@@ -89,6 +89,7 @@ const STATIC = {
   '/home.js': ['home.js', 'text/javascript; charset=utf-8'],
   '/signin.js': ['signin.js', 'text/javascript; charset=utf-8'],
   '/git.js': ['git.js', 'text/javascript; charset=utf-8'],
+  '/changes.js': ['changes.js', 'text/javascript; charset=utf-8'],
   '/releases.js': ['releases.js', 'text/javascript; charset=utf-8']
 }
 
@@ -398,6 +399,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false } = {}
       return { entries: s.agentFeedFor(url.searchParams.get('who') || s.name) }
     },
     'GET /api/sessions/:id/tree': (b, id) => get(id).tree(),
+    'GET /api/sessions/:id/changes': (b, id) => get(id).changes(),
     'GET /api/sessions/:id/file': (b, id, url) => {
       const f = get(id).readShared(url.searchParams.get('path'))
       if (!f) throw httpError(404, 'That file is not in this session.')

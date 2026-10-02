@@ -79,6 +79,10 @@ export class Session extends EventEmitter {
     this.claims = new Map()
     this.chat = this.doc.getArray('chat') // { by, text, ts }
     this.activity = this.doc.getArray('activity') // { by, path, kind, detail, ts }
+    // "<name>\0<path>" -> { by, path, added, removed, edits, kind, ts }: what each
+    // person has changed in this room, every edit counted. Each person writes
+    // only their own keys, so there is nothing to merge.
+    this.tallies = this.doc.getMap('changes')
     this.agentFeed = this.doc.getArray('agentFeed') // { id, by, tool, conv, kind, text, ts }
     this.commitRequests = this.doc.getMap('commitRequests') // id -> { id, by, message, ts, state: 'open'|'done', doneBy, hash }
     this.work = null // { state: 'working'|'done', note, ts }: what an agent says it's doing
@@ -440,10 +444,14 @@ export class Session extends EventEmitter {
       onDisk.delete(rel)
       pulled++
     }
-    for (const rel of onDisk) {
-      if (this.lastKnown.has(rel)) continue
-      if (this.ingest(rel)) pushed++
-    }
+    // What the folder brings to the room is its starting point, not a change anyone made.
+    this.seeding = true
+    try {
+      for (const rel of onDisk) {
+        if (this.lastKnown.has(rel)) continue
+        if (this.ingest(rel)) pushed++
+      }
+    } finally { this.seeding = false }
     this.log(`initial sync: ${pulled} file(s) pulled, ${pushed} pushed` +
       (backedUp ? `, ${backedUp} local version(s) backed up to ${path.relative(this.root, backupDir)}` : ''))
   }
@@ -614,12 +622,57 @@ export class Session extends EventEmitter {
 
   recordActivity (rel, kind, detail) {
     const now = Date.now()
+    this.tally(rel, kind, detail, now)
     const last = this.lastActivityPush.get(rel)
     // Collapse bursts of edits to the same file into one entry.
     if (kind === 'edited' && last && now - last < 20000) return
     this.lastActivityPush.set(rel, now)
     this.activity.push([{ by: this.name, path: rel, kind, detail, ts: now }])
     if (this.activity.length > 300) this.activity.delete(0, this.activity.length - 300)
+  }
+
+  /** Add one change of mine to the running count for rel (`detail` is "+a -r" for text). */
+  tally (rel, kind, detail, now) {
+    if (this.seeding) return
+    const key = `${this.name}\0${rel}`
+    const cur = this.tallies.get(key) || { added: 0, removed: 0, edits: 0, kind: 'edited' }
+    const m = /^\+(\d+) -(\d+)$/.exec(detail || '')
+    const state = kind === 'deleted' ? 'deleted' : kind === 'created' || cur.kind === 'created' ? 'created' : 'edited'
+    this.tallies.set(key, {
+      by: this.name,
+      path: rel,
+      added: cur.added + (m ? +m[1] : 0),
+      removed: cur.removed + (m ? +m[2] : 0),
+      edits: cur.edits + 1,
+      kind: state,
+      ts: now
+    })
+  }
+
+  /**
+   * What has changed in this room and by whom: per person (most recent first,
+   * with their files) and per file (with each person's share). Read from the
+   * shared doc, so everyone sees the same breakdown.
+   */
+  changes () {
+    const people = new Map()
+    const files = new Map()
+    for (const t of this.tallies.values()) {
+      if (!t || !t.by || !isSafeRelPath(t.path)) continue
+      const p = people.get(t.by) || { name: t.by, added: 0, removed: 0, edits: 0, ts: 0, files: [] }
+      p.added += t.added; p.removed += t.removed; p.edits += t.edits; p.ts = Math.max(p.ts, t.ts)
+      p.files.push({ path: t.path, added: t.added, removed: t.removed, edits: t.edits, kind: t.kind, ts: t.ts })
+      people.set(t.by, p)
+      const f = files.get(t.path) || { path: t.path, added: 0, removed: 0, edits: 0, ts: 0, by: [] }
+      f.added += t.added; f.removed += t.removed; f.edits += t.edits; f.ts = Math.max(f.ts, t.ts)
+      f.by.push({ name: t.by, added: t.added, removed: t.removed, edits: t.edits, kind: t.kind, ts: t.ts })
+      files.set(t.path, f)
+    }
+    const newest = (a, b) => b.ts - a.ts
+    const out = { people: [...people.values()].sort(newest), files: [...files.values()].sort(newest) }
+    for (const p of out.people) { p.files.sort(newest); p.fileCount = p.files.length }
+    for (const f of out.files) f.by.sort(newest)
+    return out
   }
 
   noteMyEdit (rel) {
@@ -1587,6 +1640,7 @@ export class Session extends EventEmitter {
       claims: [...this.claims.values()].sort((a, b) => a.ts - b.ts),
       commits: [...this.commitRequests.values()].sort((a, b) => a.ts - b.ts),
       activity: this.activity.toArray().slice(-30),
+      changes: this.changes().people.map((p) => ({ ...p, files: p.files.slice(0, 10) })),
       chat: this.messages({ limit: 20, markRead: false }),
       unread: this.unreadCount(),
       fileCount: this.files.size + this.blobs.size

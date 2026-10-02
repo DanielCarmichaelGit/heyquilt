@@ -627,3 +627,48 @@ test('a malformed chat message is skipped without breaking status or the message
   assert.ok(!got.includes('bad file id'))
   assert.equal(B.unreadCount(), 2)
 })
+
+test('each person\'s changes are tallied per file, and everyone sees the same breakdown', async (t) => {
+  const { A, B, dirA, dirB } = await pair(t, { 'src/app.js': 'a\nb\nc\n' })
+  await waitFor(() => read(dirB, 'src/app.js') === 'a\nb\nc\n')
+  // Alice edits twice in quick succession: both edits count, even though the
+  // activity log folds them into one entry.
+  write(dirA, 'src/app.js', 'a\nb\nc\nd\n')
+  A.ingest('src/app.js')
+  write(dirA, 'src/app.js', 'a\nb\nc\nd\ne\nf\n')
+  A.ingest('src/app.js')
+  write(dirA, 'notes.md', 'hello\n')
+  await waitFor(() => read(dirB, 'src/app.js') === 'a\nb\nc\nd\ne\nf\n' && read(dirB, 'notes.md') === 'hello\n')
+  write(dirB, 'src/app.js', 'b\nc\nd\ne\nf\n')
+  await waitFor(() => read(dirA, 'src/app.js') === 'b\nc\nd\ne\nf\n')
+  fs.rmSync(path.join(dirA, 'notes.md'))
+  await waitFor(() => read(dirB, 'notes.md') === null)
+
+  const seenByBob = await waitFor(() => {
+    const c = B.changes()
+    return c.files.length === 2 && c.files.find((f) => f.path === 'notes.md')?.by[0]?.kind === 'deleted' && c
+  })
+  const app = seenByBob.files.find((f) => f.path === 'src/app.js')
+  const alice = app.by.find((p) => p.name === 'alice')
+  const bob = app.by.find((p) => p.name === 'bob')
+  assert.equal(alice.added, 3, 'alice\'s two quick edits both count')
+  assert.equal(alice.removed, 0)
+  assert.equal(alice.edits, 2, 'seeding the room with the folder is the starting point, not a change')
+  assert.equal(bob.added, 0)
+  assert.equal(bob.removed, 1)
+  assert.equal(bob.edits, 1)
+  const notes = seenByBob.files.find((f) => f.path === 'notes.md')
+  assert.deepEqual(notes.by.map((p) => [p.name, p.kind]), [['alice', 'deleted']])
+
+  const people = seenByBob.people
+  assert.deepEqual(people.map((p) => p.name), ['alice', 'bob'], 'most recent first')
+  assert.equal(people[0].files.length, 2)
+  assert.equal(people[0].added, 4)
+  assert.equal(people[1].files.length, 1)
+  assert.equal(people[1].removed, 1)
+
+  // The same breakdown from Alice's side, and in the status every tool reads.
+  assert.deepEqual(A.changes().people.map((p) => [p.name, p.added, p.removed]), people.map((p) => [p.name, p.added, p.removed]))
+  const st = A.status()
+  assert.equal(st.changes.find((p) => p.name === 'bob').files[0].path, 'src/app.js')
+})

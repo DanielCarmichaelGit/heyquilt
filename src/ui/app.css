@@ -380,6 +380,12 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 .main-empty .btn .avatar { width: 22px; height: 22px; font-size: 10px; }
 
 /* AI feed */
+.feed-convs { display: flex; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); overflow-x: auto; flex: none; scrollbar-width: thin; }
+.conv-chip { height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; white-space: nowrap; max-width: 280px; }
+.conv-chip:hover { background: var(--panel-2); }
+.conv-chip.on { background: var(--panel-2); border-color: var(--accent); color: var(--text); }
+.conv-chip .tool { font-weight: 700; color: var(--accent); }
+.conv-chip .nm { overflow: hidden; text-overflow: ellipsis; }
 .feed-scroll { flex: 1; overflow-y: auto; }
 .feed { max-width: 820px; margin: 0 auto; padding: 22px 24px 40px; display: flex; flex-direction: column; gap: 14px; }
 .f-prompt { display: flex; gap: 10px; }
@@ -659,6 +665,43 @@ details.choice-foot .hint { display: block; margin-top: 6px; }
 .modal .choice-card { padding: 9px 12px; }
 .gh-base { width: auto; flex: 0 1 170px; min-width: 110px; }
 .field > label .hint { text-transform: none; letter-spacing: 0; font-weight: 400; }
+
+/* changes: who changed what */
+.chg-wrap { position: relative; }
+.chg-count { font-size: 11px; font-weight: 700; line-height: 18px; min-width: 18px; padding: 0 5px; border-radius: 999px; background: var(--panel-2); color: var(--muted); text-align: center; }
+.chg-panel { position: absolute; top: calc(100% + 8px); right: 0; width: 420px; max-width: calc(100vw - 24px); padding: 12px; max-height: 76vh; overflow: auto; display: flex; flex-direction: column; gap: 10px; }
+.chg-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.chg-head b { font-weight: 600; }
+.chg-seg { align-self: flex-start; }
+.chg-seg button { flex: none; height: 26px; padding: 0 10px; font-size: 12.5px; }
+.chg-delta { font-family: var(--mono); font-size: 11.5px; font-weight: 600; white-space: nowrap; flex: none; }
+.chg-delta .add, .chg-chip .add { color: var(--ok); }
+.chg-delta .del, .chg-chip .del { color: var(--bad); }
+.chg-person { padding-top: 10px; margin-top: 2px; border-top: 1px solid var(--border); }
+.chg-person:first-child { padding-top: 0; border-top: 0; }
+.chg-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.chg-row .avatar { width: 22px; height: 22px; font-size: 10px; flex: none; }
+.chg-row b { font-weight: 600; }
+.chg-row .hint, .chg-panel li .hint { font-size: 11.5px; white-space: nowrap; flex: none; }
+.chg-row .spacer { flex: 1; }
+.chg-panel ul { list-style: none; margin: 6px 0 0; padding: 6px; background: var(--panel-2); border-radius: 4px; }
+.chg-panel li { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 2px 0; flex-wrap: wrap; }
+.chg-file { flex: 1; min-width: 0; display: flex; border: 0; background: none; padding: 2px 4px; margin: 0 -4px; border-radius: 3px; text-align: left; font: inherit; color: inherit; cursor: pointer; }
+.chg-file:hover, .chg-file:focus-visible { background: var(--panel); }
+.chg-file code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-size: 12px; }
+.chg-file.gone { cursor: default; color: var(--muted); }
+.chg-file.gone code { text-decoration: line-through; }
+.chg-kind { flex: none; font-size: 10.5px; font-weight: 700; padding: 0 6px; height: 18px; line-height: 18px; border-radius: 999px; background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); }
+.chg-kind.gone { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad); }
+.chg-by { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 4px 6px; padding: 0 0 4px; }
+.chg-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; padding: 0 7px; height: 18px; border-radius: 999px; background: color-mix(in srgb, var(--c) 14%, transparent); color: var(--text); }
+.chg-chip::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--c); }
+.chg-chip .add, .chg-chip .del { font-family: var(--mono); font-size: 10.5px; }
+.chg-panel .error { margin: 0; }
+.chg-panel .error:empty { display: none; }
+@media (max-width: 900px) {
+  .chg-panel { position: fixed; top: 60px; right: 8px; left: 8px; width: auto; }
+}
 
 .git-wrap { position: relative; }
 .git-label { max-width: 160px; overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); font-size: 12.5px; }

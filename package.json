@@ -1,6 +1,6 @@
 {
   "name": "heyquilt",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Real-time, tool-agnostic pair vibe coding: sync a project folder live between collaborators using any AI coding tool.",
   "type": "module",
   "bin": {

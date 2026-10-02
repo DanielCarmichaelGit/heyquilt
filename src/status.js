@@ -45,6 +45,18 @@ export function renderStatus (st) {
   }
   out.push('')
 
+  out.push('## Changes')
+  const changes = st.changes || []
+  if (!changes.length) out.push('_No changes yet._')
+  for (const p of changes) {
+    const who = p.name === st.me.name ? 'you' : `**${p.name}**`
+    const n = p.fileCount ?? p.files.length
+    const files = p.files.map((f) => `\`${f.path}\` (${fileChange(f)})`)
+    if (n > p.files.length) files.push(`and ${n - p.files.length} more`)
+    out.push(`- ${who}: ${n} file${n === 1 ? '' : 's'}, +${p.added} -${p.removed} (${ago(p.ts)}): ${files.join(', ')}`)
+  }
+  out.push('')
+
   out.push(`## Messages${st.unread ? ` (${st.unread} unread)` : ''}`)
   if (!st.chat.length) out.push('_No messages._')
   for (const m of st.chat.slice(-10)) out.push(`- ${renderMessage(m, st.me.name)}`)
@@ -75,4 +87,11 @@ export function formatBytes (n) {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
   return `${(n / 1024 / 1024).toFixed(1)} MB`
+}
+
+/** One file's change in a few words: "deleted", "new, +5" or "+12 -1". */
+function fileChange (f) {
+  if (f.kind === 'deleted') return 'deleted'
+  if (f.kind === 'created') return `new, +${f.added}${f.removed ? ` -${f.removed}` : ''}`
+  return `+${f.added} -${f.removed}`
 }

@@ -9,6 +9,14 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.3 — 2026-10-02
+
+See what has changed in a session, and who changed it.
+
+- **Changes, by person or by file.** A new **Changes** button in the session bar lists every file changed in this session with lines added and removed. Switch between *By person* (each person's files) and *By file* (each file, with everyone's share). Click a file to open it. Everyone sees the same breakdown, because the counts live in the shared session.
+- **Every edit counts.** Quick successive edits to one file used to fold into a single "edited" entry; the Changes counts now add up every one of them. Files a folder brings to the room when it joins are its starting point, not changes.
+- **Agents see it too.** `.quilt/STATUS.md`, `quilt status` and the `quilt_status` tool have a **Changes** section with the same breakdown.
+
 ## 0.3.2 — 2026-10-02
 
 Invite links open the app in one click, and you can invite your AI from the app.

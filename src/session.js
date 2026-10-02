@@ -671,7 +671,7 @@ export class Session extends EventEmitter {
     const newest = (a, b) => b.ts - a.ts
     const out = { people: [...people.values()].sort(newest), files: [...files.values()].sort(newest) }
     for (const p of out.people) { p.files.sort(newest); p.fileCount = p.files.length }
-    for (const f of out.files) f.by.sort(newest)
+    for (const f of out.files) { f.by.sort(newest); f.kind = f.by[0].kind } // the latest change says whether it's new, edited or gone
     return out
   }
 

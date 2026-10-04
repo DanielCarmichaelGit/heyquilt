@@ -53,9 +53,9 @@ Nothing here may break what works today, and every step must back out cleanly.
   the flag below.
 - **Migrations are additive only:** new tables and one nullable column on `relay_sessions`. Rollback is
   dropping the new tables; no existing row changes shape.
-- **One flag, off by default:** `QUILT_WORKSPACES` on the API and a matching app setting. Off, the home page is
-  today's session list and no workspace route answers. On, the grid appears. Shipping a phase is flipping the
-  flag; backing out is flipping it back.
+- **One flag, off by default:** `QUILT_WORKSPACES` on the API. Off, no workspace route answers and the app,
+  seeing the 404, renders today's home. On, the grid appears. The app has no flag of its own: it follows the
+  API. Shipping a phase is flipping the flag; backing out is flipping it back.
 - **Loose sessions stay first-class forever.** No session ever needs a workspace, so nobody's workflow changes
   until they move a session in themselves.
 - **Branch and review:** built on the `workspaces` branch, merged in small pull requests behind the flag, each

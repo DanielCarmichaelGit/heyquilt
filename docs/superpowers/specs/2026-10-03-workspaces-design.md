@@ -3,7 +3,7 @@
 Date: 2026-10-03, revised 2026-10-04. Builds on sessions (relay rooms), accounts and spaces (personal or org),
 org roles, agent sign-in, access types and the hosted MCP.
 
-Mockups: `2026-10-03-workspaces-mockups.html` next to this file (six screens plus the plan diff).
+Mockups: `2026-10-03-workspaces-mockups.html` next to this file (card layout: home grid, add card, inside a workspace, all files).
 
 ## Goal
 
@@ -36,7 +36,7 @@ No new gating infrastructure. Iterate from there.
 | Workspace chat and board | Out of scope for now. Agents and people coordinate in session chat and the session board, and hand files over through the library. |
 | Sessions in a workspace | A session is started with a workspace id. The API records `relay_sessions.workspace_id` and answers the relay's room-access question with workspace membership when the account has no grant of its own. Loose sessions can be moved into a workspace by their owner. |
 | Agents | `agent_placements` says where an org agent works: everywhere in the org, in chosen workspaces (and their sessions), or only where added by hand. Placed agents are let into matching sessions as they start and show as "Added by <org>" in the workspace; one-off adds are ordinary members. |
-| App layout | Only a session opens the code window and the file tree. Workspaces use the home shell: the home sidebar gains a Workspaces list, and a workspace is a page with Sessions, Files, People & agents and Settings tabs. |
+| App layout | Only a session opens the code window and the file tree. Workspaces use the home shell with today's sidebar. Home is a **grid of workspace cards** with an **Add workspace** card; inside a workspace, one page of card sections (Sessions, Files, People & agents) and an All files view. No tabs, no sidebar list. |
 | Limits (defaults, per plan later) | 500 MB per file, 5 GB per workspace, 2,000 files. |
 | Naming in code | The session view's internal name "workspace" (`src/ui/session.js` comment, `state.ws`, the CSS section) is renamed so the word means one thing. |
 
@@ -182,24 +182,32 @@ room is linked before anyone else connects. When the folder being started is und
 
 ## Desktop app
 
-**Home shell.** The sidebar gets a **Workspaces** label with a `+` and a list of the person's workspaces (org
-ones show the org's name in small type). The home page shows **Your workspaces** as cards (name, description,
-counts, member avatars, "N open" when sessions are live) above **Sessions not in a workspace**, which is
-today's session list; its rows gain "Move to…" in their menu.
+**Home** is the workspace grid. The sidebar is unchanged (Sessions menu, Home, Settings). Each card: a colour
+cover with the workspace's initial, name, a pill for the space (Personal or the org's name), one line of
+description, counts (sessions, files, storage), member avatars with online dots, and a green "N open" pill when
+sessions are live. The last card is a dashed **Add workspace**; clicking it turns the card into the form in
+place (name, where it lives, colour, optional description) and Create opens the new workspace. A Personal / org
+switch at the top right filters the grid. **Sessions not in a workspace** is a small strip of chips under the
+grid with Open or Rejoin, and the Join and New session buttons that live on the home page today; a chip's menu
+has "Move to…".
 
-**Workspace page** (`state.view = 'ws:<id>'`, rendered by `renderShell`). Header: color square, name, a pill
-for the space (Personal or the org's name), description, Invite and New session. Tabs:
+**Workspace page** (`state.view = 'ws:<id>'`, rendered by `renderShell`). A back link, then the header:
+colour mark, name, space pill, description, usage, Invite and a settings gear. Three card sections on one page:
 
-- **Sessions:** running sessions in the workspace with Open, past ones with Rejoin (from `recent.json`) or
-  the owner's name if it's someone else's. New session starts one here.
-- **Files:** folder tree on the left, list in the middle (type badge, name, size, who and when, version,
-  menu), preview on the right (image, video, audio, PDF, CSV, text and Markdown; xlsx shows sheet names and
-  the first rows). Upload button and drag-and-drop; progress shows in the row; Download, Send to chat (when a
-  session in this workspace is open), Rename, Move, Delete, version list with Download this version.
-- **People & agents:** members with an access dropdown and Remove; agents placed by the org show "Added by
-  <org> · every session" and "Managed on heyquilt.com" instead of Remove. Invite opens the session invite
-  dialog pointed at the workspace.
-- **Settings:** name, description, color, usage, Archive, Delete (type the name).
+- **Sessions:** a card per session (name, folder, who is in it, Open or Rejoin), live ones first, and a dashed
+  **New session** card that starts one in this workspace.
+- **Files:** tiles with a thumbnail or type badge, name, uploader and age, version pill; folders first; an
+  upload tile that also takes dropped files; "All files" opens the library.
+- **People & agents:** a card per member with avatar, name, what they are doing, and an access dropdown or an
+  Owner pill; agents placed by the org show "Added by <org>" and no dropdown; a dashed **Invite** card opens the
+  session invite dialog pointed at the workspace.
+
+**All files** (`state.view = 'wsfiles:<id>'`): breadcrumb for the folder, Tiles / List switch, New folder and
+Upload, folders first, and a preview panel for the picked file (image, video, audio, PDF, CSV, text and
+Markdown; xlsx shows sheet names and the first rows) with Download, Send to <open session> chat, the version
+list with Download this version, Rename, Move, Delete.
+
+**Settings** (the gear): name, description, colour, usage, Archive, Delete (type the name).
 
 **Session view.** Unchanged, plus a breadcrumb in the top bar (`Launch › pricing-page`, the workspace name
 links back) and an "Attach from workspace" button in the chat composer that sends a library file as a chat
@@ -268,16 +276,18 @@ sees both files and versions in the Files tab and the thread in the session.
   sweep, rename and move, download links; a smoke script against the real bucket.
 - `test/workspace-mcp.test.js`: each tool from a local and a hosted agent; `quilt_start_session` with
   `workspace`; placed agent admitted when a session starts; webhook payload.
-- `test/ui-workspaces.test.js`: sidebar list by space, cards, the workspace page tabs, file rows and preview
-  picked by type, the `STATIC` allowlist in `src/ui-server.js` covers every new module.
+- `test/ui-workspaces.test.js`: the grid and its filter, the add card becoming the form, the workspace page
+  sections, file tiles and the preview picked by type, the `STATIC` allowlist in `src/ui-server.js` covers every
+  new module.
 - Website tests for the new pages and the Roles grid row.
 
 ## Phases
 
-1. **Shape.** Tables, API routes for workspaces, members and sessions, the Workspaces sidebar and page with
-   the Sessions and People tabs, the website lists, starting a session inside a workspace, access fallback.
-2. **Files.** The file routes, bucket, Files tab with upload, preview and versions, Attach from workspace,
-   Supabase Realtime.
+1. **Shape.** Tables, API routes for workspaces, members and sessions, the home grid with the add card, the
+   workspace page with the Sessions and People & agents sections, the website lists, starting a session inside
+   a workspace, access fallback.
+2. **Files.** The file routes, bucket, the Files section and All files view with upload, preview and versions,
+   Attach from workspace, Supabase Realtime.
 3. **Agents.** Agent invites into a workspace, the library tools, placements and the org agent page, guide text.
 
 Each phase ships with a `RELEASES.md` section and tests. Phase 1 is usable on its own.

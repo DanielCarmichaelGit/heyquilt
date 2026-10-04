@@ -2,13 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Quilt workspaces — mockups</title>
+<title>Quilt workspaces — card layout</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 :root {
   --bg:#fff8f3; --panel:#ffffff; --panel-2:#fdeee6; --text:#2b2a38; --muted:#6e6c7e; --faint:#9d9aae;
   --border:#f3dfd4; --border-strong:#e6cbbd; --accent:#c24f33; --coral:#c24f33; --violet:#7b4f9e;
-  --ok:#3d7a4c; --warn:#a8701c; --bad:#b3372e; --shadow:3px 3px 0 var(--border); --radius:6px;
+  --ok:#3d7a4c; --warn:#a8701c; --bad:#b3372e; --shadow:3px 3px 0 var(--border); --radius:8px;
   --sans:"Poppins",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
 }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
@@ -22,28 +22,22 @@ body { margin:0; background:var(--bg); color:var(--text); font:13.5px/1.6 var(--
 .doc > p.lead { color:var(--muted); font-size:15px; margin:0 0 36px; max-width:760px }
 .fig { margin:0 0 56px }
 .fig h2 { font-size:17px; margin:0 0 4px }
-.fig > p { margin:0 0 14px; color:var(--muted); max-width:760px }
-.fig .legend { display:flex; gap:14px; flex-wrap:wrap; margin:0 0 14px; font-size:12.5px; color:var(--muted) }
-.legend i { display:inline-block; width:12px; height:12px; border-radius:3px; vertical-align:-2px; margin-right:6px }
-.new { outline:2px dashed var(--violet); outline-offset:-2px; position:relative }
-.new::after { content:"new"; position:absolute; top:-9px; right:8px; background:var(--violet); color:#fff; font-size:9.5px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; padding:1px 6px; border-radius:999px }
-/* frame: an app window */
+.fig > p { margin:0 0 14px; color:var(--muted); max-width:780px }
 .frame { border:1px solid var(--border-strong); border-radius:10px; overflow:hidden; background:var(--bg); box-shadow:0 1px 0 var(--border-strong), 0 14px 36px rgba(43,42,56,.12) }
 .titlebar { height:30px; display:flex; align-items:center; gap:7px; padding:0 12px; background:var(--panel); border-bottom:1px solid var(--border) }
 .titlebar i { width:11px; height:11px; border-radius:50%; background:var(--border-strong) }
-.titlebar span { margin-left:auto; margin-right:auto; font-size:12px; color:var(--muted) }
-.shell { display:grid; grid-template-columns:232px minmax(0,1fr); min-height:560px }
+.titlebar span { margin:0 auto; font-size:12px; color:var(--muted) }
+.shell { display:grid; grid-template-columns:232px minmax(0,1fr); min-height:600px }
 .side { display:flex; flex-direction:column; gap:6px; padding:16px 12px 12px; background:var(--panel); border-right:1px solid var(--border) }
 .brand { display:flex; align-items:center; gap:8px; padding:2px 6px 12px; font-size:19px; font-weight:600; letter-spacing:-.02em }
 .brand b { width:26px; height:26px; border-radius:6px; background:conic-gradient(from 90deg, var(--coral), #f0b48a, var(--violet), var(--coral)); display:inline-block }
-.me { display:flex; align-items:center; gap:10px; padding:10px 11px; border:1px solid var(--border); border-radius:var(--radius); background:var(--bg); box-shadow:var(--shadow); margin-bottom:10px }
+.me { display:flex; align-items:center; gap:10px; padding:10px 11px; border:1px solid var(--border); border-radius:6px; background:var(--bg); box-shadow:var(--shadow); margin-bottom:10px }
 .av { width:34px; height:34px; border-radius:50%; display:grid; place-items:center; color:#fff; font-weight:700; font-size:13px; flex:none; text-transform:uppercase; position:relative }
-.av.sm { width:24px; height:24px; font-size:10px }
+.av.sm { width:26px; height:26px; font-size:10.5px }
+.av.xs { width:20px; height:20px; font-size:9px }
 .av.on::after { content:""; position:absolute; right:-1px; bottom:-1px; width:10px; height:10px; border-radius:50%; background:var(--ok); border:2px solid var(--panel) }
 .av.bot { border-radius:6px }
-.me .t { display:flex; flex-direction:column; min-width:0; flex:1; line-height:1.3 }
-.me .t b { font-weight:650 } .me .t span { font-size:12px; color:var(--muted) }
-.me .e { font-size:12px; font-weight:600; color:var(--accent) }
+.me .t { display:flex; flex-direction:column; min-width:0; flex:1; line-height:1.3 } .me .t b { font-weight:650 } .me .t span { font-size:12px; color:var(--muted) } .me .e { font-size:12px; font-weight:600; color:var(--accent) }
 .btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; height:34px; padding:0 14px; border-radius:4px; border:1px solid var(--border-strong); background:var(--panel); font-weight:500; white-space:nowrap; font-size:13px }
 .btn.primary { background:var(--text); color:var(--bg); border-color:transparent }
 .btn.ghost { background:transparent; border-color:transparent; color:var(--muted) }
@@ -51,144 +45,132 @@ body { margin:0; background:var(--bg); color:var(--text); font:13.5px/1.6 var(--
 .btn.full { width:100%; justify-content:flex-start }
 .badge { font-size:11px; font-weight:700; background:var(--coral); color:#fff; border-radius:999px; padding:0 7px; line-height:18px }
 .caret { margin-left:auto; opacity:.6 }
-.side-label { font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); padding:14px 8px 4px; display:flex; align-items:center }
-.side-label .plus { margin-left:auto; color:var(--accent); font-weight:700; font-size:14px }
+.side-label { font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); padding:14px 8px 4px }
 .nav { display:flex; flex-direction:column; gap:2px }
-.nav button, .nav .it { display:flex; align-items:center; gap:9px; width:100%; height:34px; padding:0 9px; border:0; border-radius:4px; background:transparent; color:var(--muted); font-weight:500; text-align:left; font:inherit }
+.nav .it { display:flex; align-items:center; gap:9px; height:34px; padding:0 9px; border-radius:4px; color:var(--muted); font-weight:500 }
 .nav .it.on { background:var(--panel-2); color:var(--text); font-weight:600 }
-.nav .it .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
-.nav .it .ct { font-size:11px; font-weight:700; color:var(--muted); background:var(--panel-2); border-radius:999px; padding:0 7px; line-height:18px }
-.nav .it .org { font-size:10.5px; color:var(--faint); font-weight:500 }
-.sw { width:10px; height:10px; border-radius:3px; flex:none }
 .foot { margin-top:auto; padding-top:12px; color:var(--muted); font-size:12.5px }
-.page { padding:34px 36px 44px; overflow:hidden }
-.ph h1 { font-size:26px; margin:0 0 4px; letter-spacing:-.025em }
-.ph p { margin:0 0 22px; color:var(--muted); font-size:14px }
-.card { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow) }
-.sec { margin-top:26px }
-.sech { display:flex; align-items:center; gap:10px; margin-bottom:10px }
-.sech h2 { margin:0; font-size:16px }
-.sech .count { font-size:12px; font-weight:700; color:var(--muted); background:var(--panel-2); border-radius:999px; padding:1px 8px }
-.sech .sp { flex:1 }
-.row { display:grid; grid-template-columns:auto minmax(0,1.2fr) minmax(0,1fr) auto; gap:14px; align-items:center; padding:11px 16px }
-.row + .row { border-top:1px solid var(--border) }
-.ico { width:36px; height:36px; border-radius:4px; display:grid; place-items:center; background:var(--panel-2); color:var(--muted); flex:none; font-size:15px }
-.ico.live { color:var(--ok); background:color-mix(in srgb, var(--ok) 12%, var(--panel)) }
-.row .name { font-size:14px; font-weight:600; display:flex; align-items:center; gap:8px }
-.row .sub { color:var(--muted); font-size:12px; font-family:var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
-.row .facts { display:flex; flex-wrap:wrap; gap:4px 12px; font-size:12.5px; color:var(--muted) }
-.row .acts { display:flex; gap:4px }
+.page { padding:34px 38px 44px; overflow:hidden }
+.ph { display:flex; align-items:flex-end; gap:14px; margin-bottom:22px }
+.ph h1 { font-size:26px; margin:0 0 2px; letter-spacing:-.025em }
+.ph p { margin:0; color:var(--muted); font-size:14px }
+.ph .sp { flex:1 }
+.seg { display:inline-flex; border:1px solid var(--border-strong); border-radius:6px; overflow:hidden; background:var(--panel) }
+.seg span { padding:5px 12px; font-size:12.5px; font-weight:500; color:var(--muted) }
+.seg span.on { background:var(--panel-2); color:var(--text); font-weight:600 }
 .pill { display:inline-flex; align-items:center; gap:6px; height:20px; padding:0 8px; border-radius:999px; font-size:11px; font-weight:600; background:var(--panel-2); color:var(--muted) }
-.pill.ok { color:var(--ok) } .pill .dot { width:7px; height:7px; border-radius:50%; background:currentColor }
+.pill.ok { color:var(--ok) } .pill .dot { width:7px; height:7px; border-radius:50%; background:currentColor; box-shadow:0 0 0 3px color-mix(in srgb, currentColor 22%, transparent) }
 .pill.violet { color:var(--violet); background:color-mix(in srgb, var(--violet) 12%, var(--panel)) }
 .pill.coral { color:var(--coral); background:color-mix(in srgb, var(--coral) 12%, var(--panel)) }
-/* workspace cards */
-.wsgrid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px }
-.wscard { padding:16px 16px 14px; display:flex; flex-direction:column; gap:8px; min-height:132px }
-.wscard .top { display:flex; align-items:center; gap:10px }
-.wscard .top b { font-size:15px }
-.wscard .desc { color:var(--muted); font-size:12.5px; flex:1 }
-.wscard .meta { display:flex; gap:12px; font-size:12px; color:var(--muted); align-items:center }
-.wscard .avs { display:flex; margin-left:auto } .wscard .avs .av { margin-left:-6px; border:2px solid var(--panel) }
-.wscard.ghost { border-style:dashed; box-shadow:none; align-items:center; justify-content:center; color:var(--muted); background:transparent }
-/* workspace head + tabs */
-.wshead { display:flex; align-items:flex-start; gap:14px; margin-bottom:18px }
-.wshead .big { width:46px; height:46px; border-radius:10px; flex:none }
-.wshead h1 { font-size:24px; margin:0; letter-spacing:-.02em; display:flex; align-items:center; gap:10px }
-.wshead p { margin:2px 0 0; color:var(--muted) }
-.wshead .acts { margin-left:auto; display:flex; gap:6px }
-.tabs { display:flex; gap:2px; border-bottom:1px solid var(--border); margin-bottom:18px }
-.tabs span { padding:8px 12px; color:var(--muted); font-weight:500; border-bottom:2px solid transparent; margin-bottom:-1px }
-.tabs span.on { color:var(--text); font-weight:600; border-color:var(--accent) }
-.tabs span .ct { font-size:11px; font-weight:700; color:var(--muted); background:var(--panel-2); border-radius:999px; padding:0 6px; margin-left:6px }
-/* files */
-.files { display:grid; grid-template-columns:190px minmax(0,1fr) 260px; min-height:380px }
-.ftree { border-right:1px solid var(--border); padding:10px 8px; font-size:13px }
-.ftree div { padding:5px 8px; border-radius:4px; color:var(--muted); display:flex; gap:7px; align-items:center }
-.ftree div.on { background:var(--panel-2); color:var(--text); font-weight:600 }
-.ftree div.in { padding-left:24px }
-.flist { padding:4px 0 }
-.fbar { display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid var(--border); color:var(--muted); font-size:12.5px }
-.fbar .crumb b { color:var(--text) } .fbar .sp { flex:1 }
-.frow { display:grid; grid-template-columns:28px minmax(0,1.6fr) 70px minmax(0,1fr) 86px 60px; gap:10px; align-items:center; padding:8px 14px; font-size:13px }
-.frow + .frow { border-top:1px solid var(--border) }
-.frow.on { background:var(--panel-2) }
-.frow .fi { width:22px; height:22px; border-radius:4px; display:grid; place-items:center; font-size:9.5px; font-weight:700; color:#fff; font-family:var(--mono) }
-.frow .nm { font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
-.frow .mu { color:var(--muted); font-size:12.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
-.frow .v { font-family:var(--mono); font-size:12px; color:var(--muted) }
-.frow.up .nm::after { content:" · uploading 64%"; color:var(--muted); font-weight:400 }
-.frow.up .bar { grid-column:2 / -1; height:4px; border-radius:2px; background:var(--panel-2); overflow:hidden; margin-top:-4px }
-.frow.up .bar i { display:block; height:100%; width:64%; background:var(--accent) }
-.prev { border-left:1px solid var(--border); padding:14px; display:flex; flex-direction:column; gap:10px }
-.prev .img { height:150px; border-radius:6px; background:linear-gradient(135deg, var(--panel-2), color-mix(in srgb, var(--violet) 25%, var(--panel))); display:grid; place-items:center; color:var(--muted); font-size:12px; border:1px solid var(--border) }
-.prev b { font-size:14px; overflow-wrap:anywhere }
-.kv { display:grid; grid-template-columns:72px 1fr; gap:2px 10px; font-size:12.5px } .kv span:nth-child(odd) { color:var(--muted) }
-.vers { border-top:1px dashed var(--border); padding-top:8px; font-size:12.5px }
-.vers div { display:flex; gap:8px; padding:3px 0; color:var(--muted) } .vers div b { color:var(--text); font-family:var(--mono); font-weight:600 }
-.vers div a { margin-left:auto; color:var(--accent); font-weight:600; text-decoration:none }
-.drop { margin:10px 14px 6px; border:1.5px dashed var(--border-strong); border-radius:6px; padding:12px; text-align:center; color:var(--muted); font-size:12.5px }
-/* people */
-.prow { display:grid; grid-template-columns:auto minmax(0,1.2fr) minmax(0,1fr) auto; gap:14px; align-items:center; padding:10px 16px }
-.prow + .prow { border-top:1px solid var(--border) }
-.prow .who b { display:block; font-weight:600 } .prow .who span { color:var(--muted); font-size:12.5px }
-.prow .how { color:var(--muted); font-size:12.5px; display:flex; gap:6px; flex-wrap:wrap; align-items:center }
-.sel { display:inline-flex; align-items:center; gap:6px; height:28px; padding:0 10px; border:1px solid var(--border-strong); border-radius:4px; background:var(--panel); font-size:12.5px; font-weight:500 }
-.note { display:flex; gap:10px; align-items:flex-start; padding:11px 14px; border-radius:var(--radius); background:var(--panel-2); color:var(--muted); font-size:12.5px; margin-top:12px }
-.note b { color:var(--text) }
-/* session view mini */
-.sessbar { height:44px; display:flex; align-items:center; gap:10px; padding:0 14px; background:var(--panel); border-bottom:1px solid var(--border); font-size:13px }
-.sessbar .crumb { color:var(--muted) } .sessbar .crumb b { color:var(--text); font-weight:600 }
-.sessbar .crumb a { color:var(--accent); font-weight:600; text-decoration:none }
-.sessbar .sp { flex:1 }
-.sessbody { display:grid; grid-template-columns:200px minmax(0,1fr) 240px; height:300px }
-.sessbody > div { padding:12px; color:var(--faint); font-size:12.5px }
-.sessbody > div + div { border-left:1px solid var(--border) }
-.sessbody .tree div { padding:3px 6px; font-family:var(--mono); font-size:12px; color:var(--muted) }
-.chatline { display:flex; gap:8px; align-items:flex-start; padding:6px 0; color:var(--text) }
-.chatline .b { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:6px 10px; font-size:12.5px }
-.chatline .b .att { display:inline-flex; gap:6px; align-items:center; margin-top:4px; padding:4px 8px; border-radius:4px; background:var(--panel-2); font-family:var(--mono); font-size:11.5px; color:var(--muted) }
-.composer { margin-top:auto; display:flex; gap:6px; align-items:center; border:1px solid var(--border-strong); border-radius:4px; padding:6px 8px; background:var(--panel); color:var(--faint); font-size:12.5px }
-.composer .sp { flex:1 }
-/* web */
-.web { border:1px solid var(--border-strong); border-radius:10px; overflow:hidden; background:var(--panel) }
-.webbar { display:flex; gap:18px; align-items:center; padding:12px 22px; border-bottom:1px solid var(--border); font-size:13px; color:var(--muted) }
-.webbar b { color:var(--text); font-weight:600; margin-right:auto }
-.webbar span.on { color:var(--text); font-weight:600 }
-.webbody { padding:22px 26px 26px }
-.webbody h3 { margin:0 0 4px; font-size:20px }
-.webbody p.sub { margin:0 0 16px; color:var(--muted) }
-table { width:100%; border-collapse:collapse; font-size:13px }
-th { text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); padding:6px 10px; border-bottom:1px solid var(--border) }
-td { padding:9px 10px; border-bottom:1px solid var(--border) }
-.two { display:grid; grid-template-columns:1fr 1fr; gap:16px }
-.spec { margin-top:60px; padding-top:24px; border-top:1px solid var(--border-strong) }
-.spec h2 { font-size:20px; margin:0 0 10px }
-.spec ul { padding-left:20px; color:var(--text) } .spec li { margin:5px 0 }
-.spec li b { font-weight:600 }
-.diff { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:14px }
-.diff > div { padding:14px 16px; border-radius:var(--radius); border:1px solid var(--border); background:var(--panel) }
-.diff h4 { margin:0 0 6px; font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted) }
-.diff ul { margin:0; padding-left:18px; font-size:13px }
-.diff .was li { color:var(--muted); text-decoration:line-through }
-@media (max-width: 860px) {
-  .shell { grid-template-columns:1fr } .side { border-right:0; border-bottom:1px solid var(--border) }
-  .files { grid-template-columns:1fr } .ftree, .prev { border:0; border-top:1px solid var(--border) }
-  .wsgrid, .two, .diff { grid-template-columns:1fr } .frow { grid-template-columns:28px 1fr 60px } .frow .mu, .frow .v:nth-child(6) { display:none }
-  .row, .prow { grid-template-columns:auto 1fr } .row .facts, .row .acts, .prow .how, .prow .acts { grid-column:1 / -1 }
-  .sessbody { grid-template-columns:1fr; height:auto } .sessbody > div + div { border-left:0; border-top:1px solid var(--border) }
+
+/* ---- the workspace card grid ---- */
+.grid { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:16px }
+.ws { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); display:flex; flex-direction:column; overflow:hidden; min-height:230px; position:relative }
+.ws:hover { border-color:var(--border-strong) }
+.ws .cover { height:64px; position:relative; background:var(--c, var(--panel-2)) }
+.ws .cover::after { content:""; position:absolute; inset:0; background:
+  radial-gradient(circle at 18% 120%, rgba(255,255,255,.55), transparent 40%),
+  radial-gradient(circle at 88% -20%, rgba(255,255,255,.35), transparent 45%);
 }
+.ws .cover .pin { position:absolute; top:10px; right:10px; display:flex; gap:6px }
+.ws .cover .live { position:absolute; left:14px; bottom:-10px; z-index:1 }
+.ws .mark { position:absolute; left:14px; top:14px; width:34px; height:34px; border-radius:9px; background:rgba(255,255,255,.85); color:var(--text); display:grid; place-items:center; font-weight:700; font-size:15px; letter-spacing:-.02em; box-shadow:0 1px 0 rgba(0,0,0,.08) }
+.ws .body { padding:18px 16px 12px; display:flex; flex-direction:column; gap:6px; flex:1 }
+.ws .body h3 { margin:0; font-size:16px; font-weight:600; letter-spacing:-.01em; display:flex; align-items:center; gap:8px }
+.ws .body h3 .pill { height:18px; font-size:10.5px }
+.ws .desc { color:var(--muted); font-size:12.5px; line-height:1.5; flex:1 }
+.ws .stats { display:flex; gap:14px; font-size:12px; color:var(--muted); margin-top:4px }
+.ws .stats b { color:var(--text); font-weight:600 }
+.ws .foot { margin:0; padding:10px 16px 12px; border-top:1px solid var(--border); display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted) }
+.ws .avs { display:flex } .ws .avs .av { margin-left:-7px; border:2px solid var(--panel) } .ws .avs .av:first-child { margin-left:0 }
+.ws .foot .sp { flex:1 }
+.ws.add { border:1.5px dashed var(--border-strong); box-shadow:none; background:transparent; align-items:center; justify-content:center; gap:8px; color:var(--muted); cursor:pointer; min-height:230px }
+.ws.add .plus { width:46px; height:46px; border-radius:50%; border:1.5px dashed var(--border-strong); display:grid; place-items:center; font-size:24px; color:var(--accent); font-weight:500 }
+.ws.add b { font-weight:600; color:var(--text) }
+.ws.add span { font-size:12.5px }
+.ws.add:hover { border-color:var(--accent); background:color-mix(in srgb, var(--accent) 4%, transparent) }
+/* add-form card */
+.ws.form { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent), var(--shadow) }
+.ws.form .body { padding:16px }
+.ws.form label { font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.07em; display:block; margin:8px 0 4px }
+.ws.form .in { height:34px; border:1px solid var(--border-strong); border-radius:4px; background:color-mix(in srgb, var(--panel-2) 55%, var(--panel)); padding:0 10px; display:flex; align-items:center; font-size:13px }
+.ws.form .in.ph { color:var(--faint) }
+.ws.form .sw { display:flex; gap:6px } .ws.form .sw i { width:20px; height:20px; border-radius:50% } .ws.form .sw i.on { box-shadow:0 0 0 2px var(--panel), 0 0 0 4px var(--text) }
+.ws.form .acts { display:flex; gap:6px; justify-content:flex-end; margin-top:12px }
+/* loose sessions strip */
+.strip { margin-top:30px }
+.strip h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 10px; font-weight:600; display:flex; align-items:center; gap:10px }
+.strip h2 .sp { flex:1 }
+.chips { display:flex; gap:10px; flex-wrap:wrap }
+.chip { display:flex; align-items:center; gap:10px; padding:8px 12px 8px 10px; border:1px solid var(--border); border-radius:6px; background:var(--panel); font-size:13px }
+.chip .ico { width:28px; height:28px; border-radius:4px; display:grid; place-items:center; background:var(--panel-2); color:var(--muted); font-size:13px }
+.chip .ico.live { color:var(--ok); background:color-mix(in srgb, var(--ok) 12%, var(--panel)) }
+.chip b { font-weight:600 } .chip span { color:var(--muted); font-size:12px } .chip .act { color:var(--accent); font-weight:600; font-size:12.5px; margin-left:6px }
+
+/* ---- inside a workspace: card sections ---- */
+.wshead { display:flex; align-items:center; gap:14px; margin-bottom:22px }
+.wshead .mark { width:44px; height:44px; border-radius:11px; display:grid; place-items:center; color:#fff; font-weight:700; font-size:18px }
+.wshead h1 { font-size:24px; margin:0; letter-spacing:-.02em; display:flex; align-items:center; gap:10px }
+.wshead p { margin:0; color:var(--muted) }
+.wshead .acts { margin-left:auto; display:flex; gap:6px }
+.back { color:var(--accent); font-weight:600; font-size:12.5px; margin-bottom:10px; display:inline-block }
+.sec { margin-top:26px }
+.sech { display:flex; align-items:center; gap:10px; margin-bottom:12px }
+.sech h2 { margin:0; font-size:15px } .sech .count { font-size:12px; font-weight:700; color:var(--muted); background:var(--panel-2); border-radius:999px; padding:1px 8px } .sech .sp { flex:1 } .sech a { color:var(--accent); font-weight:600; font-size:12.5px }
+.cards4 { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:12px }
+.cards3 { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:12px }
+.sc { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); padding:14px; display:flex; flex-direction:column; gap:6px; min-height:120px }
+.sc .top { display:flex; align-items:center; gap:8px } .sc .top b { font-size:14px; font-weight:600; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+.sc .ico { width:28px; height:28px; border-radius:6px; display:grid; place-items:center; background:var(--panel-2); color:var(--muted); font-size:13px; flex:none }
+.sc .ico.live { color:var(--ok); background:color-mix(in srgb, var(--ok) 12%, var(--panel)) }
+.sc .mono { font-family:var(--mono); font-size:11.5px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+.sc .who { display:flex; align-items:center; gap:6px; margin-top:auto; font-size:12px; color:var(--muted) }
+.sc .who .avs { display:flex } .sc .who .avs .av { margin-left:-6px; border:2px solid var(--panel) } .sc .who .avs .av:first-child { margin-left:0 }
+.sc .who .sp { flex:1 }
+.sc.add { border-style:dashed; box-shadow:none; background:transparent; align-items:center; justify-content:center; color:var(--muted); font-weight:500 }
+.sc.add i { font-size:22px; color:var(--accent); font-style:normal; font-weight:500; margin-bottom:-4px }
+/* file tiles */
+.tiles { display:grid; grid-template-columns:repeat(6, minmax(0,1fr)); gap:12px }
+.tile { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); overflow:hidden; display:flex; flex-direction:column }
+.tile .thumb { height:84px; display:grid; place-items:center; background:var(--panel-2); color:var(--muted); font-family:var(--mono); font-size:11px; font-weight:600; position:relative }
+.tile .thumb.img { background:linear-gradient(135deg, #fdeee6, #d9c6ea) }
+.tile .thumb.vid { background:linear-gradient(135deg, #322d36, #6b5b7e); color:#fff }
+.tile .thumb .v { position:absolute; top:6px; right:6px; font-size:10px; background:rgba(255,255,255,.85); color:var(--text); padding:0 5px; border-radius:999px; font-weight:700 }
+.tile .thumb .fl { position:absolute; left:6px; top:6px; font-size:9.5px; font-weight:700; color:#fff; padding:1px 5px; border-radius:3px }
+.tile .nm { padding:8px 10px 2px; font-size:12.5px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+.tile .mu { padding:0 10px 9px; font-size:11.5px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+.tile.folder .thumb { background:transparent; border-bottom:1px solid var(--border); font-size:26px; height:84px }
+.tile.up .thumb::after { content:""; position:absolute; left:0; bottom:0; height:3px; width:64%; background:var(--accent) }
+.tile.add { border-style:dashed; box-shadow:none; background:transparent; align-items:center; justify-content:center; color:var(--muted); font-size:12.5px; gap:4px; min-height:140px }
+.tile.add i { font-size:22px; color:var(--accent); font-style:normal }
+/* people cards */
+.pc { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); padding:14px; display:flex; gap:12px; align-items:center }
+.pc .av { width:40px; height:40px; font-size:15px }
+.pc .t { flex:1; min-width:0; line-height:1.35 } .pc .t b { display:block; font-weight:600 } .pc .t span { font-size:12px; color:var(--muted); display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+.sel { display:inline-flex; align-items:center; gap:6px; height:26px; padding:0 9px; border:1px solid var(--border-strong); border-radius:4px; background:var(--panel); font-size:12px; font-weight:500; white-space:nowrap }
+.pc.add { border-style:dashed; box-shadow:none; background:transparent; justify-content:center; color:var(--muted); font-weight:500 }
+.pc.add i { font-size:20px; color:var(--accent); font-style:normal }
+.note { display:flex; gap:10px; align-items:flex-start; padding:11px 14px; border-radius:6px; background:var(--panel-2); color:var(--muted); font-size:12.5px; margin-top:16px }
+.note b { color:var(--text) }
+.spec { margin-top:48px; padding-top:24px; border-top:1px solid var(--border-strong) }
+.spec h2 { font-size:18px; margin:0 0 8px } .spec ul { padding-left:20px } .spec li { margin:5px 0 }
+@media (max-width: 900px) {
+  .shell { grid-template-columns:1fr } .side { border-right:0; border-bottom:1px solid var(--border) }
+  .grid, .cards3 { grid-template-columns:1fr 1fr } .cards4 { grid-template-columns:1fr 1fr } .tiles { grid-template-columns:repeat(3,1fr) }
+  .page { padding:24px 16px }
+}
+@media (max-width: 560px) { .grid, .cards3, .cards4 { grid-template-columns:1fr } .tiles { grid-template-columns:1fr 1fr } }
 </style>
 </head>
 <body>
 <div class="doc">
-<h1>Workspaces</h1>
-<p class="lead">What changes in the app and on the website, screen by screen. Dashed violet outlines mark what is new; everything else is the app as it is today. Mock data throughout.</p>
+<h1>Workspaces as cards</h1>
+<p class="lead">Home is a grid of workspace cards; the last card adds one. Inside a workspace, sessions, files and people are cards too. The home sidebar stays as it is today; the code window and file tree only appear once you open a session.</p>
 
-<!-- 1 HOME -->
+<!-- 1 HOME GRID -->
 <section class="fig">
-  <h2>1 · Home with workspaces</h2>
-  <p>The home shell keeps its sidebar. A <b>Workspaces</b> list appears under the Sessions button; the page shows your workspaces as cards and the sessions that aren't in any workspace underneath, exactly as the session list looks today. Org workspaces carry the org's name under their title.</p>
+  <h2>1 · Home</h2>
+  <p>Each card is a workspace: a colour cover with its initial, name, which space it belongs to, a line of description, counts, and who is in it. A green pill means sessions are open right now. The dashed card adds a workspace. A switch at the top right narrows to Personal or an org.</p>
   <div class="frame">
     <div class="titlebar"><i></i><i></i><i></i><span>Quilt</span></div>
     <div class="shell">
@@ -196,42 +178,141 @@ td { padding:9px 10px; border-bottom:1px solid var(--border) }
         <div class="brand"><b></b>Quilt</div>
         <div class="me"><span class="av" style="background:#c24f33">D</span><span class="t"><b>Daniel</b><span>Claude Code</span></span><span class="e">Edit</span></div>
         <div class="btn primary full">▣&nbsp; Sessions <span class="badge">2</span><span class="caret">›</span></div>
-        <div class="side-label new" style="margin-top:4px">Workspaces <span class="plus">+</span></div>
-        <div class="nav new">
-          <div class="it"><span class="sw" style="background:#7b4f9e"></span><span class="nm">Launch</span><span class="ct">2</span></div>
-          <div class="it"><span class="sw" style="background:#3d7a4c"></span><span class="nm">Website</span></div>
-          <div class="it"><span class="sw" style="background:#a8701c"></span><span class="nm">Quilt core <span class="org">· Acme</span></span><span class="ct">1</span></div>
-        </div>
         <div class="side-label">Menu</div>
         <div class="nav"><div class="it on">⌂&nbsp; Home</div><div class="it">⚙&nbsp; Settings</div></div>
         <div class="foot">⏻ Shut down</div>
       </aside>
       <main class="page">
-        <div class="ph"><h1>Good morning, Daniel</h1><p>Pick up a session, open a workspace, or start something new.</p></div>
-        <div class="sec new" style="margin-top:0">
-          <div class="sech"><h2>Your workspaces</h2><span class="count">3</span><span class="sp"></span><span class="btn sm primary">＋ New workspace</span></div>
-          <div class="wsgrid">
-            <div class="card wscard"><div class="top"><span class="sw" style="background:#7b4f9e;width:14px;height:14px"></span><b>Launch</b><span class="pill ok" style="margin-left:auto"><span class="dot"></span>2 open</span></div><div class="desc">Teaser video, launch copy, pricing page.</div><div class="meta">3 sessions · 14 files · 1.2 GB<span class="avs"><span class="av sm" style="background:#c24f33">D</span><span class="av sm" style="background:#7b4f9e">B</span><span class="av sm bot" style="background:#3d7a4c">M</span><span class="av sm bot" style="background:#6e6c7e">E</span></span></div></div>
-            <div class="card wscard"><div class="top"><span class="sw" style="background:#3d7a4c;width:14px;height:14px"></span><b>Website</b></div><div class="desc">heyquilt.com and the docs.</div><div class="meta">5 sessions · 31 files · 240 MB<span class="avs"><span class="av sm" style="background:#c24f33">D</span><span class="av sm bot" style="background:#6e6c7e">D</span></span></div></div>
-            <div class="card wscard"><div class="top"><span class="sw" style="background:#a8701c;width:14px;height:14px"></span><b>Quilt core</b><span class="pill" style="margin-left:auto">Acme</span></div><div class="desc">The desktop app, relay and API.</div><div class="meta">12 sessions · 6 files<span class="avs"><span class="av sm" style="background:#c24f33">D</span><span class="av sm" style="background:#7b4f9e">B</span><span class="av sm" style="background:#a8701c">J</span><span class="av sm bot" style="background:#3d7a4c">M</span></span></div></div>
+        <div class="ph"><div><h1>Good morning, Daniel</h1><p>Your workspaces. Open one, or add a new one.</p></div><span class="sp"></span><span class="seg"><span class="on">All</span><span>Personal</span><span>Acme</span></span></div>
+        <div class="grid">
+          <div class="ws" style="--c:#d9c6ea"><div class="cover"><span class="mark">L</span><span class="pin"><span class="pill ok" style="background:rgba(255,255,255,.9)"><span class="dot"></span>2 open</span></span></div>
+            <div class="body"><h3>Launch <span class="pill">Personal</span></h3><div class="desc">Teaser video, launch copy, pricing page.</div><div class="stats"><span><b>3</b> sessions</span><span><b>14</b> files</span><span><b>1.2</b> GB</span></div></div>
+            <div class="foot"><span class="avs"><span class="av xs on" style="background:#c24f33">D</span><span class="av xs on" style="background:#7b4f9e">B</span><span class="av xs bot on" style="background:#3d7a4c">M</span><span class="av xs bot" style="background:#6e6c7e">E</span></span><span>2 people · 2 agents</span><span class="sp"></span><span>active now</span></div></div>
+          <div class="ws" style="--c:#cfe6d4"><div class="cover"><span class="mark">W</span></div>
+            <div class="body"><h3>Website <span class="pill">Personal</span></h3><div class="desc">heyquilt.com and the docs.</div><div class="stats"><span><b>5</b> sessions</span><span><b>31</b> files</span><span><b>240</b> MB</span></div></div>
+            <div class="foot"><span class="avs"><span class="av xs" style="background:#c24f33">D</span><span class="av xs bot" style="background:#6e6c7e">D</span></span><span>1 person · 1 agent</span><span class="sp"></span><span>yesterday</span></div></div>
+          <div class="ws" style="--c:#f6dcc0"><div class="cover"><span class="mark">Q</span><span class="pin"><span class="pill ok" style="background:rgba(255,255,255,.9)"><span class="dot"></span>1 open</span></span></div>
+            <div class="body"><h3>Quilt core <span class="pill coral">Acme</span></h3><div class="desc">The desktop app, relay and API.</div><div class="stats"><span><b>12</b> sessions</span><span><b>6</b> files</span><span><b>80</b> MB</span></div></div>
+            <div class="foot"><span class="avs"><span class="av xs on" style="background:#c24f33">D</span><span class="av xs" style="background:#7b4f9e">B</span><span class="av xs" style="background:#a8701c">J</span><span class="av xs bot on" style="background:#3d7a4c">M</span></span><span>3 people · 1 agent</span><span class="sp"></span><span>active now</span></div></div>
+          <div class="ws" style="--c:#f3d3d0"><div class="cover"><span class="mark">D</span></div>
+            <div class="body"><h3>Design system <span class="pill coral">Acme</span></h3><div class="desc">Tokens, components, brand assets.</div><div class="stats"><span><b>2</b> sessions</span><span><b>120</b> files</span><span><b>2.4</b> GB</span></div></div>
+            <div class="foot"><span class="avs"><span class="av xs" style="background:#7b4f9e">B</span><span class="av xs" style="background:#3d7a4c">S</span><span class="av xs bot" style="background:#3d7a4c">M</span></span><span>2 people · 1 agent</span><span class="sp"></span><span>3 days ago</span></div></div>
+          <div class="ws" style="--c:#e0dcf0"><div class="cover"><span class="mark">C</span></div>
+            <div class="body"><h3>Customer onboarding <span class="pill coral">Acme</span></h3><div class="desc">Emails, guides, the walkthrough video.</div><div class="stats"><span><b>0</b> sessions</span><span><b>44</b> files</span><span><b>610</b> MB</span></div></div>
+            <div class="foot"><span class="avs"><span class="av xs" style="background:#a8701c">J</span><span class="av xs" style="background:#c24f33">D</span><span class="av xs" style="background:#6e6c7e">+5</span></span><span>8 people</span><span class="sp"></span><span>last week</span></div></div>
+          <div class="ws add"><span class="plus">+</span><b>Add workspace</b><span>Sessions, files and agents in one place</span></div>
+        </div>
+        <div class="strip">
+          <h2>Sessions not in a workspace <span class="sp"></span><span class="btn sm ghost">⚭ Join with an invite</span><span class="btn sm">＋ New session</span></h2>
+          <div class="chips">
+            <div class="chip"><span class="ico live">▣</span><div><b>scratch-api</b><br><span>~/code/scratch-api · just you</span></div><span class="act">Open</span></div>
+            <div class="chip"><span class="ico">▣</span><div><b>brandon-prototype</b><br><span>3 days ago</span></div><span class="act">Rejoin</span></div>
           </div>
         </div>
+      </main>
+    </div>
+  </div>
+</section>
+
+<!-- 2 ADD -->
+<section class="fig">
+  <h2>2 · Adding a workspace</h2>
+  <p>Clicking the dashed card turns it into the form, in place. Name, where it lives (Personal, or an org you're in), a colour, an optional line about it. Create, and the card fills in and opens.</p>
+  <div class="frame">
+    <div class="titlebar"><i></i><i></i><i></i><span>Quilt</span></div>
+    <div class="shell">
+      <aside class="side">
+        <div class="brand"><b></b>Quilt</div>
+        <div class="me"><span class="av" style="background:#c24f33">D</span><span class="t"><b>Daniel</b><span>Claude Code</span></span><span class="e">Edit</span></div>
+        <div class="btn primary full">▣&nbsp; Sessions <span class="badge">2</span><span class="caret">›</span></div>
+        <div class="side-label">Menu</div>
+        <div class="nav"><div class="it on">⌂&nbsp; Home</div><div class="it">⚙&nbsp; Settings</div></div>
+        <div class="foot">⏻ Shut down</div>
+      </aside>
+      <main class="page">
+        <div class="ph"><div><h1>Good morning, Daniel</h1><p>Your workspaces. Open one, or add a new one.</p></div><span class="sp"></span><span class="seg"><span class="on">All</span><span>Personal</span><span>Acme</span></span></div>
+        <div class="grid">
+          <div class="ws" style="--c:#d9c6ea;opacity:.55"><div class="cover"><span class="mark">L</span></div><div class="body"><h3>Launch <span class="pill">Personal</span></h3><div class="desc">Teaser video, launch copy, pricing page.</div><div class="stats"><span><b>3</b> sessions</span><span><b>14</b> files</span></div></div><div class="foot"><span>2 people · 2 agents</span></div></div>
+          <div class="ws" style="--c:#cfe6d4;opacity:.55"><div class="cover"><span class="mark">W</span></div><div class="body"><h3>Website <span class="pill">Personal</span></h3><div class="desc">heyquilt.com and the docs.</div><div class="stats"><span><b>5</b> sessions</span><span><b>31</b> files</span></div></div><div class="foot"><span>1 person · 1 agent</span></div></div>
+          <div class="ws form" style="--c:#f3d3d0"><div class="cover" style="height:36px"></div>
+            <div class="body">
+              <label>Name</label><div class="in">Podcast</div>
+              <label>Where</label><div class="in">Acme ▾</div>
+              <label>Colour</label><div class="sw"><i style="background:#d9c6ea"></i><i style="background:#cfe6d4"></i><i style="background:#f6dcc0"></i><i class="on" style="background:#f3d3d0"></i><i style="background:#e0dcf0"></i><i style="background:#cfe0ee"></i></div>
+              <label>About (optional)</label><div class="in ph">What this workspace is for</div>
+              <div class="acts"><span class="btn sm ghost">Cancel</span><span class="btn sm primary">Create</span></div>
+            </div></div>
+        </div>
+      </main>
+    </div>
+  </div>
+</section>
+
+<!-- 3 INSIDE -->
+<section class="fig">
+  <h2>3 · Inside a workspace</h2>
+  <p>One page, three card sections. Sessions as cards (live ones first, a dashed card starts a new one). Files as tiles with thumbnails, folders first, a dashed tile to upload; "All files" opens the full library with folders and previews. People and agents as cards with their access. Everything here belongs to the workspace, so whoever is a member sees the same.</p>
+  <div class="frame">
+    <div class="titlebar"><i></i><i></i><i></i><span>Quilt</span></div>
+    <div class="shell">
+      <aside class="side">
+        <div class="brand"><b></b>Quilt</div>
+        <div class="me"><span class="av" style="background:#c24f33">D</span><span class="t"><b>Daniel</b><span>Claude Code</span></span><span class="e">Edit</span></div>
+        <div class="btn primary full">▣&nbsp; Sessions <span class="badge">2</span><span class="caret">›</span></div>
+        <div class="side-label">Menu</div>
+        <div class="nav"><div class="it on">⌂&nbsp; Home</div><div class="it">⚙&nbsp; Settings</div></div>
+        <div class="foot">⏻ Shut down</div>
+      </aside>
+      <main class="page">
+        <span class="back">‹ All workspaces</span>
+        <div class="wshead"><span class="mark" style="background:#9d7bbf">L</span><div><h1>Launch <span class="pill">Personal</span></h1><p>Teaser video, launch copy, pricing page. · 1.2 GB of 5 GB</p></div><div class="acts"><span class="btn sm">⚭ Invite</span><span class="btn sm ghost">⚙</span></div></div>
+
+        <div class="sec" style="margin-top:0">
+          <div class="sech"><h2>Sessions</h2><span class="count">3</span><span class="sp"></span></div>
+          <div class="cards4">
+            <div class="sc"><div class="top"><span class="ico live">▣</span><b>pricing-page</b><span class="pill ok"><span class="dot"></span></span></div><div class="mono">~/code/pricing-page</div><div class="who"><span class="avs"><span class="av xs on" style="background:#7b4f9e">B</span><span class="av xs bot on" style="background:#3d7a4c">M</span></span><span>Brandon, Marketing agent</span><span class="sp"></span><span class="btn sm primary">Open</span></div></div>
+            <div class="sc"><div class="top"><span class="ico live">▣</span><b>teaser-site</b><span class="pill ok"><span class="dot"></span></span></div><div class="mono">~/code/teaser-site</div><div class="who"><span>Just you</span><span class="sp"></span><span class="btn sm primary">Open</span></div></div>
+            <div class="sc"><div class="top"><span class="ico">▣</span><b>launch-emails</b></div><div class="mono">~/code/launch-emails</div><div class="who"><span class="avs"><span class="av xs" style="background:#7b4f9e">B</span></span><span>Brandon's · yesterday</span><span class="sp"></span><span class="btn sm">Rejoin</span></div></div>
+            <div class="sc add"><i>+</i>New session</div>
+          </div>
+        </div>
+
         <div class="sec">
-          <div class="sech"><h2>Sessions not in a workspace</h2><span class="count">2</span><span class="sp"></span><span class="btn sm">⚭ Join</span><span class="btn sm primary">＋ New session</span></div>
-          <div class="card">
-            <div class="row"><div class="ico live">▣</div><div><div class="name">scratch-api <span class="pill ok"><span class="dot"></span>Open</span></div><div class="sub">~/code/scratch-api</div></div><div class="facts"><span>👤 Daniel</span><span>Just you</span></div><div class="acts"><span class="btn sm primary">Open</span><span class="btn sm ghost new" title="new">Move to…</span></div></div>
-            <div class="row"><div class="ico">▣</div><div><div class="name">brandon-prototype</div><div class="sub">~/code/brandon-prototype</div></div><div class="facts"><span>👤 Daniel</span><span>3 days ago</span></div><div class="acts"><span class="btn sm">Rejoin</span><span class="btn sm ghost">✕</span></div></div>
+          <div class="sech"><h2>Files</h2><span class="count">14</span><span class="sp"></span><a>All files ›</a></div>
+          <div class="tiles">
+            <div class="tile folder"><div class="thumb">▱</div><div class="nm">raw</div><div class="mu">3 files · 1.1 GB</div></div>
+            <div class="tile folder"><div class="thumb">▱</div><div class="nm">cuts</div><div class="mu">5 files · 310 MB</div></div>
+            <div class="tile"><div class="thumb vid"><span class="fl" style="background:#7b4f9e">MP4</span>▶<span class="v">v3</span></div><div class="nm">teaser-30s.mp4</div><div class="mu">Editor agent · 2 h</div></div>
+            <div class="tile"><div class="thumb img"><span class="fl" style="background:#c24f33">PNG</span><span class="v">v2</span></div><div class="nm">hero.png</div><div class="mu">Daniel · yesterday</div></div>
+            <div class="tile"><div class="thumb"><span class="fl" style="background:#3d7a4c">XLSX</span>shot-list</div><div class="nm">shot-list.xlsx</div><div class="mu">Brandon · yesterday</div></div>
+            <div class="tile up"><div class="thumb"><span class="fl" style="background:#6e6c7e">ZIP</span>64%</div><div class="nm">b-roll.zip</div><div class="mu">uploading · 640 MB</div></div>
+            <div class="tile"><div class="thumb"><span class="fl" style="background:#b3372e">PDF</span>storyboard</div><div class="nm">storyboard.pdf</div><div class="mu">Daniel · 3 days</div></div>
+            <div class="tile"><div class="thumb"><span class="fl" style="background:#a8701c">CSV</span>captions<span class="v">v4</span></div><div class="nm">captions.csv</div><div class="mu">Marketing agent · 3 days</div></div>
+            <div class="tile"><div class="thumb"><span class="fl" style="background:#6e6c7e">MD</span>copy</div><div class="nm">teaser.md</div><div class="mu">Marketing agent · 2 h</div></div>
+            <div class="tile add"><i>↑</i>Upload<br>or drop files</div>
           </div>
         </div>
+
+        <div class="sec">
+          <div class="sech"><h2>People &amp; agents</h2><span class="count">4</span><span class="sp"></span></div>
+          <div class="cards3">
+            <div class="pc"><span class="av on" style="background:#c24f33">D</span><div class="t"><b>Daniel</b><span>you · owner</span></div><span class="pill">Owner</span></div>
+            <div class="pc"><span class="av on" style="background:#7b4f9e">B</span><div class="t"><b>Brandon</b><span>in pricing-page</span></div><span class="sel">Can edit ▾</span></div>
+            <div class="pc"><span class="av bot on" style="background:#3d7a4c">M</span><div class="t"><b>Marketing agent</b><span>Anthropic · writing launch copy</span></div><span class="sel">Can edit ▾</span></div>
+            <div class="pc"><span class="av bot" style="background:#6e6c7e">E</span><div class="t"><b>Editor agent</b><span>xAI · idle</span></div><span class="sel">Can edit ▾</span></div>
+            <div class="pc add"><i>+</i>&nbsp; Invite a person or an agent</div>
+          </div>
+        </div>
+        <div class="note">▣ <span>In an <b>org workspace</b> the org owns it: people with the Workspaces permission manage it, and agents the org placed everywhere show <b>Added by Acme</b> on their card with no access dropdown.</span></div>
       </main>
     </div>
   </div>
 </section>
 
-<!-- 2 WORKSPACE SESSIONS -->
+<!-- 4 ALL FILES -->
 <section class="fig">
-  <h2>2 · Inside a workspace: Sessions</h2>
-  <p>Clicking a workspace keeps the home sidebar (no file tree, no code: those only open inside a session). The page is the workspace: a header, and tabs for <b>Sessions</b>, <b>Files</b>, <b>People &amp; agents</b> and <b>Settings</b>. Sessions look like today's session rows, and a new session started here belongs to the workspace.</p>
+  <h2>4 · All files</h2>
+  <p>The full library, still tiles: breadcrumb for the folder you are in, folders first, a preview panel when you pick a file (play, download, versions, send to an open session's chat). Switch to a list when you want size and dates in columns.</p>
   <div class="frame">
     <div class="titlebar"><i></i><i></i><i></i><span>Quilt</span></div>
     <div class="shell">
@@ -239,81 +320,30 @@ td { padding:9px 10px; border-bottom:1px solid var(--border) }
         <div class="brand"><b></b>Quilt</div>
         <div class="me"><span class="av" style="background:#c24f33">D</span><span class="t"><b>Daniel</b><span>Claude Code</span></span><span class="e">Edit</span></div>
         <div class="btn primary full">▣&nbsp; Sessions <span class="badge">2</span><span class="caret">›</span></div>
-        <div class="side-label" style="margin-top:4px">Workspaces <span class="plus">+</span></div>
-        <div class="nav">
-          <div class="it on"><span class="sw" style="background:#7b4f9e"></span><span class="nm">Launch</span><span class="ct">2</span></div>
-          <div class="it"><span class="sw" style="background:#3d7a4c"></span><span class="nm">Website</span></div>
-          <div class="it"><span class="sw" style="background:#a8701c"></span><span class="nm">Quilt core <span class="org">· Acme</span></span><span class="ct">1</span></div>
-        </div>
         <div class="side-label">Menu</div>
-        <div class="nav"><div class="it">⌂&nbsp; Home</div><div class="it">⚙&nbsp; Settings</div></div>
+        <div class="nav"><div class="it on">⌂&nbsp; Home</div><div class="it">⚙&nbsp; Settings</div></div>
         <div class="foot">⏻ Shut down</div>
       </aside>
-      <main class="page new">
-        <div class="wshead"><span class="big" style="background:#7b4f9e"></span><div><h1>Launch <span class="pill">Personal</span></h1><p>Teaser video, launch copy, pricing page.</p></div><div class="acts"><span class="btn sm">⚭ Invite</span><span class="btn sm primary">＋ New session</span></div></div>
-        <div class="tabs"><span class="on">Sessions<span class="ct">3</span></span><span>Files<span class="ct">14</span></span><span>People &amp; agents<span class="ct">4</span></span><span>Settings</span></div>
-        <div class="card">
-          <div class="row"><div class="ico live">▣</div><div><div class="name">pricing-page <span class="pill ok"><span class="dot"></span>Open</span></div><div class="sub">~/code/pricing-page</div></div><div class="facts"><span>Brandon, Martha here</span><span>relay.heyquilt.com</span></div><div class="acts"><span class="btn sm primary">Open</span></div></div>
-          <div class="row"><div class="ico live">▣</div><div><div class="name">teaser-site <span class="pill ok"><span class="dot"></span>Open</span></div><div class="sub">~/code/teaser-site</div></div><div class="facts"><span>Just you</span><span>relay.heyquilt.com</span></div><div class="acts"><span class="btn sm primary">Open</span></div></div>
-          <div class="row"><div class="ico">▣</div><div><div class="name">launch-emails</div><div class="sub">~/code/launch-emails</div></div><div class="facts"><span>Brandon owns it</span><span>yesterday</span></div><div class="acts"><span class="btn sm">Rejoin</span><span class="btn sm ghost">⋯</span></div></div>
-        </div>
-        <div class="note">▣ <span><b>Sessions in a workspace</b> are let into by workspace membership: editors edit, viewers view. A session's owner can still tighten someone for that session or invite an outsider by link, as today.</span></div>
-      </main>
-    </div>
-  </div>
-</section>
-
-<!-- 3 FILES -->
-<section class="fig">
-  <h2>3 · Files</h2>
-  <p>The library. Folders on the left, files in the middle, a preview and version history on the right. Drag files in or click Upload; uploads go straight to cloud storage. Anything a member or an agent puts here is visible to everyone in the workspace at once.</p>
-  <div class="frame">
-    <div class="titlebar"><i></i><i></i><i></i><span>Quilt</span></div>
-    <div class="shell">
-      <aside class="side">
-        <div class="brand"><b></b>Quilt</div>
-        <div class="me"><span class="av" style="background:#c24f33">D</span><span class="t"><b>Daniel</b><span>Claude Code</span></span><span class="e">Edit</span></div>
-        <div class="btn primary full">▣&nbsp; Sessions <span class="badge">2</span><span class="caret">›</span></div>
-        <div class="side-label" style="margin-top:4px">Workspaces <span class="plus">+</span></div>
-        <div class="nav">
-          <div class="it on"><span class="sw" style="background:#7b4f9e"></span><span class="nm">Launch</span><span class="ct">2</span></div>
-          <div class="it"><span class="sw" style="background:#3d7a4c"></span><span class="nm">Website</span></div>
-          <div class="it"><span class="sw" style="background:#a8701c"></span><span class="nm">Quilt core <span class="org">· Acme</span></span><span class="ct">1</span></div>
-        </div>
-        <div class="side-label">Menu</div>
-        <div class="nav"><div class="it">⌂&nbsp; Home</div><div class="it">⚙&nbsp; Settings</div></div>
-        <div class="foot">⏻ Shut down</div>
-      </aside>
-      <main class="page new">
-        <div class="wshead"><span class="big" style="background:#7b4f9e"></span><div><h1>Launch <span class="pill">Personal</span></h1><p>Teaser video, launch copy, pricing page.</p></div><div class="acts"><span class="btn sm">⚭ Invite</span><span class="btn sm primary">＋ New session</span></div></div>
-        <div class="tabs"><span>Sessions<span class="ct">3</span></span><span class="on">Files<span class="ct">14</span></span><span>People &amp; agents<span class="ct">4</span></span><span>Settings</span></div>
-        <div class="card files">
-          <div class="ftree">
-            <div>▾ Launch</div>
-            <div class="in">▸ brand</div>
-            <div class="in on">▾ cuts</div>
-            <div class="in" style="padding-left:40px">v1</div>
-            <div class="in">▸ copy</div>
-            <div class="in">▸ raw</div>
-            <div class="in">▸ research</div>
-            <div style="margin-top:10px;color:var(--faint)">1.2 GB of 5 GB</div>
+      <main class="page">
+        <span class="back">‹ Launch</span>
+        <div class="ph" style="margin-bottom:14px"><div><h1 style="font-size:20px">Launch / <span style="color:var(--muted);font-weight:500">cuts</span></h1><p>5 files · 310 MB</p></div><span class="sp"></span><span class="seg"><span class="on">Tiles</span><span>List</span></span><span class="btn sm">＋ Folder</span><span class="btn sm primary">↑ Upload</span></div>
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) 250px;gap:16px">
+          <div class="tiles" style="grid-template-columns:repeat(4,minmax(0,1fr));align-content:start">
+            <div class="tile folder"><div class="thumb">▱</div><div class="nm">v1</div><div class="mu">2 files</div></div>
+            <div class="tile"><div class="thumb vid"><span class="fl" style="background:#7b4f9e">MP4</span>▶<span class="v">v3</span></div><div class="nm">teaser-30s.mp4</div><div class="mu">212 MB · Editor agent</div></div>
+            <div class="tile" style="outline:2px solid var(--accent);outline-offset:-1px"><div class="thumb vid"><span class="fl" style="background:#7b4f9e">MP4</span>▶</div><div class="nm">teaser-15s.mp4</div><div class="mu">98 MB · Editor agent</div></div>
+            <div class="tile"><div class="thumb"><span class="fl" style="background:#3d7a4c">XLSX</span>shot-list<span class="v">v2</span></div><div class="nm">shot-list.xlsx</div><div class="mu">41 KB · Brandon</div></div>
+            <div class="tile"><div class="thumb"><span class="fl" style="background:#b3372e">PDF</span>storyboard</div><div class="nm">storyboard.pdf</div><div class="mu">3.1 MB · Daniel</div></div>
+            <div class="tile"><div class="thumb"><span class="fl" style="background:#a8701c">CSV</span>captions<span class="v">v4</span></div><div class="nm">captions.csv</div><div class="mu">12 KB · Marketing agent</div></div>
+            <div class="tile add"><i>↑</i>Upload to cuts</div>
           </div>
-          <div class="flist">
-            <div class="fbar"><span class="crumb">Launch / <b>cuts</b></span><span class="sp"></span><span class="btn sm">＋ Folder</span><span class="btn sm primary">↑ Upload</span></div>
-            <div class="frow"><span class="fi" style="background:#7b4f9e">MP4</span><span class="nm">teaser-30s.mp4</span><span class="mu">212 MB</span><span class="mu">Editor agent · 2 h ago</span><span class="v">v3</span><span class="mu">⋯</span></div>
-            <div class="frow on"><span class="fi" style="background:#7b4f9e">MP4</span><span class="nm">teaser-15s.mp4</span><span class="mu">98 MB</span><span class="mu">Editor agent · 2 h ago</span><span class="v">v1</span><span class="mu">⋯</span></div>
-            <div class="frow"><span class="fi" style="background:#3d7a4c">XLSX</span><span class="nm">shot-list.xlsx</span><span class="mu">41 KB</span><span class="mu">Brandon · yesterday</span><span class="v">v2</span><span class="mu">⋯</span></div>
-            <div class="frow"><span class="fi" style="background:#b3372e">PDF</span><span class="nm">storyboard.pdf</span><span class="mu">3.1 MB</span><span class="mu">Daniel · 3 days ago</span><span class="v">v1</span><span class="mu">⋯</span></div>
-            <div class="frow"><span class="fi" style="background:#a8701c">CSV</span><span class="nm">captions.csv</span><span class="mu">12 KB</span><span class="mu">Marketing agent · 3 days ago</span><span class="v">v4</span><span class="mu">⋯</span></div>
-            <div class="frow up"><span class="fi" style="background:#6e6c7e">ZIP</span><span class="nm">b-roll.zip</span><span class="mu">640 MB</span><span class="mu">Daniel · now</span><span class="v">v1</span><span class="mu">✕</span><span class="bar"><i></i></span></div>
-            <div class="drop">Drop files here to upload to <b>cuts</b></div>
-          </div>
-          <div class="prev">
-            <div class="img">▶ video preview</div>
-            <b>teaser-15s.mp4</b>
-            <div class="kv"><span>Size</span><span>98 MB</span><span>Type</span><span>video/mp4</span><span>Added</span><span>Editor agent, 2 h ago</span><span>Note</span><span>Cut from raw/keynote.mp4 per task #12</span></div>
-            <div style="display:flex;gap:6px"><span class="btn sm primary">↓ Download</span><span class="btn sm">Send to chat</span><span class="btn sm ghost">⋯</span></div>
-            <div class="vers"><div><b>v1</b> Editor agent · 2 h ago <a>current</a></div></div>
+          <div class="sc" style="min-height:0;gap:10px">
+            <div class="thumb vid" style="height:120px;border-radius:6px;display:grid;place-items:center;background:linear-gradient(135deg,#322d36,#6b5b7e);color:#fff;font-size:22px">▶</div>
+            <b style="font-size:14px">teaser-15s.mp4</b>
+            <div style="font-size:12.5px;color:var(--muted);line-height:1.5">98 MB · video/mp4<br>Editor agent · 2 h ago<br>“Cut from raw/keynote.mp4 per task #12”</div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap"><span class="btn sm primary">↓ Download</span><span class="btn sm">Send to pricing-page chat</span></div>
+            <div style="border-top:1px dashed var(--border);padding-top:8px;font-size:12.5px;color:var(--muted)"><b style="color:var(--text)">Versions</b><br><span class="mono">v1</span> · Editor agent · 2 h ago · <span style="color:var(--accent);font-weight:600">current</span></div>
+            <div style="display:flex;gap:10px;font-size:12.5px;color:var(--muted)"><span>Rename</span><span>Move</span><span style="color:var(--bad)">Delete</span></div>
           </div>
         </div>
       </main>
@@ -321,118 +351,15 @@ td { padding:9px 10px; border-bottom:1px solid var(--border) }
   </div>
 </section>
 
-<!-- 4 PEOPLE & AGENTS -->
-<section class="fig">
-  <h2>4 · People &amp; agents</h2>
-  <p>Members and their access, like the people menu in a session. Agents are members too. In an org workspace, agents the org adds by policy show where they came from and can't be removed here; agents added just to this workspace can. Personal workspaces work like sessions do now: you own it, you invite people.</p>
-  <div class="two">
-    <div class="frame">
-      <div class="titlebar"><i></i><i></i><i></i><span>Quilt · personal workspace</span></div>
-      <main class="page new" style="padding:24px">
-        <div class="wshead"><span class="big" style="background:#7b4f9e"></span><div><h1>Launch <span class="pill">Personal</span></h1></div><div class="acts"><span class="btn sm primary">⚭ Invite…</span></div></div>
-        <div class="tabs"><span>Sessions<span class="ct">3</span></span><span>Files<span class="ct">14</span></span><span class="on">People &amp; agents<span class="ct">4</span></span><span>Settings</span></div>
-        <div class="card">
-          <div class="prow"><span class="av on" style="background:#c24f33">D</span><div class="who"><b>Daniel</b><span>you · owner</span></div><div class="how">Owner</div><div class="acts"></div></div>
-          <div class="prow"><span class="av on" style="background:#7b4f9e">B</span><div class="who"><b>Brandon</b><span>in pricing-page</span></div><div class="how"><span class="sel">Can edit ▾</span></div><div class="acts"><span class="btn sm ghost">Remove</span></div></div>
-          <div class="prow"><span class="av bot on" style="background:#3d7a4c">M</span><div class="who"><b>Marketing agent</b><span>Anthropic · yours · working: launch copy</span></div><div class="how"><span class="sel">Can edit ▾</span></div><div class="acts"><span class="btn sm ghost">Remove</span></div></div>
-          <div class="prow"><span class="av bot" style="background:#6e6c7e">E</span><div class="who"><b>Editor agent</b><span>xAI · yours · idle</span></div><div class="how"><span class="sel">Can edit ▾</span></div><div class="acts"><span class="btn sm ghost">Remove</span></div></div>
-        </div>
-        <div class="note">⚭ <span><b>Invite…</b> works like a session invite: people you've worked with, anyone by email, or an agent (you get a link to paste into your AI). Members may join every session in the workspace.</span></div>
-      </main>
-    </div>
-    <div class="frame">
-      <div class="titlebar"><i></i><i></i><i></i><span>Quilt · org workspace</span></div>
-      <main class="page new" style="padding:24px">
-        <div class="wshead"><span class="big" style="background:#a8701c"></span><div><h1>Quilt core <span class="pill">Acme</span></h1></div><div class="acts"><span class="btn sm primary">⚭ Invite…</span></div></div>
-        <div class="tabs"><span>Sessions<span class="ct">12</span></span><span>Files<span class="ct">6</span></span><span class="on">People &amp; agents<span class="ct">5</span></span><span>Settings</span></div>
-        <div class="card">
-          <div class="prow"><span class="av on" style="background:#c24f33">D</span><div class="who"><b>Daniel</b><span>Acme admin</span></div><div class="how"><span class="pill coral">Org admin</span></div><div class="acts"></div></div>
-          <div class="prow"><span class="av" style="background:#7b4f9e">B</span><div class="who"><b>Brandon</b><span>Acme member</span></div><div class="how"><span class="sel">Can edit ▾</span></div><div class="acts"><span class="btn sm ghost">Remove</span></div></div>
-          <div class="prow"><span class="av" style="background:#a8701c">J</span><div class="who"><b>Jules</b><span>Acme member</span></div><div class="how"><span class="sel">View only ▾</span></div><div class="acts"><span class="btn sm ghost">Remove</span></div></div>
-          <div class="prow"><span class="av bot on" style="background:#3d7a4c">M</span><div class="who"><b>Martha</b><span>Anthropic · Acme's agent</span></div><div class="how"><span class="pill violet">Added by Acme · every session</span></div><div class="acts"><span class="btn sm ghost" style="opacity:.5">Managed on heyquilt.com</span></div></div>
-          <div class="prow"><span class="av bot" style="background:#6e6c7e">D</span><div class="who"><b>Duncan</b><span>OpenAI · Acme's agent</span></div><div class="how"><span class="sel">Can edit ▾</span> <span class="pill">this workspace</span></div><div class="acts"><span class="btn sm ghost">Remove</span></div></div>
-        </div>
-        <div class="note">▣ <span><b>Org workspaces belong to the org.</b> Anyone with the Workspaces permission in their role manages them. Acme's agent policy (on heyquilt.com, screen 6) can put an agent into every workspace or every session; a one-off add here is just for this workspace.</span></div>
-      </main>
-    </div>
-  </div>
-</section>
-
-<!-- 5 SESSION VIEW -->
-<section class="fig">
-  <h2>5 · A session inside a workspace</h2>
-  <p>The session view is unchanged: file tree, main area, chat. Two small additions: the top bar says which workspace it is in, and the chat composer can attach a file from the workspace library. When your AI starts a session from inside a workspace folder, it lands in that workspace.</p>
-  <div class="frame">
-    <div class="titlebar"><i></i><i></i><i></i><span>Quilt</span></div>
-    <div class="sessbar"><span class="crumb new" style="padding:2px 6px"><a>Launch</a> › <b>pricing-page</b></span><span class="pill ok"><span class="dot"></span>Can edit</span><span class="sp"></span><span class="btn sm ghost">👥 3</span><span class="btn sm ghost">Tasks</span><span class="btn sm">⚭ Invite</span><span class="btn sm ghost">⋯</span></div>
-    <div class="sessbody">
-      <div class="tree"><div>▾ src/</div><div>&nbsp;&nbsp;pricing.tsx</div><div>&nbsp;&nbsp;plans.json</div><div>▾ public/</div><div>&nbsp;&nbsp;hero.png</div><div>package.json</div></div>
-      <div>AI · Files · Merge · Tasks (as today)</div>
-      <div style="display:flex;flex-direction:column">
-        <div class="chatline"><span class="av sm" style="background:#7b4f9e">B</span><div class="b">Can you use the 15 s cut on the hero?</div></div>
-        <div class="chatline"><span class="av sm" style="background:#c24f33">D</span><div class="b">Here it is<br><span class="att">▶ teaser-15s.mp4 · 98 MB · from Launch</span></div></div>
-        <div class="composer new"><span>Message…</span><span class="sp"></span><span title="Attach from your computer">📎</span><span title="Attach from workspace">▣</span></div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- 6 WEBSITE -->
-<section class="fig">
-  <h2>6 · heyquilt.com</h2>
-  <p>Workspaces get a page in each space (personal and org) so admins without the app can manage members and see usage. The org's Agents page gains the top-down policy: add an agent to every workspace or every session, or pick which.</p>
-  <div class="two">
-    <div class="web">
-      <div class="webbar"><b>Acme</b><span>Overview</span><span>People</span><span>Teams</span><span>Roles</span><span class="on new" style="padding:0 4px">Workspaces</span><span>Invites</span><span>Settings</span></div>
-      <div class="webbody">
-        <h3>Workspaces</h3><p class="sub">Everything Acme's people and agents work in. Your role lets you create, edit and delete them.</p>
-        <table><tr><th>Workspace</th><th>Members</th><th>Sessions</th><th>Files</th><th></th></tr>
-        <tr><td><b>Quilt core</b></td><td>5</td><td>12</td><td>6 · 80 MB</td><td style="text-align:right"><span class="btn sm">Manage</span></td></tr>
-        <tr><td><b>Design system</b></td><td>3</td><td>2</td><td>120 · 2.4 GB</td><td style="text-align:right"><span class="btn sm">Manage</span></td></tr>
-        <tr><td><b>Customer onboarding</b></td><td>8</td><td>0</td><td>44 · 610 MB</td><td style="text-align:right"><span class="btn sm">Manage</span></td></tr></table>
-        <div style="margin-top:14px"><span class="btn sm primary">＋ New workspace</span></div>
-      </div>
-    </div>
-    <div class="web">
-      <div class="webbar"><b>Acme</b><span>Overview</span><span class="on">People</span><span>Teams</span><span>Roles</span><span>Workspaces</span><span>Invites</span><span>Settings</span></div>
-      <div class="webbody">
-        <h3>Martha <span class="pill violet">agent</span></h3><p class="sub">Anthropic · coding agent · joined 2026-10-01</p>
-        <div class="card new" style="padding:14px 16px;box-shadow:none">
-          <div style="font-weight:600;margin-bottom:8px">Where Martha works</div>
-          <div style="display:flex;flex-direction:column;gap:8px;font-size:13px">
-            <label style="display:flex;gap:8px;align-items:center"><input type="radio" name="p" checked> Every workspace and every session in Acme</label>
-            <label style="display:flex;gap:8px;align-items:center"><input type="radio" name="p"> Every session in these workspaces: <span class="sel">Quilt core, Design system ▾</span></label>
-            <label style="display:flex;gap:8px;align-items:center"><input type="radio" name="p"> Only where someone adds Martha by hand</label>
-          </div>
-          <div style="display:flex;gap:14px;margin-top:12px;font-size:13px;align-items:center"><span class="sel">Can edit ▾</span><span style="color:var(--muted)">Folders: <code>src/</code>, <code>test/</code></span></div>
-        </div>
-        <p style="color:var(--muted);font-size:12.5px;margin:12px 0 0">Martha is let into every matching session the moment it starts, and shows in each workspace's People &amp; agents as "Added by Acme". Members can't remove her there.</p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- SPEC CHANGES -->
 <section class="spec">
-  <h2>What changes in the plan</h2>
-  <div class="diff">
-    <div class="was"><h4>Dropped from the first draft</h4><ul>
-      <li>A relay room per workspace (ws-&lt;id&gt;) for files index, chat and board</li>
-      <li>Workspace chat, board and agent feed in phase 2</li>
-      <li>workspace_teams table and org "default access" modes</li>
-      <li>Passes carrying a workspace claim for every session</li>
-      <li>Relay as quota authority, usage reported through presence</li>
-    </ul></div>
-    <div><h4>Now</h4><ul>
-      <li><b>Workspace is a table.</b> <code>workspaces</code> (owner: a person or an org), <code>workspace_members</code> (people and agents, edit or view), <code>workspace_files</code> (path, size, type, version, uploader), and <code>relay_sessions.workspace_id</code>.</li>
-      <li><b>Files through the API.</b> Index in Postgres, bytes in a private bucket in the Quilt Files project, signed upload and download links from the API. Quota checked by the API.</li>
-      <li><b>Realtime without the relay.</b> The app and website subscribe to Supabase Realtime for the workspace's rows (files, members, sessions); the relay stays for live co-editing inside sessions.</li>
-      <li><b>Access, minimal.</b> Personal: the owner, plus the members they invite (same invite flow as sessions). Org: the org owns it; roles get a Workspaces CRUD row; members are added by whoever holds Update.</li>
-      <li><b>Sessions in a workspace</b> admit workspace members at their workspace access. The API already answers the relay's access question per room; it adds one lookup.</li>
-      <li><b>Agent policy.</b> <code>agent_placements</code>: an org agent is placed in every workspace and session, in chosen workspaces (and their sessions), or by hand. The API's room-access answer includes placed agents, so the relay lets them in as sessions start; the existing webhook wakes them.</li>
-      <li><b>Agent tools.</b> <code>quilt_workspaces</code>, <code>quilt_workspace_files</code>, <code>quilt_workspace_read_file</code>, <code>quilt_workspace_write_file</code>; <code>quilt_start_session</code> gains <code>workspace</code>. Workspace chat and board are out of scope for now; agents coordinate in session chat and the board, and hand files over through the library.</li>
-    </ul></div>
-  </div>
+  <h2>Plan unchanged, layout changed</h2>
+  <ul>
+    <li><b>Home is the workspace grid.</b> The sidebar stays as today (Sessions menu, Home, Settings). No Workspaces list in the sidebar; the cards are the navigation. A Personal / org switch filters the grid.</li>
+    <li><b>Add workspace is a card</b> that turns into the form in place.</li>
+    <li><b>Inside a workspace</b>: Sessions cards, Files tiles, People &amp; agents cards on one page, with an All files view for the whole library. No tabs.</li>
+    <li><b>Loose sessions</b> are a small strip under the grid, with Join and New session where they are today.</li>
+    <li>Data model, API, access, agents and phases stay as in the spec.</li>
+  </ul>
 </section>
 </div>
 </body>

@@ -9,11 +9,17 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.7 — 2026-10-04
+
+A fix for the merge view, and webhooks that carry your receiver's key.
+
+- **The merge view follows the newest conflict.** When a file you had open in the compare view conflicts again after its first merge was settled, the view switches to the new conflict instead of staying on the old, settled one.
+- **Webhooks carry your receiver's key.** `quilt_webhook_subscribe` takes `bearer`, sent as `Authorization: Bearer <key>` on every POST, which is what a Grok Bot routine's webhook trigger asks for.
+
 ## 0.3.6 — 2026-10-04
 
 Agents set up their own webhooks and are @mentioned by name, your AI's edits are claimed in every tool, and work done offline merges properly when you come back.
 
-- **Webhooks carry your receiver's key.** `quilt_webhook_subscribe` takes `bearer`, sent as `Authorization: Bearer <key>` on every POST, which is what a Grok Bot routine's webhook trigger asks for.
 - **Agents set up their own webhook.** An agent calls `quilt_webhook_subscribe` with a URL of its own and Quilt POSTs each mention of it (`@name`), direct message and handed-over task there as it happens, signed with a secret, with retries: a cloud agent on a webhook trigger wakes up instead of polling `quilt_inbox`. The relay delivers for hosted agents even while they sleep; an agent on a computer is served by its own Quilt. `quilt_webhook_unsubscribe` stops it.
 - **@mentions in chat.** Type `@` in the chat and pick a member, so the name is spelled the way their agent listens for it; mentions are marked in every message, yours in colour.
 - **Two AIs can't overwrite each other, in any tool.** The moment your AI changes a file nobody holds, Quilt claims it for you, whatever tool the AI runs in: Quilt watches the disk, not the tool. A partner's edit to that file is undone, and their AI is told who holds it and to message you, the next time it talks to Quilt. The claim ends when your AI goes idle, when the file has been quiet for five minutes, or when the session stops; claims you make yourself are never touched. Hosted agents are claimed for as they write. Claude Code keeps its hooks (now in your own `.claude/settings.local.json`, never synced or committed), which refuse the edit before it happens.

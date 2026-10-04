@@ -1,7 +1,7 @@
 // Workspaces: account API helpers (see docs/superpowers/specs/2026-10-03-workspaces-design.md).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { listWorkspaces, createWorkspace, getWorkspace, putWorkspaceMember, setSessionWorkspace } from '../src/account.js'
+import { listWorkspaces, listOrgs, createWorkspace, getWorkspace, putWorkspaceMember, setSessionWorkspace } from '../src/account.js'
 
 const fakeFetch = (status, body) => {
   const calls = []
@@ -32,4 +32,11 @@ test('createWorkspace, getWorkspace, putWorkspaceMember, setSessionWorkspace hit
     ['PUT', 'https://api.test/v1/workspaces/w1/members/person%3Au2', { access: 'view' }],
     ['POST', 'https://api.test/v1/workspaces/w1/sessions', { room: 'r' }]
   ])
+})
+
+test('listOrgs reads GET /v1/orgs with the token, and an odd reply throws', async () => {
+  const fetch = fakeFetch(200, { orgs: [{ slug: 'acme', name: 'Acme' }] })
+  assert.deepEqual(await listOrgs({ token: 'qd_x', api: 'https://api.test', fetch }), [{ slug: 'acme', name: 'Acme' }])
+  assert.deepEqual(fetch.calls[0], { url: 'https://api.test/v1/orgs', method: 'GET', body: null, auth: 'Bearer qd_x' })
+  await assert.rejects(listOrgs({ token: 'qd_x', api: 'https://api.test', fetch: fakeFetch(200, { orgs: null }) }), /unexpected reply/)
 })

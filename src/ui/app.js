@@ -61,6 +61,8 @@ export function signedOutNow (message = '') {
   state.workspaces = null
   state.workspacesOn = false
   state.workspace = null
+  state.orgs = []
+  state.addingWorkspace = false
   for (const m of [state.sessions, state.messages, state.feeds, state.trees, state.files]) m.clear()
   document.querySelectorAll('.modal-back').forEach((m) => m.remove())
   renderSignIn(message, boot)
@@ -192,6 +194,7 @@ export async function go (view) {
   state.view = view
   state.pending = []
   state.to = ''
+  if (view !== 'home') state.addingWorkspace = false
   if (isWorkspace(view)) {
     if (state.workspace?.workspace?.id !== view.slice(3)) state.workspace = null // "Loading…", not the last one's page
     await refreshRecent()

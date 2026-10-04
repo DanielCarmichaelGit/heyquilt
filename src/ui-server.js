@@ -15,7 +15,7 @@ import * as gitops from './git.js'
 import { installedEditors, openIn } from './editors.js'
 import { migrateDir } from './legacy.js'
 import { writePrivateJson } from './private-file.js'
-import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession, createAgentInvite, listAgents, listAccessTypes, listCollaborators, listGrants, putGrant, deleteGrant, inviteToSession, listSessionInvites, cancelSessionInvite, listWorkspaces, createWorkspace, getWorkspace, updateWorkspace, deleteWorkspace, putWorkspaceMember, removeWorkspaceMember, setSessionWorkspace } from './account.js'
+import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession, createAgentInvite, listAgents, listAccessTypes, listCollaborators, listGrants, putGrant, deleteGrant, inviteToSession, listSessionInvites, cancelSessionInvite, listWorkspaces, listOrgs, createWorkspace, getWorkspace, updateWorkspace, deleteWorkspace, putWorkspaceMember, removeWorkspaceMember, setSessionWorkspace } from './account.js'
 import { effectiveAccess, builtinType } from './session-access.js'
 import { cleanSessionName, BAD_SESSION_NAME, SESSION_NAME_MAX } from './session-name.js'
 import { personPasses } from './pass-source.js'
@@ -539,6 +539,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     'GET /api/agents': () => asAccount(async (token) => ({ agents: await listAgents({ token }) })),
     'POST /api/agent-invites': () => asAccount((token) => createAgentInvite({ token })),
     'GET /api/workspaces': () => workspaceList(),
+    'GET /api/orgs': () => asAccount(async (token) => ({ orgs: await listOrgs({ token }) })),
     'POST /api/workspaces': (b) => asAccount(async (token) => ({ workspace: await createWorkspace({ token, name: String(b.name || ''), description: String(b.description || ''), color: String(b.color || ''), org: b.org ? String(b.org) : undefined }) })),
     'GET /api/workspaces/:id': (b, id) => asAccount(async (token) => ({ ...(await getWorkspace({ token, id: needWorkspaceId(id) })), ...ofWorkspace(id) })),
     'POST /api/workspaces/:id/update': (b, id) => asAccount(async (token) => ({ workspace: await updateWorkspace({ token, id: needWorkspaceId(id), patch: { name: b.name, description: b.description, color: b.color, archived: b.archived } }) })),

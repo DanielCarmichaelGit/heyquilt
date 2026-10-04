@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { startTestApi, makeOrg } from './api-helpers.js'
+import { startTestApi, makeOrg, linkDevice } from './api-helpers.js'
 import { BUILTIN } from '../src/api/permissions.js'
 
 let t
@@ -205,4 +205,11 @@ test('an org owner must transfer or delete their orgs before deleting their acco
     assert.equal((await other.call('DELETE', '/v1/me/account', null, 'owner')).status, 409)
     assert.equal((await other.call('DELETE', '/v1/me/account', null, 'out')).status, 200)
   } finally { await other.close() }
+})
+
+test('GET /v1/orgs answers the app on a linked computer (a qd_ device token), not only the website', async () => {
+  const { token } = await linkDevice(t, 'mem')
+  const r = await t.call('GET', '/v1/orgs', null, null, { authorization: `Bearer ${token}` })
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+  assert.ok(Array.isArray(r.body.orgs))
 })

@@ -14,7 +14,7 @@ const sortRoles = (roles) => [...roles].sort((a, b) => (ROLE_ORDER[a.builtin] ??
 const orgView = (o) => ({ id: o.id, name: o.name, slug: o.slug, domain: o.domain, domainRequests: o.domainRequests, createdAt: o.createdAt })
 const roleView = (r) => ({ id: r.id, name: r.name, builtin: r.builtin, grants: normalizeGrants(r.grants), createdAt: r.createdAt })
 
-export function orgRoutes ({ store, user }) {
+export function orgRoutes ({ store, user, person }) {
   const orgFor = async (req, slug) => { const u = await user(req); return { u, ...(await orgAccess(store, u.userId, slug)) } }
 
   // Two orgs made at once can pick the same slug; the unique index decides and we try the next.
@@ -49,7 +49,8 @@ export function orgRoutes ({ store, user }) {
 
   return [
     ['GET', /^\/v1\/orgs$/, async (req) => {
-      const u = await user(req)
+      // The app lists your orgs too (where a new workspace goes), so a computer's qd_ token works here.
+      const u = await person(req)
       const orgs = await store.orgsForUser(u.userId)
       return {
         orgs: await Promise.all(orgs.map(async (o) => ({

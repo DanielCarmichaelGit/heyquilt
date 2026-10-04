@@ -199,6 +199,13 @@ export async function cancelSessionInvite ({ token, room, id, api = apiUrl(), fe
 // .status when the API says no: 404 when the workspaces flag is off on the API.
 const ws$ = (id) => `/v1/workspaces/${encodeURIComponent(id)}`
 
+/** The orgs this account belongs to ({ slug, name, ... }), for "Where" a new workspace goes. */
+export async function listOrgs ({ token, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'GET', '/v1/orgs', null, token)
+  if (!Array.isArray(r.orgs)) throw new Error(BAD_REPLY)
+  return r.orgs
+}
+
 export async function listWorkspaces ({ token, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
   const r = await call(fetchImpl, api, 'GET', '/v1/me/workspaces', null, token)
   if (!Array.isArray(r.workspaces)) throw new Error(BAD_REPLY)

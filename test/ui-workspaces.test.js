@@ -11,7 +11,7 @@ process.env.HOME = process.env.USERPROFILE = home
 
 const { startUi } = await import('../src/ui-server.js')
 const { startServer } = await import('../src/server.js')
-const { startTestApi, linkDevice } = await import('./api-helpers.js')
+const { startTestApi, linkDevice, makeOrg } = await import('./api-helpers.js')
 const { newPassKeys } = await import('../src/passes.js')
 const { loadIdentity } = await import('../src/identity.js')
 const { saveAccount } = await import('../src/account.js')
@@ -61,6 +61,16 @@ test('a session started inside a workspace is linked on the API and shows under 
   assert.deepEqual(got.body.sessions.map((x) => x.room), [room])
   await api('POST', `/api/sessions/${s.body.id}/stop`)
   assert.deepEqual((await api('GET', `/api/workspaces/${id}`)).body.recent.map((r) => r.dir), [path.join(home, 'site')])
+})
+
+// Before the flag-off case: that one leaves account.json pointing at its own API.
+test('GET /api/orgs lists the orgs this account is in, for the Add workspace form', async () => {
+  assert.deepEqual((await api('GET', '/api/orgs')).body, { orgs: [] })
+  await makeOrg(accounts, 'Ws Co')
+  const r = await api('GET', '/api/orgs')
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+  assert.deepEqual(r.body.orgs.map((o) => o.name), ['Ws Co'])
+  assert.ok(r.body.orgs[0].slug)
 })
 
 test('with the flag off on the API, the app says workspaces are off', async () => {

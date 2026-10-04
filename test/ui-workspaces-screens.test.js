@@ -15,8 +15,9 @@ test('home shows the workspace grid when the API has workspaces on, and today\'s
 
 test('the grid: a card per workspace with cover, name, space pill, counts, avatars, and an Add workspace card that becomes the form', () => {
   const w = ui('workspaces.js')
-  for (const bit of ['class="ws-card"', 'data-open-ws=', 'class="ws-cover', 'ws-space', 'sessions</span>', 'files', 'class="ws-card add"', 'Add workspace', 'data-add-ws', 'name="name"', 'name="org"', 'name="color"', 'name="description"', 'Create', "api('POST', '/api/workspaces'"]) assert.ok(w.includes(bit), bit)
+  for (const bit of ['class="ws-card"', 'data-open-ws=', 'class="ws-cover', 'ws-space', 'session', 'files', 'class="ws-card add"', 'Add workspace', 'data-add-ws', 'name="name"', 'name="org"', 'name="color"', 'name="description"', 'Create', "api('POST', '/api/workspaces'"]) assert.ok(w.includes(bit), bit)
   assert.ok(w.includes('data-space-filter'), 'a Personal / org switch')
+  assert.ok(w.includes("'/api/orgs'"), 'the Where list comes from the account\'s orgs, so an org\'s first workspace can be made')
   assert.ok(w.includes('open</span>') || w.includes('open<'), 'an N open pill')
 })
 

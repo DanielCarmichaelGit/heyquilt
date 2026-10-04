@@ -75,6 +75,8 @@ export const state = {
   ws: new Map(), // session id -> workspace layout (mode, tabs, expanded folders)
   accessTypes: null, // the account's access types (built-ins first), once loaded; null if the API can't be reached
   workspaces: null, // [] once /api/workspaces answered; null before
+  orgs: [], // the account's orgs ({ slug, name }), for the Add workspace form and the filter
+  addingWorkspace: false, // the Add workspace card is showing its form
   workspacesOn: false, // the accounts API has workspaces on
   workspace: null, // the open workspace page's data
   spaceFilter: 'all' // the home grid's Personal / org switch

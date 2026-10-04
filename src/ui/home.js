@@ -30,7 +30,7 @@ export function renderShell (view) {
   bindSidebar()
   if (view === 'settings') bindSettings($('#page'), () => renderShell('settings'))
   else if (view.startsWith('ws:')) {
-    bindWorkspacePage($('#page'), { go, rerender: () => renderShell(view), newSessionDialog, inviteDialog: workspaceInviteDialog })
+    bindWorkspacePage($('#page'), { go, rerender: () => renderShell(view), newSessionDialog, inviteDialog: workspaceInviteDialog, dialog })
     bindSessionActions($('#page'))
   } else bindHome()
 }

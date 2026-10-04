@@ -21,16 +21,25 @@ export async function loadWorkspaces () {
     state.workspacesOn = false
     state.workspaces = []
   }
+  // Your orgs, so an org's first workspace can be made here too. Without them: Personal only.
+  if (!state.workspacesOn) return
+  try { state.orgs = (await api('GET', '/api/orgs')).orgs || [] } catch (err) {
+    if (err.signedOut) throw err
+    state.orgs = []
+  }
 }
 
 export async function openWorkspace (id) {
-  state.workspace = await api('GET', wsUrl(id))
+  const d = await api('GET', wsUrl(id))
+  // A slow answer for a workspace you've since left mustn't replace the one on screen.
+  if (state.view === `ws:${id}`) state.workspace = d
 }
 
 // ------------------------------------------------------------------ grid --
 function spaces () {
   const keys = new Map([['all', 'All'], ['personal', 'Personal']])
-  for (const w of state.workspaces || []) if (w.space?.kind === 'org') keys.set(w.space.slug, w.space.name)
+  for (const o of state.orgs || []) if (o.slug) keys.set(o.slug, o.name || o.slug)
+  for (const w of state.workspaces || []) if (w.space?.kind === 'org' && w.space.slug) keys.set(w.space.slug, w.space.name)
   return keys
 }
 
@@ -42,9 +51,9 @@ function cardHtml (w) {
     <div class="ws-card-body">
       <h3>${esc(w.name)} <span class="pill ws-space${w.space?.kind === 'org' ? ' coral' : ''}">${esc(spaceLabel(w))}</span></h3>
       <p class="ws-desc">${esc(w.description || '')}</p>
-      <div class="ws-stats"><span><b>${w.counts?.sessions ?? 0}</b> sessions</span><span><b>0</b> files</span></div>
+      <div class="ws-stats"><span><b>${w.counts?.sessions ?? 0}</b> ${w.counts?.sessions === 1 ? 'session' : 'sessions'}</span><span><b>0</b> files</span></div>
     </div>
-    <div class="ws-foot"><span>${esc(plural(w.counts?.members ?? 0, 'member', 'members'))}</span><span class="spacer"></span><span>${w.archivedAt ? 'archived' : esc(ago(w.createdAt))}</span></div>
+    <div class="ws-foot"><span>${esc(plural((w.counts?.members ?? 0) + (w.space?.kind === 'personal' ? 1 : 0), 'member', 'members'))}</span><span class="spacer"></span><span>${w.archivedAt ? 'archived' : esc(ago(w.createdAt))}</span></div>
   </div>`
 }
 
@@ -102,12 +111,12 @@ export function workspacesHtml () {
       <div class="ws-chip"><span class="folder-ico${r.live ? ' live' : ''}">${I.folder}</span>
         <span class="t"><b>${esc(basename(r.dir))}</b><span>${r.live ? (r.peers ? `${r.peers} other${r.peers === 1 ? '' : 's'} here` : 'just you') : esc(ago(r.lastUsed))}</span></span>
         ${r.live ? `<button class="btn sm primary" data-go="${esc(r.id)}">Open</button>` : `<button class="btn sm" data-rejoin="${esc(r.dir)}">Rejoin</button>`}
-        ${state.workspaces?.length ? `<button class="btn sm ghost" data-move-session="${esc(r.dir)}" title="Move to a workspace">${I.folder}</button>` : ''}
+        ${state.workspaces?.length ? `<button class="btn sm ghost" data-move-session="${esc(r.dir)}" title="Move to a workspace" aria-label="Move to a workspace">${I.folder}</button>` : ''}
       </div>`).join('')}</div>` : `<p class="hint">${state.sessions.size || state.recent.length ? 'Every session is in a workspace.' : 'No sessions yet.'}</p>`}
   </section>`
 }
 
-export function bindWorkspaces (root, { go, rerender, startSession }) {
+export function bindWorkspaces (root, { go, rerender }) {
   root.querySelectorAll('[data-open-ws]').forEach((el) => {
     const open = () => go(`ws:${el.dataset.openWs}`)
     el.onclick = open
@@ -162,7 +171,7 @@ export function bindWorkspaces (root, { go, rerender, startSession }) {
 function sessionCardHtml (s, { live, dir, id, peers, lastUsed, mine }) {
   return `
   <div class="sc">
-    <div class="top"><span class="folder-ico${live ? ' live' : ''}">${I.folder}</span><b>${esc(s?.name || basename(dir || '') || s?.room || '')}</b>${live ? '<span class="pill ok"><span class="dot"></span></span>' : ''}</div>
+    <div class="top"><span class="folder-ico${live ? ' live' : ''}">${I.folder}</span><b>${esc(s?.name || basename(dir || '') || s?.room || '')}</b>${live ? '<span class="pill ok" title="Open now" aria-label="Open now"><span class="dot"></span></span>' : ''}</div>
     <div class="mono">${esc(dir ? tildify(dir) : (s?.room || ''))}</div>
     <div class="who"><span>${live ? (peers ? `${peers} other${peers === 1 ? '' : 's'} here` : 'Just you') : (dir ? esc(ago(lastUsed)) : (mine ? 'Yours, on another computer' : 'Someone else\'s'))}</span><span class="spacer"></span>
       ${live ? `<button class="btn sm primary" data-go="${esc(id)}">Open</button>` : dir ? `<button class="btn sm" data-rejoin="${esc(dir)}">Rejoin</button>` : ''}</div>
@@ -183,7 +192,7 @@ function peopleCardHtml (m, { admin, isOwner }) {
 
 export function workspacePageHtml () {
   const d = state.workspace
-  if (!d) return '<p class="hint">Loading…</p>'
+  if (!d || d.workspace.id !== String(state.view).slice(3)) return '<p class="hint">Loading…</p>'
   const w = d.workspace
   const admin = d.access.admin
   const running = d.running.map((id) => state.sessions.get(id)).filter(Boolean)
@@ -220,9 +229,9 @@ export function workspacePageHtml () {
   </section>`
 }
 
-export function bindWorkspacePage (root, { go, rerender, newSessionDialog, inviteDialog }) {
+export function bindWorkspacePage (root, { go, rerender, newSessionDialog, inviteDialog, dialog }) {
   const d = state.workspace
-  if (!d) return
+  if (!d || d.workspace.id !== String(state.view).slice(3)) return
   const id = d.workspace.id
   const reload = async () => { await openWorkspace(id); await loadWorkspaces(); rerender() }
   root.querySelector('[data-ws-back]').onclick = (e) => { e.preventDefault(); go('home') }
@@ -231,7 +240,7 @@ export function bindWorkspacePage (root, { go, rerender, newSessionDialog, invit
   root.querySelector('[data-invite-ws]')?.addEventListener('click', () => inviteDialog(id))
   root.querySelector('[data-add-member]')?.addEventListener('click', () => inviteDialog(id))
   root.querySelectorAll('[data-member-access]').forEach((sel) => {
-    sel.onchange = async () => { try { await api('POST', wsUrl(id, '/members'), { account: sel.dataset.memberAccess, access: sel.value }); toast('Saved'); await reload() } catch (err) { toast(err.message) } }
+    sel.onchange = async () => { try { await api('POST', wsUrl(id, '/members'), { account: sel.dataset.memberAccess, access: sel.value }); toast('Saved'); await reload() } catch (err) { toast(err.message); rerender() } }
   })
   root.querySelectorAll('[data-member-remove]').forEach((b) => {
     b.onclick = async () => {
@@ -239,34 +248,32 @@ export function bindWorkspacePage (root, { go, rerender, newSessionDialog, invit
       try { await api('POST', wsUrl(id, '/members/remove'), { account: b.dataset.memberRemove }); await reload() } catch (err) { toast(err.message) }
     }
   })
-  root.querySelector('[data-ws-settings]')?.addEventListener('click', () => settingsDialog(reload, go))
+  root.querySelector('[data-ws-settings]')?.addEventListener('click', () => settingsDialog(reload, go, dialog))
 }
 
-function settingsDialog (reload, go) {
+/** `dialog(html)` is home.js's: a modal form that closes on Cancel, Escape or a click outside. */
+function settingsDialog (reload, go, dialog) {
   const w = state.workspace.workspace
-  const back = document.createElement('div')
-  back.className = 'modal-back'
-  back.innerHTML = `<form class="card modal" role="dialog" aria-modal="true" autocomplete="off">
+  const { form, close } = dialog(`
     <h3>Workspace settings</h3>
     <div class="field"><label for="wss-name">Name</label><input class="input" id="wss-name" name="name" maxlength="80" required value="${esc(w.name)}"></div>
     <div class="field"><label for="wss-desc">About</label><input class="input" id="wss-desc" name="description" maxlength="500" value="${esc(w.description || '')}"></div>
     <div class="field"><span class="label">Colour</span><div class="swatches">${Object.entries(COLORS).map(([k, c]) => `<label class="swatch"><input type="radio" name="color" value="${k}" ${(w.color || 'lilac') === k ? 'checked' : ''}><span style="background:${c}"></span></label>`).join('')}</div></div>
     <label class="toggle"><input type="checkbox" name="archived" ${w.archivedAt ? 'checked' : ''}><span class="track"><span class="knob"></span></span><span class="tg-text"><b>Archived</b><span class="hint">Kept, but out of the way.</span></span></label>
     <p class="error" data-error></p>
-    <div class="actions"><button type="button" class="btn ghost danger" data-delete>Delete workspace</button><span class="spacer"></span><button type="button" class="btn ghost" data-cancel>Cancel</button><button class="btn primary" type="submit">Save</button></div>
-  </form>`
-  document.body.appendChild(back)
-  const form = back.querySelector('form')
-  const close = () => back.remove()
-  back.addEventListener('mousedown', (e) => { if (e.target === back) close() })
-  form.querySelector('[data-cancel]').onclick = close
+    <div class="actions"><button type="button" class="btn ghost danger" data-delete>Delete workspace</button><span class="spacer"></span><button type="button" class="btn ghost" data-cancel>Cancel</button><button class="btn primary" type="submit">Save</button></div>`)
   form.onsubmit = async (e) => {
     e.preventDefault()
     const f = new FormData(form)
+    const save = form.querySelector('button[type=submit]')
+    save.disabled = true
     try {
       await api('POST', wsUrl(w.id, '/update'), { name: f.get('name'), description: f.get('description'), color: f.get('color'), archived: f.get('archived') === 'on' })
       close(); await reload()
-    } catch (err) { form.querySelector('[data-error]').textContent = err.message }
+    } catch (err) {
+      form.querySelector('[data-error]').textContent = err.message
+      save.disabled = false
+    }
   }
   form.querySelector('[data-delete]').onclick = async () => {
     const typed = await ask({ title: `Delete ${w.name}?`, message: 'Its sessions stay, outside any workspace. Type the workspace name to confirm.', ok: 'Delete', danger: true, input: { placeholder: w.name } })

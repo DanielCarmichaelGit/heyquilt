@@ -3,7 +3,7 @@
 Date: 2026-10-03, revised 2026-10-04. Builds on sessions (relay rooms), accounts and spaces (personal or org),
 org roles, agent sign-in, access types and the hosted MCP.
 
-Mockups: `2026-10-03-workspaces-mockups.html` next to this file (card layout: home grid, add card, inside a workspace, all files).
+Mockups: `2026-10-03-workspaces-mockups.html` next to this file (card layout: home grid, add card, inside a workspace, all files, where agents work).
 
 ## Goal
 
@@ -35,7 +35,7 @@ No new gating infrastructure. Iterate from there.
 | Realtime | **Not the relay.** The relay is for live co-editing inside a session. Workspace changes (files, members, sessions) reach the app and the website through Supabase Realtime on the workspace's rows, with a plain refetch as the fallback. |
 | Workspace chat and board | Out of scope for now. Agents and people coordinate in session chat and the session board, and hand files over through the library. |
 | Sessions in a workspace | A session is started with a workspace id. The API records `relay_sessions.workspace_id` and answers the relay's room-access question with workspace membership when the account has no grant of its own. Loose sessions can be moved into a workspace by their owner. |
-| Agents | `agent_placements` says where an org agent works: everywhere in the org, in chosen workspaces (and their sessions), or only where added by hand. Placed agents are let into matching sessions as they start and show as "Added by <org>" in the workspace; one-off adds are ordinary members. |
+| Agents | Three levels, most specific wins. **Account level** (a person's Settings › Agents, or the org's Agents page): the agent's **reach** is all workspaces (global) or chosen ones, and its **sessions default** is "every session" or "when invited". **Workspace level:** an agent added to a workspace is a member there, with its own sessions setting; a workspace may override a global agent's default for itself. **Session level:** as today, invited by hand or kept out of one session by its owner. Agents that join every session are let in as the session starts, show why they are there in the people menu, and in org workspaces show "Added by <org>". |
 | App layout | Only a session opens the code window and the file tree. Workspaces use the home shell with today's sidebar. Home is a **grid of workspace cards** with an **Add workspace** card; inside a workspace, one page of card sections (Sessions, Files, People & agents) and an All files view. No tabs, no sidebar list. |
 | Limits (defaults, per plan later) | 500 MB per file, 5 GB per workspace, 2,000 files. |
 | Naming in code | The session view's internal name "workspace" (`src/ui/session.js` comment, `state.ws`, the CSS section) is renamed so the word means one thing. |
@@ -83,6 +83,7 @@ create table workspace_members (
   workspace_id uuid not null references workspaces (id) on delete cascade,
   account text not null check (account ~ '^(person|agent):[A-Za-z0-9_-]{1,64}$'),
   access text not null check (access in ('edit', 'view')),
+  sessions text not null default 'invited' check (sessions in ('all', 'invited')),  -- agents only: join every session here, or when invited
   added_by text not null,
   added_at timestamptz not null default now(),
   primary key (workspace_id, account)
@@ -130,15 +131,25 @@ create table workspace_invites (           -- personal workspaces: email invites
   cancelled_at timestamptz
 );
 
-create table agent_placements (            -- org agents only
+create table agent_placements (            -- account level: where an agent reaches and its sessions default
   agent_id uuid primary key references agents (id) on delete cascade,
-  org_id uuid not null references orgs (id) on delete cascade,
-  scope text not null check (scope in ('org', 'workspaces', 'manual')),
+  reach text not null default 'manual' check (reach in ('all', 'workspaces', 'manual')),
   workspace_ids uuid[] not null default '{}',
-  access text not null check (access in ('edit', 'view')),
+  sessions text not null default 'invited' check (sessions in ('all', 'invited')),
+  access text not null default 'edit' check (access in ('edit', 'view')),
   scopes text[] not null default '{}' check (cardinality(scopes) <= 20),
   updated_by text not null,
   updated_at timestamptz not null default now()
+);
+-- The agent's owner (agents.owner_user_id or agents.org_id) sets the row: a person for their own agents, an
+-- org admin (Agents: Update) for the org's.
+
+create table workspace_agent_overrides (   -- workspace level: a workspace's say over a global agent
+  workspace_id uuid not null references workspaces (id) on delete cascade,
+  agent_id uuid not null references agents (id) on delete cascade,
+  sessions text check (sessions in ('all', 'invited')),      -- null: use the placement's default
+  excluded boolean not null default false,                   -- keep this global agent out of this workspace
+  primary key (workspace_id, agent_id)
 );
 
 alter table relay_sessions add column workspace_id uuid references workspaces (id) on delete set null;
@@ -163,8 +174,16 @@ workspace removes its rows and objects.
 2. Org workspace: an org member whose role has Workspaces: Update has edit and admin; Workspaces: Read alone
    gives view of the list and the workspace page but not of files.
 3. A `workspace_members` row gives its access.
-4. An org agent with a placement that covers this workspace gets the placement's access.
+4. An agent whose placement reaches this workspace (`reach = 'all'`, or the workspace is in `workspace_ids`)
+   gets the placement's access, unless the workspace excluded it.
 5. Otherwise none.
+
+`agentJoinsSession(agent, room)`, used when a session in a workspace starts and whenever the relay asks:
+
+1. A session-level decision wins: the session owner invited the agent (yes) or kept it out (no).
+2. A `workspace_members` row for the agent: its `sessions` value.
+3. A global agent: the workspace override's `sessions` if set, else the placement's `sessions`.
+4. Otherwise no.
 
 `roomAccess(account, room)`, which the relay already asks the API on every connection, gains one step after
 owner, invites and grants: if the room's `relay_sessions.workspace_id` is set, use `workspaceAccess`. Workspace
@@ -194,7 +213,9 @@ Under `/v1`, authenticated as a person (device token) or an agent (`qa_` key):
 | `DELETE /workspaces/:id/files/:fileId` | editor | soft delete |
 | `POST /workspaces/:id/folders` `{ path }` | editor | an empty folder |
 | `POST /workspaces/:id/sessions` `{ room }` | editor who owns the room | moves a loose session in |
-| `PUT /orgs/:slug/agents/:id/placement` | Agents: Update | the agent's placement |
+| `PUT /me/agents/:id/placement`, `PUT /orgs/:slug/agents/:id/placement` | the agent's owner; org: Agents: Update | reach, sessions default, access, scopes |
+| `PUT /workspaces/:id/agents/:agentId` `{ sessions?, excluded? }` | admin | a workspace's override for a global agent |
+| `PUT/DELETE /sessions/:room/agents/:agentId/exclude` | session owner | keep an inherited agent out of one session |
 
 Starting a session: the app's `start()` and the MCPs' `quilt_start_session` take an optional `workspace`. The
 app tells the API (`POST /me/sessions/:room/workspace`) as soon as the relay has created the room, so the
@@ -245,8 +266,8 @@ session for that: the API hands the app a short-lived Supabase access token for 
   sessions, the file list (download only) and settings.
 - Org: `/org/[slug]/workspaces` and `/org/[slug]/workspaces/[id]`, gated by the Workspaces permission. The
   **Roles** grid gets the Workspaces row.
-- Org agent page gains **Where <agent> works**: every workspace and session in the org; every session in
-  chosen workspaces; or only where someone adds it by hand. Plus access and folder limits.
+- Org agent page gains **Where <agent> works**: Available in (all workspaces or chosen ones) and Joins (every
+  session or when invited), plus access and folder limits. The personal dashboard's Agents page gets the same.
 - Invite links `/workspace-invite/<token>` sign the person in and add them.
 
 ## Agents
@@ -265,10 +286,23 @@ MCP tools, in both `quilt mcp` and the hosted MCP:
 The shared agent guide text says: files that are not code live in the workspace library; put outputs there, not
 in chat; leave a version note.
 
-Placement: when a session starts in a workspace, the API's room-access answer includes the org's placed agents,
-so the relay lets them in as members at once and the existing webhook path wakes them (the "session started"
-event is new; mentions, DMs and tasks are unchanged). Hosted agents keep their one-room-at-a-time model: the
-library tools go through the API, not a room.
+Where agents work, in the app and on the website:
+
+- **Settings › Agents** (personal) and the org's Agents page list each agent with **Available in** (all
+  workspaces, or chosen ones) and **Joins** (every session, or when invited), plus access and folder limits.
+  This writes `agent_placements` (`PUT /me/agents/:id/placement`, `PUT /orgs/:slug/agents/:id/placement`).
+- **Add an agent to a workspace** picks one of the account's agents or invites a new one by link, with access and
+  an "Also join every session in this workspace as it starts" switch. This writes `workspace_members` with
+  `sessions`. A global agent's card in the workspace shows its scope pill and a Joins dropdown that writes
+  `workspace_agent_overrides`.
+- **A session's people menu** shows why each agent is there ("global", "in Launch", "invited by Daniel") with
+  **Not in this session** for inherited agents and **Remove** for invited ones; these are the existing per-session
+  grant and a new per-session exclusion kept with the room's grants.
+
+When a session starts in a workspace the API's room-access answer includes every agent for which
+`agentJoinsSession` is yes, so the relay lets them in at once and the existing webhook path wakes them (a new
+"session started" event; mentions, DMs and tasks are unchanged). Hosted agents keep their one-room-at-a-time
+model: the library tools go through the API, not a room.
 
 ### Example: marketing agent and editor agent
 
@@ -309,7 +343,9 @@ sees both files and versions in the Files tab and the thread in the session.
    a workspace, access fallback.
 2. **Files.** The file routes, bucket, the Files section and All files view with upload, preview and versions,
    Attach from workspace, Supabase Realtime.
-3. **Agents.** Agent invites into a workspace, the library tools, placements and the org agent page, guide text.
+3. **Agents.** Add an agent to a workspace (existing or by invite link), the library tools, placements with reach
+   and sessions default in Settings › Agents and on the org agent page, workspace overrides, per-session keep-out,
+   guide text.
 
 Each phase ships with a `RELEASES.md` section and tests. Phase 1 is usable on its own.
 

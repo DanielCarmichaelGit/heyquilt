@@ -148,6 +148,22 @@ body { margin:0; background:var(--bg); color:var(--text); font:13.5px/1.6 var(--
 .pc .av { width:40px; height:40px; font-size:15px }
 .pc .t { flex:1; min-width:0; line-height:1.35 } .pc .t b { display:block; font-weight:600 } .pc .t span { font-size:12px; color:var(--muted); display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
 .sel { display:inline-flex; align-items:center; gap:6px; height:26px; padding:0 9px; border:1px solid var(--border-strong); border-radius:4px; background:var(--panel); font-size:12px; font-weight:500; white-space:nowrap }
+.pc .scope { display:flex; align-items:center; gap:6px; margin-top:4px; font-size:11.5px; color:var(--muted) }
+.sel.xs { height:22px; padding:0 7px; font-size:11.5px }
+.pc.agent { align-items:flex-start }
+.pc.agent .av { margin-top:2px }
+.dlg { background:var(--panel); border:1px solid var(--border-strong); border-radius:10px; box-shadow:0 1px 0 var(--border-strong), 0 14px 36px rgba(43,42,56,.14); padding:20px; max-width:460px }
+.dlg h3 { margin:0 0 4px; font-size:17px } .dlg p { margin:0 0 14px; color:var(--muted); font-size:13px }
+.dlg .opt { display:flex; gap:10px; align-items:flex-start; padding:10px 12px; border:1px solid var(--border); border-radius:6px; margin-bottom:8px }
+.dlg .opt.on { border-color:var(--accent); background:color-mix(in srgb, var(--accent) 5%, var(--panel)); box-shadow:0 0 0 1px var(--accent) }
+.dlg .opt b { display:block; font-weight:600 } .dlg .opt span { color:var(--muted); font-size:12.5px }
+.dlg .opt i { width:14px; height:14px; border-radius:50%; border:1.5px solid var(--border-strong); margin-top:4px; flex:none } .dlg .opt.on i { border:4px solid var(--accent) }
+.dlg label { font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.07em; display:block; margin:12px 0 6px }
+.tog { display:flex; gap:10px; align-items:center; font-size:13px } .tog i { width:34px; height:20px; border-radius:999px; background:var(--ok); position:relative; flex:none } .tog i::after { content:""; position:absolute; top:3px; left:17px; width:14px; height:14px; border-radius:50%; background:#fff }
+.tog.off i { background:var(--border-strong) } .tog.off i::after { left:3px }
+.agrow { display:grid; grid-template-columns:auto minmax(0,1fr) auto auto; gap:12px; align-items:center; padding:10px 14px }
+.agrow + .agrow { border-top:1px solid var(--border) }
+.agrow .t b { display:block; font-weight:600 } .agrow .t span { font-size:12px; color:var(--muted) }
 .pc.add { border-style:dashed; box-shadow:none; background:transparent; justify-content:center; color:var(--muted); font-weight:500 }
 .pc.add i { font-size:20px; color:var(--accent); font-style:normal }
 .note { display:flex; gap:10px; align-items:flex-start; padding:11px 14px; border-radius:6px; background:var(--panel-2); color:var(--muted); font-size:12.5px; margin-top:16px }
@@ -294,16 +310,16 @@ body { margin:0; background:var(--bg); color:var(--text); font:13.5px/1.6 var(--
         </div>
 
         <div class="sec">
-          <div class="sech"><h2>People &amp; agents</h2><span class="count">4</span><span class="sp"></span></div>
+          <div class="sech"><h2>People &amp; agents</h2><span class="count">5</span><span class="sp"></span></div>
           <div class="cards3">
             <div class="pc"><span class="av on" style="background:#c24f33">D</span><div class="t"><b>Daniel</b><span>you · owner</span></div><span class="pill">Owner</span></div>
             <div class="pc"><span class="av on" style="background:#7b4f9e">B</span><div class="t"><b>Brandon</b><span>in pricing-page</span></div><span class="sel">Can edit ▾</span></div>
-            <div class="pc"><span class="av bot on" style="background:#3d7a4c">M</span><div class="t"><b>Marketing agent</b><span>Anthropic · writing launch copy</span></div><span class="sel">Can edit ▾</span></div>
-            <div class="pc"><span class="av bot" style="background:#6e6c7e">E</span><div class="t"><b>Editor agent</b><span>xAI · idle</span></div><span class="sel">Can edit ▾</span></div>
-            <div class="pc add"><i>+</i>&nbsp; Invite a person or an agent</div>
+            <div class="pc agent"><span class="av bot on" style="background:#3d7a4c">M</span><div class="t"><b>Marketing agent</b><span>Anthropic · writing launch copy</span><span class="scope"><span class="pill violet">Global</span> joins <span class="sel xs">every session ▾</span></span></div><span class="sel">Can edit ▾</span></div>
+            <div class="pc agent"><span class="av bot" style="background:#6e6c7e">E</span><div class="t"><b>Editor agent</b><span>xAI · idle</span><span class="scope"><span class="pill">This workspace</span> joins <span class="sel xs">when invited ▾</span></span></div><span class="sel">Can edit ▾</span></div>
+            <div class="pc agent"><span class="av bot" style="background:#a8701c">R</span><div class="t"><b>Reviewer</b><span>OpenAI · idle</span><span class="scope"><span class="pill">This workspace</span> joins <span class="sel xs">every session ▾</span></span></div><span class="sel">View only ▾</span></div>
+            <div class="pc add"><i>+</i>&nbsp; Add a person or an agent</div>
           </div>
-        </div>
-        <div class="note">▣ <span>In an <b>org workspace</b> the org owns it: people with the Workspaces permission manage it, and agents the org placed everywhere show <b>Added by Acme</b> on their card with no access dropdown.</span></div>
+        <div class="note">▣ <span><b>Agents carry a scope.</b> A <b>Global</b> agent was added at account level (Settings › Agents, or the org's Agents page) and is in every workspace; a <b>This workspace</b> agent was added here. Each card says whether the agent also <b>joins every session</b> in the workspace or only <b>when invited</b> to one. Global agents bring their default; a workspace can override it. In an org workspace, agents the org placed show <b>Added by Acme</b> and only an org admin changes them.</span></div>
       </main>
     </div>
   </div>
@@ -351,6 +367,48 @@ body { margin:0; background:var(--bg); color:var(--text); font:13.5px/1.6 var(--
   </div>
 </section>
 
+
+<!-- 5 AGENT SCOPES -->
+<section class="fig">
+  <h2>5 · Where agents work</h2>
+  <p>Three places an agent can be added, each with a say over sessions. <b>Account level</b> (your Settings › Agents, or the org's Agents page on heyquilt.com): the agent is global, in every workspace, with a default for sessions. <b>Workspace level</b>: added to one workspace, with its own sessions setting. <b>Session level</b>: added to one session by hand, exactly as today. The most specific setting wins.</p>
+  <div class="two" style="display:grid;grid-template-columns:1.25fr 1fr;gap:16px;align-items:start">
+    <div class="frame">
+      <div class="titlebar"><i></i><i></i><i></i><span>Quilt · Settings › Agents</span></div>
+      <main class="page" style="padding:24px 26px">
+        <div class="sech"><h2>Your agents</h2><span class="count">3</span><span class="sp"></span><span class="btn sm primary">＋ Invite an agent</span></div>
+        <div class="sc" style="min-height:0;padding:0;gap:0">
+          <div class="agrow"><span class="av bot on" style="background:#3d7a4c">M</span><div class="t"><b>Marketing agent</b><span>Anthropic · coding agent · joined Oct 1</span></div><div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end"><span class="sel xs">Available in: all workspaces ▾</span><span class="sel xs">Joins: every session ▾</span></div><span class="sel xs">Can edit ▾</span></div>
+          <div class="agrow"><span class="av bot" style="background:#6e6c7e">E</span><div class="t"><b>Editor agent</b><span>xAI · video agent · joined Oct 2</span></div><div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end"><span class="sel xs">Available in: Launch ▾</span><span class="sel xs">Joins: when invited ▾</span></div><span class="sel xs">Can edit ▾</span></div>
+          <div class="agrow"><span class="av bot" style="background:#a8701c">R</span><div class="t"><b>Reviewer</b><span>OpenAI · review agent · joined Oct 3</span></div><div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end"><span class="sel xs">Available in: Launch, Website ▾</span><span class="sel xs">Joins: every session ▾</span></div><span class="sel xs">View only ▾</span></div>
+        </div>
+        <div class="note" style="margin-top:12px">▣ <span><b>Available in</b> is the agent's reach: all workspaces (global), or chosen ones. <b>Joins</b> is its default for sessions inside those workspaces: every session as it starts, or only when someone invites it to one. A workspace can override Joins for itself. The org's Agents page on heyquilt.com has the same two controls for org agents, and only org admins change them.</span></div>
+      </main>
+    </div>
+    <div>
+      <div class="dlg">
+        <h3>Add an agent to Launch</h3>
+        <p>Pick one of your agents, or invite a new one with a link.</p>
+        <div class="opt on"><i></i><div><b>Editor agent</b><span>xAI · not in Launch yet</span></div></div>
+        <div class="opt"><i></i><div><b>Reviewer</b><span>OpenAI · in Website</span></div></div>
+        <div class="opt"><i></i><div><b>Invite a new agent</b><span>You'll get a link to paste into your AI</span></div></div>
+        <label>Access</label><span class="sel">Can edit ▾</span>
+        <label>Sessions</label>
+        <div class="tog"><i></i><span>Also join every session in Launch as it starts</span></div>
+        <p style="margin:6px 0 0;font-size:12px">Off: the agent is in the workspace, sees its files, and joins a session only when invited there.</p>
+        <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:14px"><span class="btn sm ghost">Cancel</span><span class="btn sm primary">Add</span></div>
+      </div>
+      <div class="dlg" style="margin-top:16px;padding:14px 16px">
+        <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px">In a session's people menu</div>
+        <div class="agrow" style="padding:6px 0"><span class="av bot on" style="background:#3d7a4c">M</span><div class="t"><b>Marketing agent</b><span>here because it's global · joins every session</span></div><span></span><span class="btn sm ghost">Not in this session</span></div>
+        <div class="agrow" style="padding:6px 0"><span class="av bot on" style="background:#6e6c7e">E</span><div class="t"><b>Editor agent</b><span>invited to this session by Daniel</span></div><span></span><span class="btn sm ghost">Remove</span></div>
+        <div class="agrow" style="padding:6px 0"><span class="av bot" style="background:#a8701c">R</span><div class="t"><b>Reviewer</b><span>in Launch · joins every session</span></div><span></span><span class="btn sm ghost">Not in this session</span></div>
+        <p style="margin:8px 0 0;font-size:12px;color:var(--muted)">The session shows why each agent is there. A session owner can keep a global or workspace agent out of this one session, or invite one that only joins when invited.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
 <section class="spec">
   <h2>Plan unchanged, layout changed</h2>
   <ul>
@@ -358,7 +416,8 @@ body { margin:0; background:var(--bg); color:var(--text); font:13.5px/1.6 var(--
     <li><b>Add workspace is a card</b> that turns into the form in place.</li>
     <li><b>Inside a workspace</b>: Sessions cards, Files tiles, People &amp; agents cards on one page, with an All files view for the whole library. No tabs.</li>
     <li><b>Loose sessions</b> are a small strip under the grid, with Join and New session where they are today.</li>
-    <li>Data model, API, access, agents and phases stay as in the spec.</li>
+    <li><b>Agents have a reach and a sessions default.</b> Account-level (global) agents are in every workspace; workspace agents in one. Each says whether it joins every session or only when invited; a workspace can override a global agent's default; a session owner can keep an agent out of one session. The most specific setting wins.</li>
+    <li>Data model, API, access and phases stay as in the spec.</li>
   </ul>
 </section>
 </div>

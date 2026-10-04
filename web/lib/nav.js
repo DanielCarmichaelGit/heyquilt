@@ -4,6 +4,7 @@
 // their own tabs.
 export const PERSONAL_NAV = [
   { href: '/dashboard', label: 'Dashboard', exact: true },
+  { href: '/dashboard/workspaces', label: 'Workspaces' },
   { href: '/dashboard/computers', label: 'Computers' },
   { href: '/dashboard/agents', label: 'Agents' },
   { href: '/dashboard/access', label: 'Access types' }

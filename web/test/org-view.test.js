@@ -14,8 +14,15 @@ test('allowed: the owner may do everything, others what their grid says', () => 
 
 test('orgTabs shows only what the viewer can read', () => {
   assert.deepEqual(orgTabs('acme', member).map((t) => t.label), ['Overview', 'Teams'])
-  assert.deepEqual(orgTabs('acme', owner).map((t) => t.label), ['Overview', 'People', 'Teams', 'Roles', 'Invites', 'Settings'])
-  assert.deepEqual(orgTabs('acme', owner).map((t) => t.href), ['/org/acme', '/org/acme/people', '/org/acme/teams', '/org/acme/roles', '/org/acme/invites', '/org/acme/settings'])
+  assert.deepEqual(orgTabs('acme', owner).map((t) => t.label), ['Overview', 'People', 'Teams', 'Workspaces', 'Roles', 'Invites', 'Settings'])
+  assert.deepEqual(orgTabs('acme', owner).map((t) => t.href), ['/org/acme', '/org/acme/people', '/org/acme/teams', '/org/acme/workspaces', '/org/acme/roles', '/org/acme/invites', '/org/acme/settings'])
+})
+
+test('orgTabs shows Workspaces only to those who can read it', () => {
+  const canSee = { isOwner: false, grants: { workspaces: { r: true } } }
+  assert.deepEqual(orgTabs('acme', canSee).map((t) => t.label), ['Overview', 'Teams', 'Workspaces'])
+  assert.equal(orgTabs('acme', canSee).find((t) => t.label === 'Workspaces').href, '/org/acme/workspaces')
+  assert.equal(orgTabs('acme', member).some((t) => t.label === 'Workspaces'), false)
 })
 
 test('orgTabs shows People to those who may read agents, even without Members: Read', () => {

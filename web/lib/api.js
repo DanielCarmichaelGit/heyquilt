@@ -15,7 +15,7 @@ const nameOf = (method, path) => `${method} ${path.split('?')[0]
   .replace(/\/[A-Za-z0-9_-]{24,}(?=\/|$)/g, '/:token')
   .replace(/\/[A-Z0-9]{4}-[A-Z0-9]{4}(?=\/|$)/g, '/:code')}`.slice(0, 80)
 
-export async function apiCall (user, method, path, body) {
+export async function apiCall (user, method, path, body, { expect404 = false } = {}) {
   // Missing config must fail loudly in production rather than silently calling "undefined/v1/..."
   if (!process.env.QUILT_API_URL && process.env.NODE_ENV === 'production') {
     throw new Error('QUILT_API_URL is not set')
@@ -36,7 +36,7 @@ export async function apiCall (user, method, path, body) {
     result = { ok: false, status: 0, data: null }
   }
   const durationMs = Date.now() - started
-  const failed = result.status === 0 || result.status === 404 || result.status >= 500
+  const failed = result.status === 0 || (result.status === 404 && !expect404) || result.status >= 500
   if (failed || durationMs > SLOW_MS) {
     // Fire-and-forget: a report never delays the page. If the function host ends the request
     // before it lands, the report is lost, which is acceptable.

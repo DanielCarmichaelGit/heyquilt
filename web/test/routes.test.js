@@ -79,7 +79,7 @@ test('the homepage serves sized WebP screenshots, lazily below the fold, and bot
 // The proxy redirects signed-out people before routing, so check the pages really exist too.
 test('Computers, Agents, Access types and each session have their own pages under the dashboard', () => {
   const pages = Object.keys(JSON.parse(readFileSync(new URL('../.next/server/app-paths-manifest.json', import.meta.url))))
-  for (const page of ['/dashboard/page', '/dashboard/computers/page', '/dashboard/agents/page', '/dashboard/access/page', '/dashboard/sessions/[room]/page']) assert.ok(pages.includes(page), page)
+  for (const page of ['/dashboard/page', '/dashboard/workspaces/page', '/dashboard/workspaces/[id]/page', '/dashboard/computers/page', '/dashboard/agents/page', '/dashboard/access/page', '/dashboard/sessions/[room]/page']) assert.ok(pages.includes(page), page)
 })
 
 // Static images skip the proxy: it would run getClaims() and could add Set-Cookie, which stops CDN caching.
@@ -90,7 +90,7 @@ test('screenshots are served without running the proxy (no Set-Cookie)', async (
 })
 
 test('private pages send signed-out people to sign in, and come back after', async () => {
-  for (const path of ['/dashboard', '/dashboard/computers', '/dashboard/agents', '/dashboard/access', '/dashboard/sessions/room-abc', '/settings', '/link?code=AAAA-BBBB', '/reset', '/org/acme', '/org/acme/people', '/org/acme/roles', '/org/acme/teams', '/org/acme/invites', '/org/acme/settings', '/invite/qi_test']) {
+  for (const path of ['/dashboard', '/dashboard/workspaces', '/dashboard/workspaces/abc', '/dashboard/computers', '/dashboard/agents', '/dashboard/access', '/dashboard/sessions/room-abc', '/settings', '/link?code=AAAA-BBBB', '/reset', '/org/acme', '/org/acme/people', '/org/acme/roles', '/org/acme/teams', '/org/acme/workspaces', '/org/acme/workspaces/abc', '/org/acme/invites', '/org/acme/settings', '/invite/qi_test']) {
     const res = await get(path)
     assert.equal(res.status, 307, path)
     const to = new URL(res.headers.get('location'), base)

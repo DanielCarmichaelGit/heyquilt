@@ -13,6 +13,7 @@ export function orgTabs (slug, me) {
     { href: base, label: 'Overview' },
     (allowed(me, 'members', 'r') || allowed(me, 'agents', 'r')) && { href: `${base}/people`, label: 'People' },
     { href: `${base}/teams`, label: 'Teams' },
+    allowed(me, 'workspaces', 'r') && { href: `${base}/workspaces`, label: 'Workspaces' },
     allowed(me, 'roles', 'r') && { href: `${base}/roles`, label: 'Roles' },
     allowed(me, 'invites', 'r') && { href: `${base}/invites`, label: 'Invites' },
     allowed(me, 'org', 'r') && { href: `${base}/settings`, label: 'Settings' }

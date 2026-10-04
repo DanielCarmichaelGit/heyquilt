@@ -284,10 +284,11 @@ export async function runMcp () {
     inputSchema: {
       url: z.string().min(1).max(2000).describe('The URL to POST to: https, or http on this computer (a webhook trigger of your routine, for example)'),
       secret: z.string().max(200).optional().describe('16 to 200 characters for signing; omit to have Quilt make one'),
-      events: z.array(z.enum(WEBHOOK_EVENTS)).max(WEBHOOK_EVENTS.length).optional().describe(`Which events to send (default: all): ${WEBHOOK_EVENTS.join(', ')}`)
+      events: z.array(z.enum(WEBHOOK_EVENTS)).max(WEBHOOK_EVENTS.length).optional().describe(`Which events to send (default: all): ${WEBHOOK_EVENTS.join(', ')}`),
+      bearer: z.string().max(500).optional().describe('A key your receiver wants on every POST, sent as "Authorization: Bearer <key>" (a Grok Bot routine\'s sender key, for example)')
     }
-  }, ({ url, secret, events }) => withDaemon(async (d) => {
-    const { webhook } = await call(d, 'POST', '/webhook', { url, secret, events })
+  }, ({ url, secret, events, bearer }) => withDaemon(async (d) => {
+    const { webhook } = await call(d, 'POST', '/webhook', { url, secret, events, bearer })
     return describeSubscription(webhook, { showSecret: webhook.made })
   }))
 

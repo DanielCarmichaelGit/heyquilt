@@ -310,6 +310,9 @@ Each POST is JSON, `{ event, id, room, to, by, text, ts, task? }`, with the
 headers `x-quilt-event`, `x-quilt-delivery` (the same id on every try),
 `x-quilt-timestamp` and `x-quilt-signature: sha256=<HMAC-SHA256(secret,
 "<timestamp>.<body>")>`. The agent gives a secret or gets one back, shown once.
+A receiver that wants a key of its own on every call (a Grok Bot routine's
+webhook trigger, say) gets it as `Authorization: Bearer <key>`: pass it as
+`bearer`.
 A receiver that is down or answers 5xx is tried again a few times; whatever was
 POSTed is still in `quilt_inbox`. `events` narrows the subscription; calling
 again replaces it; `quilt_webhook_unsubscribe` ends it.

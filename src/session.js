@@ -1704,9 +1704,9 @@ export class Session extends EventEmitter {
    * message, a task handed over) is POSTed to `url`, signed with `secret` (made when not
    * given). Kept on disk for this folder. Returns the subscription (`made`: the secret is new).
    */
-  setWebhook ({ url, secret, events } = {}) {
-    const sub = makeSubscription({ url, secret, events }, { allowLocal: true })
-    this.webhook = { url: sub.url, secret: sub.secret, events: sub.events, since: sub.since }
+  setWebhook ({ url, secret, events, bearer } = {}) {
+    const sub = makeSubscription({ url, secret, events, bearer }, { allowLocal: true })
+    this.webhook = { url: sub.url, secret: sub.secret, events: sub.events, since: sub.since, ...(sub.bearer ? { bearer: sub.bearer } : {}) }
     fs.writeFileSync(this.webhookFile, JSON.stringify(this.webhook))
     return { ...this.webhook, made: sub.made }
   }
@@ -1720,7 +1720,7 @@ export class Session extends EventEmitter {
   }
 
   /** The subscription without its secret, or null. */
-  webhookInfo () { return this.webhook ? { url: this.webhook.url, events: this.webhook.events, since: this.webhook.since } : null }
+  webhookInfo () { return this.webhook ? { url: this.webhook.url, events: this.webhook.events, since: this.webhook.since, bearer: !!this.webhook.bearer } : null }
 
   /** POSTs `events` to the webhook, one after another, in order; failures are logged, never thrown. */
   sendWebhook (events) {

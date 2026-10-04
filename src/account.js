@@ -195,6 +195,50 @@ export async function cancelSessionInvite ({ token, room, id, api = apiUrl(), fe
   await call(fetchImpl, api, 'DELETE', `${room$(room)}/invites/${encodeURIComponent(id)}`, null, token)
 }
 
+// Workspaces (see docs/superpowers/specs/2026-10-03-workspaces-design.md). Each throws with
+// .status when the API says no: 404 when the workspaces flag is off on the API.
+const ws$ = (id) => `/v1/workspaces/${encodeURIComponent(id)}`
+
+export async function listWorkspaces ({ token, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'GET', '/v1/me/workspaces', null, token)
+  if (!Array.isArray(r.workspaces)) throw new Error(BAD_REPLY)
+  return r.workspaces
+}
+export async function createWorkspace ({ token, name, description = '', color = '', org, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'POST', '/v1/workspaces', { name, description, color, ...(org ? { org } : {}) }, token)
+  if (!r.workspace) throw new Error(BAD_REPLY)
+  return r.workspace
+}
+export async function getWorkspace ({ token, id, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'GET', ws$(id), null, token)
+  if (!r.workspace) throw new Error(BAD_REPLY)
+  return r
+}
+export async function updateWorkspace ({ token, id, patch, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'PATCH', ws$(id), patch, token)
+  if (!r.workspace) throw new Error(BAD_REPLY)
+  return r.workspace
+}
+export async function deleteWorkspace ({ token, id, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  await call(fetchImpl, api, 'DELETE', ws$(id), null, token)
+}
+export async function putWorkspaceMember ({ token, id, account, access, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'PUT', `${ws$(id)}/members/${encodeURIComponent(account)}`, { access }, token)
+  if (!r.member) throw new Error(BAD_REPLY)
+  return r.member
+}
+export async function removeWorkspaceMember ({ token, id, account, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  await call(fetchImpl, api, 'DELETE', `${ws$(id)}/members/${encodeURIComponent(account)}`, null, token)
+}
+export async function setSessionWorkspace ({ token, id, room, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'POST', `${ws$(id)}/sessions`, { room }, token)
+  if (!r.session) throw new Error(BAD_REPLY)
+  return r.session
+}
+export async function unsetSessionWorkspace ({ token, id, room, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  await call(fetchImpl, api, 'DELETE', `${ws$(id)}/sessions/${encodeURIComponent(room)}`, null, token)
+}
+
 /** Revokes a token on the server, best effort, without touching account.json. */
 export async function revokeToken ({ token, api = apiUrl(), fetch: fetchImpl = globalThis.fetch, timeoutMs = 5000 } = {}) {
   if (token) await call(fetchImpl, api, 'POST', '/v1/me/signout', {}, token, { signal: AbortSignal.timeout(timeoutMs) }).catch(() => {})

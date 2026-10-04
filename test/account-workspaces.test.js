@@ -1,0 +1,35 @@
+// Workspaces: account API helpers (see docs/superpowers/specs/2026-10-03-workspaces-design.md).
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { listWorkspaces, createWorkspace, getWorkspace, putWorkspaceMember, setSessionWorkspace } from '../src/account.js'
+
+const fakeFetch = (status, body) => {
+  const calls = []
+  const f = async (url, init = {}) => { calls.push({ url, method: init.method || 'GET', body: init.body ? JSON.parse(init.body) : null, auth: init.headers?.authorization }); return { ok: status < 400, status, json: async () => body } }
+  f.calls = calls
+  return f
+}
+
+test('listWorkspaces reads the list and passes the token', async () => {
+  const fetch = fakeFetch(200, { workspaces: [{ id: 'w1', name: 'Launch' }] })
+  assert.deepEqual(await listWorkspaces({ token: 'qd_x', api: 'https://api.test', fetch }), [{ id: 'w1', name: 'Launch' }])
+  assert.deepEqual(fetch.calls[0], { url: 'https://api.test/v1/me/workspaces', method: 'GET', body: null, auth: 'Bearer qd_x' })
+})
+
+test('listWorkspaces: a 404 (flag off) throws with status 404', async () => {
+  await assert.rejects(listWorkspaces({ token: 'qd_x', api: 'https://api.test', fetch: fakeFetch(404, { error: 'not found' }) }), (e) => e.status === 404)
+})
+
+test('createWorkspace, getWorkspace, putWorkspaceMember, setSessionWorkspace hit the right routes', async () => {
+  const fetch = fakeFetch(200, { workspace: { id: 'w1' }, access: {}, members: [], sessions: [], member: { account: 'person:u2' }, session: { room: 'r' } })
+  await createWorkspace({ token: 't', api: 'https://api.test', fetch, name: 'Launch', color: 'mint', org: 'acme' })
+  await getWorkspace({ token: 't', api: 'https://api.test', fetch, id: 'w1' })
+  await putWorkspaceMember({ token: 't', api: 'https://api.test', fetch, id: 'w1', account: 'person:u2', access: 'view' })
+  await setSessionWorkspace({ token: 't', api: 'https://api.test', fetch, id: 'w1', room: 'r' })
+  assert.deepEqual(fetch.calls.map((c) => [c.method, c.url, c.body]), [
+    ['POST', 'https://api.test/v1/workspaces', { name: 'Launch', description: '', color: 'mint', org: 'acme' }],
+    ['GET', 'https://api.test/v1/workspaces/w1', null],
+    ['PUT', 'https://api.test/v1/workspaces/w1/members/person%3Au2', { access: 'view' }],
+    ['POST', 'https://api.test/v1/workspaces/w1/sessions', { room: 'r' }]
+  ])
+})

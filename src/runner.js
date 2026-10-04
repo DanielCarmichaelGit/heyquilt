@@ -97,7 +97,7 @@ export async function describeOtherSync (dir) {
  * optionally overrides the relay address given out in invites (e.g. a public
  * tunnel URL when the relay runs on this machine).
  */
-export async function runSession ({ dir, conn, name, tool, color = null, shareByDefault = true, summarizeByDefault = false, joined = false, prefer = 'remote', inviteServer, onLog, onFatal, onDebug, kind = 'human', agentFeed = true, readerOptions = {}, passes = null, identity = null, startName = '' }) {
+export async function runSession ({ dir, conn, name, tool, color = null, shareByDefault = true, summarizeByDefault = false, joined = false, prefer = 'remote', inviteServer, onLog, onFatal, onDebug, kind = 'human', agentFeed = true, readerOptions = {}, passes = null, identity = null, startName = '', workspace = '' }) {
   dir = path.resolve(dir)
   if (!/^wss?:\/\//.test(conn.server)) throw new Error('The relay address must start with ws:// or wss://')
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
@@ -124,7 +124,7 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   fs.mkdirSync(path.join(dir, '.quilt'), { recursive: true })
   const configFile = path.join(dir, '.quilt', 'config.json')
   // It holds the room secret: written privately and atomically (see private-file.js).
-  writePrivateJson(configFile, { ...conn, name, tool, kind, inviteServer: inviteServer || undefined, shareAgent, summarize })
+  writePrivateJson(configFile, { ...conn, name, tool, kind, inviteServer: inviteServer || undefined, shareAgent, summarize, workspace: workspace || previous?.workspace || undefined })
   // Keeps the saved name in step with the pass's (the rest of the file may have changed since).
   const saveName = (name) => {
     try { writePrivateJson(configFile, { ...JSON.parse(fs.readFileSync(configFile, 'utf8')), name }) } catch {}
@@ -153,7 +153,7 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   if (session.name !== name) saveName(session.name)
   session.on('identity', ({ name }) => saveName(name))
   const control = await startControl(session, { invite, viewInvite, joined })
-  remember({ dir, room: conn.room, server: conn.server, name: session.name, tool, kind })
+  remember({ dir, room: conn.room, server: conn.server, name: session.name, tool, kind, workspace: workspace || previous?.workspace || '' })
 
   // Claude Code claims files as it edits them (src/hooks.js). The hooks live in the shared
   // .claude/settings.json so everyone in the session follows the same rule.

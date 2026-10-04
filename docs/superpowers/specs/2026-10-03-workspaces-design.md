@@ -1,46 +1,46 @@
 # Workspaces — design
 
-Date: 2026-10-03. Builds on sessions (relay rooms), accounts and spaces (personal or org), agent sign-in,
-access types, the hosted MCP and encrypted large files.
+Date: 2026-10-03, revised 2026-10-04. Builds on sessions (relay rooms), accounts and spaces (personal or org),
+org roles, agent sign-in, access types and the hosted MCP.
+
+Mockups: `2026-10-03-workspaces-mockups.html` next to this file (six screens plus the plan diff).
 
 ## Goal
 
-A **workspace** is a new platform primitive: a durable container, like a Claude project, that owns the things
-a group of people and agents work with over time:
+A **workspace** is a new platform primitive, like a Claude project: a durable container that owns
 
-- **Sessions.** Every session can be started inside a workspace. The workspace lists them, live and past.
-- **Files and folders.** A library for the things that are not code: images, video, PDFs, spreadsheets, CSV,
-  zips, documents. Uploaded once, reachable by every member and every workspace agent.
-- **Agents.** Agents can be members of a workspace, see its files and sessions, talk in its chat and take
-  tasks from its board. Two agents (a marketing agent that makes a video, an editor agent that cuts it) hand
-  work to each other through the library and the board.
-- **Realtime.** Workspace chat, board, activity and presence, synced the way a session's are.
+- **Sessions.** A session can be started inside a workspace. The workspace lists them, live and past.
+- **Files and folders.** A cloud library for what is not code: images, video, PDFs, spreadsheets, CSV, zips,
+  documents. Uploaded once, reachable by every member and every workspace agent.
+- **Agents.** Agents are members. An org can place an agent in every workspace and session top down, or in
+  chosen ones; a person adds an agent to one workspace the way they invite it to a session today.
 
-Sessions stay what they are: synced project folders for code. A workspace sits above them and does not change
-how a session syncs.
+Sessions stay what they are: synced project folders for code, on the relay. The workspace sits above them and
+changes nothing about how a session syncs. Orgs, teams, roles and access types are untouched: they decide who
+may reach a workspace, the workspace is where the work is.
 
-Orgs, teams, roles and access types are untouched. They decide who may reach a workspace; the workspace is
-where the work is.
+**Scope rule for the first build:** the UI shape, the tables, and the least backend logic that makes them real.
+No new gating infrastructure. Iterate from there.
 
 ## Decisions
 
 | Topic | Decision |
 |---|---|
-| Where a workspace lives | In a space: owned by a person (personal) or an org. A space can have many workspaces. |
-| Membership | People and agents, each **editor** or **viewer**. The owner is implicit. Org workspaces can also admit everyone in the org, or in named teams, as a default access. |
-| Files | A **cloud library**: bytes in Supabase Storage (the "Quilt Files" project), index in the workspace's realtime document, quota enforced by the relay. Server-readable (private bucket, signed links), not end-to-end encrypted, so previews and hosted agents work. |
-| Folders | Paths. A folder is a row of kind `folder`; files have a `path` like `brand/logo.png`. |
+| Who owns a workspace | If the signed-in person is in an org and creates it in that org's space, the **org** owns it. Otherwise the **person** owns it. |
+| Who manages it | Org: anyone whose role has the **Workspaces** permission (Create / Read / Update / Delete, a new row in the role grid; Admin has all four, Member has Read). Personal: the owner. |
+| Membership | People and agents, **edit** or **view**. Personal workspaces: the owner invites, with the same invite dialog sessions use (people you've worked with, anyone by email, an agent link). Org workspaces: whoever holds Workspaces: Update adds org members and org agents. |
+| Files | Stored in the cloud: bytes in a private bucket in the Quilt Files Supabase project, index rows in Postgres, signed upload and download links from the accounts API. Server-readable (encrypted at rest by the provider, not end to end), so previews and hosted agents work. |
+| Folders | Paths. A folder is a row of kind `folder`; a file's `path` is `cuts/teaser-15s.mp4`. |
 | Versions | Uploading to an existing path makes a new version; the last 10 are kept. |
-| Realtime | Every workspace has a relay room of its own, `ws-<id>`, that holds the file index, chat, board, activity and agent feed. No synced folder in that room. |
-| Sessions in a workspace | A session is started with a workspace id. The API records it, the pass carries it, the relay keeps it in room meta. Workspace editors are session editors and viewers are viewers unless the session owner tightens it. Existing sessions can be moved into a workspace by their owner. |
-| Agents | A workspace invites agents the way a space does today; the agent joins as a workspace member. Agents get MCP tools for the library and for the workspace room. A hosted agent may hold one workspace room and one session room at a time. |
-| Admission | Workspace rooms admit by pass only (membership), never by secret link. |
-| Naming in code | The session view's old name "workspace" (`src/ui/session.js`, `state.ws`, the CSS section) is renamed `session view` / `state.sv` so the word means one thing. |
-| Limits (defaults, overridable per plan) | 500 MB per file, 5 GB per workspace, 2,000 files. Free personal spaces get one workspace. |
+| Realtime | **Not the relay.** The relay is for live co-editing inside a session. Workspace changes (files, members, sessions) reach the app and the website through Supabase Realtime on the workspace's rows, with a plain refetch as the fallback. |
+| Workspace chat and board | Out of scope for now. Agents and people coordinate in session chat and the session board, and hand files over through the library. |
+| Sessions in a workspace | A session is started with a workspace id. The API records `relay_sessions.workspace_id` and answers the relay's room-access question with workspace membership when the account has no grant of its own. Loose sessions can be moved into a workspace by their owner. |
+| Agents | `agent_placements` says where an org agent works: everywhere in the org, in chosen workspaces (and their sessions), or only where added by hand. Placed agents are let into matching sessions as they start and show as "Added by <org>" in the workspace; one-off adds are ordinary members. |
+| App layout | Only a session opens the code window and the file tree. Workspaces use the home shell: the home sidebar gains a Workspaces list, and a workspace is a page with Sessions, Files, People & agents and Settings tabs. |
+| Limits (defaults, per plan later) | 500 MB per file, 5 GB per workspace, 2,000 files. |
+| Naming in code | The session view's internal name "workspace" (`src/ui/session.js` comment, `state.ws`, the CSS section) is renamed so the word means one thing. |
 
-## Data model
-
-### Accounts API (Postgres)
+## Data model (accounts API, Postgres)
 
 ```sql
 create table workspaces (
@@ -49,12 +49,10 @@ create table workspaces (
   org_id uuid references orgs (id) on delete cascade,
   name text not null check (char_length(name) between 1 and 80),
   description text not null default '' check (char_length(description) <= 500),
-  room text not null unique,              -- 'ws-' || id, the relay room
-  default_access text not null default 'none' check (default_access in ('none', 'org-viewer', 'org-editor')),
+  color text not null default '',
   quota_bytes bigint not null,
-  used_bytes bigint not null default 0,   -- reported by the relay
-  file_count integer not null default 0,
-  created_by text not null,               -- 'person:<uuid>' or 'agent:<uuid>'
+  used_bytes bigint not null default 0,
+  created_by text not null,                -- 'person:<uuid>' or 'agent:<uuid>'
   created_at timestamptz not null default now(),
   archived_at timestamptz,
   check ((owner_user_id is null) <> (org_id is null))
@@ -63,27 +61,46 @@ create table workspaces (
 create table workspace_members (
   workspace_id uuid not null references workspaces (id) on delete cascade,
   account text not null check (account ~ '^(person|agent):[A-Za-z0-9_-]{1,64}$'),
-  access text not null check (access in ('editor', 'viewer')),
+  access text not null check (access in ('edit', 'view')),
   added_by text not null,
   added_at timestamptz not null default now(),
   primary key (workspace_id, account)
 );
 
-create table workspace_teams (                 -- org workspaces only: whole teams let in
+create table workspace_files (
+  id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references workspaces (id) on delete cascade,
-  team_id uuid not null references teams (id) on delete cascade,
-  access text not null check (access in ('editor', 'viewer')),
-  primary key (workspace_id, team_id)
+  path text not null check (char_length(path) between 1 and 500),   -- 'cuts/teaser-15s.mp4'; no '..', no leading '/'
+  kind text not null check (kind in ('file', 'folder')),
+  size bigint not null default 0,
+  mime text not null default '',
+  sha256 text not null default '',
+  version integer not null default 1,
+  object_key text not null default '',     -- '<workspace id>/<file id>/<version>' in the bucket
+  note text not null default '' check (char_length(note) <= 300),
+  uploaded_by text not null,
+  uploaded_at timestamptz not null default now(),
+  deleted_at timestamptz,
+  unique (workspace_id, path) where deleted_at is null   -- as a partial unique index
 );
 
-alter table relay_sessions add column workspace_id uuid references workspaces (id) on delete set null;
-create index relay_sessions_workspace_id on relay_sessions (workspace_id);
+create table workspace_file_versions (     -- the previous versions of a path; the current one is the row above
+  file_id uuid not null references workspace_files (id) on delete cascade,
+  version integer not null,
+  size bigint not null,
+  sha256 text not null,
+  object_key text not null,
+  note text not null default '',
+  uploaded_by text not null,
+  uploaded_at timestamptz not null,
+  primary key (file_id, version)
+);
 
-create table workspace_invites (               -- email invites, like session_invites
+create table workspace_invites (           -- personal workspaces: email invites, shaped like session_invites
   id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references workspaces (id) on delete cascade,
   email text not null,
-  access text not null check (access in ('editor', 'viewer')),
+  access text not null check (access in ('edit', 'view')),
   token_hash text not null unique,
   invited_by text not null,
   created_at timestamptz not null default now(),
@@ -91,205 +108,183 @@ create table workspace_invites (               -- email invites, like session_in
   claimed_at timestamptz,
   cancelled_at timestamptz
 );
+
+create table agent_placements (            -- org agents only
+  agent_id uuid primary key references agents (id) on delete cascade,
+  org_id uuid not null references orgs (id) on delete cascade,
+  scope text not null check (scope in ('org', 'workspaces', 'manual')),
+  workspace_ids uuid[] not null default '{}',
+  access text not null check (access in ('edit', 'view')),
+  scopes text[] not null default '{}' check (cardinality(scopes) <= 20),
+  updated_by text not null,
+  updated_at timestamptz not null default now()
+);
+
+alter table relay_sessions add column workspace_id uuid references workspaces (id) on delete set null;
+create index relay_sessions_workspace_id on relay_sessions (workspace_id);
 ```
 
-Row-level security on, no client policies; every read and write goes through the accounts API with the
-service role, like `relay_sessions`.
+Row-level security is on. Reads that the website and the app do live are through the authenticated role with
+policies that let a member read their own workspaces' rows (needed for Supabase Realtime, which filters by
+RLS). All writes go through the accounts API with the service role, as everywhere else. Agent invites gain
+`workspaceId` and `workspaceAccess`: the agent that redeems one is added to `workspace_members`.
 
-Agent invites get an optional `workspaceId` and `workspaceAccess`: the agent that redeems the invite is added
-to `workspace_members`. The `agents` row still belongs to the person or org (billing and revocation unchanged).
-
-### Workspace room (relay, Yjs)
-
-Room name `ws-<workspace id>`. The same `Room` class as a session, with a `kind: 'workspace'` flag in meta and
-no `files`, `blobs` or `fileKeys` maps. Maps and arrays:
-
-- `library`: Map, `path` → `{ id, kind: 'file' | 'folder', size, mime, sha256, version, by, ts, versions: [{ id, size, sha256, by, ts }] }`.
-  `id` is the storage object id of the current version (32 hex, `blobId`-shaped but random).
-- `chat`, `tasks`, `activity` and `agentFeed`, as in a session. No `commitRequests`, `merges` or `history`: there is no code to commit or merge.
-- Awareness carries presence exactly as a session: name, tool, color, kind, agent, work.
-
-Relay meta for the room: `{ kind: 'workspace', workspace: <id>, members: { account: access }, blobs: { id: { size, ts, path } }, usedBytes }`.
-Membership is pushed by the API when it changes (`POST /v1/relay/workspaces/<id>/members`, signed with the
-relay secret, same channel as presence) and cached in meta so the relay admits without a round trip.
-
-The relay is the quota authority, as it is for session storage: every upload is checked against the
-workspace's `quota_bytes` (sent with membership) and it reports `usedBytes` and `fileCount` in presence
-events, which `ingest_presence` writes to `workspaces`.
-
-### Storage
-
-Bucket `workspace-files` in the Quilt Files project, private, `file_size_limit` 500 MB. Object path
-`<workspace id>/<object id>`. Bytes are stored as uploaded (the bucket is encrypted at rest by the provider,
-not by Quilt). Signed upload and download links come from the relay's existing `/blobs` endpoints, generalised
-to accept a workspace room and a pass instead of a session secret. Self-hosted relays without Supabase use
-`DiskStore` under `blobs/ws-<id>/`.
-
-Deleting a file keeps its versions for 30 days (a `deletedAt` on the library entry, hidden from listings),
-then the relay's unload-time sweep removes unreferenced objects, as it does for sessions. Archiving a
-workspace keeps everything; deleting a workspace (owner only, confirmed by typing its name) removes the room,
-the objects and the rows.
+Supabase Storage: bucket `workspace-files` in the Quilt Files project, private, `file_size_limit` 500 MB,
+object key `<workspace id>/<file id>/<version>`. The API signs uploads and downloads with the service key.
+Deleted files keep their objects for 30 days (`deleted_at`), then a daily API sweep removes them. Deleting a
+workspace removes its rows and objects.
 
 ## Access
 
-`workspaceAccess(account, workspace)` in the API, in order:
+`workspaceAccess(account, workspace)`:
 
-1. Owner (the personal owner, or an org member with a role that has **Workspaces: Update**) → editor, plus admin rights.
-2. Explicit `workspace_members` row.
-3. Org workspaces: a `workspace_teams` row for a team the account is in.
-4. Org workspaces: `default_access` (`org-editor` / `org-viewer`) for any org member.
+1. Personal workspace: the owner has edit and admin.
+2. Org workspace: an org member whose role has Workspaces: Update has edit and admin; Workspaces: Read alone
+   gives view of the list and the workspace page but not of files.
+3. A `workspace_members` row gives its access.
+4. An org agent with a placement that covers this workspace gets the placement's access.
 5. Otherwise none.
 
-Passes gain a `workspace` claim: `{ room, workspace, workspaceAccess, access, iat }`. A pass for a session
-inside a workspace carries both; `roomAccess` falls back to `workspaceAccess` when the account has no grant,
-invite or ownership of the room itself. Session owners can still tighten a member's access for one session
-with the existing people menu, and can still let outsiders in by invite link.
-
-Org roles get a **Workspaces** row (Create / Read / Update / Delete). Members default to Read of workspaces
-they can reach; Admin has every box.
-
-Agents' folder scopes (`scopes`) apply to library paths as they apply to session paths.
+`roomAccess(account, room)`, which the relay already asks the API on every connection, gains one step after
+owner, invites and grants: if the room's `relay_sessions.workspace_id` is set, use `workspaceAccess`. Workspace
+`edit` maps to the built-in edit access type, `view` to view only; agent placement `scopes` become folder limits.
+Session owners can still tighten someone for one session with the people menu, and still invite outsiders by
+link, exactly as today.
 
 ## API
 
-Under `/v1`, all JSON, all authenticated as a person (device token) or an agent (`qa_` key):
+Under `/v1`, authenticated as a person (device token) or an agent (`qa_` key):
 
 | Method and path | Who | Does |
 |---|---|---|
-| `GET /me/workspaces` | anyone | workspaces the caller can reach, across spaces, with access and counts |
-| `POST /workspaces` `{ name, description?, org? }` | personal: anyone within plan; org: Workspaces: Create | creates the row and asks the relay to create the room |
+| `GET /me/workspaces` | anyone | workspaces the caller can reach, with access, counts and the space they belong to |
+| `POST /workspaces` `{ name, description?, color?, org? }` | personal: anyone; org: Workspaces: Create | creates it. `org` is the org slug; omitted means personal |
 | `GET /workspaces/:id` | reader | the workspace, members, sessions (from `relay_sessions`), usage |
-| `PATCH /workspaces/:id` | admin | name, description, default access, archive |
-| `DELETE /workspaces/:id` | owner | everything gone |
-| `GET/PUT/DELETE /workspaces/:id/members/:account` | admin | add, change access, remove |
-| `PUT/DELETE /workspaces/:id/teams/:teamId` | admin, org only | let a team in |
-| `POST /workspaces/:id/invites` | admin | email invite; claimed on sign-in like session invites |
-| `POST /workspaces/:id/agent-invites` | admin | the existing agent invite flow with `workspaceId` filled |
-| `POST /workspaces/:id/sessions` `{ room }` | editor, session owner | moves an existing session in |
-| `POST /passes` `{ workspace }` or `{ room }` | member | a pass that carries the workspace claim |
+| `PATCH /workspaces/:id` | admin | name, description, color, archive |
+| `DELETE /workspaces/:id` | admin (org) or owner (personal) | rows and objects gone; its sessions become loose |
+| `PUT/DELETE /workspaces/:id/members/:account` | admin | add, change access, remove |
+| `POST /workspaces/:id/invites` | admin, personal only | email invite, claimed on sign-in like a session invite |
+| `POST /workspaces/:id/agent-invites` | admin | the existing agent invite with `workspaceId` filled |
+| `GET /workspaces/:id/files?folder=` | reader with file access | the index |
+| `POST /workspaces/:id/files` `{ path, size, mime, sha256?, note? }` | editor | checks quota and size, inserts or versions the row, returns `{ fileId, version, upload: { method, url, headers } }` |
+| `POST /workspaces/:id/files/:fileId/done` | editor | confirms the upload landed (the API checks the object exists and its size), sets `used_bytes` |
+| `GET /workspaces/:id/files/:fileId/download?version=` | reader | `{ url, expiresAt }` (10 minutes) |
+| `PATCH /workspaces/:id/files/:fileId` `{ path?, note? }` | editor | rename or move |
+| `DELETE /workspaces/:id/files/:fileId` | editor | soft delete |
+| `POST /workspaces/:id/folders` `{ path }` | editor | an empty folder |
+| `POST /workspaces/:id/sessions` `{ room }` | editor who owns the room | moves a loose session in |
+| `PUT /orgs/:slug/agents/:id/placement` | Agents: Update | the agent's placement |
 
-The relay's `start session` path (`runSession` in the app, `quilt_start_session` in the MCPs) takes an optional
-`workspace`. The app asks the API for a pass with the workspace, the relay reads it when the room is created
-and stores `meta.workspace`, and the API links the room on the first presence event.
-
-Files have no API routes of their own: listing is the `library` map, bytes go through the relay's signed
-links. That keeps one source of truth and reuses the session large-file code. The website reads the index
-through the relay's existing read endpoint (`GET /rooms/:room/library`, pass-authenticated, new).
+Starting a session: the app's `start()` and the MCPs' `quilt_start_session` take an optional `workspace`. The
+app tells the API (`POST /me/sessions/:room/workspace`) as soon as the relay has created the room, so the
+room is linked before anyone else connects. When the folder being started is under `~/.quilt/workspaces/<id>/`
+(where agent tools save library files) the workspace is implied.
 
 ## Desktop app
 
-**Home** gets a **Workspaces** section above "Your sessions" in the sidebar: one entry per workspace, with the
-space switcher the website already has (Personal, each org). "New workspace…" is a dialog with name and space.
-Loose sessions (not in any workspace) keep showing under "Your sessions".
+**Home shell.** The sidebar gets a **Workspaces** label with a `+` and a list of the person's workspaces (org
+ones show the org's name in small type). The home page shows **Your workspaces** as cards (name, description,
+counts, member avatars, "N open" when sessions are live) above **Sessions not in a workspace**, which is
+today's session list; its rows gain "Move to…" in their menu.
 
-**Workspace view** (a new top-level `state.view = 'ws:<id>'`), layout: left rail with Sessions, Files,
-Board, Chat, People; main area for the chosen one; the chat panel on the right as in a session.
+**Workspace page** (`state.view = 'ws:<id>'`, rendered by `renderShell`). Header: color square, name, a pill
+for the space (Personal or the org's name), description, Invite and New session. Tabs:
 
-- **Sessions:** running sessions in this workspace with Open, and past ones with Rejoin (from `recent.json`)
-  or Start again (a new room in the same folder). "New session" starts one inside the workspace.
-- **Files:** a folder tree and a list: name, size, who, when, version. Drag-and-drop and a button to
-  upload; Download; Preview for images, video, audio, PDF, CSV, text and Markdown (xlsx shows the sheet names
-  and first rows, no editing); Rename, Move, Delete; version history with "Download this version". Uploads
-  stream straight from the app to storage with the relay's link; progress shows in the list.
-- **Board** and **Chat:** the session components, pointed at the workspace room. @mentions, tasks and
-  the QA flow work the same, so agents are woken the same way.
-- **People:** members and their access, agents and what they are doing, invite people (email) and agents
-  (the invite link flow), let a team in (org workspaces).
+- **Sessions:** running sessions in the workspace with Open, past ones with Rejoin (from `recent.json`) or
+  the owner's name if it's someone else's. New session starts one here.
+- **Files:** folder tree on the left, list in the middle (type badge, name, size, who and when, version,
+  menu), preview on the right (image, video, audio, PDF, CSV, text and Markdown; xlsx shows sheet names and
+  the first rows). Upload button and drag-and-drop; progress shows in the row; Download, Send to chat (when a
+  session in this workspace is open), Rename, Move, Delete, version list with Download this version.
+- **People & agents:** members with an access dropdown and Remove; agents placed by the org show "Added by
+  <org> · every session" and "Managed on heyquilt.com" instead of Remove. Invite opens the session invite
+  dialog pointed at the workspace.
+- **Settings:** name, description, color, usage, Archive, Delete (type the name).
 
-The app keeps the workspace room connected while the app runs (it is cheap: no folder watching), so files,
-chat and the board stay live and the person counts as present.
+**Session view.** Unchanged, plus a breadcrumb in the top bar (`Launch › pricing-page`, the workspace name
+links back) and an "Attach from workspace" button in the chat composer that sends a library file as a chat
+attachment.
 
-A session view inside a workspace shows the workspace's name in its top bar as a link back, and its chat
-composer gets **Attach from workspace**, which sends a library file as a chat attachment.
+**Realtime.** The app holds one Supabase Realtime subscription per workspace it has open (files, members,
+`relay_sessions` rows for that workspace), with a 30-second refetch fallback. The desktop app needs a Supabase
+session for that: the API hands the app a short-lived Supabase access token for the signed-in person
+(`POST /me/realtime-token`), refreshed when it expires.
 
 ## Website
 
-`/dashboard/workspaces` and `/org/<slug>/workspaces` list workspaces with usage; a workspace page shows
-members, sessions, the file list (download only) and settings. Admin actions live here as well as in the app,
-so an org admin without the app can manage access. Invite links `/workspace-invite/<token>` sign the person in
-and add them.
+- Personal: `/dashboard/workspaces` lists workspaces with usage; `/dashboard/workspaces/[id]` shows members,
+  sessions, the file list (download only) and settings.
+- Org: `/org/[slug]/workspaces` and `/org/[slug]/workspaces/[id]`, gated by the Workspaces permission. The
+  **Roles** grid gets the Workspaces row.
+- Org agent page gains **Where <agent> works**: every workspace and session in the org; every session in
+  chosen workspaces; or only where someone adds it by hand. Plus access and folder limits.
+- Invite links `/workspace-invite/<token>` sign the person in and add them.
 
 ## Agents
 
-New MCP tools (both local `quilt mcp` and the hosted MCP), all tool-agnostic:
+MCP tools, in both `quilt mcp` and the hosted MCP:
 
 | Tool | Does |
 |---|---|
-| `quilt_workspaces` | the agent's workspaces, with access, usage, open sessions |
-| `quilt_join_workspace` `{ workspace }` | connects the agent to the workspace room (hosted: alongside its session room) so chat, tasks, inbox and feed tools work there |
-| `quilt_workspace_files` `{ workspace, folder?, glob? }` | the index: path, size, type, version, who, when |
-| `quilt_workspace_read_file` `{ workspace, path, version? }` | text, CSV, Markdown, JSON up to 2 MB inline; anything else returns a 10-minute download link, and local agents get `savedTo` (a path under `~/.quilt/workspaces/<id>/`) |
-| `quilt_workspace_write_file` `{ workspace, path, text? \| fromPath?, note? }` | a new file or version; hosted agents send text or upload through the link the tool returns |
+| `quilt_workspaces` | the agent's workspaces, with access, usage and open sessions |
+| `quilt_workspace_files` `{ workspace, folder?, glob? }` | the index |
+| `quilt_workspace_read_file` `{ workspace, path, version? }` | text, CSV, Markdown and JSON up to 2 MB inline; otherwise a 10-minute download link, and local agents also get `savedTo` under `~/.quilt/workspaces/<id>/` |
+| `quilt_workspace_write_file` `{ workspace, path, text? \| fromPath?, note? }` | a new file or version; hosted agents send text or get an upload link back |
 | `quilt_workspace_delete_file`, `quilt_workspace_move_file` | editors |
 
-Existing tools gain an optional `workspace` argument where a room was implied: `quilt_message`,
-`quilt_read_messages`, `quilt_tasks`, `quilt_add_task`, `quilt_move_task`, `quilt_assign_task`, `quilt_inbox`,
-`quilt_partner_feed`, `quilt_share`. With it, they act in the workspace room. `quilt_start_session` gains
-`workspace`.
+`quilt_start_session` gains `workspace`. `quilt_status` and `quilt_session_info` name the session's workspace.
+The shared agent guide text says: files that are not code live in the workspace library; put outputs there, not
+in chat; leave a version note.
 
-Webhooks: mentions, direct messages and tasks in a workspace room post to the agent's webhook with a
-`workspace` field, the same payload shape as session events.
-
-The relay's hosted-agent map becomes `account → { room?, workspace? }`: one session room and one workspace
-room at a time.
-
-The agent guide text (shared MCP instructions and `quilt setup`'s AGENTS.md section) explains: files that
-are not code live in the workspace library; put outputs there, not in chat; name the version note.
+Placement: when a session starts in a workspace, the API's room-access answer includes the org's placed agents,
+so the relay lets them in as members at once and the existing webhook path wakes them (the "session started"
+event is new; mentions, DMs and tasks are unchanged). Hosted agents keep their one-room-at-a-time model: the
+library tools go through the API, not a room.
 
 ### Example: marketing agent and editor agent
 
-Both are members of the "Launch" workspace. A person posts a task "Cut a 30 s teaser from
-`raw/keynote.mp4`" and assigns the editor. The editor's webhook fires, it reads the task with
-`quilt_inbox` and the file with `quilt_workspace_read_file` (a download link), renders, uploads
-`cuts/teaser-v1.mp4` with `quilt_workspace_write_file`, moves the task to QA with notes, and @mentions the
-marketing agent in workspace chat. The marketing agent wakes, reads the cut, writes `copy/teaser.md`, and
-reports. The person sees both files, versions and the thread in the Files and Chat panes, and the board.
-
-## Pricing hooks
-
-Plan limits are per space: number of workspaces, quota per workspace, per-file size. Defaults above; the API
-fills `quota_bytes` on create from the plan and the relay enforces it. Nothing else in `plans/pricing.md`
-changes.
+Both are members of "Launch". In the `teaser-site` session, a person posts the task "Cut a 30 s teaser from
+`raw/keynote.mp4`" and assigns the editor agent. It wakes, reads the task, fetches the file with
+`quilt_workspace_read_file` (a download link), renders, uploads `cuts/teaser-30s.mp4` with
+`quilt_workspace_write_file` and a note, moves the task to QA and @mentions the marketing agent in the session
+chat. The marketing agent wakes, reads the cut, writes `copy/teaser.md` to the library and reports. The person
+sees both files and versions in the Files tab and the thread in the session.
 
 ## Error handling
 
-- Upload too big, quota full, not a member, viewer trying to write: the relay answers with the same codes and
-  messages the session `/blobs` endpoints use; the app shows them inline in the Files list; the MCP tools
-  return them as text.
-- Relay unreachable: the Files pane shows the last index it saw (the Y.Doc is persisted locally under
-  `~/.quilt/workspaces/<id>/state.bin`) and disables upload.
-- Membership changes while connected: the relay re-reads meta on the API push and disconnects anyone removed
-  with close code `4403` ("You are no longer a member of this workspace").
-- A session whose workspace is deleted becomes loose; nothing in it is lost.
+- Too big, quota full, not a member, viewer writing: the API answers 413 / 403 with a plain message; the Files
+  tab shows it on the row; the tools return it as text.
+- Upload interrupted: the row stays `version n, size 0` until `done`; rows never confirmed are removed after
+  an hour and don't count against quota.
+- Realtime down: the app falls back to refetching every 30 seconds and shows nothing different.
+- Workspace deleted: its sessions become loose; nothing in them is lost. Agents placed through it lose that
+  placement's access to those sessions on their next connection.
 
 ## Testing
 
-- `test/workspaces-api.test.js`: create, members, teams, default access, pass claims, `workspaceAccess`
-  order, plan limits, delete cascade (memory store and Supabase store).
-- `test/workspace-room.test.js`: relay admits by pass only, membership push, quota, upload and download links
-  with both stores, version keep count, deleted-file sweep, close code on removal.
-- `test/workspace-sessions.test.js`: a session started with a workspace, access fallback, moving a loose
-  session in, deletion makes it loose.
-- `test/workspace-mcp.test.js`: each new tool from a local agent and a hosted agent; the `workspace`
-  argument on existing tools; hosted agent holding both rooms; webhook payloads.
-- `test/ui-workspaces.test.js`: the Files view renders the index, previews pick the right component by type,
-  the sidebar lists workspaces by space, the allowlist in `src/ui-server.js` covers every new module.
-- Smoke script `scripts/workspace-storage-smoke.mjs` against the real bucket.
+- `test/workspaces-api.test.js`: create in personal and org spaces, permission row, members, invites, access
+  order, `roomAccess` fallback, placements, delete cascade (memory store and Supabase store).
+- `test/workspace-files.test.js`: upload handshake, quota and size checks, versions kept at 10, soft delete and
+  sweep, rename and move, download links; a smoke script against the real bucket.
+- `test/workspace-mcp.test.js`: each tool from a local and a hosted agent; `quilt_start_session` with
+  `workspace`; placed agent admitted when a session starts; webhook payload.
+- `test/ui-workspaces.test.js`: sidebar list by space, cards, the workspace page tabs, file rows and preview
+  picked by type, the `STATIC` allowlist in `src/ui-server.js` covers every new module.
+- Website tests for the new pages and the Roles grid row.
 
 ## Phases
 
-1. **Primitive.** Tables, API routes, passes, workspace room on the relay, storage bucket, app Workspaces
-   sidebar and view with Sessions and Files, website lists. Sessions start inside workspaces.
-2. **Realtime.** Board, chat, people and presence in the workspace view (mostly reuse).
-3. **Agents.** Membership through invites, the MCP tools, hosted dual room, webhooks, guide text.
-4. **Bridges.** Attach from workspace in session chat; "Save to workspace" on a session chat attachment;
-   later, mounting a library folder into a session on demand.
+1. **Shape.** Tables, API routes for workspaces, members and sessions, the Workspaces sidebar and page with
+   the Sessions and People tabs, the website lists, starting a session inside a workspace, access fallback.
+2. **Files.** The file routes, bucket, Files tab with upload, preview and versions, Attach from workspace,
+   Supabase Realtime.
+3. **Agents.** Agent invites into a workspace, the library tools, placements and the org agent page, guide text.
 
-Each phase ships with a `RELEASES.md` section and its own tests; phase 1 is usable alone.
+Each phase ships with a `RELEASES.md` section and tests. Phase 1 is usable on its own.
 
-## Out of scope
+## Out of scope for now
 
+- Workspace-level chat, board or feed.
 - Editing office files in place, comments on files, sharing a file outside Quilt by link.
-- End-to-end encryption of the library (sessions keep theirs).
-- Full-text search across files.
-- Syncing the whole library to disk.
+- End-to-end encryption of the library.
+- Full-text search across files; syncing the whole library to disk; mounting it into a session.

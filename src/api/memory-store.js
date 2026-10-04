@@ -30,6 +30,8 @@ export function createMemoryStore ({ now = Date.now } = {}) {
   const events = new Map(); const issues = new Map()
   const relaySessions = new Map(); const visits = new Map(); const seenEvents = new Map()
   const accessTypes = new Map(); const grants = new Map(); const sessionInvites = new Map()
+  const workspaces = new Map(); const workspaceMembers = new Map()
+  const wmKey = (workspaceId, account) => `${workspaceId}\n${account}`
   const grantKey = (room, account) => `${room}\n${account}`
   const inviteOpenAt = (i, at) => !i.usedAt && !i.cancelledAt && i.expiresAt > at
   const all = (m, keep) => [...m.values()].filter(keep)
@@ -204,6 +206,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       for (const i of agentInvites.values()) if (i.createdBy === userId) i.createdBy = null
       for (const [id, m] of members) if (m.userId === userId) dropMember(id)
       for (const [id, r] of requests) if (r.userId === userId) requests.delete(id)
+      for (const [k, w] of workspaces) if (w.ownerUserId === userId) { for (const s of relaySessions.values()) if (s.workspaceId === k) s.workspaceId = null; for (const [mk, m] of workspaceMembers) if (m.workspaceId === k) workspaceMembers.delete(mk); workspaces.delete(k) }
     },
 
     // The address a person signs in with, and whether they've confirmed it.
@@ -219,7 +222,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
         applied++
         const s = relaySessions.get(e.room)
         if (e.type === 'start') {
-          if (!s) relaySessions.set(e.room, { room: e.room, name: '', ownerAccount: e.owner ? e.account : null, createdAt: e.at, lastActiveAt: e.at, renamedAt: null })
+          if (!s) relaySessions.set(e.room, { room: e.room, name: '', ownerAccount: e.owner ? e.account : null, createdAt: e.at, lastActiveAt: e.at, renamedAt: null, workspaceId: null })
           else {
             if (!s.ownerAccount && e.owner) s.ownerAccount = e.account
             s.lastActiveAt = Math.max(s.lastActiveAt, e.at)
@@ -232,7 +235,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
           for (const v of visits.values()) if (v.eventStartId === e.start && v.endedAt == null) v.endedAt = Math.max(v.startedAt, e.at)
           if (s) s.lastActiveAt = Math.max(s.lastActiveAt, e.at)
         } else if (e.type === 'name') {
-          if (!s) relaySessions.set(e.room, { room: e.room, name: e.name, ownerAccount: null, createdAt: e.at, lastActiveAt: e.at, renamedAt: null })
+          if (!s) relaySessions.set(e.room, { room: e.room, name: e.name, ownerAccount: null, createdAt: e.at, lastActiveAt: e.at, renamedAt: null, workspaceId: null })
           else if (s.renamedAt == null) s.name = e.name
         }
       }
@@ -401,6 +404,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       for (const [k, r] of roles) if (r.orgId === id) roles.delete(k)
       for (const [k, i] of invites) if (i.orgId === id) invites.delete(k)
       for (const [k, r] of requests) if (r.orgId === id) requests.delete(k)
+      for (const [k, w] of workspaces) if (w.orgId === id) { for (const s of relaySessions.values()) if (s.workspaceId === k) s.workspaceId = null; for (const [mk, m] of workspaceMembers) if (m.workspaceId === k) workspaceMembers.delete(mk); workspaces.delete(k) }
     },
     // Ownership moves in one step: the old owner becomes an Admin. Mirrors
     // transfer_org's own errcodes (QO003/QO002/QO001) for the same checks.
@@ -607,6 +611,52 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       for (const [key, i] of issues) if (i.lastSeenAt < before) { issues.delete(key); n++ }
       return n
     },
+    // Workspaces (see 20261004000000_workspaces.sql).
+    async createWorkspace ({ ownerUserId = null, orgId = null, name, description = '', color = '', createdBy }) {
+      if ((ownerUserId == null) === (orgId == null)) throw checkViolation('a workspace belongs to a person or an org')
+      const row = { id: uuid(), ownerUserId, orgId, name, description, color, createdBy, createdAt: now(), archivedAt: null }
+      workspaces.set(row.id, row); return copy(row)
+    },
+    async workspaceById (id) { return copy(workspaces.get(id)) },
+    async listWorkspacesOwnedBy (userId) { return all(workspaces, (w) => w.ownerUserId === userId).sort((a, b) => a.name.localeCompare(b.name)).map(copy) },
+    async listWorkspacesOfOrg (orgId) { return all(workspaces, (w) => w.orgId === orgId).sort((a, b) => a.name.localeCompare(b.name)).map(copy) },
+    async listWorkspacesForMember (account) {
+      return all(workspaceMembers, (m) => m.account === account)
+        .map((m) => ({ ...copy(workspaces.get(m.workspaceId)), memberAccess: m.access }))
+        .filter((w) => w.id)
+        .sort((a, b) => a.name.localeCompare(b.name))
+    },
+    async updateWorkspace (id, patch) {
+      const w = workspaces.get(id)
+      if (!w) return null
+      for (const k of ['name', 'description', 'color', 'archivedAt']) if (patch[k] !== undefined) w[k] = patch[k]
+      return copy(w)
+    },
+    async deleteWorkspace (id) {
+      for (const s of relaySessions.values()) if (s.workspaceId === id) s.workspaceId = null
+      for (const [k, m] of workspaceMembers) if (m.workspaceId === id) workspaceMembers.delete(k)
+      workspaces.delete(id)
+    },
+    async workspaceMember (workspaceId, account) { return copy(workspaceMembers.get(wmKey(workspaceId, account))) },
+    async listWorkspaceMembers (workspaceId) { return all(workspaceMembers, (m) => m.workspaceId === workspaceId).sort((a, b) => a.addedAt - b.addedAt).map(copy) },
+    async putWorkspaceMember ({ workspaceId, account, access, addedBy }) {
+      if (!workspaces.has(workspaceId)) throw fkViolation('workspace', 'does not exist')
+      const k = wmKey(workspaceId, account)
+      const old = workspaceMembers.get(k)
+      const row = { workspaceId, account, access, addedBy, addedAt: old ? old.addedAt : now() }
+      workspaceMembers.set(k, row); return copy(row)
+    },
+    async removeWorkspaceMember (workspaceId, account) { return workspaceMembers.delete(wmKey(workspaceId, account)) },
+    // Links a room to a workspace (or none). The relay may not have reported the room yet: then the API makes the row.
+    async setSessionWorkspace (room, workspaceId, { ownerAccount, at }) {
+      if (workspaceId && !workspaces.has(workspaceId)) throw fkViolation('workspace', 'does not exist')
+      let s = relaySessions.get(room)
+      if (!s) { s = { room, name: '', ownerAccount, createdAt: at, lastActiveAt: at, renamedAt: null, workspaceId: null }; relaySessions.set(room, s) }
+      s.workspaceId = workspaceId || null
+      return copy(s)
+    },
+    async listWorkspaceSessions (workspaceId) { return all(relaySessions, (s) => s.workspaceId === workspaceId).sort((a, b) => b.lastActiveAt - a.lastActiveAt).map(copy) },
+
     // Test-only views (production reads the tables in the Supabase dashboard).
     listEvents () { return [...events.values()].map(copy) },
     listIssues () { return [...issues.values()].map(copy) },

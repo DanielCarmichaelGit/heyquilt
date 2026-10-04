@@ -20,10 +20,12 @@ const INVITE = 'id, org_id, email, role_id, token_hash, invited_by, expires_at, 
 const REQUEST = 'id, org_id, user_id, email, status, decided_by, decided_at, created_at'
 const AGENT_INVITE = 'id, token_hash, owner_user_id, org_id, created_by, role_id, teams, expires_at, used_at, used_by_agent_id, cancelled_at, created_at'
 const AGENT_KEY = 'id, agent_id, family_id, access_hash, refresh_hash, access_expires_at, refresh_expires_at, refreshed_at, revoked_at, created_at'
-const RELAY_SESSION = 'room, name, owner_account, created_at, last_active_at, renamed_at'
+const RELAY_SESSION = 'room, name, owner_account, created_at, last_active_at, renamed_at, workspace_id'
 const ACCESS_TYPE = 'id, owner_account, name, files, folders, talk, created_at, updated_at'
 const GRANT = 'room, account, type_id, tighten, granted_by, created_at, updated_at'
 const SESSION_INVITE = 'id, room, email, account, account_name, type_id, invited_by, created_at, expires_at, used_at, used_by, cancelled_at'
+const WORKSPACE = 'id, owner_user_id, org_id, name, description, color, created_by, created_at, archived_at'
+const WORKSPACE_MEMBER = 'workspace_id, account, access, added_by, added_at'
 // PostgREST hands back at most 1000 rows per request: longer lists are read a page at a time.
 const PAGE = 1000
 
@@ -184,6 +186,36 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     async renameSession (room, name, at) {
       return rowFrom(await one(db.from('relay_sessions').update({ name, renamed_at: ts(at) }).eq('room', room).select(RELAY_SESSION).maybeSingle()))
     },
+
+    // Workspaces (see 20261004000000_workspaces.sql).
+    async createWorkspace ({ ownerUserId = null, orgId = null, name, description = '', color = '', createdBy }) {
+      return rowFrom(await one(db.from('workspaces').insert({ owner_user_id: ownerUserId, org_id: orgId, name, description, color, created_by: createdBy }).select(WORKSPACE).single()))
+    },
+    async workspaceById (id) { return rowFrom(await one(db.from('workspaces').select(WORKSPACE).eq('id', id).maybeSingle())) },
+    async listWorkspacesOwnedBy (userId) { return (await one(db.from('workspaces').select(WORKSPACE).eq('owner_user_id', userId).order('name'))).map(rowFrom) },
+    async listWorkspacesOfOrg (orgId) { return (await one(db.from('workspaces').select(WORKSPACE).eq('org_id', orgId).order('name'))).map(rowFrom) },
+    async listWorkspacesForMember (account) {
+      const rows = await one(db.from('workspace_members').select(`access, workspaces (${WORKSPACE})`).eq('account', account))
+      return rows.filter((r) => r.workspaces).map((r) => ({ ...rowFrom(r.workspaces), memberAccess: r.access })).sort((a, b) => a.name.localeCompare(b.name))
+    },
+    async updateWorkspace (id, { name, description, color, archivedAt }) {
+      return rowFrom(await one(db.from('workspaces').update(toSnake({ name, description, color, archivedAt: ts(archivedAt) })).eq('id', id).select(WORKSPACE).maybeSingle()))
+    },
+    async deleteWorkspace (id) { await one(db.rpc('delete_workspace', { p_id: id })) },
+    async workspaceMember (workspaceId, account) { return rowFrom(await one(db.from('workspace_members').select(WORKSPACE_MEMBER).eq('workspace_id', workspaceId).eq('account', account).maybeSingle())) },
+    async listWorkspaceMembers (workspaceId) { return (await one(db.from('workspace_members').select(WORKSPACE_MEMBER).eq('workspace_id', workspaceId).order('added_at'))).map(rowFrom) },
+    async putWorkspaceMember ({ workspaceId, account, access, addedBy }) {
+      // Keep added_at on a change of access: upsert only touches access and added_by.
+      return rowFrom(await one(db.from('workspace_members').upsert({ workspace_id: workspaceId, account, access, added_by: addedBy }, { onConflict: 'workspace_id,account' }).select(WORKSPACE_MEMBER).single()))
+    },
+    async removeWorkspaceMember (workspaceId, account) {
+      const rows = await one(db.from('workspace_members').delete().eq('workspace_id', workspaceId).eq('account', account).select('account'))
+      return rows.length > 0
+    },
+    async setSessionWorkspace (room, workspaceId, { ownerAccount, at }) {
+      return rowFrom(await one(db.rpc('set_session_workspace', { p_room: room, p_workspace: workspaceId || null, p_owner: ownerAccount, p_at: ts(at) })))
+    },
+    async listWorkspaceSessions (workspaceId) { return (await one(db.from('relay_sessions').select(RELAY_SESSION).eq('workspace_id', workspaceId).order('last_active_at', { ascending: false }))).map(rowFrom) },
     async pruneActivity ({ before, seenBefore }) {
       await one(db.rpc('prune_activity', { p_before: ts(before), p_seen_before: ts(seenBefore) }))
     },

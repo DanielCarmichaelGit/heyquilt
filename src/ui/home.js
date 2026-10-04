@@ -5,6 +5,7 @@ import { go, pickFolder, signedOutNow, agentInviteHtml } from './app.js'
 import { agentPaste } from './invite.js'
 import { quiltMark } from './mark.js'
 import { updateControl } from './releases.js'
+import { workspacesHtml, bindWorkspaces, workspacePageHtml, bindWorkspacePage, loadWorkspaces, openWorkspace } from './workspaces.js'
 
 export const tildify = (p) => state.defaults.home && String(p).startsWith(state.defaults.home) ? `~${String(p).slice(state.defaults.home.length)}` : p
 const hostOf = (url) => { try { return new URL(String(url).replace(/^ws/, 'http')).host } catch { return url } }
@@ -22,13 +23,16 @@ export function renderShell (view) {
   $('#app').innerHTML = `
     <div class="app-shell">
       ${sidebarHtml(view)}
-      <main class="page" id="page">${view === 'settings' ? settingsHtml() : homeHtml()}</main>
+      <main class="page" id="page">${view === 'settings' ? settingsHtml() : view.startsWith('ws:') ? workspacePageHtml() : homeHtml()}</main>
     </div>`
   if (page && view === state.shellView) $('#page').scrollTop = scroll
   state.shellView = view
   bindSidebar()
   if (view === 'settings') bindSettings($('#page'), () => renderShell('settings'))
-  else bindHome()
+  else if (view.startsWith('ws:')) {
+    bindWorkspacePage($('#page'), { go, rerender: () => renderShell(view), newSessionDialog, inviteDialog: workspaceInviteDialog })
+    bindSessionActions($('#page'))
+  } else bindHome()
 }
 
 function sidebarHtml (view) {
@@ -162,10 +166,10 @@ function homeHtml () {
   return `
   <header class="page-head">
     <h1>${greeting()}, ${esc(firstName())}</h1>
-    <p>${rows.some((r) => r.live) ? 'Pick up a session, or start something new from the Sessions menu.' : 'Start a session on one of your folders, or join one a partner shared with you.'}</p>
+    <p>${state.workspacesOn ? 'Your workspaces. Open one, or add a new one.' : rows.some((r) => r.live) ? 'Pick up a session, or start something new from the Sessions menu.' : 'Start a session on one of your folders, or join one a partner shared with you.'}</p>
   </header>
 
-  ${rows.length ? `
+  ${state.workspacesOn ? workspacesHtml() : rows.length ? `
   <section class="sessions">
     <div class="sec-head"><h2>Your sessions</h2><span class="count">${rows.length}</span>
       <span class="spacer"></span>
@@ -191,6 +195,7 @@ function bindHome () {
   const page = $('#page')
   bindSessionActions(page)
   page.querySelectorAll('.session-list [data-go]').forEach((b) => { b.onclick = () => go(b.dataset.go) })
+  if (state.workspacesOn) bindWorkspaces(page, { go, rerender: () => renderShell('home') })
   page.querySelectorAll('[data-forget]').forEach((b) => {
     b.onclick = async () => {
       try {
@@ -216,9 +221,9 @@ function dialog (html) {
   return { back, form, close }
 }
 
-function newSessionDialog () {
+export function newSessionDialog (workspace = '') {
   const { form, close } = dialog(`
-    <h3>New session</h3>
+    <h3>New session${workspace ? ` in ${esc(state.workspaces?.find((w) => w.id === workspace)?.name || 'this workspace')}` : ''}</h3>
     <p class="lead">Pick what you want to work on together. You'll get invites to send once it starts.</p>
     <div class="segmented src-switch" role="tablist" aria-label="Start from">
       <button type="button" role="tab" data-src="folder" class="on" aria-selected="true">${I.folder}<span>Folder</span></button>
@@ -255,14 +260,63 @@ function newSessionDialog () {
     if (src === 'github') {
       let body
       try { body = gh.value() } catch (err) { form.querySelector('#n-error').textContent = err.message; return }
-      if (await submit(form, '#n-error', { mode: 'github', ...body }, 'Cloning…')) close()
+      if (await submit(form, '#n-error', { mode: 'github', ...body, workspace }, 'Cloning…')) close()
       return
     }
     const dir = form.querySelector('#n-dir').value
     state.lastCreateDir = dir
-    if (await submit(form, '#n-error', { mode: 'create', dir })) close()
+    if (await submit(form, '#n-error', { mode: 'create', dir, workspace })) close()
   }
   form.querySelector('#n-dir').focus()
+}
+
+/**
+ * Add someone to a workspace: people you've worked with and your own agents, each with an
+ * Add button, at the access picked above. Email invites to a workspace come later.
+ */
+function workspaceInviteDialog (id) {
+  const { back, form, close } = dialog(`
+    <h3>Add to ${esc(state.workspace?.workspace?.name || 'this workspace')}</h3>
+    <p class="lead">They get into every session in this workspace once they sign in.</p>
+    <div class="field"><label for="wi-access">Access</label>
+      <select class="input" id="wi-access"><option value="edit">Can edit</option><option value="view">View only</option></select></div>
+    <div class="label inv-sub">People you've worked with, and your agents</div>
+    <div class="inv-list" id="wi-people"><p class="hint">Loading…</p></div>
+    <p class="error" id="wi-error"></p>
+    <div class="actions"><button type="button" class="btn primary" data-cancel>Done</button></div>`)
+  form.onsubmit = (e) => e.preventDefault()
+  const already = new Set([state.workspace?.owner?.account, ...(state.workspace?.members || []).map((m) => m.account)].filter(Boolean))
+  const list = $('#wi-people', back)
+  Promise.all([
+    api('GET', '/api/collaborators').then((r) => r.collaborators).catch(() => []),
+    api('GET', '/api/agents').then((r) => r.agents.map((a) => ({ account: `agent:${a.id}`, name: a.name, kind: 'agent' }))).catch(() => [])
+  ]).then(([people, agents]) => {
+    const seen = new Set()
+    const rows = [...people, ...agents].filter((c) => c.account && !seen.has(c.account) && seen.add(c.account))
+    list.innerHTML = rows.length
+      ? rows.map((c) => `<div class="inv-row">${avatar(c.name, null)}<span class="grow">${esc(c.name)}${c.kind === 'agent' ? `<span class="tag bot">${I.bot}agent</span>` : ''}</span>${already.has(c.account)
+        ? '<span class="hint">Already in</span>'
+        : `<button class="btn sm" type="button" data-add-account="${esc(c.account)}" data-name="${esc(c.name)}">Add</button>`}</div>`).join('')
+      : "<p class=\"hint\">Nobody yet. People and agents you've been in a session with show up here.</p>"
+  })
+  list.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-add-account]')
+    if (!b) return
+    b.disabled = true
+    $('#wi-error', back).textContent = ''
+    try {
+      await api('POST', `/api/workspaces/${encodeURIComponent(id)}/members`, { account: b.dataset.addAccount, access: $('#wi-access', back).value })
+      b.outerHTML = '<span class="hint">Added</span>'
+      toast(`Added ${b.dataset.name}`)
+      await openWorkspace(id)
+      await loadWorkspaces()
+      if (state.view === `ws:${id}`) renderShell(state.view)
+    } catch (err) {
+      $('#wi-error', back).textContent = err.message
+      b.disabled = false
+    }
+  })
+  return close
 }
 
 /** The GitHub side of the New session dialog: repo, branch, and where to clone it. */

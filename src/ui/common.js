@@ -73,7 +73,11 @@ export const state = {
   trees: new Map(), // session id -> { files, claims }
   files: new Map(), // `${id}\n${path}` -> file contents from /file
   ws: new Map(), // session id -> workspace layout (mode, tabs, expanded folders)
-  accessTypes: null // the account's access types (built-ins first), once loaded; null if the API can't be reached
+  accessTypes: null, // the account's access types (built-ins first), once loaded; null if the API can't be reached
+  workspaces: null, // [] once /api/workspaces answered; null before
+  workspacesOn: false, // the accounts API has workspaces on
+  workspace: null, // the open workspace page's data
+  spaceFilter: 'all' // the home grid's Personal / org switch
 }
 
 // -------------------------------------------------------------- helpers --
@@ -106,6 +110,7 @@ export function toast (msg) {
  * An in-app replacement for confirm()/prompt(): browser dialogs are blocked in
  * some embedded views (a preview pane answers "no" without showing anything).
  * Resolves true/false, or with `input` the trimmed text (null when cancelled).
+ * `input.select` ([{ value, label }]) shows a dropdown instead and resolves with the chosen value.
  */
 export function ask ({ title, message = '', ok = 'OK', danger = false, input = null }) {
   return new Promise((resolve) => {
@@ -114,7 +119,9 @@ export function ask ({ title, message = '', ok = 'OK', danger = false, input = n
     back.innerHTML = `<form class="card modal" role="dialog" aria-modal="true" aria-labelledby="ask-title" autocomplete="off">
       <h3 id="ask-title">${esc(title)}</h3>
       ${message ? `<p class="lead">${esc(message)}</p>` : ''}
-      ${input ? `<div class="field"><label for="ask-input">${esc(input.label || '')}</label><input class="input" id="ask-input" placeholder="${esc(input.placeholder || '')}" value="${esc(input.value || '')}"></div>` : ''}
+      ${input ? `<div class="field"><label for="ask-input">${esc(input.label || '')}</label>${Array.isArray(input.select)
+        ? `<select class="input" id="ask-input">${input.select.map((o) => `<option value="${esc(o.value)}" ${o.value === input.value ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>`
+        : `<input class="input" id="ask-input" placeholder="${esc(input.placeholder || '')}" value="${esc(input.value || '')}">`}</div>` : ''}
       <div class="actions"><button type="button" class="btn" data-no>Cancel</button><button type="submit" class="btn ${danger ? 'danger' : 'primary'}">${esc(ok)}</button></div>
     </form>`
     document.body.appendChild(back)

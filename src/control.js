@@ -28,6 +28,11 @@ export async function startControl (session, extras = {}) {
       const c = shared ? session.claimFor(rel) : null
       return { path: rel, shared, claim: c ? { by: c.by, pattern: c.pattern, note: c.note } : null, mine: !!c && c.by === session.name, me: session.name, focus: session.focus || '' }
     },
+    // Before an agent changes files (any tool): is each one ours to edit (free ones are claimed for
+    // us), and what did people ask about them? See Session.prepareEdit and duties.js.
+    'POST /before-edit': (b) => session.prepareEdit(Array.isArray(b.paths) ? b.paths.slice(0, 100) : []),
+    // An agent finished a piece of work: let go of the claims that followed its edits.
+    'POST /finish': () => session.finishEditing(),
     'POST /agent': (b) => { session.addAgent(b.client); return { ok: true } },
     'POST /feed': (b) => ({ entries: session.agentFeedFor(b.who, { limit: Math.min(Number(b.limit) || 40, 300) }) }),
     // The chronology: { path, by, since, task, limit } (see Session.historyQuery).

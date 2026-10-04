@@ -26,6 +26,9 @@ ${TASK_WORKFLOW_MD}
 - See what a partner's AI is doing with \`quilt_partner_feed\`, and where people
   are working with \`quilt_list_files\` (recent edits and claims).
 - Announce what you're working on (\`quilt_set_focus\` / \`quilt focus "..."\`).
+- Before you change files, call \`quilt_before_edit\` with their paths. It tells you
+  whether each one is yours to edit (claiming free ones for you) and shows what
+  people asked about those files. Don't edit a file it refuses.
 - Claims follow edits, whatever tool you are: the moment you change a file nobody
   holds, Quilt claims it for you, and lets go when you finish (your AI goes idle, or
   the file has been quiet for a few minutes). Claim ahead only for a larger change
@@ -36,7 +39,9 @@ ${TASK_WORKFLOW_MD}
   message (\`quilt_message\` with "to" / \`quilt say @name "..."\`) saying what you
   wanted to change and asking for help, then carry on with other work.
 - Answer collaborators' messages (\`quilt_read_messages\`): help with their change,
-  hand the file over, or say when you'll be done.
+  hand the file over, or say when you'll be done. New ones are shown at the top of
+  every quilt answer. When you finish, call \`quilt_set_work\` with "done": it is
+  refused until everyone who wrote to you has an answer.
 - \`quilt_inbox\` lists what is waiting for you: mentions of you (@yourname), direct
   messages and tasks handed to you. Read it when you start and act on each one.
 - Before moving a ticket to Done, run the checks under "Verifying a change" (in

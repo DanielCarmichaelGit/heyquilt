@@ -163,3 +163,20 @@ test('files Quilt does not sync are never claimed', async (t) => {
   assert.equal(B.claims.size, 0)
   assert.equal(A.autoClaims.size, 0)
 })
+
+test('an edit check claims for an agent no chat reader can see, and its "working" lapses with its files', async (t) => {
+  const { A, B } = await pair(t, { 'src/app.js': 'a\n' }, { autoClaimQuietMs: 300 })
+  A.setAgentState(null) // a tool Quilt can't read: only the edit check says it is working
+  const r = await A.prepareEdit(['src/app.js', '.quilt/notes.md'])
+  assert.deepEqual(r.files.map((f) => [f.path, f.ok, !!f.claimed]), [['src/app.js', true, true], ['.quilt/notes.md', undefined, false]])
+  assert.equal((await waitFor(() => B.claimFor('src/app.js'))).by, 'alice')
+  assert.ok(B.commitStatus().busy.some((b) => b.name === 'alice'), 'the host waits for alice')
+  // Never said done: once the file is quiet, the claim and the "working" both end.
+  await waitFor(() => !B.claimFor('src/app.js'))
+  await waitFor(() => !B.commitStatus().busy.some((b) => b.name === 'alice'))
+  // Someone else's file is refused, with who holds it.
+  await B.claim('src/app.js', 'mine now')
+  await waitFor(() => A.claimFor('src/app.js'))
+  const held = await A.prepareEdit(['src/app.js'])
+  assert.deepEqual(held.files[0].claim, { by: 'bob', pattern: 'src/app.js', note: 'mine now' })
+})

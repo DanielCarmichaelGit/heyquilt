@@ -140,9 +140,12 @@ This registers the `quilt` MCP server in `.mcp.json` (Claude Code) and
 claimed files; re-read files before editing"). Restart or reload your tool to
 pick up the MCP server.
 
+Quilt's rules don't depend on any one tool: every MCP agent checks a file with
+`quilt_before_edit` before changing it, finds new messages at the top of each
+Quilt answer, and can't mark its work done while someone waits for a reply.
 Claude Code also gets Quilt's hooks (in your own `.claude/settings.local.json`,
-written whenever a session starts for the folder): every file is claimed for you
-the moment Claude edits it, and those claims are released when Claude finishes.
+written whenever a session starts for the folder), which apply the same rules
+automatically, so Claude doesn't have to remember to call the tools.
 See [Claims](#claims).
 
 ## Commands
@@ -183,6 +186,8 @@ See [Claims](#claims).
 | `quilt_history` | The chronology: who changed which file, when, the diff, and for which task; filter by path, person, task or time |
 | `quilt_list_files` | Shared files with recent editors and claims |
 | `quilt_set_focus` | Announce the current task |
+| `quilt_before_edit` | Before changing files: whether each one is yours to edit (free ones are claimed for you; held ones are refused, with who to ask), and what people asked about them that you haven't answered |
+| `quilt_set_work` | Say you're working or done; "done" releases the files claimed for you, and is refused until you've answered everyone who wrote to you |
 | `quilt_claim` / `quilt_release` | Claim or release files by hand (Quilt claims files for you as your AI edits them) |
 | `quilt_message` | Message everyone, or one person with `to` |
 | `quilt_read_messages` | Read unread (or recent) messages, including received files |
@@ -226,11 +231,22 @@ follow edits, so nobody has to remember:
 - **A partner's edit to your file is undone** and put back the way you have it. Their
   AI hears about it with its next Quilt tool call: who holds the file and why, and to
   send you a direct message saying what it wanted to change rather than retry.
-- **Claude Code gets the nicer version** through hooks in your own
-  `.claude/settings.local.json`: the edit is refused before it happens, the holder's
-  Claude sees the message after its next edit, and if it tries to finish with an
-  unanswered one it is asked to reply first. Hook claims end when Claude finishes
-  its turn; a crashed Claude's leftovers are released by the next session.
+- **Every MCP agent is checked before it edits, too.** `quilt_before_edit` refuses
+  a file someone else holds, claims a free one, and lists what people asked about
+  those files that the agent hasn't answered (a message naming the file). Every
+  Quilt answer starts with the direct messages, mentions and tasks that arrived
+  since the last one. `quilt_set_work` "done" and moving a task to Done are refused
+  while someone who wrote to the agent is still waiting for a reply. An agent that
+  never says it's done stops counting as working once its files have been quiet
+  for five minutes, so commits aren't held up.
+- **Claude Code gets the same rules automatically** through hooks in your own
+  `.claude/settings.local.json`: the edit is refused before it happens, requests
+  about the file are shown before the edit, the holder's Claude sees new messages
+  after its next edit, and if it tries to finish with an unanswered one it is asked
+  to reply first. Hook claims end when Claude finishes its turn; a crashed Claude's
+  leftovers are released by the next session.
+- **Hosted agents** (on `api.heyquilt.com/mcp`) are told what people asked about a
+  file each time they write it, until they answer.
 - **Hosted agents** (on `api.heyquilt.com/mcp`) are claimed for when they write a
   file and let go after ten quiet minutes; a write to someone else's file is refused
   with the same advice.

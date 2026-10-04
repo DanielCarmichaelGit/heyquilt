@@ -23,6 +23,7 @@ import { migrateDir } from './legacy.js'
 import { readTasks, addTask as putTask, updateTask as patchTask, deleteTask as dropTask, planAutoTask } from './tasks.js'
 import { HistoryLog, queryHistory, parseSince, currentTask } from './history.js'
 import { Inbox } from './inbox.js'
+import { requestsAbout } from './duties.js'
 import { makeSubscription, deliverEvents } from './webhooks.js'
 import { pickChecklist } from './agent-task-workflow.js'
 import { changeRefusal, TALK_REFUSED } from './session-access.js'
@@ -1551,6 +1552,7 @@ export class Session extends EventEmitter {
   /** An agent says it's working or done (people's AI status comes from their chat reader). */
   setWork (state, note = '') {
     this.work = state === 'working' || state === 'done' ? { state, note: String(note).slice(0, 200), ts: Date.now() } : null
+    this.workFromEdits = false // said on purpose now (prepareEdit sets it again when it is the one saying so)
     if (this.conn) this.conn.awareness.setLocalStateField('work', this.work)
     this.scheduleStatusWrite()
     return this.work
@@ -1957,7 +1959,57 @@ export class Session extends EventEmitter {
   releaseQuietAutoClaims () {
     if (!this.ready || this.stopped) return
     const cutoff = Date.now() - this.autoClaimQuietMs
-    this.releaseAutoClaims((rel, ts) => ts <= cutoff).catch(() => {})
+    this.releaseAutoClaims((rel, ts) => ts <= cutoff).then(() => {
+      // "Working" that only an edit check said lapses with its files, so a commit isn't held up by an agent that never said done.
+      if (this.workFromEdits && !this.autoClaims.size && this.work?.state === 'working') this.finishEditing().catch(() => {})
+    }).catch(() => {})
+  }
+
+  /**
+   * The check every agent makes before it changes files, whatever tool it runs in (the local
+   * MCP's quilt_before_edit, or a Claude Code hook): for each path, whether it is ours to edit
+   * (a file nobody holds is claimed for us, and let go like any claim that follows edits), and
+   * the messages asking about those files that we haven't answered. When no chat reader can see
+   * our AI work, it is marked working, so the host doesn't commit under it.
+   */
+  async prepareEdit (paths) {
+    const files = []
+    for (const p of [...new Set((paths || []).map((x) => String(x || '').replace(/\\/g, '/').replace(/^\.\//, '')))]) {
+      if (!p) continue
+      if (!this.syncable(p)) { files.push({ path: p, shared: false }); continue }
+      const held = (c) => ({ by: c.by, pattern: c.pattern, note: c.note || '' })
+      let c = this.claimFor(p)
+      if (c && c.by === this.name) {
+        if (this.autoClaims.has(p)) this.autoClaims.set(p, Date.now())
+        files.push({ path: p, shared: true, ok: true, mine: true })
+        continue
+      }
+      if (c) { files.push({ path: p, shared: true, ok: false, claim: held(c) }); continue }
+      try {
+        if (!this.conn) throw new Error('not connected')
+        await this.conn.claimRequest({ op: 'claim', pattern: p, note: this.focus ? `editing: ${this.focus}` : 'editing' })
+        this.autoClaims.set(p, Date.now())
+        files.push({ path: p, shared: true, ok: true, claimed: true })
+      } catch (err) {
+        c = this.claimFor(p)
+        files.push(c && c.by !== this.name ? { path: p, shared: true, ok: false, claim: held(c) } : { path: p, shared: true, ok: false, error: err.message })
+      }
+    }
+    const shared = files.filter((f) => f.shared).map((f) => f.path)
+    const requests = requestsAbout(shared, { messages: this.chat.toArray().filter((m) => this.canSee(m)), me: this.name })
+    if (files.some((f) => f.claimed) && !this.agentState?.tool && this.work?.state !== 'working') {
+      this.setWork('working', this.focus || '')
+      this.workFromEdits = true
+    }
+    return { me: this.name, files, requests }
+  }
+
+  /** Done with a piece of work: lets go of the claims that followed our edits and says we're done. */
+  async finishEditing () {
+    const released = await this.releaseAutoClaims()
+    if (this.work?.state === 'working') this.setWork('done')
+    this.workFromEdits = false
+    return { released }
   }
 
   /** Releases one of our claims, or all of them with '*'. Resolves to the number released. */

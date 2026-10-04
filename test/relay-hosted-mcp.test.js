@@ -166,6 +166,15 @@ test('the agent reads what the owner has, and what it writes lands on the owner\
   assert.match(out(await call('quilt_release', { pattern: 'hello.md' })), /Released hello\.md/)
   await waitFor(() => !carl.claimFor('hello.md'))
 
+  // A write to a file someone asked about shows what they asked, until the agent answers them.
+  carl.say('Grok-Bot, keep brief.md short please', { to: 'Grok-Bot' })
+  const asked = await waitFor(async () => { const t = out(await call('quilt_write_file', { path: 'brief.md', content: 'brief\n' })); return /keep brief\.md short/.test(t) && t })
+  assert.match(asked, /Carl \(to you\) about brief\.md: "Grok-Bot, keep brief\.md short please"/)
+  await call('quilt_message', { to: 'Carl', text: 'Will do.' })
+  assert.doesNotMatch(out(await call('quilt_write_file', { path: 'brief.md', content: 'hi\n' })), /keep brief\.md short/)
+  await call('quilt_release', { pattern: 'brief.md' })
+  await waitFor(() => !carl.claimFor('brief.md'))
+
   fs.writeFileSync(path.join(carlDir, 'notes.txt'), 'owner notes')
   await waitFor(async () => out(await call('quilt_read_file', { path: 'notes.txt' })) === 'owner notes')
   const list = out(await call('quilt_list_files'))

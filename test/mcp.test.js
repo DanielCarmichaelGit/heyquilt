@@ -53,7 +53,7 @@ after(async () => {
 
 test('exposes the join and workspace tools', async () => {
   const names = (await client.listTools()).tools.map((t) => t.name)
-  for (const n of ['quilt_join_session', 'quilt_start_session', 'quilt_leave_session', 'quilt_session_info', 'quilt_partner_feed', 'quilt_list_files', 'quilt_status', 'quilt_claim', 'quilt_inbox']) {
+  for (const n of ['quilt_join_session', 'quilt_start_session', 'quilt_leave_session', 'quilt_session_info', 'quilt_partner_feed', 'quilt_list_files', 'quilt_status', 'quilt_claim', 'quilt_inbox', 'quilt_before_edit', 'quilt_set_work']) {
     assert.ok(names.includes(n), n)
   }
 })
@@ -227,6 +227,33 @@ test('merges are listed and settled through the MCP tools', async () => {
   const rec2 = openMerge(human.doc, human.merges, { path: 'src/gone.js', by: 'dana', others: ['helper'], kind: 'conflict', ours: null, oursDeleted: true, base: 'console.log("hi")\n', theirsHash: 'y', binary: false }, null)
   const listed2 = await waitFor(async () => { const t = text(await call('quilt_merges')); return t.includes(rec2.id) ? t : null })
   assert.match(listed2, /deleted it offline/)
+})
+
+test('without hooks, the MCP holds an agent to the rules: check before editing, news in every answer, answer before finishing', async () => {
+  human.say('helper, please do not touch src/app.js, I am mid-refactor', { to: 'helper' })
+  await waitFor(async () => text(await call('quilt_inbox', { all: true })).includes('mid-refactor'))
+  // Before editing: free files are claimed for the agent, held ones refused, and what was asked about them is shown.
+  const check = text(await call('quilt_before_edit', { paths: ['src/app.js', 'src/auth/login.js', '/etc/passwd'] }))
+  assert.match(check, /- src\/app\.js: ✅ yours to edit \(claimed for you until you finish\)/)
+  assert.match(check, /- src\/auth\/login\.js: ⛔ src\/auth\/login\.js is claimed by dana \(refactoring\), as part of their claim on src\/auth.*Do not retry.*quilt_message \(to: "dana"\)/)
+  assert.match(check, /- \/etc\/passwd: not inside the project folder/)
+  assert.match(check, /dana \(to you\) about src\/app\.js: "helper, please do not touch src\/app\.js, I am mid-refactor"/)
+  assert.equal((await waitFor(() => human.claimFor('src/app.js'))).by, 'helper')
+  // Finishing is refused while dana waits for an answer; the claim stays.
+  const early = text(await call('quilt_set_work', { state: 'done' }))
+  assert.match(early, /^Not yet: these people are still waiting for an answer from you:\n/)
+  assert.match(early, /- dana sent you a direct message: "helper, please do not touch src\/app\.js/)
+  assert.equal(human.claimFor('src/app.js').by, 'helper')
+  // What arrives while the agent works is put in front of its next answer, once.
+  human.say('also @helper, ping me when you are done')
+  const news = await waitFor(async () => { const t = text(await call('quilt_status')); return t.includes('📬') && t })
+  assert.match(news, /^📬 Waiting for you:\n- dana mentioned you in chat: also @helper, ping me when you are done/)
+  assert.doesNotMatch(text(await call('quilt_status')), /📬/)
+  // Answering clears both the request about the file and the finish gate; finishing lets go of the file.
+  await call('quilt_message', { to: 'dana', text: 'Understood, leaving src/app.js to you. Done now.' })
+  assert.doesNotMatch(text(await call('quilt_before_edit', { paths: ['src/app.js'] })), /mid-refactor/)
+  assert.match(text(await call('quilt_set_work', { state: 'done' })), /^Marked as done\. Let go of \d+ files? claimed for you while you edited\./)
+  await waitFor(() => !human.claimFor('src/app.js'))
 })
 
 test('agent edits sync back to people, and leaving removes the agent', async () => {

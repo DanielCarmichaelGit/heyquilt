@@ -19,6 +19,7 @@ import { pickAgent } from './agent-join.js'
 import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, MAX_VERIFIED } from './agent-task-workflow.js'
 import { formatHistory } from './history.js'
 import { renderInbox, describeEvent, INBOX_HOW } from './inbox.js'
+import { unanswered, renderRequests, renderUnanswered, heldRefusal } from './duties.js'
 import { describeSubscription, WEBHOOK_EVENTS } from './webhooks.js'
 import { UpdateCheck } from './update-check.js'
 import { getSettings } from './settings.js'
@@ -53,8 +54,12 @@ export const MCP_INSTRUCTIONS =
   'and move a task with quilt_move_task when you start or finish it. ' +
   'quilt_history tells you who changed which file, when, with the diff: read it for the files you are about to touch. ' +
   'When you edit files for a request that is not already on the board, Quilt adds an In progress task from that chat: use it instead of adding a duplicate, and move it to Done when you finish. ' +
-  'Claims follow your edits: a file you change that nobody holds is claimed for you until you finish, so partners are refused instead of overwriting you. ' +
+  'Before you change files, call quilt_before_edit with their paths: it tells you whether each is yours to edit (claiming free ones for you, so partners are refused instead of overwriting you), ' +
+  'and shows what people asked about those files that you have not answered yet. Do not edit a file it refuses: message the holder with quilt_message and carry on with other work. ' +
+  'Claims also follow your edits: a file you change that nobody holds is claimed for you until you finish. ' +
   'If an edit of yours was undone because someone else holds the file, your next quilt answer says so: do not retry; message them with quilt_message and carry on with other work. ' +
+  'Every quilt answer starts with anything new for you (direct messages, mentions, tasks handed to you): act on it. ' +
+  'When you finish a piece of work, call quilt_set_work with "done": it lets go of the files claimed for you, and is refused until you have answered everyone who wrote to you. ' +
   'Claim ahead (quilt_claim) only for a larger change across several files. ' +
   'Always re-read a file right before you edit it. ' +
   'If quilt_status lists merges to settle, read quilt_merges before editing those files. ' +
@@ -86,14 +91,45 @@ export async function runMcp () {
       return notices.length ? `⚠️ Quilt:\n${notices.map((n) => `- ${n}`).join('\n')}\n\n` : ''
     } catch { return '' }
   }
-  const withDaemon = async (fn) => {
+  // What arrived for this agent (direct messages, mentions, tasks handed over) is put in front of
+  // its next answer, whatever tool it runs in: hooks and channels are Claude Code's, MCP answers are
+  // everyone's. `since` is where this server started: what came before is for quilt_inbox, and
+  // only what came after must be answered before the agent may finish.
+  const shown = { key: null, seq: 0, since: 0 }
+  const track = async (d) => {
+    const key = `${d.dir}:${d.pid}`
+    if (shown.key === key) return shown
+    const { seq } = await call(d, 'POST', '/inbox', { after: 0 })
+    Object.assign(shown, { key, seq: seq || 0, since: seq || 0 })
+    return shown
+  }
+  const arrivals = async (d) => {
+    try {
+      const s = await track(d)
+      const r = await call(d, 'POST', '/inbox', { after: s.seq })
+      s.seq = r.seq
+      const text = renderInbox(r.events)
+      return text ? `📬 ${text}\n\n` : ''
+    } catch { return '' }
+  }
+  /** Direct messages and mentions since this server started that the agent hasn't answered. */
+  const owed = async (d) => {
+    const s = await track(d)
+    const { events } = await call(d, 'POST', '/inbox', { after: s.since })
+    if (!events.length) return []
+    const { messages } = await call(d, 'POST', '/messages', { limit: 200, markRead: false })
+    const me = (await call(d, 'GET', '/info')).name
+    return unanswered(events, { messages, me })
+  }
+  const withDaemon = async (fn, { inbox = true } = {}) => {
     const d = findDaemon(joined ? joined.dir : undefined)
     if (!d) return { content: [{ type: 'text', text: NOT_RUNNING + stale() }], isError: true }
+    const before = async () => (await notices(d)) + (inbox ? await arrivals(d) : '')
     try {
       const body = await fn(d)
-      return { content: [{ type: 'text', text: (await notices(d)) + body + stale() }] }
+      return { content: [{ type: 'text', text: (await before()) + body + stale() }] }
     } catch (err) {
-      return { content: [{ type: 'text', text: (await notices(d)) + `Error: ${err.message}` }], isError: true }
+      return { content: [{ type: 'text', text: (await before()) + `Error: ${err.message}` }], isError: true }
     }
   }
 
@@ -150,6 +186,10 @@ export async function runMcp () {
   }, ({ id, column, verified }) => withDaemon(async (d) => {
     const brief = await call(d, 'POST', '/tasks/brief', { id })
     if (column === 'done' && !verifiedEnough(verified)) return doneRefusal({ task: brief.task, checklist: brief.checklist })
+    if (column === 'done') {
+      const waiting = renderUnanswered(await owed(d))
+      if (waiting) return waiting
+    }
     const { task } = await call(d, 'POST', '/tasks/update', { id, column, ...(column === 'done' ? { verified } : {}) })
     if (column === 'doing') return pickupBrief({ ...brief, task })
     if (column === 'done') return `Moved "${task.title}" to Done. Verified: ${verifiedLine(task)}`
@@ -274,8 +314,10 @@ export async function runMcp () {
     const c = at(toolCursor, d)
     const r = await call(d, 'POST', '/inbox', { after: all ? 0 : c.seq })
     c.seq = r.seq
+    const s = await track(d)
+    s.seq = Math.max(s.seq, r.seq) // shown here, so not again in front of the next answer
     return renderInbox(r.events) || (all ? 'Nothing has been waiting for you.' : 'Nothing new for you.')
-  }))
+  }, { inbox: false }))
 
   server.registerTool('quilt_webhook_subscribe', {
     description: 'Be told as it happens, by an HTTP POST to a URL of yours, when you are mentioned in chat (@yourname), sent a direct message or handed a task: ' +
@@ -492,14 +534,49 @@ export async function runMcp () {
   }
 
   server.registerTool('quilt_set_work', {
-    description: 'Tell everyone whether you (this agent) are working or done, so the host knows when it is safe to commit. Set "working" when you start a task and "done" when you finish.',
+    description: 'Tell everyone whether you (this agent) are working or done, so the host knows when it is safe to commit. Set "working" when you start a task and "done" when you finish: ' +
+      '"done" lets go of the files claimed for you while you edited, and is refused until you have answered everyone who wrote to you (direct messages, mentions) since you started.',
     inputSchema: {
       state: z.enum(['working', 'done']),
       note: z.string().optional().describe('What you are working on, in a few words')
     }
   }, ({ state, note }) => withDaemon(async (d) => {
+    if (state === 'working') {
+      await call(d, 'POST', '/work', { state, note })
+      return 'Marked as working. Set "done" when you finish so the host can commit.'
+    }
+    const waiting = renderUnanswered(await owed(d))
+    if (waiting) return waiting
+    const { released } = await call(d, 'POST', '/finish', {})
     await call(d, 'POST', '/work', { state, note })
-    return state === 'working' ? 'Marked as working. Set "done" when you finish so the host can commit.' : 'Marked as done.'
+    return `Marked as done.${released ? ` Let go of ${released} file${released === 1 ? '' : 's'} claimed for you while you edited.` : ''}`
+  }))
+
+  server.registerTool('quilt_before_edit', {
+    description: 'Call before you change files (with your own edit tools), with the paths you are about to change. For each file: whether it is yours to edit ' +
+      '(a file nobody holds is claimed for you until you finish; one someone else holds is refused: do not edit it, message them instead), and what people asked ' +
+      'about those files that you have not answered. Works in every tool; it is how Quilt keeps agents from overwriting each other.',
+    inputSchema: {
+      paths: z.array(z.string().min(1).max(500)).min(1).max(50).describe('Files you are about to change: relative to the project folder, or absolute inside it')
+    }
+  }, ({ paths }) => withDaemon(async (d) => {
+    const outside = []
+    const rels = []
+    for (const p of paths) {
+      const rel = path.relative(d.dir, path.resolve(d.dir, p)).split(path.sep).join('/')
+      if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) outside.push(p)
+      else rels.push(rel)
+    }
+    const r = rels.length ? await call(d, 'POST', '/before-edit', { paths: rels }) : { files: [], requests: [] }
+    const lines = []
+    for (const f of r.files) {
+      if (!f.shared) lines.push(`- ${f.path}: not shared by Quilt (ignored or private): edit it as you like.`)
+      else if (f.ok) lines.push(`- ${f.path}: ✅ yours to edit${f.claimed ? ' (claimed for you until you finish)' : ''}.`)
+      else lines.push(`- ${f.path}: ⛔ ${heldRefusal(f.path, f.claim, f.error)}`)
+    }
+    for (const p of outside) lines.push(`- ${p}: not inside the project folder (${d.dir}).`)
+    const asked = renderRequests(r.requests)
+    return lines.join('\n') + (asked ? `\n\n${asked}` : '') + '\n\nRe-read each file right before you edit it.'
   }))
 
   server.registerTool('quilt_request_commit', {

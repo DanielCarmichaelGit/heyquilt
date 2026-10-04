@@ -23,6 +23,7 @@ import { UpdateCheck } from './update-check.js'
 import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, pickChecklist, MAX_VERIFIED } from './agent-task-workflow.js'
 import { HistoryLog, queryHistory, parseSince, formatHistory, currentTask } from './history.js'
 import { changeRefusal, TALK_REFUSED } from './session-access.js'
+import { requestsAbout, renderRequests } from './duties.js'
 import { describeSubscription, WEBHOOK_EVENTS } from './webhooks.js'
 
 const FEED_CAP = 300
@@ -483,7 +484,9 @@ function sessionTools (server, ctx) {
       if (activity.length > ACTIVITY_CAP) activity.delete(0, activity.length - ACTIVITY_CAP)
       historyOf(room).record({ by: me, path: rel, kind, before, after: content, task: currentTask(readTasks(taskMap(doc)), me) })
     }, AGENT)
-    return text(`${existed ? 'Updated' : 'Created'} ${rel}${detail ? ` (${detail} lines)` : ' (no change)'}. Everyone in the session has it now.${claimedNow ? ` ${rel} is claimed for you while you work on it; quilt_release it when you are done.` : ''}`)
+    // The rule every agent follows (duties.js): what people asked about this file, until it is answered.
+    const asked = renderRequests(requestsAbout([rel], { messages: doc.getArray('chat').toArray().filter(visible), me }))
+    return text(`${existed ? 'Updated' : 'Created'} ${rel}${detail ? ` (${detail} lines)` : ' (no change)'}. Everyone in the session has it now.${claimedNow ? ` ${rel} is claimed for you while you work on it; quilt_release it when you are done.` : ''}${asked ? `\n\n${asked}` : ''}`)
   })
 
   tool('quilt_claim', {

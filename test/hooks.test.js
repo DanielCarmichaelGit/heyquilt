@@ -160,11 +160,37 @@ test('stopping with an unanswered message asks Claude to reply first; then relea
   assert.equal(done.out, '')
   await waitFor(() => !sam.claimFor('src/app.js'))
   assert.deepEqual(hookState(danaDir, 'claude-1').read().claims, [])
-  // A quiet stop with nothing to answer just releases.
+  // A message Claude was shown after an edit but never answered holds it back once at stop too.
+  sam.say('one more thing: is src/lib ok to touch?', { to: 'dana' })
+  await waitFor(() => dana.messages({ markRead: false }).some((m) => m.text.startsWith('one more thing')))
+  assert.match((await hook({ hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/app.js' } })).out, /one more thing/)
+  const owed = await hook({ hook_event_name: 'Stop', stop_hook_active: false })
+  assert.equal(owed.json.decision, 'block')
+  assert.match(owed.json.reason, /one more thing: is src\/lib ok to touch\?/)
+  assert.doesNotMatch(owed.json.reason, /when will/, 'each one holds Claude back once')
+  // Once each was asked about (or answered), a quiet stop just releases.
+  dana.say('free in ten minutes', { to: 'sam' })
   await edit('src/app.js')
   await waitFor(() => sam.claimFor('src/app.js'))
   assert.equal((await hook({ hook_event_name: 'Stop', stop_hook_active: false })).out, '')
   await waitFor(() => !sam.claimFor('src/app.js'))
+})
+
+test('before an edit, Claude is shown what was asked about that file, once', async () => {
+  sam.say('please leave src/auth.js alone for an hour')
+  sam.say('src/app.js is fine to touch') // about another file
+  await waitFor(() => dana.messages({ markRead: false }).some((m) => m.text.startsWith('please leave')))
+  await sam.release('src/auth.js')
+  await waitFor(() => !dana.claimFor('src/auth.js'))
+  const r = await edit('src/auth.js')
+  const o = r.json.hookSpecificOutput
+  assert.equal(o.hookEventName, 'PreToolUse')
+  assert.equal(o.permissionDecision, undefined, 'informs, never grants permission')
+  assert.match(o.additionalContext, /sam about src\/auth\.js: "please leave src\/auth\.js alone for an hour"/)
+  assert.doesNotMatch(o.additionalContext, /fine to touch/)
+  assert.equal((await edit('src/auth.js')).out, '', 'shown once per Claude session')
+  await hook({ hook_event_name: 'Stop', stop_hook_active: true })
+  await waitFor(() => !sam.claimFor('src/auth.js'))
 })
 
 test('a mention in public chat and a task handed to my AI are shown too', async () => {

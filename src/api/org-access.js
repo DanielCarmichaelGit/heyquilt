@@ -35,3 +35,20 @@ export async function orgAccess (store, userId, slug) {
     }
   }
 }
+
+/** An account's grants in an org as { can }, or null when it isn't a member. Never throws. */
+export async function orgGrantsFor (store, orgId, account) {
+  const [kind, id] = account.split(':')
+  const org = await store.orgById(orgId)
+  if (!org) return null
+  if (kind === 'person') {
+    if (org.ownerId === id) return { can: () => true }
+    const me = await store.memberOf(orgId, id)
+    if (!me) return null
+    const role = me.roleId ? await store.roleById(orgId, me.roleId) : null
+    const grants = normalizeGrants(role?.grants)
+    return { can: (resource, op) => can(grants, resource, op) }
+  }
+  // Agents in an org get team access, never a role (orgs spec), so no workspace permission from the org.
+  return (await store.memberByAgent(orgId, id)) ? { can: () => false } : null
+}

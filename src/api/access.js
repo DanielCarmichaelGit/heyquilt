@@ -2,6 +2,8 @@
 // the owner's own) and what a grant comes to.
 import { UUID } from './http.js'
 import { builtinType, effectiveAccess, FALLBACK_TYPE } from '../session-access.js'
+import { workspaceAccess } from './workspace-access.js'
+import { orgGrantsFor } from './org-access.js'
 
 // The owner's access, as a pass carries it. The relay keeps its own record of who owns a
 // room; this only says the API agrees.
@@ -39,7 +41,14 @@ export async function roomAccess (store, room, account, email = '') {
   if (session.ownerAccount === account) return OWNER_ACCESS
   if (email) await store.claimEmailInvites(room, email.toLowerCase(), account)
   const grant = await store.grantFor(room, account)
-  if (!grant) return null
-  await store.useAccountInvites(room, account)
-  return effectiveAccess(await typeOfGrant(store, grant), grant.tighten)
+  if (grant) {
+    await store.useAccountInvites(room, account)
+    return effectiveAccess(await typeOfGrant(store, grant), grant.tighten)
+  }
+  // No grant of its own: a session inside a workspace admits the workspace's members.
+  if (!session.workspaceId) return null
+  const ws = await store.workspaceById(session.workspaceId)
+  if (!ws) return null
+  const wa = await workspaceAccess(store, ws, account, { orgGrants: ws.orgId ? await orgGrantsFor(store, ws.orgId, account) : null })
+  return wa ? effectiveAccess(builtinType(wa.access === 'edit' ? 'builtin:edit' : 'builtin:view'), {}) : null
 }

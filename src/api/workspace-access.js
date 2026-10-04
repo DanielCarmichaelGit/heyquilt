@@ -13,9 +13,9 @@ export function cleanColor (value) {
 }
 
 export function cleanDescription (value) {
-  const s = stripInvisible(String(value ?? '')).join('').trim()
-  if (s.length > MAX_DESCRIPTION) throw new HttpError(400, `Keep the description under ${MAX_DESCRIPTION} characters.`)
-  return s
+  const chars = stripInvisible(String(value ?? ''))
+  if (chars.length > MAX_DESCRIPTION) throw new HttpError(400, `Keep the description under ${MAX_DESCRIPTION} characters.`)
+  return chars.join('').trim()
 }
 
 export function cleanAccess (value) {

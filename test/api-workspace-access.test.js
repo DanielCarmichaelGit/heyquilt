@@ -34,6 +34,9 @@ test('cleaners', () => {
   assert.equal(COLORS.length, 6)
   assert.equal(cleanDescription('  hi ​'), 'hi')
   assert.throws(() => cleanDescription('x'.repeat(501)), /500/)
+  // 400 emoji are 400 characters (code points) and pass the 500 limit
+  assert.equal(cleanDescription('😀'.repeat(400)).length, 800)
+  assert.throws(() => cleanDescription('😀'.repeat(501)), /500/)
   assert.equal(cleanAccess('view'), 'view')
   assert.throws(() => cleanAccess('owner'), /Access is edit or view\./)
 })

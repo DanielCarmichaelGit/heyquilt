@@ -4,7 +4,8 @@
 // everyone in the session.
 import fs from 'node:fs'
 import path from 'node:path'
-import { hookSettings, HOOK_COMMAND } from './hooks.js'
+import { hookSettings, isQuiltHook } from './hooks.js'
+import { registerEverywhere } from './integrations.js'
 import { TASK_WORKFLOW_MD, CHECKLIST_SCAFFOLD, extractChecklist } from './agent-task-workflow.js'
 
 const START = '<!-- quilt:start -->'
@@ -65,20 +66,6 @@ function upsertBlock (file, block) {
   return next !== text
 }
 
-function upsertMcp (file, key = 'mcpServers', entry = { command: 'quilt', args: ['mcp'] }) {
-  let json = {}
-  try { json = JSON.parse(fs.readFileSync(file, 'utf8')) } catch {}
-  json[key] = json[key] || {}
-  json[key].quilt = entry
-  delete json[key].cowove // the old name (renamed to Quilt)
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-  const text = JSON.stringify(json, null, 2) + '\n'
-  let prev = ''
-  try { prev = fs.readFileSync(file, 'utf8') } catch {}
-  if (prev !== text) fs.writeFileSync(file, text)
-  return prev !== text
-}
-
 /** Where Quilt's Claude Code hooks live: this person's own settings, which never sync or get committed. */
 export const HOOKS_FILE = '.claude/settings.local.json'
 
@@ -94,7 +81,7 @@ export function installHooks (root) {
   try { json = JSON.parse(prev) || {} } catch {}
   if (typeof json !== 'object' || Array.isArray(json)) json = {}
   const hooks = (json.hooks && typeof json.hooks === 'object' && !Array.isArray(json.hooks)) ? json.hooks : {}
-  const ours = (h) => h && typeof h.command === 'string' && h.command.startsWith(HOOK_COMMAND)
+  const ours = isQuiltHook
   for (const [event, entries] of Object.entries(hookSettings())) {
     const kept = (Array.isArray(hooks[event]) ? hooks[event] : [])
       .map((e) => (e && Array.isArray(e.hooks) ? { ...e, hooks: e.hooks.filter((h) => !ours(h)) } : e))
@@ -122,13 +109,15 @@ export function scaffoldChecklist (root) {
   return true
 }
 
-export function setup (root) {
+export function setup (root, { home } = {}) {
   const changed = []
-  if (upsertMcp(path.join(root, '.mcp.json'))) changed.push('.mcp.json (Claude Code MCP server)')
+  // MCP servers go in each AI tool's own settings on this computer (with this install's path),
+  // not in the project, whose files sync to everyone. See integrations.js.
+  for (const r of registerEverywhere(home ? { home } : {})) {
+    if (r.result === 'added' || r.result === 'updated') changed.push(`${r.file} (${r.name} MCP server)`)
+    else if (r.result === 'skipped' || r.result === 'failed') changed.push(`${r.file}: left alone, not plain JSON (${r.name})`)
+  }
   if (installHooks(root)) changed.push(`${HOOKS_FILE} (Claude Code hooks: files are claimed as you edit them)`)
-  if (upsertMcp(path.join(root, '.cursor', 'mcp.json'))) changed.push('.cursor/mcp.json (Cursor MCP server)')
-  if (upsertMcp(path.join(root, '.vscode', 'mcp.json'), 'servers', { type: 'stdio', command: 'quilt', args: ['mcp'] })) changed.push('.vscode/mcp.json (VS Code and GitHub Copilot MCP server)')
-  if (upsertMcp(path.join(root, '.gemini', 'settings.json'))) changed.push('.gemini/settings.json (Gemini CLI MCP server)')
   if (upsertBlock(path.join(root, 'AGENTS.md'), AGENT_GUIDE)) changed.push('AGENTS.md (Cursor, Codex, and other agents)')
   if (upsertBlock(path.join(root, 'CLAUDE.md'), AGENT_GUIDE)) changed.push('CLAUDE.md (Claude Code)')
   if (scaffoldChecklist(root)) changed.push('AGENTS.md ("Verifying a change": fill in what proves a change works here)')

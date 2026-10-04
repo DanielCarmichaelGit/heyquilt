@@ -265,6 +265,7 @@ async function ui () {
   const { values } = parseArgs({ args: argv, options: { port: { type: 'string' }, 'no-open': { type: 'boolean' }, preview: { type: 'boolean' } } })
   const { startUi } = await import('../src/ui-server.js')
   const { registerProcess, stopProcesses } = await import('../src/procs.js')
+  ;(await import('../src/integrations.js')).registerOnStart((line) => console.log(line))
   const app = await startUi({
     port: Number(values.port || 7420),
     preview: !!values.preview,
@@ -301,6 +302,7 @@ async function login () {
   const account = accountFromProfile(r.profile)
   saveAccount({ token: r.token, account, signedInAt: Date.now() })
   console.log(`Signed in as ${account.name} (${account.email}).`)
+  ;(await import('../src/integrations.js')).registerOnStart((line) => console.log(line))
 }
 
 async function logout () {
@@ -335,8 +337,7 @@ async function doSetup () {
   const changed = setup(process.cwd())
   if (!changed.length) return console.log('already set up')
   console.log('updated:\n' + changed.map((c) => `  - ${c}`).join('\n'))
-  console.log('\nRestart your AI tool (or reload MCP servers) to pick up the "quilt" MCP server.')
-  console.log('Other tools: point them at AGENTS.md, or have them run `quilt status`.')
+  console.log('\nAn AI tool that was already open picks up the "quilt" MCP server when it restarts.')
 }
 
 async function daemonOrFail () {

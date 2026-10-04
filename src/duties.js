@@ -9,6 +9,11 @@
 //   answered (a message back to that person, or to everyone, after theirs).
 //
 // Messages are chat entries ({ id, by, to, text, ts }) the reader can see.
+//
+// These are enforced, not suggested: the daemon undoes an AI's edit to a file someone asked
+// about until it answers them (as it does for a claimed file), and the MCP tools that move
+// work forward (claims, tasks, commits, "done") refuse while someone is waiting for an answer.
+import { mentioned } from './inbox.js'
 
 // How far back a message naming a file still counts as a request about it.
 export const REQUEST_WINDOW_MS = 24 * 60 * 60 * 1000
@@ -53,6 +58,20 @@ export function requestsAbout (paths, { messages = [], me, now = Date.now(), win
   return out
 }
 
+/**
+ * Straight from the chat: direct messages to `me` and mentions of `me` (recent, from others)
+ * with no later message from `me` to that person or everyone, as inbox-like events.
+ */
+export function waitingOn (messages, me, { now = Date.now(), windowMs = REQUEST_WINDOW_MS } = {}) {
+  const out = []
+  for (const m of messages || []) {
+    if (!m || !m.by || m.by === me || typeof m.text !== 'string' || (m.ts || 0) < now - windowMs) continue
+    const kind = m.to === me ? 'dm' : !m.to && mentioned(m.text, [me]).length ? 'mention' : null
+    if (kind && !answered(messages, me, m.by, m.ts)) out.push({ id: m.id, kind, by: m.by, text: m.text, ts: m.ts })
+  }
+  return out
+}
+
 /** Direct messages and mentions among inbox `events` that `me` has not answered yet. */
 export function unanswered (events, { messages = [], me } = {}) {
   return (events || []).filter((e) => e && (e.kind === 'dm' || e.kind === 'mention') && e.by !== me && !answered(messages, me, e.by, e.ts))
@@ -71,12 +90,24 @@ export function renderRequests (requests) {
     'If someone asked you to leave a file alone, or to change it a certain way, do that, and answer them with quilt_message (to: their name) before or as you edit.'
 }
 
-/** Why an agent may not finish yet: the messages it still owes an answer, or '' when it owes none. */
-export function renderUnanswered (events) {
+/**
+ * Why an agent may not go on yet: the messages it still owes an answer, or '' when it owes none.
+ * `then` says what to do once they're answered ("finish again", "call quilt_claim again").
+ */
+export function renderUnanswered (events, then = 'finish again') {
   if (!events || !events.length) return ''
   const lines = events.map((e) => `- ${e.by} ${e.kind === 'dm' ? 'sent you a direct message' : 'mentioned you'}: "${quote(e.text)}"`)
   return 'Not yet: these people are still waiting for an answer from you:\n' + lines.join('\n') + '\n' +
-    'Answer each with quilt_message (to: their name), even if only to say when you will get to it, then finish again.'
+    `Answer each with quilt_message (to: their name), even if only to say when you will get to it, then ${then}. ` +
+    'Reading, messaging and checking files work meanwhile.'
+}
+
+/** Why an edit to a file someone asked about is refused until they're answered. */
+export function askedRefusal (rel, requests) {
+  const who = [...new Set(requests.map((r) => r.by))]
+  return `${rel}: ${who.join(' and ')} asked about it and you haven't answered, so Quilt holds edits to it until you do ` +
+    `(an edit made anyway is undone and your version kept aside). Answer with quilt_message (to: "${who[0]}"): do what they asked, ` +
+    'or say what you are about to change. Then edit it.'
 }
 
 /** One refusal for an edit to a file someone else holds: who, and what to do instead of retrying. */

@@ -16,15 +16,19 @@ import path from 'node:path'
 import { findDaemon } from './control.js'
 import { migrateDir } from './legacy.js'
 import { describeEvent } from './inbox.js'
-import { unanswered, renderRequests, heldRefusal } from './duties.js'
+import { renderRequests, heldRefusal, askedRefusal } from './duties.js'
+import { quiltShellCommand } from './integrations.js'
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 const TIMEOUT_MS = 5000
 
-/** Settings for .claude/settings.json: every hook runs `quilt hook`. */
-export const HOOK_COMMAND = 'quilt hook'
-export function hookSettings () {
-  const run = { type: 'command', command: HOOK_COMMAND, timeout: 10 }
+/** Settings for .claude/settings.local.json: every hook runs this Quilt's `hook`, by absolute path (no PATH needed). */
+export const HOOK_COMMAND = 'quilt hook' // what older versions wrote
+export const hookCommand = () => quiltShellCommand(['hook'])
+/** Is this hook entry one of Quilt's (any version)? */
+export const isQuiltHook = (h) => !!h && typeof h.command === 'string' && (h.command.startsWith(HOOK_COMMAND) || /quilt\.js"? hook$/.test(h.command))
+export function hookSettings (command = hookCommand()) {
+  const run = { type: 'command', command, timeout: 10 }
   return {
     SessionStart: [{ hooks: [run] }],
     PreToolUse: [{ matcher: 'Edit|Write|MultiEdit|NotebookEdit', hooks: [run] }],
@@ -98,6 +102,7 @@ async function preEdit (event, d, api, state) {
   const r = await api('POST', '/before-edit', { paths: [rel] })
   const f = r.files && r.files[0]
   if (!f || !f.shared) return { exitCode: 0 } // Quilt doesn't sync it, so nobody can clash on it
+  if (!f.ok && f.asked) return { exitCode: 0, output: { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: askedRefusal(rel, f.asked) } } }
   if (!f.ok) return deny(rel, f.claim, 'PreToolUse', f.error)
   const seen = new Set(state.read().seen)
   const asked = (r.requests || []).filter((q) => q.id && !seen.has(`ask:${q.id}`))
@@ -129,7 +134,7 @@ async function stop (event, api, state) {
     const events = await unseenEvents(api, state)
     // Each unanswered one holds Claude back once, so a message meant for the person doesn't stop every turn.
     const asked = new Set(state.read().seen)
-    const owed = (await owedAnswers(api, state).catch(() => [])).filter((e) => !asked.has(`owed:${e.id}`))
+    const owed = (await owedAnswers(api).catch(() => [])).filter((e) => !asked.has(`owed:${e.id}`))
     for (const e of owed) if (!events.some((x) => x.id === e.id)) events.push(e)
     if (events.length) {
       state.update((s) => { for (const e of events) s.seen.push(e.id); for (const e of owed) s.seen.push(`owed:${e.id}`) })
@@ -141,13 +146,9 @@ async function stop (event, api, state) {
   return { exitCode: 0 }
 }
 
-/** Direct messages and mentions since this Claude session started that it hasn't answered. */
-async function owedAnswers (api, state) {
-  const { events } = await api('POST', '/inbox', { after: state.read().after || 0 })
-  if (!events.length) return []
-  const { messages } = await api('POST', '/messages', { limit: 200, markRead: false })
-  const me = (await api('GET', '/info')).name
-  return unanswered(events, { messages, me })
+/** Who is still waiting for an answer from this person or their AI (the rule every MCP agent is held to). */
+async function owedAnswers (api) {
+  return (await api('GET', '/duties')).waiting || []
 }
 
 async function sessionEnd (api, state) {

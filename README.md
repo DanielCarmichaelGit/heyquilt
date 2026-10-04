@@ -69,8 +69,9 @@ The app isn't signed by Apple yet, so the first time you open it macOS may say
 it can't check it. Open **System Settings → Privacy & Security** and click
 **Open Anyway**.
 
-To let your AI tools use Quilt (its MCP server and the `quilt` command),
-choose **Quilt → Install the Quilt Command…** in the menu bar.
+Your AI tools can use Quilt as soon as the app opens: it connects every one it
+finds (see [Your AI tools are connected already](#the-terminal-way)). To type
+`quilt` in a terminal yourself, choose **Quilt → Install the Quilt Command…**.
 
 ### From source
 
@@ -129,24 +130,31 @@ quilt join <invite-link> --tool cursor
 Keep `quilt join` running in a terminal while you work. It logs who joined,
 what they're touching, claims, and messages.
 
-**4. Connect your AI tools** (once per project, by either of you; it syncs):
+**Your AI tools are connected already.** Whenever the app, `quilt login`,
+`quilt ui` or a session starts, Quilt adds its MCP server to every AI tool it
+finds on the computer: Claude Code, Claude Desktop, Cursor, Windsurf, Codex,
+VS Code (GitHub Copilot, Cline, Roo Code), Gemini CLI, GitHub Copilot CLI, Zed,
+opencode, Kiro, Amp, Junie and Continue. It writes each tool's own settings with
+this install's full path, so nothing depends on your PATH or on files in the
+project, and it keeps them current when the app moves or updates. A tool that
+was already open picks Quilt up when it restarts. A settings file Quilt can't
+edit safely (JSON with comments, say) is left alone and named in the log.
+`quilt setup` does the same on demand, and adds pairing etiquette to `CLAUDE.md`
+and `AGENTS.md`.
 
-```bash
-quilt setup
-```
+**Quilt's rules are enforced, in every tool.** They aren't instructions an agent
+may skip:
 
-This registers the `quilt` MCP server in `.mcp.json` (Claude Code) and
-`.cursor/mcp.json` (Cursor), and adds pairing etiquette to `CLAUDE.md` and
-`AGENTS.md` ("check what your partner is doing before you start; don't edit
-claimed files; re-read files before editing"). Restart or reload your tool to
-pick up the MCP server.
+- An edit to a file someone else holds is undone (Quilt watches the disk).
+- An edit to a file someone asked about, by an AI that hasn't answered them, is
+  undone too and kept aside, until it answers. `quilt_before_edit` says so up front.
+- While someone who messaged or mentioned the agent is waiting for an answer, every
+  tool that moves work on (claims, tasks, focus, merges, commits, `quilt_set_work`)
+  refuses with who is waiting, until the agent answers with `quilt_message`.
+- Hosted agents write through Quilt's tools, so their writes are refused outright.
 
-Quilt's rules don't depend on any one tool: every MCP agent checks a file with
-`quilt_before_edit` before changing it, finds new messages at the top of each
-Quilt answer, and can't mark its work done while someone waits for a reply.
-Claude Code also gets Quilt's hooks (in your own `.claude/settings.local.json`,
-written whenever a session starts for the folder), which apply the same rules
-automatically, so Claude doesn't have to remember to call the tools.
+Claude Code also gets Quilt's hooks (in your own `.claude/settings.local.json`),
+which refuse such an edit before it happens instead of undoing it after.
 See [Claims](#claims).
 
 ## Commands
@@ -171,7 +179,7 @@ See [Claims](#claims).
 | `quilt messages` / `quilt messages --all` / `--with bob` | Unread messages / history / one conversation |
 | `quilt history [path] [--by name] [--since 2h] [--diff]` | Who changed what, when, and for which task |
 | `quilt get <message-id> [dest]` | Download a shared file again |
-| `quilt setup` | Wire up MCP + agent instructions |
+| `quilt setup` | Connect every AI tool on this computer now, and add agent instructions to the project |
 | `quilt mcp` | The MCP server itself (your AI tool launches this) |
 | `quilt doctor [--watch 30]` | Check what Quilt can see of your Claude Code / Cursor chats (safe to share: no chat text) |
 
@@ -200,9 +208,7 @@ See [Claims](#claims).
 | `quilt_get_file` | Download a shared file (again) |
 
 Any MCP-capable tool works: Claude Code, Cursor, Windsurf, Codex, Zed, and so on.
-`quilt setup` registers the server for Claude Code (`.mcp.json`), Cursor
-(`.cursor/mcp.json`), VS Code and GitHub Copilot (`.vscode/mcp.json`) and Gemini CLI
-(`.gemini/settings.json`); add `quilt mcp` to the others' MCP settings yourself.
+Quilt registers the server with each of them by itself (see above).
 
 Mentions, direct messages and handed-over tasks reach any agent without polling:
 subscribe to the `quilt://inbox` resource (standard MCP; you're notified when it

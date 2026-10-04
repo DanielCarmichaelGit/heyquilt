@@ -23,7 +23,7 @@ import { migrateDir } from './legacy.js'
 import { readTasks, addTask as putTask, updateTask as patchTask, deleteTask as dropTask, planAutoTask } from './tasks.js'
 import { HistoryLog, queryHistory, parseSince, currentTask } from './history.js'
 import { Inbox } from './inbox.js'
-import { requestsAbout } from './duties.js'
+import { requestsAbout, waitingOn, askedRefusal } from './duties.js'
 import { makeSubscription, deliverEvents } from './webhooks.js'
 import { pickChecklist } from './agent-task-workflow.js'
 import { changeRefusal, TALK_REFUSED } from './session-access.js'
@@ -873,6 +873,16 @@ export class Session extends EventEmitter {
     if (refusal && (disk ? disk.key : undefined) !== this.sharedKey(rel)) {
       this.rejectLocal(rel, disk, refusal)
       return false
+    }
+    // Someone asked about this file and our AI hasn't answered: the edit waits for the answer, the
+    // same way an edit to a claimed file is undone (duties.js). Whatever tool made it.
+    if (this.ready && !this.seeding && (disk ? disk.key : undefined) !== this.sharedKey(rel) && this.aiMayBeEditing()) {
+      const asked = this.requestsAbout([rel])
+      if (asked.length) {
+        this.rejectLocal(rel, disk, `${asked[0].by} asked about it and has not been answered`)
+        this.notice(`Your change to ${rel} was undone and kept aside (.quilt/rejected/). ${askedRefusal(rel, asked)}`)
+        return false
+      }
     }
     // A change of ours to a file nobody holds claims it for us while our AI works on it. A person
     // typing by hand while their AI sits idle keeps editing live with everyone, as before.
@@ -1979,12 +1989,14 @@ export class Session extends EventEmitter {
       if (!this.syncable(p)) { files.push({ path: p, shared: false }); continue }
       const held = (c) => ({ by: c.by, pattern: c.pattern, note: c.note || '' })
       let c = this.claimFor(p)
-      if (c && c.by === this.name) {
+      if (c && c.by === this.name && !this.requestsAbout([p]).length) {
         if (this.autoClaims.has(p)) this.autoClaims.set(p, Date.now())
         files.push({ path: p, shared: true, ok: true, mine: true })
         continue
       }
       if (c) { files.push({ path: p, shared: true, ok: false, claim: held(c) }); continue }
+      const asked = this.requestsAbout([p])
+      if (asked.length) { files.push({ path: p, shared: true, ok: false, asked }); continue }
       try {
         if (!this.conn) throw new Error('not connected')
         await this.conn.claimRequest({ op: 'claim', pattern: p, note: this.focus ? `editing: ${this.focus}` : 'editing' })
@@ -1995,8 +2007,7 @@ export class Session extends EventEmitter {
         files.push(c && c.by !== this.name ? { path: p, shared: true, ok: false, claim: held(c) } : { path: p, shared: true, ok: false, error: err.message })
       }
     }
-    const shared = files.filter((f) => f.shared).map((f) => f.path)
-    const requests = requestsAbout(shared, { messages: this.chat.toArray().filter((m) => this.canSee(m)), me: this.name })
+    const requests = this.requestsAbout(files.filter((f) => f.shared).map((f) => f.path))
     if (files.some((f) => f.claimed)) this.reportWorking(this.focus || '')
     return { me: this.name, files, requests }
   }
@@ -2039,6 +2050,17 @@ export class Session extends EventEmitter {
     else this.agentReportedAt = now
     this.pushAgentEntries(entries)
     return { shared: entries.length }
+  }
+
+  /** Messages naming one of `paths` that we haven't answered (duties.js). */
+  requestsAbout (paths) {
+    if (!paths.length) return []
+    return requestsAbout(paths, { messages: this.chat.toArray().filter((m) => this.canSee(m)), me: this.name })
+  }
+
+  /** What this member owes before work moves on: direct messages and mentions not answered yet. */
+  duties () {
+    return { me: this.name, waiting: waitingOn(this.chat.toArray().filter((m) => this.canSee(m)), this.name) }
   }
 
   /** Done with a piece of work: lets go of the claims that followed our edits and says we're done. */

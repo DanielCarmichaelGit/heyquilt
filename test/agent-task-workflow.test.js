@@ -60,15 +60,15 @@ test('relay MCP instructions include TASK_WORKFLOW', () => {
 
 test('quilt setup writes the workflow into AGENTS.md and CLAUDE.md, and scaffolds the checklist once', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-workflow-'))
-  const changed = setup(root)
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-workflow-home-'))
+  fs.mkdirSync(path.join(home, '.cursor'))
+  const changed = setup(root, { home })
+  assert.ok(changed.some((c) => c.endsWith('(Cursor MCP server)')), 'the tools on this computer get the server')
   assert.ok(changed.some((c) => c.startsWith('AGENTS.md (Cursor')))
   assert.ok(changed.some((c) => c.startsWith('CLAUDE.md')))
   assert.ok(changed.some((c) => c.includes('Verifying a change')))
-  // Every tool that reads a project-level MCP config gets Quilt's server, not just Claude Code.
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, '.mcp.json'), 'utf8')).mcpServers.quilt, { command: 'quilt', args: ['mcp'] })
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, '.cursor', 'mcp.json'), 'utf8')).mcpServers.quilt, { command: 'quilt', args: ['mcp'] })
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, '.vscode', 'mcp.json'), 'utf8')).servers.quilt, { type: 'stdio', command: 'quilt', args: ['mcp'] })
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, '.gemini', 'settings.json'), 'utf8')).mcpServers.quilt, { command: 'quilt', args: ['mcp'] })
+  // MCP servers go in each AI tool's own settings on this computer, not in the (synced) project.
+  for (const f of ['.mcp.json', '.cursor/mcp.json', '.vscode/mcp.json']) assert.equal(fs.existsSync(path.join(root, f)), false, f)
   for (const file of ['AGENTS.md', 'CLAUDE.md']) {
     const text = fs.readFileSync(path.join(root, file), 'utf8')
     assert.ok(text.includes(TASK_WORKFLOW_MD), `${file} should contain TASK_WORKFLOW_MD`)
@@ -80,7 +80,7 @@ test('quilt setup writes the workflow into AGENTS.md and CLAUDE.md, and scaffold
   assert.ok(agents.indexOf('<!-- quilt:end -->') < agents.indexOf('## Verifying a change'), 'outside the quilt block, so owners can edit it')
   // The owner fills it in; setup again keeps their text and does not add a second section.
   fs.writeFileSync(path.join(root, 'AGENTS.md'), agents.replace(/## Verifying a change[\s\S]*$/, '## Verifying a change\n\n- npm test\n- open the app\n'))
-  const again = setup(root)
+  const again = setup(root, { home })
   assert.ok(!again.some((c) => c.includes('Verifying a change')))
   assert.equal((fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf8').match(/## Verifying a change/g) || []).length, 1)
   assert.equal(extractChecklist(fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf8')), '- npm test\n- open the app')

@@ -11,7 +11,7 @@ import { startServer } from '../src/server.js'
 import { Session } from '../src/session.js'
 import { startControl } from '../src/control.js'
 import { installHooks } from '../src/setup.js'
-import { HOOK_COMMAND, releaseLeftoverHookClaims, hookState } from '../src/hooks.js'
+import { hookCommand, releaseLeftoverHookClaims, hookState } from '../src/hooks.js'
 import { openMerge } from '../src/merges.js'
 
 const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'quilt.js')
@@ -176,19 +176,21 @@ test('stopping with an unanswered message asks Claude to reply first; then relea
   await waitFor(() => !sam.claimFor('src/app.js'))
 })
 
-test('before an edit, Claude is shown what was asked about that file, once', async () => {
+test('an edit to a file someone asked about is refused until Claude answers them', async () => {
   sam.say('please leave src/auth.js alone for an hour')
-  sam.say('src/app.js is fine to touch') // about another file
   await waitFor(() => dana.messages({ markRead: false }).some((m) => m.text.startsWith('please leave')))
   await sam.release('src/auth.js')
   await waitFor(() => !dana.claimFor('src/auth.js'))
   const r = await edit('src/auth.js')
   const o = r.json.hookSpecificOutput
-  assert.equal(o.hookEventName, 'PreToolUse')
-  assert.equal(o.permissionDecision, undefined, 'informs, never grants permission')
-  assert.match(o.additionalContext, /sam about src\/auth\.js: "please leave src\/auth\.js alone for an hour"/)
-  assert.doesNotMatch(o.additionalContext, /fine to touch/)
-  assert.equal((await edit('src/auth.js')).out, '', 'shown once per Claude session')
+  assert.equal(o.permissionDecision, 'deny')
+  assert.match(o.permissionDecisionReason, /^src\/auth\.js: sam asked about it and you haven't answered/)
+  assert.match(o.permissionDecisionReason, /quilt_message \(to: "sam"\)/)
+  assert.equal(sam.claimFor('src/auth.js'), null, 'not claimed while held')
+  // Answered: the edit goes through (and is claimed).
+  dana.say('ok, I will leave src/auth.js alone', { to: 'sam' })
+  assert.equal((await edit('src/auth.js')).out, '')
+  await waitFor(() => sam.claimFor('src/auth.js')?.by === 'dana')
   await hook({ hook_event_name: 'Stop', stop_hook_active: true })
   await waitFor(() => !sam.claimFor('src/auth.js'))
 })
@@ -232,7 +234,8 @@ test('installHooks writes the hooks, keeps other hooks, and is idempotent', () =
   let json = JSON.parse(fs.readFileSync(file, 'utf8'))
   for (const ev of ['SessionStart', 'PreToolUse', 'PostToolUse', 'Stop', 'SessionEnd']) assert.ok(json.hooks[ev], ev)
   assert.equal(json.hooks.PreToolUse[0].matcher, 'Edit|Write|MultiEdit|NotebookEdit')
-  assert.equal(json.hooks.PreToolUse[0].hooks[0].command, HOOK_COMMAND)
+  assert.equal(json.hooks.PreToolUse[0].hooks[0].command, hookCommand())
+  assert.match(hookCommand(), /quilt\.js" hook$/, 'by absolute path: no PATH needed')
   assert.equal(installHooks(dir), false, 'nothing to change')
   // Someone's own hook stays; an older Quilt entry is replaced, not duplicated.
   json.hooks.PreToolUse.unshift({ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo mine' }] })
@@ -245,7 +248,7 @@ test('installHooks writes the hooks, keeps other hooks, and is idempotent', () =
   assert.equal(json.hooks.PreToolUse.length, 2)
   assert.equal(json.hooks.PreToolUse[0].hooks[0].command, 'echo mine')
   assert.equal(json.hooks.Stop.length, 1)
-  assert.equal(json.hooks.Stop[0].hooks[0].command, HOOK_COMMAND)
+  assert.equal(json.hooks.Stop[0].hooks[0].command, hookCommand())
   // A broken file is replaced rather than crashing.
   fs.writeFileSync(file, '{not json')
   assert.equal(installHooks(dir), true)

@@ -166,12 +166,17 @@ test('the agent reads what the owner has, and what it writes lands on the owner\
   assert.match(out(await call('quilt_release', { pattern: 'hello.md' })), /Released hello\.md/)
   await waitFor(() => !carl.claimFor('hello.md'))
 
-  // A write to a file someone asked about shows what they asked, until the agent answers them.
-  carl.say('Grok-Bot, keep brief.md short please', { to: 'Grok-Bot' })
-  const asked = await waitFor(async () => { const t = out(await call('quilt_write_file', { path: 'brief.md', content: 'brief\n' })); return /keep brief\.md short/.test(t) && t })
-  assert.match(asked, /Carl \(to you\) about brief\.md: "Grok-Bot, keep brief\.md short please"/)
-  await call('quilt_message', { to: 'Carl', text: 'Will do.' })
-  assert.doesNotMatch(out(await call('quilt_write_file', { path: 'brief.md', content: 'hi\n' })), /keep brief\.md short/)
+  // Enforced, not suggested: a write to a file someone asked about is refused until the agent answers them,
+  // and while a direct message waits for an answer, writes and claims are refused too.
+  carl.say('I am rewriting brief.md, hold off for now')
+  await waitFor(async () => /brief\.md: Carl asked about it/.test(out(await call('quilt_write_file', { path: 'brief.md', content: 'brief\n' }))))
+  carl.say('Grok-Bot, are you around?', { to: 'Grok-Bot' })
+  const held = await waitFor(async () => { const t = out(await call('quilt_claim', { pattern: 'docs/**' })); return /^Not yet/.test(t) && t })
+  assert.match(held, /Carl sent you a direct message: "Grok-Bot, are you around\?"/)
+  assert.match(held, /then call quilt_claim again/)
+  assert.ok(!carl.claimFor('docs/x.md'), 'nothing claimed')
+  await call('quilt_message', { to: 'Carl', text: 'Here. I will leave brief.md to you.' })
+  assert.match(out(await call('quilt_write_file', { path: 'brief.md', content: 'brief\n' })), /Created brief\.md/)
   await call('quilt_release', { pattern: 'brief.md' })
   await waitFor(() => !carl.claimFor('brief.md'))
 
@@ -329,6 +334,7 @@ test('an agent that sends an old image is told to update in every answer; quilt_
 })
 
 test('the owner can limit the agent to folders, make it a viewer, or remove it', async () => {
+  await call('quilt_message', { text: 'Got all your messages, Carl, thanks.' }) // answered, so writes are not held for that
   await carl.setMember(GROK, { scopes: ['docs'] })
   await waitFor(async () => /only change files in docs/.test(out(await call('quilt_write_file', { path: 'src/x.js', content: 'x' }))))
   assert.match(out(await call('quilt_write_file', { path: 'docs/guide.md', content: 'guide' })), /Created docs\/guide.md/)

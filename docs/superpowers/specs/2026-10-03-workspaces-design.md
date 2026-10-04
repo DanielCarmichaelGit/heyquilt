@@ -40,6 +40,27 @@ No new gating infrastructure. Iterate from there.
 | Limits (defaults, per plan later) | 500 MB per file, 5 GB per workspace, 2,000 files. |
 | Naming in code | The session view's internal name "workspace" (`src/ui/session.js` comment, `state.ws`, the CSS section) is renamed so the word means one thing. |
 
+## Reversibility
+
+Nothing here may break what works today, and every step must back out cleanly.
+
+- **The relay is not changed** in phases 1 and 2. Workspaces live in the accounts API and the app's home
+  screen. The relay keeps its protocol, document, admission, claims, merges, history and hosted MCP. The one
+  relay-adjacent change is in the API's answer to the room-access question the relay already asks. If a later
+  phase needs a relay change, it goes through the existing `features=` negotiation on connect and the update
+  check, not a new versioning scheme.
+- **The session code is not changed** except the breadcrumb and Attach from workspace in phase 2, both behind
+  the flag below.
+- **Migrations are additive only:** new tables and one nullable column on `relay_sessions`. Rollback is
+  dropping the new tables; no existing row changes shape.
+- **One flag, off by default:** `QUILT_WORKSPACES` on the API and a matching app setting. Off, the home page is
+  today's session list and no workspace route answers. On, the grid appears. Shipping a phase is flipping the
+  flag; backing out is flipping it back.
+- **Loose sessions stay first-class forever.** No session ever needs a workspace, so nobody's workflow changes
+  until they move a session in themselves.
+- **Branch and review:** built on the `workspaces` branch, merged in small pull requests behind the flag, each
+  with tests, and the spec and mockups reviewed by everyone working on the app before code lands.
+
 ## Data model (accounts API, Postgres)
 
 ```sql

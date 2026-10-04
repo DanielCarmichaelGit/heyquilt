@@ -151,7 +151,8 @@ async function apiCmd () {
     // Where agents reach this API (invite links point here).
     apiUrl: env.QUILT_API_PUBLIC_URL || (values.memory ? `http://${host}:${port}` : 'https://api.heyquilt.com'),
     siteUrl: env.QUILT_SITE_URL || 'http://localhost:3000',
-    trustProxy: /^(1|true|yes)$/i.test(env.QUILT_TRUST_PROXY || ''), log: console.log
+    trustProxy: /^(1|true|yes)$/i.test(env.QUILT_TRUST_PROXY || ''), log: console.log,
+    workspaces: env.QUILT_WORKSPACES === '1' || env.QUILT_WORKSPACES === 'true'
   })
   console.log(`quilt accounts API listening on ${api.url}`)
   if (!env.RELAY_API_SECRET) console.log('RELAY_API_SECRET is not set: the relay cannot report sessions for the dashboard')

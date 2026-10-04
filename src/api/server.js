@@ -22,6 +22,7 @@ import { sessionRoutes } from './routes/sessions.js'
 import { accessTypeRoutes } from './routes/access-types.js'
 import { grantRoutes } from './routes/grants.js'
 import { sessionInviteRoutes } from './routes/session-invites.js'
+import { workspaceRoutes } from './routes/workspaces.js'
 import { HOSTED_RELAY } from '../settings.js'
 import { roomAccess } from './access.js'
 import { parseInvite } from '../ui/invite.js'
@@ -43,7 +44,7 @@ const MCP_TIMEOUT_MS = 30 * 1000
 // a change to its grant reaches it as soon as it reaches a connected app.
 const PASS_REUSE_MARGIN_MS = 5 * 60 * 1000
 
-export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, apiUrl = 'https://api.heyquilt.com', mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, tokenLimit = 30, joinLimit = 20, trustProxy = false, maxStartKeys = 10_000, passKey = '', passLimit = 60, relayUrl = HOSTED_RELAY, mcpLimit = 600, reportKey = '', reportLimit = 10, slowMs = 2000, pruneEveryMs = 60 * 60 * 1000, keepEventsMs = 30 * 24 * 60 * 60 * 1000, keepIssuesMs = 90 * 24 * 60 * 60 * 1000, pruneStartMs = 10_000, relaySecret = '' }) {
+export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, apiUrl = 'https://api.heyquilt.com', mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, tokenLimit = 30, joinLimit = 20, trustProxy = false, maxStartKeys = 10_000, passKey = '', passLimit = 60, relayUrl = HOSTED_RELAY, mcpLimit = 600, reportKey = '', reportLimit = 10, slowMs = 2000, pruneEveryMs = 60 * 60 * 1000, keepEventsMs = 30 * 24 * 60 * 60 * 1000, keepIssuesMs = 90 * 24 * 60 * 60 * 1000, pruneStartMs = 10_000, relaySecret = '', workspaces = false }) {
   // PASS_SIGNING_KEY. A bad one should stop the API at start, not fail every pass later.
   if (passKey) passPublicKey(passKey)
   const site = String(siteUrl || '').replace(/\/+$/, '')
@@ -260,6 +261,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   // Org routes live in their own modules and share the caller check and the limiter.
   const ctx = { store, user, person, device, bearer, now, site, apiUrl: api, mailer, log, limit: limitInvites, limitSend: limitInviteSend, limitTokens, limitJoin, agentAuth, reportKey, limitReports, relaySecret }
   routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx), ...agentRoutes(ctx), ...agentInviteRoutes(ctx), ...joinRoutes(ctx), ...relayRoutes(ctx), ...sessionRoutes(ctx), ...accessTypeRoutes(ctx), ...grantRoutes(ctx), ...sessionInviteRoutes(ctx), ...issueRoutes(ctx))
+  if (workspaces) routes.push(...workspaceRoutes(ctx))
 
   async function openLink (code) {
     const userCode = normalizeUserCode(code)
@@ -310,7 +312,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
       recordOwn({ method: req.method, pathname, status, startedAt, message, noRoute })
     }
     if (req.method === 'OPTIONS') {
-      res.writeHead(204, { 'cache-control': 'no-store', ...extra, ...cors(req), 'access-control-allow-methods': 'GET,POST,PUT,DELETE', 'access-control-allow-headers': 'authorization,content-type', 'access-control-max-age': '600' })
+      res.writeHead(204, { 'cache-control': 'no-store', ...extra, ...cors(req), 'access-control-allow-methods': 'GET,POST,PUT,PATCH,DELETE', 'access-control-allow-headers': 'authorization,content-type', 'access-control-max-age': '600' })
       return res.end()
     }
     try {
@@ -319,7 +321,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
       const route = routes.find(([m, re]) => m === req.method && re.test(url.pathname))
       if (!route) throw Object.assign(new HttpError(404, 'not found'), { noRoute: true })
       // A route may take a bigger body than usual (the relay's presence reports): route[3].maxBody.
-      const body = ['POST', 'PUT'].includes(req.method) ? await readJson(req, route[3]?.maxBody || MAX_BODY) : {}
+      const body = ['POST', 'PUT', 'PATCH'].includes(req.method) ? await readJson(req, route[3]?.maxBody || MAX_BODY) : {}
       const out = await route[2](req, body, url.pathname.match(route[1]).slice(1).map(decodePart))
       if (out instanceof Raw) send(out.status, out.body, out.type)
       else if (Array.isArray(out)) send(out[0], out[1])

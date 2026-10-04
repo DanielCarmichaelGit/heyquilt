@@ -262,6 +262,14 @@ export function forgetRecent (dir) {
   } catch {}
 }
 
+/** Records which workspace a remembered folder's session is in. */
+export function rememberWorkspace (dir, workspace) {
+  try {
+    const list = JSON.parse(fs.readFileSync(recentFile(), 'utf8')).map((r) => (r.dir === dir ? { ...r, workspace } : r))
+    fs.writeFileSync(recentFile(), JSON.stringify(list, null, 2))
+  } catch {}
+}
+
 function remember (entry) {
   // An agent's run in a person's folder isn't theirs to put on the list, or to rename there.
   if (entry.kind === 'agent' && !isAgentCopy(entry.dir, entry.room)) return

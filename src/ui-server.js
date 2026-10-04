@@ -8,13 +8,14 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
-import { runSession, decodeInvite, newConn, readConfig, recentSessions, forgetRecent } from './runner.js'
+import { runSession, decodeInvite, newConn, readConfig, recentSessions, forgetRecent, rememberWorkspace } from './runner.js'
 import { MAX_SHARED_FILE_BYTES } from './protocol.js'
 import { getSettings, saveSettings, unsupportedRelay, relayUrl } from './settings.js'
 import * as gitops from './git.js'
 import { installedEditors, openIn } from './editors.js'
 import { migrateDir } from './legacy.js'
-import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession, createAgentInvite, listAgents, listAccessTypes, listCollaborators, listGrants, putGrant, deleteGrant, inviteToSession, listSessionInvites, cancelSessionInvite } from './account.js'
+import { writePrivateJson } from './private-file.js'
+import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession, createAgentInvite, listAgents, listAccessTypes, listCollaborators, listGrants, putGrant, deleteGrant, inviteToSession, listSessionInvites, cancelSessionInvite, listWorkspaces, createWorkspace, getWorkspace, updateWorkspace, deleteWorkspace, putWorkspaceMember, removeWorkspaceMember, setSessionWorkspace } from './account.js'
 import { effectiveAccess, builtinType } from './session-access.js'
 import { cleanSessionName, BAD_SESSION_NAME, SESSION_NAME_MAX } from './session-name.js'
 import { personPasses } from './pass-source.js'
@@ -106,7 +107,8 @@ export const STATIC = {
   '/git.js': ['git.js', 'text/javascript; charset=utf-8'],
   '/releases.js': ['releases.js', 'text/javascript; charset=utf-8'],
   '/feed-convs.js': ['feed-convs.js', 'text/javascript; charset=utf-8'],
-  '/board.js': ['board.js', 'text/javascript; charset=utf-8']
+  '/board.js': ['board.js', 'text/javascript; charset=utf-8'],
+  '/workspaces.js': ['workspaces.js', 'text/javascript; charset=utf-8']
 }
 
 // The page's Content-Security-Policy: scripts only from our own files (no inline script or
@@ -155,6 +157,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
   let link = null // signing in: what startLink returned, plus { state, error }
   let signedOutReason = null // 'revoked' once the API turned this computer's token away
   let checkedToken = false // asked the API about the saved token since the app started
+  let workspacesOn = false // cached result of the last GET /api/workspaces probe
 
   const accountPasses = () => {
     if (passes) return passes
@@ -240,7 +243,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
   }
   const summary = (id) => {
     const r = runs.get(id)
-    return { id, dir: r.run.dir, invite: r.run.invite, viewInvite: r.run.viewInvite, status: r.run.session.status(), logs: r.logs.slice(-80), git: hostsGit(r) }
+    return { id, dir: r.run.dir, invite: r.run.invite, viewInvite: r.run.viewInvite, status: r.run.session.status(), logs: r.logs.slice(-80), git: hostsGit(r), workspace: readConfig(r.run.dir)?.workspace || '' }
   }
   const pushStatus = (id) => runs.has(id) && broadcast('session', summary(id))
   // Git lives only on the host's computer (sync never writes inside .git), so
@@ -249,7 +252,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
   // clients) fall back to "didn't join it from an invite".
   const hostsGit = (r) => gitops.hostsGit(r.run.session, { joined: r.joined })
 
-  async function start ({ mode, dir, tool, invite, prefer, repo, branch, newBranch, base }) {
+  async function start ({ mode, dir, tool, invite, prefer, repo, branch, newBranch, base, workspace }) {
     const me = profile()
     // Every session signs in to the relay as this computer's account.
     const sessionPasses = accountPasses()
@@ -315,6 +318,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
         passes: sessionPasses,
         // A new session is named after its folder (the owner can rename it later).
         startName: mode === 'create' ? cleanSessionName([...path.basename(dir)].slice(0, SESSION_NAME_MAX).join('')) || '' : '',
+        workspace: workspace || '',
         onLog: log,
         onFatal: async (err) => {
           log(`stopped: ${err.message}`)
@@ -345,6 +349,11 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     s.on('file-changed', (e) => broadcast('file-changed', { id, ...e }))
     // Presence changes (e.g. focus, recently edited files) also refresh the view.
     s.conn.awareness.on('change', () => pushStatus(id))
+    if (workspace && mode === 'create') {
+      // Put the new room in its workspace before anyone else connects. A failure is logged, never fatal.
+      // mode was reassigned to 'create' for github clones above, so this covers both.
+      await asAccount((token) => setSessionWorkspace({ token, id: workspace, room: conn.room })).catch((err) => log(`could not add this session to its workspace: ${err.message}`))
+    }
     return summary(id)
   }
 
@@ -417,6 +426,23 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       throw Object.assign(httpError(401, SIGNED_OUT_MESSAGE), { signedOut: true })
     }
   }
+
+  // Workspaces live on the accounts API behind a flag: a 404 means off, and the app shows today's home.
+  const workspaceList = () => asAccount(async (token) => {
+    try {
+      const workspaces = await listWorkspaces({ token })
+      workspacesOn = true
+      return { on: true, workspaces }
+    } catch (err) {
+      if (err.status === 404) { workspacesOn = false; return { on: false, workspaces: [] } }
+      throw err
+    }
+  })
+  const needWorkspaceId = (id) => { if (!/^[0-9a-f-]{36}$/i.test(String(id || ''))) throw httpError(400, 'Which workspace?'); return id }
+  const ofWorkspace = (id) => ({
+    running: [...runs.keys()].filter((k) => (readConfig(runs.get(k).run.dir) || {}).workspace === id),
+    recent: recentList().filter((r) => r.workspace === id)
+  })
 
   // Access types and invites (the owner's): the API keeps grants, the relay applies them.
   const ACCOUNT = /^(person|agent):[A-Za-z0-9_-]{1,64}$/
@@ -512,6 +538,22 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     },
     'GET /api/agents': () => asAccount(async (token) => ({ agents: await listAgents({ token }) })),
     'POST /api/agent-invites': () => asAccount((token) => createAgentInvite({ token })),
+    'GET /api/workspaces': () => workspaceList(),
+    'POST /api/workspaces': (b) => asAccount(async (token) => ({ workspace: await createWorkspace({ token, name: String(b.name || ''), description: String(b.description || ''), color: String(b.color || ''), org: b.org ? String(b.org) : undefined }) })),
+    'GET /api/workspaces/:id': (b, id) => asAccount(async (token) => ({ ...(await getWorkspace({ token, id: needWorkspaceId(id) })), ...ofWorkspace(id) })),
+    'POST /api/workspaces/:id/update': (b, id) => asAccount(async (token) => ({ workspace: await updateWorkspace({ token, id: needWorkspaceId(id), patch: { name: b.name, description: b.description, color: b.color, archived: b.archived } }) })),
+    'POST /api/workspaces/:id/delete': (b, id) => asAccount(async (token) => { await deleteWorkspace({ token, id: needWorkspaceId(id) }); return { ok: true } }),
+    'POST /api/workspaces/:id/members': (b, id) => asAccount(async (token) => ({ member: await putWorkspaceMember({ token, id: needWorkspaceId(id), account: String(b.account || ''), access: String(b.access || '') }) })),
+    'POST /api/workspaces/:id/members/remove': (b, id) => asAccount(async (token) => { await removeWorkspaceMember({ token, id: needWorkspaceId(id), account: String(b.account || '') }); return { ok: true } }),
+    'POST /api/workspaces/:id/sessions/move': (b, id) => asAccount(async (token) => {
+      const dir = path.resolve(expandHome(String(b.dir || '')))
+      const saved = readConfig(dir)
+      if (!saved) throw httpError(404, 'No session in that folder.')
+      await setSessionWorkspace({ token, id: needWorkspaceId(id), room: saved.room })
+      writePrivateJson(path.join(dir, '.quilt', 'config.json'), { ...saved, workspace: id })
+      rememberWorkspace(dir, id)
+      return { ok: true }
+    }),
     'POST /api/account/start': () => beginLink(),
     'POST /api/account/cancel': () => { link = null; return accountState() },
     'POST /api/account/signout': async () => {
@@ -530,7 +572,8 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       recent: recentList(),
       defaults: { home: os.homedir(), cwd: process.cwd(), tools: TOOL_NAMES, editors: installedEditors(), relay: relayUrl() },
       profile: profile(),
-      maxFileBytes: MAX_SHARED_FILE_BYTES
+      maxFileBytes: MAX_SHARED_FILE_BYTES,
+      workspacesOn
     }),
     'POST /api/sessions': (b) => start(b),
     'POST /api/sessions/:id/open-in': async (b, id) => { await openIn(String(b.app || ''), get(id).root); return { ok: true } },
@@ -672,8 +715,10 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       m = url.pathname.match(/^\/api\/sessions\/([a-f0-9]+)\/files\/([a-f0-9]+)$/)
       if (req.method === 'GET' && m) return await serveFile(res, get(m[1]), m[2])
 
-      const pathKey = url.pathname.replace(/^\/api\/sessions\/[a-f0-9]+/, '/api/sessions/:id')
-      const sid = (url.pathname.match(/^\/api\/sessions\/([a-f0-9]+)/) || [])[1]
+      const pathKey = url.pathname
+        .replace(/^\/api\/sessions\/[a-f0-9]+/, '/api/sessions/:id')
+        .replace(/^\/api\/workspaces\/[^/]+/, '/api/workspaces/:id')
+      const sid = (url.pathname.match(/^\/api\/sessions\/([a-f0-9]+)/) || url.pathname.match(/^\/api\/workspaces\/([^/]+)/) || [])[1]
       const key = `${req.method} ${pathKey}`
       const handler = api[key]
       if (!handler) {

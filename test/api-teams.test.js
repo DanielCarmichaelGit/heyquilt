@@ -23,7 +23,8 @@ test('the member list shows names, emails, roles and teams to people with Member
 
 test('changing roles: Members and Roles Update, never your own, never the owner, only within your grid', async () => {
   const o = await makeOrg(t, 'Roles Co')
-  const lead = await t.store.createRole({ orgId: o.org.id, name: 'Lead', grants: { members: { r: true, u: true }, roles: { r: true, u: true }, teams: { r: true } } })
+  // Member now holds Workspaces: Read, so a role that hands out Member must too.
+  const lead = await t.store.createRole({ orgId: o.org.id, name: 'Lead', grants: { members: { r: true, u: true }, roles: { r: true, u: true }, teams: { r: true }, workspaces: { r: true } } })
   await t.store.addMember({ orgId: o.org.id, userId: 'lim', roleId: lead.id })
   const put = (who, id, roleId) => t.call('PUT', `/v1/orgs/${o.slug}/members/${id}`, { roleId }, who)
   const ok = await put('admin', o.mem.id, lead.id)
@@ -112,7 +113,7 @@ test('re-adding someone already in the team is refused, even with Create alone',
 
 test('removing someone who outranks you is refused even with Members: Delete', async () => {
   const o = await makeOrg(t, 'Guard Co')
-  const guard = await t.store.createRole({ orgId: o.org.id, name: 'Guard', grants: { members: { d: true }, teams: { r: true } } })
+  const guard = await t.store.createRole({ orgId: o.org.id, name: 'Guard', grants: { members: { d: true }, teams: { r: true }, workspaces: { r: true } } })
   await t.store.addMember({ orgId: o.org.id, userId: 'lim', roleId: guard.id })
   assert.equal((await t.call('DELETE', `/v1/orgs/${o.slug}/members/${o.admin.id}`, null, 'lim')).status, 403)
   assert.equal((await t.call('DELETE', `/v1/orgs/${o.slug}/members/${o.mem.id}`, null, 'lim')).status, 200, "a peer within Guard's grid can still be removed")

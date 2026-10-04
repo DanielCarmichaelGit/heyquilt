@@ -113,7 +113,8 @@ test('a second invite to an address that already has an open one is refused, not
 test('a narrow inviter cannot replace someone else\'s pending invite by sending a new one', async () => {
   const o = await makeOrg(t, 'Guard Co')
   // A Member who can also send invites (create only, no update/delete on invites).
-  const inviter = await t.store.createRole({ orgId: o.org.id, name: 'Narrow Inviter', grants: { invites: { c: true }, teams: { r: true } } })
+  // Member now holds Workspaces: Read, so a role that hands out Member must too.
+  const inviter = await t.store.createRole({ orgId: o.org.id, name: 'Narrow Inviter', grants: { invites: { c: true }, teams: { r: true }, workspaces: { r: true } } })
   await t.store.addMember({ orgId: o.org.id, userId: 'lim', roleId: inviter.id })
   const owner = await invite(o, 'target@acme.com', 'owner', o.role('admin').id)
   assert.equal(owner.status, 200)

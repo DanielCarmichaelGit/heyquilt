@@ -69,7 +69,8 @@ test('an org invite needs Agents: Create, and carries a role and teams; access d
 test('org invite choices are checked against the inviter: roles within their grid, teams they may add to', async () => {
   const o = await makeOrg(t, 'Invite Rights Co')
   const core = await t.store.createTeam({ orgId: o.org.id, name: 'Core' })
-  const inviter = await t.store.createRole({ orgId: o.org.id, name: 'Inviter', grants: { agents: { c: true }, teams: { r: true } } })
+  // Member now holds Workspaces: Read, so a role that hands out Member must too.
+  const inviter = await t.store.createRole({ orgId: o.org.id, name: 'Inviter', grants: { agents: { c: true }, teams: { r: true }, workspaces: { r: true } } })
   await t.store.setMemberRole(o.mem.id, inviter.id)
   const go = (body, who = 'mem') => t.call('POST', `/v1/orgs/${o.slug}/agent-invites`, body, who)
   assert.equal((await go({ teams: [{ teamId: core.id }] })).status, 403, 'no Team membership: Create')

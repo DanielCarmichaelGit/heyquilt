@@ -108,7 +108,11 @@ export function workspaceRoutes ({ store, person, now, agentAuth, bearer }) {
 
     ['DELETE', /^\/v1\/workspaces\/([^/]+)$/, async (req, body, [id]) => {
       const r = await reach(req, id)
-      if (r.ws.orgId) { const a = await orgAccess(store, r.me.userId, (await store.orgById(r.ws.orgId)).slug); a.need('workspaces', 'd') } else if (r.access.via !== 'owner') throw new HttpError(403, 'only the owner can delete a workspace')
+      if (r.ws.orgId) {
+        if (!r.me.userId) throw new HttpError(403, 'agents do not delete workspaces')
+        const a = await orgAccess(store, r.me.userId, (await store.orgById(r.ws.orgId)).slug)
+        a.need('workspaces', 'd')
+      } else if (r.access.via !== 'owner') throw new HttpError(403, 'only the owner can delete a workspace')
       await store.deleteWorkspace(r.ws.id)
       return { ok: true }
     }],

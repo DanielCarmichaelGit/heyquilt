@@ -71,6 +71,9 @@ test('org workspaces: Workspaces: Create makes, Update manages, Read sees; the o
   assert.equal((await t.call('PUT', `/v1/workspaces/${w.id}/members/person:mem`, { access: 'edit' }, 'admin')).status, 200)
   assert.deepEqual((await t.call('GET', `/v1/workspaces/${w.id}`, null, 'mem')).body.access, { access: 'edit', admin: false, via: 'member' })
   assert.equal((await t.call('DELETE', `/v1/workspaces/${w.id}`, null, 'mem')).status, 403)
+  const { agent, accessKey } = await makeAgent(t, { orgId: o.org.id })
+  assert.equal((await t.call('PUT', `/v1/workspaces/${w.id}/members/agent:${agent.id}`, { access: 'edit' }, 'admin')).status, 200)
+  assert.equal((await t.call('DELETE', `/v1/workspaces/${w.id}`, null, null, { authorization: `Bearer ${accessKey}` })).status, 403, 'agents do not delete org workspaces')
   assert.equal((await t.call('DELETE', `/v1/workspaces/${w.id}`, null, 'owner')).status, 200)
 })
 

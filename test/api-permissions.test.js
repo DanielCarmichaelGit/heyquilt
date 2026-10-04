@@ -6,10 +6,10 @@ import { slugify, uniqueSlug } from '../src/api/slugs.js'
 
 test('the grid has the spec rows, and only the cells the spec gives checkboxes', () => {
   assert.deepEqual(OPS, ['c', 'r', 'u', 'd'])
-  assert.deepEqual(RESOURCES, ['org', 'members', 'agents', 'teams', 'team_members', 'invites', 'roles', 'billing'])
+  assert.deepEqual(RESOURCES, ['org', 'members', 'agents', 'teams', 'team_members', 'invites', 'roles', 'workspaces', 'billing'])
   assert.deepEqual(ALLOWED.org, ['r', 'u'])
   assert.deepEqual(ALLOWED.members, ['r', 'u', 'd'])
-  for (const r of ['agents', 'teams', 'team_members', 'invites', 'roles']) assert.deepEqual(ALLOWED[r], ['c', 'r', 'u', 'd'], r)
+  for (const r of ['agents', 'teams', 'team_members', 'invites', 'roles', 'workspaces']) assert.deepEqual(ALLOWED[r], ['c', 'r', 'u', 'd'], r)
   assert.deepEqual(ALLOWED.billing, [], 'reserved for per-seat plans')
   assert.equal(LABELS.team_members, 'Team membership')
   assert.equal(LABELS.invites, 'User invites')
@@ -48,8 +48,10 @@ test('built-in roles: Owner and Admin hold every checkbox, Member only Teams: Re
   assert.deepEqual(BUILTIN.owner, BUILTIN.admin)
   for (const r of RESOURCES) for (const op of ALLOWED[r]) assert.equal(can(BUILTIN.admin, r, op), true, `${r}.${op}`)
   assert.equal('billing' in BUILTIN.admin, false)
-  assert.deepEqual(BUILTIN.member, { teams: { r: true } })
+  assert.deepEqual(BUILTIN.member, { teams: { r: true }, workspaces: { r: true } })
 })
+
+test('the Workspaces row is labelled', () => { assert.equal(LABELS.workspaces, 'Workspaces') })
 
 test('emailDomain and isDomain', () => {
   assert.equal(emailDomain('Dana@Acme.COM'), 'acme.com')

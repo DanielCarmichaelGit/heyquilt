@@ -71,7 +71,7 @@ test('people outside an org get a 404 for it, the same as a missing org', async 
 test('a Member sees their grants and cannot change settings; an Admin can', async () => {
   const o = await makeOrg(t)
   const me = await t.call('GET', `/v1/orgs/${o.slug}/me`, null, 'mem')
-  assert.deepEqual([me.body.isOwner, me.body.role.name, me.body.grants], [false, 'Member', { teams: { r: true } }])
+  assert.deepEqual([me.body.isOwner, me.body.role.name, me.body.grants], [false, 'Member', { teams: { r: true }, workspaces: { r: true } }])
   assert.equal((await t.call('PUT', `/v1/orgs/${o.slug}`, { name: 'Nope' }, 'mem')).status, 403)
   const ok = await t.call('PUT', `/v1/orgs/${o.slug}`, { name: 'Acme Two' }, 'admin')
   assert.deepEqual([ok.status, ok.body.org.name, ok.body.org.slug], [200, 'Acme Two', o.slug], 'renaming keeps the address')

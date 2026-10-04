@@ -13,6 +13,7 @@ export const ALLOWED = {
   team_members: ['c', 'r', 'u', 'd'],
   invites: ['c', 'r', 'u', 'd'],
   roles: ['c', 'r', 'u', 'd'],
+  workspaces: ['c', 'r', 'u', 'd'],
   billing: []
 }
 
@@ -26,6 +27,7 @@ export const LABELS = {
   team_members: 'Team membership',
   invites: 'User invites',
   roles: 'Roles',
+  workspaces: 'Workspaces',
   billing: 'Billing'
 }
 
@@ -65,5 +67,5 @@ const everything = () => Object.fromEntries(RESOURCES
 export const BUILTIN = {
   owner: everything(),
   admin: everything(),
-  member: { teams: { r: true } }
+  member: { teams: { r: true }, workspaces: { r: true } }
 }

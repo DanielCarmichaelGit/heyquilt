@@ -24,7 +24,7 @@ test('creating an org makes the three built-in roles and the owner as a member',
   assert.deepEqual([org.name, org.slug, org.ownerId, org.domain, org.domainRequests], ['Acme', 'acme', 'u1', null, false])
   const roles = await s.listRoles(org.id)
   assert.deepEqual(roles.map((r) => [r.name, r.builtin]).sort(), [['Admin', 'admin'], ['Member', 'member'], ['Owner', 'owner']])
-  assert.deepEqual(roles.find((r) => r.builtin === 'member').grants, { teams: { r: true } })
+  assert.deepEqual(roles.find((r) => r.builtin === 'member').grants, { teams: { r: true }, workspaces: { r: true } })
   const me = await s.memberOf(org.id, 'u1')
   assert.equal(me.roleId, roles.find((r) => r.builtin === 'owner').id)
   await assert.rejects(newOrg(s, 'Other', 'acme'), (err) => err.code === '23505')

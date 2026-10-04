@@ -26,6 +26,9 @@ ${TASK_WORKFLOW_MD}
 - See what a partner's AI is doing with \`quilt_partner_feed\`, and where people
   are working with \`quilt_list_files\` (recent edits and claims).
 - Announce what you're working on (\`quilt_set_focus\` / \`quilt focus "..."\`).
+- Share your work with \`quilt_share\`: when you start a request (what was asked,
+  your plan) and when you finish (what you did, the files you changed). Partners
+  see it in their feed, it goes on the task board, and the host won't commit under you.
 - Before you change files, call \`quilt_before_edit\` with their paths. It tells you
   whether each one is yours to edit (claiming free ones for you) and shows what
   people asked about those files. Don't edit a file it refuses.
@@ -62,11 +65,11 @@ function upsertBlock (file, block) {
   return next !== text
 }
 
-function upsertMcp (file, key = 'mcpServers') {
+function upsertMcp (file, key = 'mcpServers', entry = { command: 'quilt', args: ['mcp'] }) {
   let json = {}
   try { json = JSON.parse(fs.readFileSync(file, 'utf8')) } catch {}
   json[key] = json[key] || {}
-  json[key].quilt = { command: 'quilt', args: ['mcp'] }
+  json[key].quilt = entry
   delete json[key].cowove // the old name (renamed to Quilt)
   fs.mkdirSync(path.dirname(file), { recursive: true })
   const text = JSON.stringify(json, null, 2) + '\n'
@@ -124,6 +127,8 @@ export function setup (root) {
   if (upsertMcp(path.join(root, '.mcp.json'))) changed.push('.mcp.json (Claude Code MCP server)')
   if (installHooks(root)) changed.push(`${HOOKS_FILE} (Claude Code hooks: files are claimed as you edit them)`)
   if (upsertMcp(path.join(root, '.cursor', 'mcp.json'))) changed.push('.cursor/mcp.json (Cursor MCP server)')
+  if (upsertMcp(path.join(root, '.vscode', 'mcp.json'), 'servers', { type: 'stdio', command: 'quilt', args: ['mcp'] })) changed.push('.vscode/mcp.json (VS Code and GitHub Copilot MCP server)')
+  if (upsertMcp(path.join(root, '.gemini', 'settings.json'))) changed.push('.gemini/settings.json (Gemini CLI MCP server)')
   if (upsertBlock(path.join(root, 'AGENTS.md'), AGENT_GUIDE)) changed.push('AGENTS.md (Cursor, Codex, and other agents)')
   if (upsertBlock(path.join(root, 'CLAUDE.md'), AGENT_GUIDE)) changed.push('CLAUDE.md (Claude Code)')
   if (scaffoldChecklist(root)) changed.push('AGENTS.md ("Verifying a change": fill in what proves a change works here)')

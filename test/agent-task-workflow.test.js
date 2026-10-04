@@ -64,6 +64,11 @@ test('quilt setup writes the workflow into AGENTS.md and CLAUDE.md, and scaffold
   assert.ok(changed.some((c) => c.startsWith('AGENTS.md (Cursor')))
   assert.ok(changed.some((c) => c.startsWith('CLAUDE.md')))
   assert.ok(changed.some((c) => c.includes('Verifying a change')))
+  // Every tool that reads a project-level MCP config gets Quilt's server, not just Claude Code.
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, '.mcp.json'), 'utf8')).mcpServers.quilt, { command: 'quilt', args: ['mcp'] })
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, '.cursor', 'mcp.json'), 'utf8')).mcpServers.quilt, { command: 'quilt', args: ['mcp'] })
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, '.vscode', 'mcp.json'), 'utf8')).servers.quilt, { type: 'stdio', command: 'quilt', args: ['mcp'] })
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, '.gemini', 'settings.json'), 'utf8')).mcpServers.quilt, { command: 'quilt', args: ['mcp'] })
   for (const file of ['AGENTS.md', 'CLAUDE.md']) {
     const text = fs.readFileSync(path.join(root, file), 'utf8')
     assert.ok(text.includes(TASK_WORKFLOW_MD), `${file} should contain TASK_WORKFLOW_MD`)

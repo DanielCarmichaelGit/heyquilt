@@ -6,6 +6,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
+import { SubscribeRequestSchema, UnsubscribeRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import { findDaemon, call } from './control.js'
@@ -41,6 +42,8 @@ export { toolLabel }
 export const INBOX_POLL_MS = 2000
 // The notification Claude Code turns into a turn when it was started with the quilt channel.
 export const CHANNEL_METHOD = 'notifications/claude/channel'
+// The inbox as an MCP resource: any client may subscribe to hear when something new arrives.
+export const INBOX_URI = 'quilt://inbox'
 
 const NOT_RUNNING = 'There is no live quilt session for this project. If the user gave you an invite link, join with ' +
   'quilt_join_session. To start a new session, use quilt_start_session. A person can also run `quilt join` or `quilt ui`.'
@@ -64,7 +67,8 @@ export const MCP_INSTRUCTIONS =
   'Always re-read a file right before you edit it. ' +
   'If quilt_status lists merges to settle, read quilt_merges before editing those files. ' +
   'Mentions of you (@yourname) in chat, direct messages to you and tasks handed to you wait in quilt_inbox: read it when you start, and act on each one. ' +
-  'To be woken instead of polling, quilt_webhook_subscribe POSTs each one to a URL of yours as it happens. ' +
+  'To be woken instead of polling, subscribe to the quilt://inbox resource (you are told when something new arrives), or quilt_webhook_subscribe POSTs each one to a URL of yours as it happens. ' +
+  'Share what you are doing with quilt_share: when you start on a request (request and your plan) and when you finish (what you did and the files you changed). Partners see it in their feed, it puts your work on the task board, and it tells the host not to commit under you. ' +
   'When Claude Code is started with the quilt channel, they arrive on their own as <channel source="quilt"> events while you work: treat each like a request from that person, answer with quilt_message, and take a task with quilt_move_task. ' +
   TASK_WORKFLOW
 
@@ -72,7 +76,7 @@ export async function runMcp () {
   const server = new McpServer(
     { name: 'quilt', version: '0.1.0' },
     // The channel capability lets Claude Code (started with the quilt channel) take inbox events as turns.
-    { instructions: MCP_INSTRUCTIONS, capabilities: { experimental: { 'claude/channel': {} } } }
+    { instructions: MCP_INSTRUCTIONS, capabilities: { resources: { subscribe: true }, experimental: { 'claude/channel': {} } } }
   )
 
   // A session this MCP server runs itself, when the agent joined or started one.
@@ -344,14 +348,21 @@ export async function runMcp () {
   // Claude Code started with the quilt channel gets each new inbox event as a turn. Other
   // tools are not sent anything (they read quilt_inbox). What was already waiting when this
   // server first finds the session is left to quilt_inbox, so a fresh Claude is not flooded.
+  // Any client that subscribes to the inbox resource (plain MCP) is told the moment something
+  // arrives, and reads it; Claude Code started with the quilt channel gets each event as a turn
+  // instead. What was already waiting when this server first finds the session is left to quilt_inbox.
+  const subscribed = new Set()
   const pushInbox = async () => {
-    if (clientTool() !== 'Claude Code') return
+    const channel = clientTool() === 'Claude Code'
+    if (!channel && !subscribed.size) return
     const d = findDaemon(joined ? joined.dir : undefined)
     if (!d) return
     const c = at(pushCursor, d)
     const r = await call(d, 'POST', '/inbox', { after: c.seq })
     c.seq = r.seq
-    if (c.fresh) return
+    if (c.fresh || !r.events.length) return
+    for (const uri of subscribed) await server.server.sendResourceUpdated({ uri })
+    if (!channel) return
     for (const e of r.events) {
       await server.server.notification({
         method: CHANNEL_METHOD,
@@ -359,6 +370,25 @@ export async function runMcp () {
       })
     }
   }
+  server.registerResource('inbox', INBOX_URI, {
+    title: 'Quilt inbox',
+    description: 'Mentions of you, direct messages to you and tasks handed to you (the last 100). Subscribe to be told when something new arrives.',
+    mimeType: 'text/markdown'
+  }, async (uri) => {
+    const d = findDaemon(joined ? joined.dir : undefined)
+    const r = d ? await call(d, 'POST', '/inbox', { after: 0 }).catch(() => ({ events: [] })) : { events: [] }
+    return { contents: [{ uri: uri.href, mimeType: 'text/markdown', text: d ? (renderInbox(r.events) || 'Nothing has been waiting for you.') : NOT_RUNNING }] }
+  })
+  server.server.setRequestHandler(SubscribeRequestSchema, (req) => {
+    if (req.params.uri === INBOX_URI) {
+      subscribed.add(INBOX_URI)
+      // Take stock now, so only what arrives from here on is announced.
+      const d = findDaemon(joined ? joined.dir : undefined)
+      if (d) call(d, 'POST', '/inbox', { after: 0 }).then((r) => { const c = at(pushCursor, d); if (c.fresh || c.seq < r.seq) { c.seq = r.seq; c.fresh = false } }).catch(() => {})
+    }
+    return {}
+  })
+  server.server.setRequestHandler(UnsubscribeRequestSchema, (req) => { subscribed.delete(req.params.uri); return {} })
   const pushTimer = setInterval(() => pushInbox().catch(() => {}), INBOX_POLL_MS)
   pushTimer.unref()
 
@@ -552,6 +582,21 @@ export async function runMcp () {
     return `Marked as done.${released ? ` Let go of ${released} file${released === 1 ? '' : 's'} claimed for you while you edited.` : ''}`
   }))
 
+  server.registerTool('quilt_share', {
+    description: 'Share what you are doing with your collaborators; it appears live in their Quilt feed and on the task board, in any tool. Call it when you start on a request ' +
+      '(`request`: what your user asked, in a sentence; `summary`: your plan) and again when you finish (`summary`: what you did; `files`: files you changed). ' +
+      'Starting marks you as working, so the host doesn\'t commit under you. Keep it short and never include secrets, keys or file contents.',
+    inputSchema: {
+      request: z.string().max(2000).optional().describe('What your user asked for, in a sentence (only when starting a new request)'),
+      summary: z.string().max(4000).describe('Your plan, progress or result, in one to three sentences'),
+      files: z.array(z.string().max(300)).max(30).optional().describe('Project files you changed, relative paths')
+    }
+  }, ({ request, summary, files }) => withDaemon(async (d) => {
+    const r = await call(d, 'POST', '/share-work', { tool: clientTool(), request, summary, files })
+    if (r.automatic) return 'Quilt already shares your chat with the session as you work, so nothing more to do.'
+    return r.shared ? 'Shared with the session.' : 'Nothing to share: give a summary.'
+  }))
+
   server.registerTool('quilt_before_edit', {
     description: 'Call before you change files (with your own edit tools), with the paths you are about to change. For each file: whether it is yours to edit ' +
       '(a file nobody holds is claimed for you until you finish; one someone else holds is refused: do not edit it, message them instead), and what people asked ' +
@@ -648,7 +693,8 @@ export async function runMcp () {
       if (!st.peers.length) return 'Nobody else is in the session right now.'
       return st.peers.map((p) => {
         const a = p.agent || {}
-        const ai = a.sharing === false ? 'sharing paused' : a.status === 'unavailable' ? 'feed unavailable' : a.tool ? `${a.tool} ${a.status}` : 'no AI activity yet'
+        const reported = p.work && p.work.state === 'working' ? `working${p.work.note ? `: ${p.work.note}` : ''}` : null
+        const ai = a.sharing === false ? 'sharing paused' : a.status === 'working' && a.tool ? `${a.tool} working` : reported || (a.status === 'unavailable' ? 'feed unavailable' : a.tool ? `${a.tool} ${a.status}` : 'no AI activity yet')
         return `- ${p.name}${p.kind === 'agent' ? ' (AI agent)' : ''}: ${ai}${p.focus ? `; focus: ${p.focus}` : ''}`
       }).join('\n') + '\n\nCall again with "who" to read one feed.'
     }

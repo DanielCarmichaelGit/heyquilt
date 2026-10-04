@@ -33,6 +33,8 @@ export async function startControl (session, extras = {}) {
     'POST /before-edit': (b) => session.prepareEdit(Array.isArray(b.paths) ? b.paths.slice(0, 100) : []),
     // An agent finished a piece of work: let go of the claims that followed its edits.
     'POST /finish': () => session.finishEditing(),
+    // What an MCP agent shares about its work (quilt_share): the feed, tasks and "working", for any tool.
+    'POST /share-work': (b) => session.shareAgentWork({ tool: b.tool, request: b.request, summary: b.summary, files: Array.isArray(b.files) ? b.files : [] }),
     'POST /agent': (b) => { session.addAgent(b.client); return { ok: true } },
     'POST /feed': (b) => ({ entries: session.agentFeedFor(b.who, { limit: Math.min(Number(b.limit) || 40, 300) }) }),
     // The chronology: { path, by, since, task, limit } (see Session.historyQuery).

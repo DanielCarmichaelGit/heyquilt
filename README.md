@@ -36,7 +36,8 @@ within milliseconds. Your agents can also see what the other agents are doing.
   **Merges** bar for everyone to settle.
 - **Watch each other's AI, live.** The app shows your partner's AI conversation
   as it happens: their prompts, the AI's replies, and one-line actions like
-  "Edited src/app.ts" or "Ran npm test". This works for Claude Code and Cursor.
+  "Edited src/app.ts" or "Ran npm test". Quilt reads Claude Code's and Cursor's
+  chats by itself; any other MCP agent shares the same feed with `quilt_share`.
   Next to it are a live file tree (who's editing what, what's claimed) and
   read-only file tabs where changed lines light up.
 - **Agents coordinate, and can join by themselves.** An MCP server gives each
@@ -186,6 +187,7 @@ See [Claims](#claims).
 | `quilt_history` | The chronology: who changed which file, when, the diff, and for which task; filter by path, person, task or time |
 | `quilt_list_files` | Shared files with recent editors and claims |
 | `quilt_set_focus` | Announce the current task |
+| `quilt_share` | Share what you're working on (the request, your plan, what you did, files changed): it reaches partners' feeds and the task board, and holds off commits while you work |
 | `quilt_before_edit` | Before changing files: whether each one is yours to edit (free ones are claimed for you; held ones are refused, with who to ask), and what people asked about them that you haven't answered |
 | `quilt_set_work` | Say you're working or done; "done" releases the files claimed for you, and is refused until you've answered everyone who wrote to you |
 | `quilt_claim` / `quilt_release` | Claim or release files by hand (Quilt claims files for you as your AI edits them) |
@@ -198,6 +200,14 @@ See [Claims](#claims).
 | `quilt_get_file` | Download a shared file (again) |
 
 Any MCP-capable tool works: Claude Code, Cursor, Windsurf, Codex, Zed, and so on.
+`quilt setup` registers the server for Claude Code (`.mcp.json`), Cursor
+(`.cursor/mcp.json`), VS Code and GitHub Copilot (`.vscode/mcp.json`) and Gemini CLI
+(`.gemini/settings.json`); add `quilt mcp` to the others' MCP settings yourself.
+
+Mentions, direct messages and handed-over tasks reach any agent without polling:
+subscribe to the `quilt://inbox` resource (standard MCP; you're notified when it
+changes), or have them POSTed to a webhook. Claude Code started with the quilt
+channel gets each one as a turn.
 Point its MCP config at the command `quilt` with args `["mcp"]`.
 
 ## Watching each other's AI

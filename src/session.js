@@ -1927,7 +1927,7 @@ export class Session extends EventEmitter {
 
   /** An agent session, or a person whose AI is working or whose tool Quilt can't read: an edit is probably the AI's. */
   aiMayBeEditing () {
-    return this.kind === 'agent' || this.agentState?.status !== 'idle'
+    return this.kind === 'agent' || this.agentState?.status !== 'idle' || this.work?.state === 'working'
   }
 
   autoClaim (rel) {
@@ -1961,7 +1961,7 @@ export class Session extends EventEmitter {
     const cutoff = Date.now() - this.autoClaimQuietMs
     this.releaseAutoClaims((rel, ts) => ts <= cutoff).then(() => {
       // "Working" that only an edit check said lapses with its files, so a commit isn't held up by an agent that never said done.
-      if (this.workFromEdits && !this.autoClaims.size && this.work?.state === 'working') this.finishEditing().catch(() => {})
+      if (this.workFromEdits && !this.autoClaims.size && this.work?.state === 'working' && Date.now() - (this.agentReportedAt || 0) >= this.autoClaimQuietMs) this.finishEditing().catch(() => {})
     }).catch(() => {})
   }
 
@@ -1997,11 +1997,48 @@ export class Session extends EventEmitter {
     }
     const shared = files.filter((f) => f.shared).map((f) => f.path)
     const requests = requestsAbout(shared, { messages: this.chat.toArray().filter((m) => this.canSee(m)), me: this.name })
-    if (files.some((f) => f.claimed) && !this.agentState?.tool && this.work?.state !== 'working') {
-      this.setWork('working', this.focus || '')
-      this.workFromEdits = true
-    }
+    if (files.some((f) => f.claimed)) this.reportWorking(this.focus || '')
     return { me: this.name, files, requests }
+  }
+
+  /**
+   * An agent said (over MCP) that it is at work. Unless a chat reader already sees it working,
+   * it counts as working for commits and for claims that follow edits, until it says done or
+   * goes quiet (nothing reported, no claimed file touched, for the quiet time).
+   */
+  reportWorking (note = '') {
+    this.agentReportedAt = Date.now()
+    if (this.agentState?.status === 'working' || this.work?.state === 'working') return
+    this.setWork('working', note)
+    this.workFromEdits = true
+  }
+
+  /**
+   * What an agent shares about its work over MCP (quilt_share), for any tool: the request it
+   * took, its plan or result, the files it changed. It reaches partners' feeds and opens or
+   * extends an In progress task exactly like a chat Quilt reads itself. A tool whose chat
+   * Quilt already reads is not shared twice.
+   */
+  shareAgentWork ({ tool = this.tool, request = '', summary = '', files = [] } = {}) {
+    const label = String(tool || 'AI')
+    if (this.agentState?.tool === label && this.agentState.status !== 'unavailable') return { shared: 0, automatic: true }
+    const now = Date.now()
+    const base = { tool: label, conv: `mcp-${label}`, ts: now }
+    const nid = () => `mcp-${now}-${crypto.randomBytes(4).toString('hex')}`
+    const entries = []
+    const req = String(request || '').trim()
+    const sum = String(summary || '').trim()
+    if (req) entries.push({ ...base, id: nid(), kind: 'prompt', text: req.slice(0, 2000) })
+    if (sum) entries.push({ ...base, id: nid(), kind: 'reply', text: sum.slice(0, 4000) })
+    for (const f of (files || []).slice(0, 30)) {
+      const p = String(f || '').replace(/\\/g, '/').replace(/^\.\//, '')
+      if (p && !p.startsWith('..') && !path.isAbsolute(p)) entries.push({ ...base, id: nid(), kind: 'action', text: `Edited ${p}` })
+    }
+    if (!entries.length) return { shared: 0 }
+    if (req) this.reportWorking(req.slice(0, 200))
+    else this.agentReportedAt = now
+    this.pushAgentEntries(entries)
+    return { shared: entries.length }
   }
 
   /** Done with a piece of work: lets go of the claims that followed our edits and says we're done. */

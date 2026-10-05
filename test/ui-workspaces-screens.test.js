@@ -56,3 +56,12 @@ test('the session view no longer calls itself a workspace in code', () => {
   assert.ok(!ui('session.js').includes('ws-content') && !ui('app.css').includes('.ws-content'), 'ws- is the workspaces screens\' prefix')
   assert.ok(ui('session.js').includes('<div class="sv-content" id="main">') && ui('app.css').includes('.sv-content {'))
 })
+
+test('the settings dialog focuses its name field so Escape closes it, and people cards wrap instead of squeezing the name', () => {
+  assert.ok(ui('workspaces.js').includes("form.querySelector('#wss-name').focus()"))
+  const css = ui('app.css')
+  assert.ok(css.includes('.pc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));'))
+  assert.ok(css.includes('.pc { display: flex; flex-wrap: wrap;'))
+  assert.ok(css.includes('.pc .t { flex: 1 1 110px; min-width: 0;'))
+})
+

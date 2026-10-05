@@ -1114,7 +1114,7 @@ body.has-update #app { padding-top: var(--update-bar); } /* padding, not margin:
 .ws-head .acts { margin-left: auto; display: flex; gap: 6px; }
 .sec { margin-top: 26px; }
 .sc-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-.pc-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.pc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
 .sc { display: flex; flex-direction: column; gap: 6px; min-height: 120px; padding: 14px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow); }
 .sc .top { display: flex; align-items: center; gap: 8px; }
 .sc .top b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
@@ -1123,14 +1123,14 @@ body.has-update #app { padding-top: var(--update-bar); } /* padding, not margin:
 .sc .who { display: flex; align-items: center; gap: 6px; margin-top: auto; font-size: 12px; color: var(--muted); }
 .sc.add, .pc.add { align-items: center; justify-content: center; gap: 6px; border-style: dashed; box-shadow: none; background: transparent; color: var(--muted); font: inherit; font-weight: 500; cursor: pointer; }
 .sc.add svg, .pc.add svg { width: 18px; height: 18px; color: var(--accent); }
-.pc { display: flex; align-items: center; gap: 12px; padding: 14px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow); }
+.pc { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow); }
 .pc .avatar { width: 40px; height: 40px; font-size: 15px; }
-.pc .t { flex: 1; min-width: 0; line-height: 1.35; }
+.pc .t { flex: 1 1 110px; min-width: 0; line-height: 1.35; }
 .pc .t b { display: block; font-weight: 600; }
 .pc .t span { display: block; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pc .input.sm { height: 28px; width: auto; padding: 0 8px; font-size: 12.5px; }
 @media (max-width: 900px) {
-  .ws-grid, .pc-grid { grid-template-columns: 1fr 1fr; }
+  .ws-grid { grid-template-columns: 1fr 1fr; }
   .sc-grid { grid-template-columns: 1fr 1fr; }
 }
-@media (max-width: 560px) { .ws-grid, .pc-grid, .sc-grid { grid-template-columns: 1fr; } }
+@media (max-width: 560px) { .ws-grid, .sc-grid { grid-template-columns: 1fr; } }

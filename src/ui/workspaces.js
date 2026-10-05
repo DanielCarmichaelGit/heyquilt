@@ -262,6 +262,8 @@ function settingsDialog (reload, go, dialog) {
     <label class="toggle"><input type="checkbox" name="archived" ${w.archivedAt ? 'checked' : ''}><span class="track"><span class="knob"></span></span><span class="tg-text"><b>Archived</b><span class="hint">Kept, but out of the way.</span></span></label>
     <p class="error" data-error></p>
     <div class="actions">${state.workspace.canDelete ? '<button type="button" class="btn ghost danger" data-delete>Delete workspace</button>' : ''}<span class="spacer"></span><button type="button" class="btn ghost" data-cancel>Cancel</button><button class="btn primary" type="submit">Save</button></div>`)
+  // Focus inside the dialog, so Escape (bound on the dialog) closes it straight away.
+  form.querySelector('#wss-name').focus()
   form.onsubmit = async (e) => {
     e.preventDefault()
     const f = new FormData(form)

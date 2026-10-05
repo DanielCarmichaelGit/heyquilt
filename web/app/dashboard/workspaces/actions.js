@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
 import { requireUser } from '@/lib/session.js'
 import { apiCall } from '@/lib/api.js'
+import { workspacePatch } from '@/lib/workspace-form.js'
 
 const back = (path, q) => redirect(`${path}?${new URLSearchParams(q)}`)
 
@@ -17,7 +18,7 @@ export async function createWorkspace (formData) {
 export async function updateWorkspace (formData) {
   const user = await requireUser('/dashboard/workspaces')
   const id = String(formData.get('id'))
-  const r = await apiCall(user, 'PATCH', `/v1/workspaces/${id}`, { name: formData.get('name'), description: formData.get('description') || '', color: formData.get('color') || '', archived: formData.get('archived') === 'on' })
+  const r = await apiCall(user, 'PATCH', `/v1/workspaces/${id}`, workspacePatch(formData))
   revalidatePath(`/dashboard/workspaces/${id}`)
   back(`/dashboard/workspaces/${id}`, r.ok ? { message: 'Saved.' } : { error: r.data?.error || 'Could not save.' })
 }

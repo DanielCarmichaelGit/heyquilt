@@ -168,3 +168,21 @@ test('agents: list the workspaces they are members of, never make one', async ()
   const made = await t.call('POST', '/v1/workspaces', { name: 'Mine' }, null, asAgent)
   assert.deepEqual([made.status, made.body.error], [403, 'agents do not make workspaces'])
 })
+
+test('GET a workspace says whether the caller may delete it', async () => {
+  const canDelete = async (id, who, headers) => (await t.call('GET', `/v1/workspaces/${id}`, null, who, headers)).body.canDelete
+  const mine = (await t.call('POST', '/v1/workspaces', { name: 'Del' }, 'mem')).body.workspace
+  await t.call('PUT', `/v1/workspaces/${mine.id}/members/person:lim`, { access: 'edit' }, 'mem')
+  assert.equal(await canDelete(mine.id, 'mem'), true, 'the owner')
+  assert.equal(await canDelete(mine.id, 'lim'), false, 'an edit member')
+  const o = await makeOrg(t, 'Del Co')
+  const w = (await t.call('POST', '/v1/workspaces', { name: 'Core', org: o.slug }, 'admin')).body.workspace
+  await t.call('PUT', `/v1/workspaces/${w.id}/members/person:mem`, { access: 'edit' }, 'admin')
+  const { agent, accessKey } = await makeAgent(t, { orgId: o.org.id })
+  await t.store.addAgentMember({ orgId: o.org.id, agentId: agent.id })
+  await t.call('PUT', `/v1/workspaces/${w.id}/members/agent:${agent.id}`, { access: 'edit' }, 'admin')
+  assert.equal(await canDelete(w.id, 'owner'), true, 'the org owner')
+  assert.equal(await canDelete(w.id, 'admin'), true, 'Admin holds Workspaces: Delete')
+  assert.equal(await canDelete(w.id, 'mem'), false, 'Member does not, whatever its member row says')
+  assert.equal(await canDelete(w.id, null, { authorization: `Bearer ${accessKey}` }), false, 'agents never')
+})

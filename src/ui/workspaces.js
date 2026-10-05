@@ -261,23 +261,27 @@ function settingsDialog (reload, go, dialog) {
     <div class="field"><span class="label">Colour</span><div class="swatches">${Object.entries(COLORS).map(([k, c]) => `<label class="swatch"><input type="radio" name="color" value="${k}" ${(w.color || 'lilac') === k ? 'checked' : ''}><span style="background:${c}"></span></label>`).join('')}</div></div>
     <label class="toggle"><input type="checkbox" name="archived" ${w.archivedAt ? 'checked' : ''}><span class="track"><span class="knob"></span></span><span class="tg-text"><b>Archived</b><span class="hint">Kept, but out of the way.</span></span></label>
     <p class="error" data-error></p>
-    <div class="actions"><button type="button" class="btn ghost danger" data-delete>Delete workspace</button><span class="spacer"></span><button type="button" class="btn ghost" data-cancel>Cancel</button><button class="btn primary" type="submit">Save</button></div>`)
+    <div class="actions">${state.workspace.canDelete ? '<button type="button" class="btn ghost danger" data-delete>Delete workspace</button>' : ''}<span class="spacer"></span><button type="button" class="btn ghost" data-cancel>Cancel</button><button class="btn primary" type="submit">Save</button></div>`)
   form.onsubmit = async (e) => {
     e.preventDefault()
     const f = new FormData(form)
     const save = form.querySelector('button[type=submit]')
     save.disabled = true
     try {
-      await api('POST', wsUrl(w.id, '/update'), { name: f.get('name'), description: f.get('description'), color: f.get('color'), archived: f.get('archived') === 'on' })
+      const patch = { name: f.get('name'), description: f.get('description'), color: f.get('color') }
+      // Only a change of the toggle: sending it again would reset when it was archived.
+      const archived = f.get('archived') === 'on'
+      if (archived !== !!w.archivedAt) patch.archived = archived
+      await api('POST', wsUrl(w.id, '/update'), patch)
       close(); await reload()
     } catch (err) {
       form.querySelector('[data-error]').textContent = err.message
       save.disabled = false
     }
   }
-  form.querySelector('[data-delete]').onclick = async () => {
+  form.querySelector('[data-delete]')?.addEventListener('click', async () => {
     const typed = await ask({ title: `Delete ${w.name}?`, message: 'Its sessions stay, outside any workspace. Type the workspace name to confirm.', ok: 'Delete', danger: true, input: { placeholder: w.name } })
     if (typed !== w.name) { if (typed) toast('That is not the name.'); return }
     try { await api('POST', wsUrl(w.id, '/delete')); close(); await loadWorkspaces(); go('home') } catch (err) { toast(err.message) }
-  }
+  })
 }

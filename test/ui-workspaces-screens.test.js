@@ -26,6 +26,15 @@ test('the workspace page: back link, header, session cards with New session, peo
   for (const bit of ['All workspaces', 'data-ws-back', 'class="ws-head"', 'class="sc-grid"', 'data-rejoin=', 'data-go=', 'data-new-session-in=', 'New session', 'People &amp; agents', 'class="pc"', 'data-member-access=', 'data-member-remove=', 'Add a person or an agent', 'data-ws-settings', 'Delete workspace', "'/update'", "'/delete'", "'/members/remove'"]) assert.ok(w.includes(bit), bit)
 })
 
+test('settings: Save sends archived only when it changed, and Delete shows only to who may delete', () => {
+  const w = ui('workspaces.js')
+  const dialog = w.slice(w.indexOf('function settingsDialog'))
+  assert.ok(dialog.includes("if (archived !== !!w.archivedAt) patch.archived = archived"), 'an unchanged toggle leaves archivedAt alone')
+  assert.ok(!dialog.includes("archived: f.get('archived') === 'on'"))
+  assert.ok(dialog.includes("state.workspace.canDelete ? '<button type=\"button\" class=\"btn ghost danger\" data-delete>Delete workspace</button>' : ''"))
+  assert.ok(dialog.includes("form.querySelector('[data-delete]')?.addEventListener"))
+})
+
 test('starting a session from a workspace passes the workspace id', () => {
   const h = ui('home.js')
   assert.ok(h.includes('export function newSessionDialog (workspace = \'\')'))

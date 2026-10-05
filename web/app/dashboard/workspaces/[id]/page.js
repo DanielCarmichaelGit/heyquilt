@@ -41,7 +41,7 @@ export default async function WorkspacePage ({ params, searchParams }) {
       </>
     )
   }
-  const { access = {}, owner = {}, members = [], sessions = [] } = r.data
+  const { access = {}, canDelete = false, owner = {}, members = [], sessions = [] } = r.data
   const [collabsRes, agentsRes] = access.admin
     ? await Promise.all([apiCall(user, 'GET', '/v1/me/collaborators'), apiCall(user, 'GET', '/v1/agents')])
     : [null, null]
@@ -70,10 +70,11 @@ export default async function WorkspacePage ({ params, searchParams }) {
               <select className='input' name='color' defaultValue={w.color || 'lilac'} aria-label='Colour'>
                 {COLORS.map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
+              <input type='hidden' name='was_archived' value={w.archivedAt ? 'on' : ''} />
               <label className='row'><input type='checkbox' name='archived' defaultChecked={!!w.archivedAt} /> Archived</label>
               <div className='row'>
                 <button className='btn primary'>Save</button>
-                <ConfirmDelete action={deleteWorkspace} what='this workspace' note='Its sessions are kept, unassigned.' />
+                {canDelete && <ConfirmDelete action={deleteWorkspace} what='this workspace' note='Its sessions are kept, unassigned.' />}
               </div>
             </form>
           </section>)}

@@ -32,7 +32,7 @@ export default async function WorkspacePage ({ params, searchParams }) {
   if (r.status === 404) notFound()
   const w = r.data?.workspace
   if (!w) return <p className='notice bad'>Could not load this workspace right now.</p>
-  const { access = {}, owner = {}, members = [], sessions = [] } = r.data
+  const { access = {}, canDelete = false, owner = {}, members = [], sessions = [] } = r.data
   const membersRes = access.admin ? await apiCall(user, 'GET', `/v1/orgs/${slug}/members`) : null
   const toAdd = access.admin ? addable(members, membersRes?.data?.members) : []
   const now = Date.now()
@@ -58,10 +58,11 @@ export default async function WorkspacePage ({ params, searchParams }) {
             <select className='input' name='color' defaultValue={w.color || 'lilac'} aria-label='Colour'>
               {COLORS.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
+            <input type='hidden' name='was_archived' value={w.archivedAt ? 'on' : ''} />
             <label className='row'><input type='checkbox' name='archived' defaultChecked={!!w.archivedAt} /> Archived</label>
             <div className='row'>
               <button className='btn primary'>Save</button>
-              <ConfirmDelete action={deleteWorkspace} what='this workspace' note='Its sessions are kept, unassigned.' />
+              {canDelete && <ConfirmDelete action={deleteWorkspace} what='this workspace' note='Its sessions are kept, unassigned.' />}
             </div>
           </form>
         </section>)}

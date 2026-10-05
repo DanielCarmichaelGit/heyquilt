@@ -77,6 +77,15 @@ test('a session the API will not put in its workspace starts outside any workspa
   assert.equal(recentSessions().find((r) => r.dir === dir)?.workspace, '')
 })
 
+test('saving settings without the archived toggle keeps when it was archived; the page says who may delete', async () => {
+  const id = (await api('POST', '/api/workspaces', { name: 'Old' })).body.workspace.id
+  const archivedAt = (await api('POST', `/api/workspaces/${id}/update`, { name: 'Old', archived: true })).body.workspace.archivedAt
+  assert.ok(archivedAt)
+  const saved = await api('POST', `/api/workspaces/${id}/update`, { name: 'Older', description: '', color: 'mint' })
+  assert.deepEqual([saved.body.workspace.name, saved.body.workspace.archivedAt], ['Older', archivedAt])
+  assert.equal((await api('GET', `/api/workspaces/${id}`)).body.canDelete, true)
+})
+
 // Before the flag-off case: that one leaves account.json pointing at its own API.
 test('GET /api/orgs lists the orgs this account is in, for the Add workspace form', async () => {
   assert.deepEqual((await api('GET', '/api/orgs')).body, { orgs: [] })

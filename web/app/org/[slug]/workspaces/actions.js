@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
 import { requireUser } from '@/lib/session.js'
 import { apiCall } from '@/lib/api.js'
+import { workspacePatch } from '@/lib/workspace-form.js'
 import { isSlug } from '@/lib/space.js'
 
 const enc = (v) => encodeURIComponent(String(v ?? ''))
@@ -27,7 +28,7 @@ export async function updateWorkspace (formData) {
   const { base } = baseOf(formData)
   const id = String(formData.get('id'))
   const user = await requireUser(base)
-  const r = await apiCall(user, 'PATCH', `/v1/workspaces/${id}`, { name: formData.get('name'), description: formData.get('description') || '', color: formData.get('color') || '', archived: formData.get('archived') === 'on' })
+  const r = await apiCall(user, 'PATCH', `/v1/workspaces/${id}`, workspacePatch(formData))
   revalidatePath(`${base}/${id}`)
   back(`${base}/${id}`, r.ok ? { message: 'Saved.' } : { error: r.data?.error || 'Could not save.' })
 }
@@ -39,7 +40,7 @@ export async function deleteWorkspace (formData) {
   const r = await apiCall(user, 'DELETE', `/v1/workspaces/${id}`)
   revalidatePath(base)
   if (!r.ok) return back(`${base}/${id}`, { error: r.data?.error || 'Could not delete.' })
-  back(base, { message: 'Deleted. Its sessions are still yours.' })
+  back(base, { message: 'Deleted. Its sessions are now outside any workspace.' })
 }
 
 export async function setMember (formData) {

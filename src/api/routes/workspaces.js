@@ -30,9 +30,13 @@ export function workspaceRoutes ({ store, person, now, agentAuth, bearer, worksp
   async function reach (req, id) {
     const me = await caller(req)
     const ws = await store.workspaceById(needId(id, 'workspace'))
-    const access = ws && await workspaceAccess(store, ws, me.account, { orgGrants: await grantsIn(ws, me) })
+    const orgGrants = ws && await grantsIn(ws, me)
+    const access = ws && await workspaceAccess(store, ws, me.account, { orgGrants })
     if (!access) throw new HttpError(404, NOT_FOUND)
-    return { me, ws, access, needAdmin () { if (!access.admin) throw new HttpError(403, "you don't manage this workspace") } }
+    // Who may delete it, as the DELETE route decides: the owner of a personal one; for an
+    // org's, a person whose role holds Workspaces: Delete (never an agent).
+    const canDelete = ws.orgId ? !!(me.userId && orgGrants && orgGrants.can('workspaces', 'd')) : access.via === 'owner'
+    return { me, ws, access, canDelete, needAdmin () { if (!access.admin) throw new HttpError(403, "you don't manage this workspace") } }
   }
 
   const nameOf = async (account) => {
@@ -93,12 +97,12 @@ export function workspaceRoutes ({ store, person, now, agentAuth, bearer, worksp
     }],
 
     ['GET', /^\/v1\/workspaces\/([^/]+)$/, async (req, body, [id]) => {
-      const { ws, access } = await reach(req, id)
+      const { ws, access, canDelete } = await reach(req, id)
       const t = now()
       const members = await Promise.all((await store.listWorkspaceMembers(ws.id)).map(async (m) => ({ account: m.account, name: (await nameOf(m.account)) || '', kind: kindOf(m.account), access: m.access, addedAt: m.addedAt })))
       const ownerAccount = ws.ownerUserId ? `person:${ws.ownerUserId}` : null
       const owner = ownerAccount ? { account: ownerAccount, name: (await nameOf(ownerAccount)) || '' } : { account: null, name: (await store.orgById(ws.orgId))?.name || '' }
-      return { workspace: ws, access, owner, members, sessions: (await store.listWorkspaceSessions(ws.id)).map((s) => sessionView(s, t)) }
+      return { workspace: ws, access, canDelete, owner, members, sessions: (await store.listWorkspaceSessions(ws.id)).map((s) => sessionView(s, t)) }
     }],
 
     ['PATCH', /^\/v1\/workspaces\/([^/]+)$/, async (req, body, [id]) => {

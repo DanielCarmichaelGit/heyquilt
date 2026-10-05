@@ -990,8 +990,8 @@ body.has-update #app { padding-top: var(--update-bar); } /* padding, not margin:
 .task button.task-move svg { width: 14px; height: 14px; flex: none; }
 .task button.task-move:hover { background: color-mix(in srgb, var(--accent) 16%, var(--panel)); }
 .task-foot { display: flex; align-items: center; gap: 6px; margin-top: 4px; min-height: 28px; }
-.task.mine { box-shadow: inset 3px 0 0 var(--accent), var(--shadow); }
-.task.mine-ai { box-shadow: inset 3px 0 0 var(--violet), var(--shadow); }
+.task.mine { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 55%, var(--panel)), var(--shadow); }
+.task.mine-ai { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--violet) 55%, var(--panel)), var(--shadow); }
 .task .dd-btn.task-assign, .task select.task-assign { width: 100%; margin-top: 8px; height: 26px; font-size: 12px; }
 .task-files { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 0; padding: 0; list-style: none; }
 /* What the agent ran and saw before moving the card to Done. */

@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { gitDir, headKey, busy, indexStamp, classify, fileAt, filesAt, changedBetween, changesBetween, treeState, branchTip, watchGit } from '../src/gitstate.js'
+import { gitDir, headKey, headRef, gitRuns, busy, indexStamp, classify, fileAt, filesAt, changedBetween, changesBetween, treeState, branchTip, watchGit } from '../src/gitstate.js'
 import { sha1 } from '../src/fsutil.js'
 
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-git-${n}-`))
@@ -104,6 +104,50 @@ test('fileAt keys a binary as Quilt does, reads files over 1 MB, and filesAt rea
   assert.equal(fileAt(dir, sha, 'big.txt'), big)
   const many = filesAt(dir, sha, ['a.txt', 'img.png', 'nope.txt', 'sp ace.txt', 'big.txt'])
   assert.deepEqual([...many.entries()].sort(), [['a.txt', 'a1\na2\na3\n'], ['big.txt', big], ['img.png', `bin:${sha1(png)}`], ['nope.txt', null], ['sp ace.txt', 'with a space\n']])
+})
+
+/** A git that runs, but fails any call with one of `failOn` in its arguments. */
+function failingGit (...failOn) {
+  const bin = path.join(tmp('fakegit'), 'git')
+  fs.writeFileSync(bin, `#!/bin/sh\nfor a in "$@"; do case "$a" in ${failOn.map((f) => `'${f}'`).join('|')}) exit 1;; esac; done\nexec git "$@"\n`, { mode: 0o755 })
+  return bin
+}
+const withGit = (bin, fn) => { process.env.QUILT_GIT = bin; try { return fn() } finally { delete process.env.QUILT_GIT } }
+
+test('filesAt never reads a filtered path or an LFS pointer, and a failed read leaves files unread, not the call', () => {
+  const dir = repo()
+  write(dir, '.gitattributes', '*.lfs filter=lfs\n')
+  write(dir, 'pic.lfs', 'version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 9999999999\n')
+  write(dir, 'loose.dat', 'version https://git-lfs.github.com/spec/v1\noid sha256:def\nsize 1\n') // a pointer with no filter set
+  git(dir, 'add', '.'); git(dir, 'commit', '-qm', 'lfs')
+  git(dir, 'config', 'filter.lfs.smudge', 'false'); git(dir, 'config', 'filter.lfs.required', 'true') // running it would fail
+  const sha = headKey(dir).sha
+  const got = filesAt(dir, sha, ['pic.lfs', 'loose.dat', 'a.txt'])
+  assert.equal(got.get('pic.lfs'), undefined); assert.ok(got.has('pic.lfs'))
+  assert.equal(got.get('loose.dat'), undefined)
+  assert.equal(got.get('a.txt'), 'a1\na2\na3\n')
+  assert.equal(got.failed, 0)
+  const failed = withGit(failingGit('--filters'), () => filesAt(dir, sha, ['a.txt', 'b.txt']))
+  assert.deepEqual([...failed.entries()], [['a.txt', undefined], ['b.txt', undefined]])
+  assert.equal(failed.failed, 2)
+  assert.equal(withGit(path.join(tmp('nogit'), 'git'), () => filesAt(dir, sha, ['a.txt'])), null, 'no git at all: null')
+})
+
+test('gitRuns tells git missing from a call failing; headRef names an unborn branch; classify holds when status fails', () => {
+  const dir = repo()
+  assert.equal(gitRuns(dir), true)
+  assert.equal(withGit(path.join(tmp('nogit'), 'git'), () => gitRuns(dir)), false)
+  assert.equal(withGit(failingGit('status'), () => gitRuns(dir)), true)
+  const before = headKey(dir)
+  write(dir, 'a.txt', 'x\n'); git(dir, 'checkout', '-q', '--', 'a.txt')
+  assert.equal(withGit(failingGit('status'), () => classify(dir, { changed: ['a.txt'], before }).kind), 'busy')
+  assert.equal(headRef(dir), 'main')
+  git(dir, 'checkout', '-q', '--orphan', 'fresh')
+  assert.equal(headKey(dir), null)
+  assert.equal(headRef(dir), 'fresh')
+  git(dir, 'checkout', '-q', '--detach', before.sha)
+  assert.equal(headRef(dir), null)
+  assert.equal(headRef(tmp('plain')), null)
 })
 
 test('changesBetween gives each path\'s status; treeState says what is dirty and what is tracked', () => {

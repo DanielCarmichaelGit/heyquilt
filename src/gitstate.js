@@ -24,11 +24,18 @@ const MAX_OUTPUT = 256 * 1024 * 1024
 const MAX_PATHSPECS = 200
 
 /** Runs git: its output (a string, or a Buffer with `buffer`), or null when it fails. */
-function run (root, args, { buffer = false, input } = {}) {
+function run (root, args, opts) {
+  return call(root, args, opts).out
+}
+
+const gitBinary = () => process.env.QUILT_GIT || 'git'
+
+/** Runs git: { out } or, when it fails, { out: null, missing } (missing: the git binary could not be started at all). */
+function call (root, args, { buffer = false, input } = {}) {
   try {
     // QUILT_GIT lets tests point at a git binary that doesn't exist, to exercise
     // the "git is unreachable" path without touching the real PATH.
-    return execFileSync(process.env.QUILT_GIT || 'git', args, {
+    const out = execFileSync(gitBinary(), args, {
       cwd: root,
       encoding: buffer ? undefined : 'utf8', // undefined: a Buffer
       timeout: GIT_TIMEOUT_MS,
@@ -37,6 +44,31 @@ function run (root, args, { buffer = false, input } = {}) {
       stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'ignore'],
       env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }
     })
+    return { out, missing: false }
+  } catch (err) { return { out: null, missing: err.code === 'ENOENT' || err.code === 'EACCES' } }
+}
+
+const runs = new Set() // git binaries seen to run
+
+/**
+ * Whether git itself can be run here (`git --version`), as against one call
+ * of it failing (a timeout, a filter, a big read). Remembered once it has run.
+ */
+export function gitRuns (root) {
+  const bin = gitBinary()
+  if (runs.has(bin)) return true
+  if (run(root, ['--version']) === null) return false
+  runs.add(bin)
+  return true
+}
+
+/** The branch .git/HEAD names (even one with no commits yet), or null (detached, or not a repo). No git call. */
+export function headRef (root) {
+  const dir = gitDir(root)
+  if (!dir) return null
+  try {
+    const m = /^ref:\s*refs\/heads\/(.+)$/.exec(fs.readFileSync(path.join(dir, 'HEAD'), 'utf8').trim())
+    return m ? m[1] : null
   } catch { return null }
 }
 
@@ -90,11 +122,11 @@ export function indexStamp (root) {
   try { const st = fs.statSync(path.join(dir, 'index')); return `${st.mtimeMs}:${st.size}` } catch { return null }
 }
 
-/** True when every one of `paths` is clean (matches HEAD) according to git. */
+/** True when every one of `paths` is clean (matches HEAD) according to git; null when git could not say. */
 function allClean (root, paths) {
   if (!paths.length) return false
-  const out = run(root, ['status', '--porcelain=v2', '-z', '--', ...paths])
-  if (out === null) return false
+  const out = run(root, ['--literal-pathspecs', 'status', '--porcelain=v2', '-z', '--', ...paths])
+  if (out === null) return null
   // Any entry at all means a change or an untracked file; clean paths print nothing,
   // and so does a path git has never heard of (outside the repo, or nonexistent).
   return out.replace(/\0/g, '').trim() === ''
@@ -113,7 +145,10 @@ export function classify (root, { changed = [], before = null } = {}) {
   if (busy(root)) return { kind: 'busy', head, prevHead: before }
   if (before && head.key !== before.key) return { kind: 'switch', head, prevHead: before }
   if (before && head.sha !== before.sha) return { kind: 'advance', head, prevHead: before }
-  if (changed.length && allClean(root, changed)) return { kind: 'discard', head, prevHead: before }
+  const clean = changed.length ? allClean(root, changed) : false
+  // git could not say (a timeout in a big repo): held as busy, and asked again when it settles.
+  if (clean === null) return { kind: 'busy', head, prevHead: before }
+  if (clean) return { kind: 'discard', head, prevHead: before }
   return { kind: 'edit', head, prevHead: before }
 }
 
@@ -129,39 +164,48 @@ export function fileAt (root, sha, rel) {
 
 /**
  * Several files at one commit, in a few git calls whatever their number:
- * rel -> key (as fileAt), null (not there), or undefined (bigger than Quilt
- * shares). Null when git fails.
+ * rel -> key (as fileAt), null (not there), or undefined (not read: bigger
+ * than Quilt shares, behind a filter such as Git LFS, or a git call failed).
+ * `out.failed` counts the files a failed git call left unread. Null only
+ * when git itself can't be run.
  */
 export function filesAt (root, sha, rels) {
   const out = new Map()
+  out.failed = 0
   if (!rels.length) return out
+  const unread = (list) => { for (const rel of list) out.set(rel, undefined); out.failed += list.length }
   // Sizes first, so a huge file can't overflow the read of the contents.
-  const check = run(root, ['cat-file', '--batch-check=%(objectname) %(objecttype) %(objectsize)'], { input: rels.map((r) => `${sha}:${r}\n`).join('') })
-  if (check === null) return null
-  const lines = check.split('\n').slice(0, rels.length)
-  if (lines.length !== rels.length) return null
+  const check = call(root, ['cat-file', '--batch-check=%(objectname) %(objecttype) %(objectsize)'], { input: rels.map((r) => `${sha}:${r}\n`).join('') })
+  if (check.missing) return null
+  const lines = check.out === null ? [] : check.out.split('\n').slice(0, rels.length)
+  if (lines.length !== rels.length) { unread(rels); return out }
+  // A path with a filter (Git LFS, say) is never read: its smudged size is unknown (the blob is
+  // a pointer), and running the filter can be slow or fail. The attributes are asked in one call.
+  const filtered = filterOf(root, rels)
+  if (filtered === null) { unread(rels); return out }
   const fetch = [] // [rel, blob id, size]
   rels.forEach((rel, i) => {
     const [id, type, size] = lines[i].split(' ')
     if (type !== 'blob' || !/^\d+$/.test(size)) out.set(rel, null) // "<name> missing", or a folder there
-    else if (Number(size) > MAX_STORED_BINARY_BYTES) out.set(rel, undefined)
+    else if (Number(size) > MAX_STORED_BINARY_BYTES || filtered.has(rel)) out.set(rel, undefined)
     else fetch.push([rel, id, Number(size)])
   })
-  // In chunks well under MAX_OUTPUT. --filters can change a size (line endings),
-  // so each file's own size is read from the batch's headers.
-  // With --filters each line is "<blob> <path>": the path picks the filters, as checkout would.
+  // With --filters each line is "<blob> <path>": the path picks the line-ending conversion, as
+  // checkout would. That can change a size, so each file's own size is read from the batch's headers.
   const read = (chunk) => {
-    const buf = run(root, ['cat-file', '--batch', '--filters'], { buffer: true, input: chunk.map(([rel, id]) => `${id} ${rel}\n`).join('') })
-    if (buf === null) return false
+    const buf = call(root, ['cat-file', '--batch', '--filters'], { buffer: true, input: chunk.map(([rel, id]) => `${id} ${rel}\n`).join('') })
+    if (buf.missing) return false
+    if (buf.out === null) { unread(chunk.map(([rel]) => rel)); return true }
     let at = 0
-    for (const [rel] of chunk) {
-      const nl = buf.indexOf(10, at)
-      if (nl < 0) return false
-      const header = buf.subarray(at, nl).toString('utf8')
+    for (let i = 0; i < chunk.length; i++) {
+      const rel = chunk[i][0]
+      const nl = buf.out.indexOf(10, at)
+      const header = nl < 0 ? '' : buf.out.subarray(at, nl).toString('utf8')
       if (/ missing$/.test(header)) { out.set(rel, null); at = nl + 1; continue }
       const size = Number(header.split(' ')[2])
-      if (!Number.isInteger(size)) return false
-      out.set(rel, keyOf(buf.subarray(nl + 1, nl + 1 + size)))
+      if (nl < 0 || !Number.isInteger(size)) { unread(chunk.slice(i).map(([r]) => r)); return true }
+      const key = keyOf(buf.out.subarray(nl + 1, nl + 1 + size))
+      out.set(rel, key.startsWith(LFS_POINTER) ? undefined : key) // an LFS pointer is not the file
       at = nl + 1 + size + 1
     }
     return true
@@ -176,6 +220,18 @@ export function filesAt (root, sha, rels) {
   }
   if (chunk.length && !read(chunk)) return null
   return out
+}
+
+const LFS_POINTER = 'version https://git-lfs'
+
+/** The paths with a `filter` attribute set (in .gitattributes), or null when git failed. */
+function filterOf (root, rels) {
+  const out = run(root, ['check-attr', '-z', '--stdin', 'filter'], { input: rels.join('\0') + '\0' })
+  if (out === null) return null
+  const f = out.split('\0')
+  const filtered = new Set()
+  for (let i = 0; i + 2 < f.length; i += 3) if (f[i + 2] !== 'unspecified' && f[i + 2] !== 'unset') filtered.add(f[i])
+  return filtered
 }
 
 /** The commit a branch points at (wherever HEAD is), or null. */

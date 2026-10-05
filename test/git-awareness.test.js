@@ -283,6 +283,64 @@ test('git at work on the other branch keeps the pause as it is, said once; the h
   assert.equal(B.logs.filter((l) => l.includes("You're on feature")).length, 1, B.logs.join('\n'))
 })
 
+/** A git that runs, but fails any call with one of `failOn` in its arguments. */
+function failingGit (...failOn) {
+  const bin = path.join(tmp('fakegit'), 'git')
+  fs.writeFileSync(bin, `#!/bin/sh\nfor a in "$@"; do case "$a" in ${failOn.map((f) => `'${f}'`).join('|')}) exit 1;; esac; done\nexec git "$@"\n`, { mode: 0o755 })
+  return bin
+}
+const POINTER = (oid) => `version https://git-lfs.github.com/spec/v1\noid sha256:${oid}\nsize 123456789\n`
+
+test('a pull over a Git LFS file whose filter fails settles; nothing is parked', async (t) => {
+  const { B, dirA, dirB } = await pairRepos(t, { '.gitattributes': '*.lfs filter=lfs\n', 'model.lfs': POINTER('aaa') })
+  const c = tmp('c'); git(c, 'clone', '-q', git(dirA, 'remote', 'get-url', 'origin'), '.')
+  write(c, 'model.lfs', POINTER('bbb')); write(c, 'README.md', 'hello (remote)\n')
+  git(c, 'commit', '-qam', 'new model'); git(c, 'push', '-q', 'origin', 'main')
+  git(dirB, 'pull', '-q', '--ff-only')
+  // The filter is set now (within the settle time): running it fails.
+  git(dirB, 'config', 'filter.lfs.smudge', 'false'); git(dirB, 'config', 'filter.lfs.required', 'true')
+  await waitFor(() => B.status().git.hold)
+  await waitFor(() => B.status().git.hold === null && read(dirA, 'README.md') === 'hello (remote)\n', 10000)
+})
+
+test('a file git fails to read at the old commit settles as a record at worst, not a frozen folder', async (t) => {
+  const { A, B, dirA, dirB } = await pairRepos(t)
+  const c = tmp('c'); git(c, 'clone', '-q', git(dirA, 'remote', 'get-url', 'origin'), '.')
+  write(c, 'src/app.js', 'line1 (remote)\nline2\nline3\nline4\nline5\n'); git(c, 'commit', '-qam', 'remote'); git(c, 'push', '-q', 'origin', 'main')
+  git(dirB, 'pull', '-q', '--ff-only')
+  await waitFor(() => B.status().git.hold)
+  process.env.QUILT_GIT = failingGit('--filters')
+  try {
+    await waitFor(() => B.status().git.hold === null, 10000)
+  } finally { delete process.env.QUILT_GIT }
+  assert.ok(B.logs.some((l) => l.includes('git could not read 1 file')), B.logs.join('\n'))
+  await waitFor(() => read(dirA, 'src/app.js') === 'line1 (remote)\nline2\nline3\nline4\nline5\n' || A.mergeList().some((m) => m.path === 'src/app.js' && m.state === 'open'), 10000)
+})
+
+test('git status failing during a stash: held, then merged against the last commit, so the room keeps its work', async (t) => {
+  const { B, dirA, dirB } = await pairRepos(t)
+  write(dirA, 'README.md', 'main work\n')
+  await waitFor(() => read(dirB, 'README.md') === 'main work\n')
+  process.env.QUILT_GIT = failingGit('status')
+  try {
+    git(dirB, 'stash', '-q')
+    await never(() => read(dirA, 'README.md') !== 'main work\n', 2500)
+    await waitFor(() => read(dirB, 'README.md') === 'main work\n' && B.status().git.hold === null, 10000)
+  } finally { delete process.env.QUILT_GIT }
+  assert.equal(read(dirA, 'README.md'), 'main work\n')
+})
+
+test('a new branch with no commits yet (checkout --orphan) is a switch, not git gone missing', async (t) => {
+  const { B, dirA, dirB } = await pairRepos(t)
+  git(dirB, 'checkout', '-q', '--orphan', 'scratch')
+  await waitFor(() => B.status().git.hold?.kind === 'switching')
+  assert.ok(B.logs.some((l) => l.includes("You're on scratch; this session syncs main")), B.logs.join('\n'))
+  write(dirA, 'README.md', 'main work\n')
+  await never(() => read(dirB, 'README.md') === 'main work\n', 1000)
+  git(dirB, 'checkout', '-q', 'main')
+  await waitFor(() => B.status().git.hold === null && read(dirB, 'README.md') === 'main work\n', 10000)
+})
+
 test('a folder without git is untouched by all of this', async (t) => {
   const dirA = tmp('pa'); const dirB = tmp('pb'); write(dirA, 'x.txt', 'x\n')
   const A = await open(t, dirA, 'alice', { room: 'ga-plain2' })

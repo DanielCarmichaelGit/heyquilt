@@ -31,7 +31,7 @@ import { canAdmit } from './admit-policy.js'
 import { merge3, withMarkers, hasMarkers } from './merge3.js'
 import { aiMerge, findMergeCli } from './merge-ai.js'
 import { openMerge, updateMerge, readMerges, pruneMerges, cleanName } from './merges.js'
-import { headKey, busy as gitBusy, indexStamp, classify, filesAt, changesBetween, changedBetween, treeState, branchTip, watchGit, SETTLE_MS, BURST_PATHS } from './gitstate.js'
+import { headKey, headRef, gitRuns, busy as gitBusy, indexStamp, classify, filesAt, changesBetween, changedBetween, treeState, branchTip, watchGit, SETTLE_MS, BURST_PATHS } from './gitstate.js'
 
 export { applyTextDiff }
 
@@ -932,7 +932,7 @@ export class Session extends EventEmitter {
     this.reclassify = false
     this.noteCommits()
     const r = classify(this.root, { changed: paths, before: this.gitSeen })
-    if (!r.head) return this.gitUnreadable(paths) // this.git is set, so this is a repo git can't be asked about
+    if (!r.head) return this.headless(paths) // this.git is set, so this is a repo
     this.gitFailures = 0
     this.gitSeen = r.head
     if (r.kind === 'edit') {
@@ -959,7 +959,23 @@ export class Session extends EventEmitter {
   }
 
   /**
-   * git can't be asked (missing, or timing out) in a folder that is a repo:
+   * HEAD can't be read as a commit. A branch with no commits yet (`git
+   * checkout --orphan`, git itself running) is a switch to it; otherwise git
+   * can't be asked here.
+   */
+  headless (paths = []) {
+    const ref = headRef(this.root)
+    if (ref && this.git && ref !== this.git.key && gitRuns(this.root)) {
+      for (const rel of paths) this.heldPaths.add(rel)
+      this.setHold('switching', { to: ref })
+      this.logSwitch(ref)
+      return
+    }
+    this.gitUnreadable(paths)
+  }
+
+  /**
+   * git can't be run (missing, or HEAD unreadable) in a folder that is a repo:
    * whatever happened can't be told apart from an edit, so the folder stays
    * held and nothing is shared. Asked again every SETTLE_MS, for good.
    */
@@ -1007,6 +1023,7 @@ export class Session extends EventEmitter {
 
   releaseHold () {
     this.hold = null
+    this.reclassify = false
     clearTimeout(this.settleTimer); this.settleTimer = null
     this.emit('hold', null)
     this.scheduleStatusWrite()
@@ -1026,7 +1043,7 @@ export class Session extends EventEmitter {
     if (!this.hold || this.hold.kind === 'switching' || this.stopped) return
     if (gitBusy(this.root)) { this.setHold('busy'); this.settleSoon(); return } // still mid-operation: look again later
     const head = headKey(this.root)
-    if (!head) return this.gitUnreadable()
+    if (!head) return this.headless()
     if (this.git && head.key !== this.git.key) {
       // Landed on another branch while settling: pause instead.
       this.setHold('switching', { to: head.key })
@@ -1040,6 +1057,7 @@ export class Session extends EventEmitter {
     for (const e of plan.advance) this.merging.add(e.rel)
     this.heldPaths.clear()
     this.rejoin = false
+    this.reclassify = false
     this.gitFailures = 0
     this.gitSeen = head
     // What git wrote is accounted for here: the next flush is an edit unless git moves again.
@@ -1054,9 +1072,10 @@ export class Session extends EventEmitter {
   }
 
   /**
-   * What ending the hold does, all asked of git before anything changes (so a
-   * git failure leaves the hold on), in a handful of git calls whatever the
-   * number of paths. Null when git can't be asked.
+   * What ending the hold does, all asked of git before anything changes, in a
+   * handful of git calls whatever the number of paths. Null only when git
+   * can't be run (the hold stays on); a git call that fails is retried once,
+   * then the settle goes on with less (never parks the folder for good).
    * - advance: each path the new commits changed, merged three-way into the
    *   doc: base = the file at the old commit, ours = the disk, theirs = the room.
    * - discarded: held paths git put back (clean, and tracked or gone from
@@ -1071,18 +1090,34 @@ export class Session extends EventEmitter {
     // Restarted held: changes made while stopped were never seen, so every path is checked.
     if (this.rejoin) for (const rel of [...this.sharedPaths(), ...walk(this.root, this.ig)]) paths.add(rel)
     const free = (rel) => this.syncable(rel) && !this.merging.has(rel)
+    const twice = (ask) => { const r = ask(); return r !== null || !gitRuns(this.root) ? r : ask() }
     let changes = new Map()
     if (prev && prev.sha && prev.sha !== head.sha) {
-      changes = changesBetween(this.root, prev.sha, head.sha)
-      if (!changes) return null
+      changes = twice(() => changesBetween(this.root, prev.sha, head.sha))
+      if (!changes) {
+        if (!gitRuns(this.root)) return null
+        // Each held path is then checked against HEAD below: the pulled ones look discarded and get the room's version.
+        this.log('⚠️ git could not list what the new commits changed; the session\'s version of those files is kept')
+        changes = new Map()
+      }
     }
     const changed = [...changes.keys()].filter(free)
     const old = filesAt(this.root, prev?.sha, changed.filter((rel) => changes.get(rel) !== 'A'))
     if (!old) return null
+    if (old.failed) this.log(`⚠️ git could not read ${old.failed} file${old.failed === 1 ? '' : 's'} at the old commit; merged without a base (a merge record at worst)`)
     const advance = changed.map((rel) => ({ rel, base: old.get(rel) ?? undefined }))
     const rest = [...paths].filter((rel) => !changes.has(rel) && free(rel))
-    const tree = rest.length ? treeState(this.root, rest) : { dirty: new Set(), tracked: new Set() }
-    if (!tree) return null
+    const tree = rest.length ? twice(() => treeState(this.root, rest)) : { dirty: new Set(), tracked: new Set() }
+    if (!tree) {
+      if (!gitRuns(this.root)) return null
+      // git can't say which paths it put back. Each is merged against the file at HEAD: a discarded
+      // one (the disk is HEAD's) takes the room's version, an edited one merges three-way. Never
+      // against lastKnown: after a stash that is the room's version, and the stashed-away disk would win.
+      const atHead = filesAt(this.root, head.sha, rest)
+      if (!atHead) return null
+      this.log(`⚠️ git could not say what it changed here; ${rest.length} held file${rest.length === 1 ? '' : 's'} merged against your last commit`)
+      return { advance, discarded: [], edited: rest.map((rel) => ({ rel, base: atHead.get(rel) ?? undefined })) }
+    }
     const discarded = []; const edited = []
     for (const rel of rest) {
       // git calls an untracked or ignored file clean too, but nothing put it back to a commit: that is an edit.

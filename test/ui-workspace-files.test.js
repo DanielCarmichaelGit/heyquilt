@@ -52,6 +52,36 @@ test('upload, list, stream, rename, delete through the app', async () => {
   assert.deepEqual((await api('GET', `/api/workspaces/${id}/files`)).body.files.map((f) => f.path), ['notes', 'raw'])
 })
 
+test('file bytes are never sniffed, and run sandboxed unless they are a PDF', async () => {
+  const id = (await api('POST', '/api/workspaces', { name: 'Guarded' })).body.workspace.id
+  const put = async (p, type, body) => (await (await fetch(`${base()}/api/workspaces/${id}/upload`, { method: 'PUT', headers: { 'x-quilt-token': ui.token, 'x-path': encodeURIComponent(p), 'content-type': type }, body })).json()).file
+  const txt = await put('a.txt', 'text/plain', '<script>alert(1)</script>')
+  const pdf = await put('b.pdf', 'application/pdf', '%PDF-1.4 nothing much')
+  const head = async (f) => (await fetch(`${base()}/api/workspaces/${id}/files/${f.id}/data?t=${ui.token}`)).headers
+  const t = await head(txt)
+  assert.equal(t.get('x-content-type-options'), 'nosniff')
+  assert.equal(t.get('content-security-policy'), 'sandbox')
+  const p = await head(pdf)
+  assert.equal(p.get('content-type'), 'application/pdf')
+  assert.equal(p.get('x-content-type-options'), 'nosniff')
+  assert.equal(p.get('content-security-policy'), null, 'Chromium will not render a sandboxed PDF')
+})
+
+test('an upload over 500 MB is refused from its content-length, before the bytes', { timeout: 10000 }, async () => {
+  const id = (await api('POST', '/api/workspaces', { name: 'Big' })).body.workspace.id
+  const http = await import('node:http')
+  const res = await new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port: ui.port, method: 'PUT', path: `/api/workspaces/${id}/upload`, headers: { 'x-quilt-token': ui.token, 'x-path': 'big.bin', 'content-length': String(600 * 1024 * 1024) } }, resolve)
+    req.on('error', reject)
+    req.flushHeaders()
+  })
+  let raw = ''
+  for await (const c of res) raw += c
+  res.socket?.destroy()
+  assert.equal(res.statusCode, 413)
+  assert.match(JSON.parse(raw).error, /500 MB at most/)
+})
+
 test('an upload the API refuses is reported with its message', async () => {
   const id = (await api('POST', '/api/workspaces', { name: 'Lib2' })).body.workspace.id
   const bad = await fetch(`${base()}/api/workspaces/${id}/upload`, { method: 'PUT', headers: { 'x-quilt-token': ui.token, 'x-path': encodeURIComponent('../evil') }, body: 'x' })

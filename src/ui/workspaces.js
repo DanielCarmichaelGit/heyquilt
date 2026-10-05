@@ -57,7 +57,7 @@ function cardHtml (w) {
     <div class="ws-card-body">
       <h3>${esc(w.name)} <span class="pill ws-space${w.space?.kind === 'org' ? ' coral' : ''}">${esc(spaceLabel(w))}</span></h3>
       <p class="ws-desc">${esc(w.description || '')}</p>
-      <div class="ws-stats"><span><b>${w.counts?.sessions ?? 0}</b> ${w.counts?.sessions === 1 ? 'session' : 'sessions'}</span><span><b>0</b> files</span></div>
+      <div class="ws-stats"><span><b>${w.counts?.sessions ?? 0}</b> ${w.counts?.sessions === 1 ? 'session' : 'sessions'}</span><span><b>${w.counts?.files ?? 0}</b> ${w.counts?.files === 1 ? 'file' : 'files'}</span></div>
     </div>
     <div class="ws-foot"><span>${esc(plural((w.counts?.members ?? 0) + (w.space?.kind === 'personal' ? 1 : 0), 'member', 'members'))}</span><span class="spacer"></span><span>${w.archivedAt ? 'archived' : esc(ago(w.createdAt))}</span></div>
   </div>`

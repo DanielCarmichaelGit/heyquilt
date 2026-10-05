@@ -70,6 +70,14 @@ test('upload, list, download, versions, rename, move folder, delete; viewers rea
   assert.equal((await t.call('GET', `/v1/workspaces/${w.id}`, null, 'mem')).body.usage.usedBytes, 0)
 })
 
+test('the workspace list counts files once an upload lands', async () => {
+  const w = (await t.call('POST', '/v1/workspaces', { name: 'Counted' }, 'mem')).body.workspace
+  const count = async () => (await t.call('GET', '/v1/me/workspaces', null, 'mem')).body.workspaces.find((x) => x.id === w.id).counts.files
+  assert.equal(await count(), 0)
+  assert.equal((await upload('mem', w.id, 'a.txt', 'hello')).status, 200)
+  assert.equal(await count(), 1)
+})
+
 test('limits: file size, workspace quota, file count, bad paths', async () => {
   const w = (await t.call('POST', '/v1/workspaces', { name: 'Limits' }, 'mem')).body.workspace
   assert.equal((await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: 'big.bin', size: 101 }, 'mem')).status, 413)

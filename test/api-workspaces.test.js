@@ -27,7 +27,7 @@ test('a person makes a personal workspace, sees it, edits it, deletes it', async
   assert.deepEqual([w.name, w.description, w.color, w.ownerUserId, w.orgId], ['Launch', 'Teaser video', 'lilac', 'mem', null])
   const list = await t.call('GET', '/v1/me/workspaces', null, 'mem')
   const mine = list.body.workspaces.find((x) => x.id === w.id)
-  assert.deepEqual([mine.space, mine.access, mine.admin, mine.via, mine.counts], [{ kind: 'personal' }, 'edit', true, 'owner', { sessions: 0, members: 0, open: 0 }])
+  assert.deepEqual([mine.space, mine.access, mine.admin, mine.via, mine.counts], [{ kind: 'personal' }, 'edit', true, 'owner', { sessions: 0, members: 0, open: 0, files: 0 }])
   assert.equal((await t.call('GET', '/v1/me/workspaces', null, 'out')).body.workspaces.some((x) => x.id === w.id), false)
   assert.equal((await t.call('GET', `/v1/workspaces/${w.id}`, null, 'out')).status, 404, 'outsiders get the same as a missing workspace')
   const got = await t.call('GET', `/v1/workspaces/${w.id}`, null, 'mem')

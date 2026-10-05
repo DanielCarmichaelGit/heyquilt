@@ -40,7 +40,8 @@ export function workspaceRoutes (ctx) {
     return {
       id: ws.id, name: ws.name, description: ws.description, color: ws.color, createdAt: ws.createdAt, archivedAt: ws.archivedAt,
       space: await spaceOf(ws), access: access.access, admin: access.admin, via: access.via,
-      counts: { sessions: sessions.length, members: members.length, open: sessions.filter((s) => isOpen(s, t)).length }
+      // files: the row's count, kept by every upload, delete and sweep (setWorkspaceUsage).
+      counts: { sessions: sessions.length, members: members.length, open: sessions.filter((s) => isOpen(s, t)).length, files: ws.fileCount ?? 0 }
     }
   }
 

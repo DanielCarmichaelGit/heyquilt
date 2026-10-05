@@ -1229,6 +1229,16 @@ body.has-update #app { padding-top: var(--update-bar); } /* padding, not margin:
 .fpk-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 0; border-radius: 4px; background: transparent; font: inherit; color: inherit; text-align: left; cursor: pointer; }
 .fpk-row:hover, .fpk-row:focus-visible { background: var(--panel-2); }
 .fpk-row .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile-wrap { position: relative; display: flex; min-width: 0; }
+.tile-wrap > .tile { flex: 1; }
+.folder-acts { display: flex; gap: 2px; }
+.tile-wrap .folder-acts { position: absolute; top: 6px; right: 6px; opacity: 0; transition: opacity .12s; }
+.tile-wrap:hover .folder-acts, .tile-wrap:focus-within .folder-acts { opacity: 1; }
+.folder-acts .btn.icon { width: 26px; height: 26px; padding: 0; background: var(--panel); }
+.folder-acts svg { width: 13px; height: 13px; }
+.files-list td.acts { padding: 4px 8px; }
+.files-list .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+@media (hover: none) { .tile-wrap .folder-acts { opacity: 1; } }
 @media (max-width: 900px) {
   .files-body.has-preview { grid-template-columns: minmax(0, 1fr); }
   .file-preview { position: static; }

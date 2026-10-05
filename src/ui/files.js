@@ -4,6 +4,7 @@
 // Bytes always come from the local server (/api/workspaces/<id>/files/<fid>/data), so
 // thumbnails and previews stay same-origin under the page's CSP.
 import { I, state, esc, toast, api, ask, ago, bytes, TOKEN } from './common.js'
+import { parseCsv } from './csv.js'
 
 const wsUrl = (id, rest = '') => `/api/workspaces/${encodeURIComponent(id)}${rest}`
 const fileUrl = (id, fid, rest = '') => wsUrl(id, '/files/' + encodeURIComponent(fid) + rest)
@@ -13,6 +14,10 @@ const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`
 const MAX_TEXT_PREVIEW = 2 * 1024 * 1024
 const CSV_ROWS = 200
 const NEWEST = 8
+const MAX_UPLOAD = 500 * 1024 * 1024 // the local server's cap too
+const TOO_BIG = 'File is too large (500 MB at most).'
+const NO_SLASH = 'A name cannot contain a slash. Use Move to change the folder.'
+const viewWorkspace = () => String(state.view).replace(/^(ws|wsfiles):/, '')
 
 // ----------------------------------------------------------------- types --
 const EXT_MIME = {
@@ -87,7 +92,9 @@ function paintProgress () {
   document.querySelectorAll('[data-progress-bar]').forEach((el) => { el.style.width = `${progress ? progress.pct : 0}%` })
 }
 
-async function startUpload (id, list, folder, reload) {
+/** `reload` redraws the screen the upload started on; `go` redraws whichever screen of the
+ * same workspace you moved to meanwhile. Elsewhere, nothing: the 20 s poll catches up. */
+async function startUpload (id, list, folder, { reload, go }) {
   const files = [...list]
   if (!files.length) return
   if (progress) return toast('Wait for the upload in progress to finish.')
@@ -105,8 +112,10 @@ async function startUpload (id, list, folder, reload) {
     })
   } finally {
     progress = null
-    // Redraw only the screen the upload started on; anywhere else, the 20 s poll catches up.
+    paintProgress()
+    document.querySelectorAll('[data-upload-tile]').forEach((t) => { delete t.dataset.busy })
     if (state.view === view) await reload()
+    else if (viewWorkspace() === id) await go(state.view)
   }
 }
 
@@ -114,6 +123,7 @@ async function startUpload (id, list, folder, reload) {
 export async function uploadFiles (id, files, { folder = '', onProgress = () => {} } = {}) {
   for (const file of files) {
     try {
+      if (file.size > MAX_UPLOAD) throw new Error(TOO_BIG)
       await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest()
         xhr.open('PUT', wsUrl(id, '/upload'))
@@ -138,13 +148,17 @@ export async function uploadFiles (id, files, { folder = '', onProgress = () => 
 }
 
 // ----------------------------------------------------------------- tiles --
-function folderTileHtml (d, f) {
+/** A folder's Rename and Delete buttons (All files, for editors). */
+const folderActsHtml = (f) => `<span class="folder-acts"><button type="button" class="btn sm ghost icon" data-folder-rename="${esc(f.id)}" title="Rename ${esc(f.name)}" aria-label="Rename ${esc(f.name)}">${I.pencil}</button><button type="button" class="btn sm ghost icon danger" data-folder-delete="${esc(f.id)}" title="Delete ${esc(f.name)}" aria-label="Delete ${esc(f.name)}">${I.trash}</button></span>`
+
+function folderTileHtml (d, f, { acts = false } = {}) {
   const s = folderStats(d, f.path)
-  return `
+  const tile = `
     <button type="button" class="tile folder" data-folder="${esc(f.path)}" title="${esc(f.path)}">
       <span class="thumb">${I.folder}</span>
       <span class="nm">${esc(f.name)}</span><span class="mu">${esc(plural(s.count, 'file', 'files'))}${s.count ? ` · ${esc(bytes(s.size))}` : ''}</span>
     </button>`
+  return acts ? `<div class="tile-wrap">${tile}${folderActsHtml(f)}</div>` : tile
 }
 
 function thumbHtml (d, f) {
@@ -229,7 +243,7 @@ export function bindFilesSection (root, { id, reload, go }) {
     b.onclick = () => { const f = filesOf(d).find((x) => x.id === b.dataset.pickFile); if (f) open({ folder: f.folder, picked: f.id }) }
   })
   if (!canEdit(d)) return
-  const upload = (list) => startUpload(id, list, '', reload)
+  const upload = (list) => startUpload(id, list, '', { reload, go })
   bindUpload(sec, upload)
   bindDrop(sec, upload)
 }
@@ -246,12 +260,13 @@ function crumbsHtml (d, folder) {
 }
 
 function listHtml (d, folders, files, picked) {
+  const edit = canEdit(d)
   return `
   <div class="files-scroll"><table class="files-list">
-    <thead><tr><th>Name</th><th>Size</th><th>Uploaded by</th><th>Date</th><th>Version</th></tr></thead>
+    <thead><tr><th>Name</th><th>Size</th><th>Uploaded by</th><th>Date</th><th>Version</th>${edit ? '<th><span class="sr">Actions</span></th>' : ''}</tr></thead>
     <tbody>
-      ${folders.map((f) => { const s = folderStats(d, f.path); return `<tr class="is-folder" tabindex="0" data-folder="${esc(f.path)}"><td class="nm">${I.folder}<span>${esc(f.name)}</span></td><td>${esc(plural(s.count, 'file', 'files'))}</td><td></td><td></td><td></td></tr>` }).join('')}
-      ${files.map((f) => `<tr tabindex="0" data-pick-file="${esc(f.id)}" class="${f.id === picked ? 'on' : ''}"><td class="nm"><span class="badge" style="background:${badgeColor(f)}">${esc(badgeText(f))}</span><span>${esc(f.name)}</span></td><td>${esc(bytes(f.size || 0))}</td><td>${esc(whoOf(d, f.uploadedBy))}</td><td>${esc(f.uploadedAt ? new Date(f.uploadedAt).toLocaleDateString() : '')}</td><td>v${esc(f.version || 1)}</td></tr>`).join('')}
+      ${folders.map((f) => { const s = folderStats(d, f.path); return `<tr class="is-folder" tabindex="0" data-folder="${esc(f.path)}"><td class="nm">${I.folder}<span>${esc(f.name)}</span></td><td>${esc(plural(s.count, 'file', 'files'))}</td><td></td><td></td><td></td>${edit ? `<td class="acts">${folderActsHtml(f)}</td>` : ''}</tr>` }).join('')}
+      ${files.map((f) => `<tr tabindex="0" data-pick-file="${esc(f.id)}" class="${f.id === picked ? 'on' : ''}"><td class="nm"><span class="badge" style="background:${badgeColor(f)}">${esc(badgeText(f))}</span><span>${esc(f.name)}</span></td><td>${esc(bytes(f.size || 0))}</td><td>${esc(whoOf(d, f.uploadedBy))}</td><td>${esc(f.uploadedAt ? new Date(f.uploadedAt).toLocaleDateString() : '')}</td><td>v${esc(f.version || 1)}</td>${edit ? '<td></td>' : ''}</tr>`).join('')}
     </tbody>
   </table></div>`
 }
@@ -275,26 +290,6 @@ function previewMediaHtml (d, f) {
   return '<p class="hint">No preview for this kind of file.</p>'
 }
 
-/** Splits CSV text into rows of cells: commas, quoted fields, "" for a quote inside one. */
-export function parseCsv (text, maxRows = CSV_ROWS) {
-  const rows = []
-  let row = []; let cell = ''; let quoted = false
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i]
-    if (quoted) {
-      if (c !== '"') cell += c
-      else if (text[i + 1] === '"') { cell += '"'; i++ } else quoted = false
-    } else if (c === '"' && cell === '') quoted = true
-    else if (c === ',') { row.push(cell); cell = '' } else if (c === '\n' || c === '\r') {
-      if (c === '\r' && text[i + 1] === '\n') i++
-      row.push(cell); rows.push(row); row = []; cell = ''
-      if (rows.length >= maxRows) return rows
-    } else cell += c
-  }
-  if (cell !== '' || row.length) { row.push(cell); rows.push(row) }
-  return rows
-}
-
 const csvTableHtml = (rows) => `<div class="fp-table"><table>${rows.map((r, i) => `<tr>${r.map((c) => (i === 0 ? `<th>${esc(c)}</th>` : `<td>${esc(c)}</td>`)).join('')}</tr>`).join('')}</table></div>`
 
 async function loadPreviewText (root, d, f) {
@@ -306,7 +301,7 @@ async function loadPreviewText (root, d, f) {
     const res = await fetch(fileUrl(d.workspace.id, f.id, '/data') + `?v=${encodeURIComponent(f.version || 1)}`, { headers: { 'x-quilt-token': TOKEN || '' } })
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `Could not load it (${res.status}).`)
     const text = await res.text()
-    html = kind === 'csv' ? csvTableHtml(parseCsv(text)) : `<pre class="fp-pre">${esc(text)}</pre>`
+    html = kind === 'csv' ? csvTableHtml(parseCsv(text, CSV_ROWS)) : `<pre class="fp-pre">${esc(text)}</pre>`
     previewCache.set(`${f.id}:${f.version}`, html)
   } catch (err) {
     html = `<p class="hint">${esc(err.message)}</p>`
@@ -349,7 +344,7 @@ export function allFilesHtml (d) {
   const grid = !folders.length && !files.length && !edit ? ''
     : fv.mode === 'list' ? (folders.length || files.length ? listHtml(d, folders, files, fv.picked) : '')
       : `<div class="tiles">
-        ${folders.map((f) => folderTileHtml(d, f)).join('')}
+        ${folders.map((f) => folderTileHtml(d, f, { acts: edit })).join('')}
         ${files.map((f) => fileTileHtml(d, f, { on: f.id === fv.picked, meta: [bytes(f.size || 0), whoOf(d, f.uploadedBy)].filter(Boolean).join(' · ') })).join('')}
         ${edit ? uploadTileHtml(id, fv.folder ? `Upload to ${fv.folder.split('/').pop()}` : 'Upload or drop files') : ''}
       </div>`
@@ -391,7 +386,7 @@ export function bindAllFiles (root, { id, reload, go, rerender = () => go(`wsfil
   root.querySelector('[data-close-preview]')?.addEventListener('click', () => { fv.picked = null; rerender() })
 
   if (canEdit(d)) {
-    const upload = (list) => startUpload(id, list, fv.folder, reload)
+    const upload = (list) => startUpload(id, list, fv.folder, { reload, go })
     bindUpload(root, upload)
     bindDrop(root.querySelector('[data-files-drop]'), upload)
     root.querySelector('[data-new-folder]').onclick = async () => {
@@ -399,17 +394,21 @@ export function bindAllFiles (root, { id, reload, go, rerender = () => go(`wsfil
       if (!name) return
       try { await api('POST', wsUrl(id, '/folders'), { path: fv.folder ? `${fv.folder}/${name}` : name }); await reload() } catch (err) { toast(err.message) }
     }
+    bindFolderActs(root, d, id, reload)
   }
 
   const f = filesOf(d).find((x) => x.id === fv.picked)
   if (!f) return
   loadPreviewText(root, d, f)
-  const update = async (patch, done) => {
-    try { await api('POST', fileUrl(id, f.id, '/update'), patch); toast(done); await reload() } catch (err) { toast(err.message) }
+  /** Saves the patch; `then` runs only once it saved, before the redraw. */
+  const update = async (patch, done, then = () => {}) => {
+    try { await api('POST', fileUrl(id, f.id, '/update'), patch) } catch (err) { return toast(err.message) }
+    then(); toast(done); await reload()
   }
   root.querySelector('[data-rename]')?.addEventListener('click', async () => {
     const name = await ask({ title: `Rename ${f.name}`, input: { label: 'Name', value: f.name }, ok: 'Rename' })
     if (!name || name === f.name) return
+    if (name.includes('/')) return toast(NO_SLASH)
     await update({ path: f.folder ? `${f.folder}/${name}` : name }, 'Renamed')
   })
   root.querySelector('[data-move]')?.addEventListener('click', async () => {
@@ -419,16 +418,17 @@ export function bindAllFiles (root, { id, reload, go, rerender = () => go(`wsfil
     if (!to) return
     const folder = to === '/' ? '' : to
     if (folder === f.folder) return
-    fv.folder = folder
-    await update({ path: folder ? `${folder}/${f.name}` : f.name }, 'Moved')
+    await update({ path: folder ? `${folder}/${f.name}` : f.name }, 'Moved', () => { fv.folder = folder })
   })
   root.querySelector('[data-delete]')?.addEventListener('click', async () => {
     if (!await ask({ title: `Delete ${f.name}?`, message: 'It goes for everyone in this workspace, with its earlier versions.', ok: 'Delete', danger: true })) return
     try { await api('POST', fileUrl(id, f.id, '/delete')); fv.picked = null; toast('Deleted'); await reload() } catch (err) { toast(err.message) }
   })
-  root.querySelector('[data-versions]')?.addEventListener('click', async (e) => {
+  const showVersions = async () => {
     const box = root.querySelector('[data-versions-box]')
-    e.currentTarget.disabled = true
+    const btn = box.querySelector('[data-versions]')
+    if (btn) btn.disabled = true
+    versionsOpen = f.id
     try {
       // The list holds the earlier versions; the one people get now is the file itself.
       const { versions: earlier } = await api('GET', fileUrl(id, f.id, '/versions'))
@@ -436,8 +436,49 @@ export function bindAllFiles (root, { id, reload, go, rerender = () => go(`wsfil
       box.innerHTML = `<b>Versions</b>${versions.map((v) => `
         <div class="fp-version"><span class="mono">v${esc(v.version)}</span><span class="grow">${esc([whoOf(d, v.uploadedBy), when(v.uploadedAt), bytes(v.size || 0)].filter(Boolean).join(' · '))}${v.version === f.version ? ' · <b class="cur">current</b>' : ''}${v.note ? `<span class="hint">${esc(v.note)}</span>` : ''}</span>
           <a href="${esc(fileUrl(id, f.id, '/data?t=' + encodeURIComponent(TOKEN || '')) + `&version=${encodeURIComponent(v.version)}&download=1`)}" download="${esc(f.name)}">Download this version</a></div>`).join('')}${earlier.length ? '' : '<p class="hint">No earlier versions.</p>'}`
-    } catch (err) { toast(err.message); e.currentTarget.disabled = false }
+    } catch (err) {
+      versionsOpen = null
+      toast(err.message)
+      if (btn?.isConnected) btn.disabled = false
+    }
+  }
+  root.querySelector('[data-versions]')?.addEventListener('click', showVersions)
+  // A redraw (the poll, an upload) keeps an open Versions list open.
+  if (versionsOpen === f.id) showVersions()
+}
+
+// Which file's Versions list is open, so a redraw opens it again.
+let versionsOpen = null
+
+/** Rename and Delete on folder tiles and rows. The API moves or removes what is inside too. */
+function bindFolderActs (root, d, id, reload) {
+  const byId = (fid) => foldersOf(d).find((x) => x.id === fid)
+  root.querySelectorAll('[data-folder-rename]').forEach((b) => {
+    b.onclick = async (e) => {
+      e.stopPropagation()
+      const f = byId(b.dataset.folderRename)
+      if (!f) return
+      const name = await ask({ title: `Rename ${f.name}`, input: { label: 'Name', value: f.name }, ok: 'Rename' })
+      if (!name || name === f.name) return
+      if (name.includes('/')) return toast(NO_SLASH)
+      try { await api('POST', fileUrl(id, f.id, '/update'), { path: f.folder ? `${f.folder}/${name}` : name }); toast('Renamed'); await reload() } catch (err) { toast(err.message) }
+    }
   })
+  root.querySelectorAll('[data-folder-delete]').forEach((b) => {
+    b.onclick = async (e) => {
+      e.stopPropagation()
+      const f = byId(b.dataset.folderDelete)
+      if (!f) return
+      const n = folderStats(d, f.path).count
+      const message = n ? `Everything in it goes too (${plural(n, 'file', 'files')}), for everyone in this workspace.` : 'It is empty.'
+      if (!await ask({ title: `Delete the folder ${f.name}?`, message, ok: 'Delete', danger: true })) return
+      try {
+        await api('POST', fileUrl(id, f.id, '/delete'))
+        toast('Deleted'); await reload()
+      } catch (err) { toast(err.message) }
+    }
+  })
+  root.querySelectorAll('.folder-acts').forEach((el) => el.addEventListener('keydown', (e) => e.stopPropagation()))
 }
 
 /** True while a preview is playing, so the poll's re-render doesn't restart it. */

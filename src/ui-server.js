@@ -110,7 +110,8 @@ export const STATIC = {
   '/feed-convs.js': ['feed-convs.js', 'text/javascript; charset=utf-8'],
   '/board.js': ['board.js', 'text/javascript; charset=utf-8'],
   '/workspaces.js': ['workspaces.js', 'text/javascript; charset=utf-8'],
-  '/files.js': ['files.js', 'text/javascript; charset=utf-8']
+  '/files.js': ['files.js', 'text/javascript; charset=utf-8'],
+  '/csv.js': ['csv.js', 'text/javascript; charset=utf-8']
 }
 
 // The page's Content-Security-Policy: scripts only from our own files (no inline script or
@@ -805,6 +806,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
   async function receiveWorkspaceUpload (req, id) {
     const account = readAccount()
     if (!account) throw Object.assign(httpError(401, 'Sign in to Quilt first.'), { signedOut: true })
+    if (Number(req.headers['content-length']) > MAX_WS_FILE_BYTES) throw httpError(413, 'File is too large (500 MB at most).')
     const filePath = decodeURIComponent(req.headers['x-path'] || '')
     const note = req.headers['x-note'] ? decodeURIComponent(req.headers['x-note']) : ''
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-wsup-'))
@@ -838,7 +840,12 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     const r = await fetch(info.url)
     if (!r.ok) { res.writeHead(502, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: `The file could not be fetched (${r.status}).` })) }
     const disposition = url.searchParams.get('download') ? 'attachment' : 'inline'
-    res.writeHead(200, { 'content-type': info.mime || 'application/octet-stream', ...(info.size ? { 'content-length': String(info.size) } : {}), 'content-disposition': `${disposition}; filename="${String(info.name).replace(/["\r\n]/g, '')}"`, 'cache-control': 'private, max-age=60' })
+    const type = info.mime || 'application/octet-stream'
+    // A stored HTML or SVG opened directly must not run on the app's origin (its URL carries
+    // the token): no sniffing, and a sandbox for every type but PDF, which Chromium won't
+    // render sandboxed. <img>, <video> and <audio> ignore the header.
+    const guard = { 'x-content-type-options': 'nosniff', ...(type.split(';')[0].trim().toLowerCase() === 'application/pdf' ? {} : { 'content-security-policy': 'sandbox' }) }
+    res.writeHead(200, { ...guard, 'content-type': type, ...(info.size ? { 'content-length': String(info.size) } : {}), 'content-disposition': `${disposition}; filename="${String(info.name).replace(/["\r\n]/g, '')}"`, 'cache-control': 'private, max-age=60' })
     const { Readable } = await import('node:stream')
     Readable.fromWeb(r.body).pipe(res)
   }

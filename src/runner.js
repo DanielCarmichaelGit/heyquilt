@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { Session } from './session.js'
-import { startControl } from './control.js'
+import { startControl, call } from './control.js'
 import { renderStatus } from './status.js'
 import { startAgentReaders } from './agents/index.js'
 import { relayUrl, isHostedRelay, getSettings } from './settings.js'
@@ -185,6 +185,62 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
       if (stopped) return
       stopped = true
       if (readers) readers.stop()
+      await control.close()
+      await session.stop()
+    }
+  }
+}
+
+/**
+ * Joins an agent to the session already syncing `dir` on this computer, as itself, without a
+ * copy of its own: one folder per session per computer, however many local agents work in it.
+ * The agent gets its own connection (its presence, access, claims, chat and inbox, all under its
+ * name), keeps the room in memory, and never writes the files: `host` (that folder's session)
+ * does, and credits the agent with changes to files the agent holds. Its own state lives under
+ * ~/.quilt/attached, so nothing is added to the folder.
+ */
+export async function attachSession ({ dir, conn, host, name, tool, identity, passes, onLog, onFatal, onDebug, agentFeed = true, readerOptions = {} }) {
+  const p = passes && passes.payload
+  if (p && p.name) name = p.name
+  tool = tool || 'unknown'
+  const stateDir = path.join(quiltHome(), 'attached', `${conn.room}-${slug(name)}`)
+  const session = new Session({ dir, ...conn, name, tool, kind: 'agent', identity, passes, attached: true, stateDir })
+  if (onLog) session.on('log', onLog)
+  if (onDebug) session.on('debug', onDebug)
+  session.on('fatal', (err) => onFatal && onFatal(err))
+  // The folder's session learns who we are, and what the relay lets us do, whenever that changes.
+  const register = () => call(host, 'POST', '/tenants', { name: session.name, pid: process.pid, access: session.access }).catch((err) => session.emit('debug', `could not register with ${dir}'s session: ${err.message}`))
+  let registeredAs = null
+  const reregister = () => {
+    if (registeredAs && registeredAs !== session.name) call(host, 'POST', '/tenants', { op: 'remove', name: registeredAs }).catch(() => {})
+    registeredAs = session.name
+    return register()
+  }
+  session.on('access', reregister)
+  session.on('identity', reregister)
+  try {
+    await session.start({ waitTimeoutMs: 15000 })
+  } catch (err) {
+    await session.stop().catch(() => {})
+    throw err
+  }
+  await reregister()
+  const control = await startControl(session, { joined: true })
+  const readers = agentFeed
+    ? startAgentReaders({ dir, ...readerOptions, onEntries: (entries) => session.pushAgentEntries(entries), onState: (state) => session.setAgentState(state), onLog: (line) => onLog && onLog(line) })
+    : null
+  let stopped = false
+  return {
+    session,
+    dir,
+    attached: true,
+    // How this agent's own tools reach its session (the folder's daemon.json is the host's).
+    daemon: { port: control.port, token: control.token, pid: process.pid, dir },
+    stop: async () => {
+      if (stopped) return
+      stopped = true
+      if (readers) readers.stop()
+      await call(host, 'POST', '/tenants', { op: 'remove', name: session.name }).catch(() => {})
       await control.close()
       await session.stop()
     }

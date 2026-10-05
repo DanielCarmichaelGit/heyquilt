@@ -12,7 +12,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ResourceUpdatedNotificationSchema } from '@modelcontextprotocol/sdk/types.js'
 import { startServer } from '../src/server.js'
 import { Session } from '../src/session.js'
-import { encodeInvite } from '../src/runner.js'
+import { encodeInvite, runSession } from '../src/runner.js'
 import { startTestApi, API_URL } from './api-helpers.js'
 import { newPassKeys } from '../src/passes.js'
 import { agentJoin } from '../src/agent-join.js'
@@ -349,4 +349,47 @@ test("an agent started in a person's folder works in its own copy and leaves the
     if (folder === copy) assert.doesNotMatch(text(again), /stays theirs/)
     assert.match(text(await call2('quilt_leave_session')), /Left the session/)
   }
+})
+
+test('an agent started where another session syncs the folder shares it, as itself', async (t) => {
+  // Duncan, another agent on this computer, is syncing the room in its folder.
+  const conn = { server: `ws://127.0.0.1:${relay.port}`, room: 'pair', secret: 's3cret' }
+  const duncanDir = tmp('duncan')
+  const duncan = await runSession({ dir: duncanDir, conn, name: 'duncan', tool: 'Claude Code', kind: 'agent', joined: true, agentFeed: false })
+  t.after(() => duncan.stop())
+  await waitFor(() => fs.existsSync(path.join(duncanDir, 'src', 'app.js')) && human.status().peers.some((p) => p.name === 'duncan'))
+  // The second agent's tool runs in the same folder.
+  const c3 = new Client({ name: 'grok', version: '1.0.0' })
+  await c3.connect(new StdioClientTransport({ command: process.execPath, args: [BIN, 'mcp'], cwd: duncanDir, env: { ...process.env, HOME: home, QUILT_SERVER: `ws://127.0.0.1:${relay.port}` }, stderr: 'ignore' }))
+  t.after(() => c3.close().catch(() => {}))
+  const call3 = (name, args = {}) => c3.callTool({ name, arguments: args })
+
+  // (An earlier test left the agent a copy of its own; this join must not make or use one.)
+  const copy = path.join(home, 'quilt', 'quilt-pair-helper')
+  fs.rmSync(copy, { recursive: true, force: true })
+  // Before: it "worked through" Duncan's session, acting as Duncan, and never showed up itself.
+  const r = await call3('quilt_join_session', { invite: encodeInvite(conn) })
+  assert.ok(!r.isError, text(r))
+  assert.match(text(r), /You share .* with duncan's session on this computer/)
+  assert.match(text(r), /You appear as: helper \(AI agent\)/)
+  assert.equal(fs.existsSync(copy), false, 'no copy of its own')
+  await waitFor(() => human.status().peers.some((p) => p.name === 'helper' && p.kind === 'agent'))
+  assert.ok(human.status().peers.some((p) => p.name === 'duncan'), 'Duncan is still there')
+
+  // It holds files and talks as itself; what it changes in the shared folder is credited to it.
+  const before = text(await call3('quilt_before_edit', { paths: ['src/app.js'] }))
+  assert.doesNotMatch(before, /claimed by duncan/)
+  await waitFor(() => human.claimFor('src/app.js')?.by === 'helper')
+  fs.writeFileSync(path.join(duncanDir, 'src', 'app.js'), 'console.log("hi from grok")\n')
+  await waitFor(() => fs.readFileSync(path.join(humanDir, 'src', 'app.js'), 'utf8').includes('grok'))
+  await waitFor(() => human.status().activity.some((a) => a.path === 'src/app.js' && a.by === 'helper'))
+  assert.ok(!human.status().activity.some((a) => a.path === 'src/app.js' && a.by === 'duncan'), 'not Duncan\'s change')
+  assert.equal(fs.readFileSync(path.join(duncanDir, 'src', 'app.js'), 'utf8'), 'console.log("hi from grok")\n', 'not undone as someone else\'s file')
+  await call3('quilt_message', { text: 'done with app.js' })
+  await waitFor(() => human.messages({ limit: 5, markRead: false }).some((m) => m.by === 'helper' && m.text === 'done with app.js'))
+
+  // Leaving takes it out of the session and out of Duncan's folder bookkeeping.
+  assert.match(text(await call3('quilt_leave_session')), /Left the session/)
+  await waitFor(() => !human.status().peers.some((p) => p.name === 'helper'))
+  assert.equal(duncan.session.tenants.size, 0)
 })

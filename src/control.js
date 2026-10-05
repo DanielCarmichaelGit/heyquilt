@@ -79,6 +79,8 @@ export async function startControl (session, extras = {}) {
       session.resolveCommitRequests({ hash: r.hash })
       return r
     },
+    // An agent on this computer joining through this folder as itself (runner.attachSession), or leaving.
+    'POST /tenants': (b) => b.op === 'remove' ? session.removeTenant(b.name) : session.addTenant(b),
     'GET /info': () => ({ room: session.room, dir: session.root, name: session.name, kind: session.kind, invite: extras.invite || null, viewInvite: extras.viewInvite || null, access: session.access, pid: process.pid })
   }
   const server = http.createServer(async (req, res) => {
@@ -102,6 +104,8 @@ export async function startControl (session, extras = {}) {
   const file = path.join(session.stateDir, 'daemon.json')
   fs.writeFileSync(file, JSON.stringify({ port: server.address().port, token, pid: process.pid }), { mode: 0o600 })
   return {
+    port: server.address().port,
+    token,
     close: () => {
       try { fs.rmSync(file) } catch {}
       return new Promise((r) => server.close(r))

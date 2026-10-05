@@ -55,7 +55,7 @@ const RETRY_MS = 30 * 1000
 const MAX_TRANSFERS = 2
 
 export class Session extends EventEmitter {
-  constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, summarize = null, identity = null, passes = null, startName = '', autoClaimQuietMs = AUTO_CLAIM_QUIET_MS, webhookTransport = null }) {
+  constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, summarize = null, identity = null, passes = null, startName = '', autoClaimQuietMs = AUTO_CLAIM_QUIET_MS, webhookTransport = null, attached = false, stateDir = null }) {
     super()
     this.root = path.resolve(dir)
     this.server = server
@@ -70,7 +70,11 @@ export class Session extends EventEmitter {
     this.tool = tool
     this.color = color
     this.prefer = prefer
-    this.stateDir = migrateDir(this.root)
+    // Attached: another session on this computer already syncs this folder (see addTenant there).
+    // This one is a member of its own (presence, access, claims, chat, inbox) but never touches
+    // the files: it keeps the room in memory, and its state lives in `stateDir`, outside the folder.
+    this.attached = !!attached
+    this.stateDir = stateDir || migrateDir(this.root)
     this.stateFile = path.join(this.stateDir, 'state.bin')
 
     this.doc = new Y.Doc()
@@ -158,6 +162,8 @@ export class Session extends EventEmitter {
     this.sessionName = '' // what the owner named the session (the relay sends it with the member list)
     this.startName = startName // a new session's name (its folder), sent once the relay lets us in as owner
     this.startNameSent = false
+    // Agents attached to this folder (name -> { pid, access }): their edits on disk are theirs.
+    this.tenants = new Map()
     if (passes) this.adoptPass(passes.payload)
   }
 
@@ -184,7 +190,7 @@ export class Session extends EventEmitter {
   async start ({ waitTimeoutMs = 0 } = {}) {
     fs.mkdirSync(this.stateDir, { recursive: true })
     this.loadWebhook()
-    const hadState = this.loadState()
+    const hadState = !this.attached && this.loadState()
     if (hadState) this.loadClaims()
 
     this.conn = new Connection({
@@ -242,9 +248,9 @@ export class Session extends EventEmitter {
         if (first === 'pending') {
           // Finish joining in the background once let in.
           this.admitted = sync.then(async () => {
-            this.reconcileFirstJoin()
+            if (!this.attached) this.reconcileFirstJoin()
             this.goLive()
-            await this.startWatcher()
+            if (!this.attached) await this.startWatcher()
             this.log('✅ you were let in')
             this.emit('status-changed')
           }).catch(() => {})
@@ -254,10 +260,10 @@ export class Session extends EventEmitter {
         clearTimeout(timer)
         this.conn.off('access', onAccess)
       }
-      this.reconcileFirstJoin()
+      if (!this.attached) this.reconcileFirstJoin()
       this.goLive()
     }
-    await this.startWatcher()
+    if (!this.attached) await this.startWatcher()
     return this
   }
 
@@ -301,6 +307,39 @@ export class Session extends EventEmitter {
   }
 
   /** Why we may not change rel, or null if we may. */
+  /**
+   * An agent on this computer works in this folder as itself (its own session is attached, see
+   * runner.attachSession): files it claims are its to change here, and the change is credited to
+   * it. `access` is what the relay gave it; `pid` its process, so a tenant that died is forgotten.
+   */
+  addTenant ({ name, pid, access = null }) {
+    name = String(name || '').trim()
+    if (!name || name === this.name) throw new Error('an attached agent needs a name of its own')
+    this.tenants.set(name, { name, pid: Number(pid) || 0, access })
+    return { tenants: [...this.tenants.keys()] }
+  }
+
+  removeTenant (name) {
+    this.tenants.delete(String(name || ''))
+    return { tenants: [...this.tenants.keys()] }
+  }
+
+  liveTenant (name) {
+    const t = this.tenants.get(name)
+    if (!t) return null
+    try { if (t.pid) process.kill(t.pid, 0) } catch { this.tenants.delete(name); return null }
+    return t
+  }
+
+  /** Why an attached agent may not change rel (its own access, from the relay), or null. */
+  tenantRefusal (t, rel) {
+    const a = t.access
+    if (a && a.state === 'pending') return `${t.name} hasn't been let into the session yet`
+    if (!a || a.state !== 'approved') return null
+    const why = changeRefusal(a, rel)
+    return why ? `${t.name}: ${why}` : null
+  }
+
   writeRefusal (rel) {
     const a = this.access
     if (!a || a.state !== 'approved') return null
@@ -347,27 +386,7 @@ export class Session extends EventEmitter {
   }
 
   goLive () {
-    this.files.observeDeep((events, tr) => {
-      if (tr.origin === LOCAL) return
-      const paths = new Set()
-      for (const ev of events) {
-        if (ev.target === this.files) for (const k of ev.changes.keys.keys()) paths.add(k)
-        else if (ev.path.length) paths.add(ev.path[0])
-      }
-      this.applyRemote(paths)
-    })
-    this.blobs.observe((ev, tr) => {
-      if (tr.origin === LOCAL) return
-      const paths = [...ev.changes.keys.keys()]
-      for (const k of paths) this.retry.delete(k)
-      this.applyRemote(paths)
-    })
-    this.fileKeys.observe(() => {
-      this.shareKeysWithViewers()
-      // Files whose key just arrived can be downloaded now.
-      for (const [rel, b] of this.blobs) if (b && b.stored && this.lastKnown.get(rel) !== `bin:${b.hash}`) this.writeOut(rel)
-    })
-    this.shareKeysWithViewers()
+    if (!this.attached) this.watchShared()
     this.chat.observe((ev, tr) => {
       for (const item of ev.changes.added) {
         for (const msg of item.content.getContent()) {
@@ -377,7 +396,7 @@ export class Session extends EventEmitter {
             this.emit('message', this.describeMessage(msg))
             if (tr.origin === LOCAL || msg.by === this.name) continue
             this.log(`💬 ${formatMessage(msg)}`)
-            if (msg.file) {
+            if (msg.file && !this.attached) {
               this.fetchFile(msg).then(
                 (dest) => this.log(`📎 received ${msg.file.name} from ${msg.by} → ${path.relative(this.root, dest)}`),
                 (err) => this.log(`could not download ${msg.file.name}: ${err.message} (retry with: quilt get ${msg.id})`)
@@ -411,12 +430,37 @@ export class Session extends EventEmitter {
       for (const item of ev.changes.added) for (const e of item.content.getContent()) if (e && e.id) added.push(e)
       if (added.length) this.emit('agent-feed', added)
     })
-    this.doc.on('update', () => this.scheduleStateSave())
+    if (!this.attached) this.doc.on('update', () => this.scheduleStateSave())
     this.ready = true
     this.scanInbox({ quiet: true }) // take stock: what is already here wakes nobody
-    this.fetchMissedFiles()
+    if (!this.attached) this.fetchMissedFiles()
     this.scheduleStateSave()
     this.scheduleStatusWrite()
+  }
+
+  /** Keeps the folder in step with the shared files (only the session that syncs the folder). */
+  watchShared () {
+    this.files.observeDeep((events, tr) => {
+      if (tr.origin === LOCAL) return
+      const paths = new Set()
+      for (const ev of events) {
+        if (ev.target === this.files) for (const k of ev.changes.keys.keys()) paths.add(k)
+        else if (ev.path.length) paths.add(ev.path[0])
+      }
+      this.applyRemote(paths)
+    })
+    this.blobs.observe((ev, tr) => {
+      if (tr.origin === LOCAL) return
+      const paths = [...ev.changes.keys.keys()]
+      for (const k of paths) this.retry.delete(k)
+      this.applyRemote(paths)
+    })
+    this.fileKeys.observe(() => {
+      this.shareKeysWithViewers()
+      // Files whose key just arrived can be downloaded now.
+      for (const [rel, b] of this.blobs) if (b && b.stored && this.lastKnown.get(rel) !== `bin:${b.hash}`) this.writeOut(rel)
+    })
+    this.shareKeysWithViewers()
   }
 
   // ---------------------------------------------------------------- state --
@@ -441,6 +485,7 @@ export class Session extends EventEmitter {
 
   saveState () {
     clearTimeout(this.stateTimer)
+    if (this.attached) return // the room is kept in memory; the folder's own session saves it
     this.stateTimer = null
     const tmp = this.stateFile + '.tmp'
     fs.writeFileSync(tmp, Y.encodeStateAsUpdate(this.doc))
@@ -888,18 +933,21 @@ export class Session extends EventEmitter {
     }
 
     const claim = this.claimFor(rel)
-    if (claim && claim.by !== this.name && (disk ? disk.key : undefined) !== this.sharedKey(rel)) {
+    // A file an agent attached to this folder holds is that agent's to change: the change is its.
+    const tenant = claim && claim.by !== this.name ? this.liveTenant(claim.by) : null
+    const by = tenant ? claim.by : this.name
+    if (claim && claim.by !== this.name && !tenant && (disk ? disk.key : undefined) !== this.sharedKey(rel)) {
       this.rejectClaimed(rel, disk, claim)
       return false
     }
-    const refusal = this.writeRefusal(rel)
+    const refusal = this.writeRefusal(rel) || (tenant ? this.tenantRefusal(tenant, rel) : null)
     if (refusal && (disk ? disk.key : undefined) !== this.sharedKey(rel)) {
       this.rejectLocal(rel, disk, refusal)
       return false
     }
     // A change of ours to a file nobody holds claims it for us while our AI works on it. A person
     // typing by hand while their AI sits idle keeps editing live with everyone, as before.
-    if (disk && this.ready && !this.seeding && disk.key !== this.sharedKey(rel) && (!claim || this.autoClaims.has(rel)) && this.aiMayBeEditing()) this.autoClaim(rel)
+    if (!tenant && disk && this.ready && !this.seeding && disk.key !== this.sharedKey(rel) && (!claim || this.autoClaims.has(rel)) && this.aiMayBeEditing()) this.autoClaim(rel)
 
     if (!disk) {
       if (!this.files.has(rel) && !this.blobs.has(rel)) { this.lastKnown.delete(rel); return false }
@@ -909,11 +957,11 @@ export class Session extends EventEmitter {
         const before = was ? was.toString() : undefined
         this.files.delete(rel)
         this.blobs.delete(rel)
-        this.recordActivity(rel, 'deleted', '', { before, after: before === undefined ? undefined : '' })
+        this.recordActivity(rel, 'deleted', '', { before, after: before === undefined ? undefined : '' }, by)
       }, LOCAL)
       this.lastKnown.delete(rel)
       this.setOnDisk(rel, null)
-      this.noteMyEdit(rel)
+      this.noteEdit(rel, by)
       return true
     }
 
@@ -948,11 +996,11 @@ export class Session extends EventEmitter {
         texts = { before: ytext.toString(), after: disk.text }
         detail = applyTextDiff(ytext, disk.text)
       }
-      this.recordActivity(rel, existed ? 'edited' : 'created', detail, texts)
+      this.recordActivity(rel, existed ? 'edited' : 'created', detail, texts, by)
     }, LOCAL)
     this.lastKnown.set(rel, disk.key)
     this.setOnDisk(rel, null)
-    this.noteMyEdit(rel)
+    this.noteEdit(rel, by)
     return true
   }
 
@@ -1004,28 +1052,29 @@ export class Session extends EventEmitter {
     this.emit('file-changed', { path: rel, by: by || this.lastEditorOf(rel) || 'partner' })
   }
 
-  /** `texts` is { before, after } for text files, so the chronology keeps the diff. */
-  recordActivity (rel, kind, detail, texts) {
+  /** `texts` is { before, after } for text files, so the chronology keeps the diff. `by`: an attached agent's change. */
+  recordActivity (rel, kind, detail, texts, by = this.name) {
     const now = Date.now()
-    this.tally(rel, kind, detail, now)
-    this.history.record({ by: this.name, path: rel, kind, detail, before: texts?.before, after: texts?.after, task: this.currentTask(), ts: now })
+    this.tally(rel, kind, detail, now, by)
+    const task = by === this.name ? this.currentTask() : currentTask(this.taskList(), by)
+    this.history.record({ by, path: rel, kind, detail, before: texts?.before, after: texts?.after, task, ts: now })
     const last = this.lastActivityPush.get(rel)
     // Collapse bursts of edits to the same file into one entry.
     if (kind === 'edited' && last && now - last < 20000) return
     this.lastActivityPush.set(rel, now)
-    this.activity.push([{ by: this.name, path: rel, kind, detail, ts: now }])
+    this.activity.push([{ by, path: rel, kind, detail, ts: now }])
     if (this.activity.length > 300) this.activity.delete(0, this.activity.length - 300)
   }
 
   /** Add one change of mine to the running count for rel (`detail` is "+a -r" for text). */
-  tally (rel, kind, detail, now) {
+  tally (rel, kind, detail, now, by = this.name) {
     if (this.seeding) return
-    const key = `${this.name}\0${rel}`
+    const key = `${by}\0${rel}`
     const cur = this.tallies.get(key) || { added: 0, removed: 0, edits: 0, kind: 'edited' }
     const m = /^\+(\d+) -(\d+)$/.exec(detail || '')
     const state = kind === 'deleted' ? 'deleted' : kind === 'created' || cur.kind === 'created' ? 'created' : 'edited'
     this.tallies.set(key, {
-      by: this.name,
+      by,
       path: rel,
       added: cur.added + (m ? +m[1] : 0),
       removed: cur.removed + (m ? +m[2] : 0),
@@ -1059,6 +1108,12 @@ export class Session extends EventEmitter {
     for (const p of out.people) { p.files.sort(newest); p.fileCount = p.files.length }
     for (const f of out.files) f.by.sort(newest)
     return out
+  }
+
+  /** A change on disk was ours, or (`by`) an attached agent's. */
+  noteEdit (rel, by) {
+    if (by === this.name) return this.noteMyEdit(rel)
+    this.emit('file-changed', { path: rel, by })
   }
 
   noteMyEdit (rel) {
@@ -1981,6 +2036,12 @@ export class Session extends EventEmitter {
 
   releaseQuietAutoClaims () {
     if (!this.ready || this.stopped) return
+    // Attached, we don't watch the folder: a held file still being changed there counts as an edit.
+    if (this.attached) {
+      for (const [rel, ts] of this.autoClaims) {
+        try { this.autoClaims.set(rel, Math.max(ts, fs.statSync(path.join(this.root, ...rel.split('/'))).mtimeMs)) } catch {}
+      }
+    }
     const cutoff = Date.now() - this.autoClaimQuietMs
     this.releaseAutoClaims((rel, ts) => ts <= cutoff).then(() => {
       // "Working" that only an edit check said lapses with its files, so a commit isn't held up by an agent that never said done.

@@ -12,7 +12,7 @@ import path from 'node:path'
 import { findDaemon, call } from './control.js'
 import { renderMessage, renderStatus } from './status.js'
 import { formatTasks, columnName, assigneeLabel } from './tasks.js'
-import { runSession, decodeInvite, newConn, readConfig, runningElsewhere, personsFolder, agentCopyFolder } from './runner.js'
+import { runSession, attachSession, decodeInvite, newConn, readConfig, runningElsewhere, personsFolder, agentCopyFolder } from './runner.js'
 import { INVALID_INVITE } from './ui/invite.js'
 import { toolLabel } from './agents/common.js'
 import { sessionPasses } from './pass-source.js'
@@ -82,7 +82,9 @@ export async function runMcp () {
   )
 
   // A session this MCP server runs itself, when the agent joined or started one.
-  let joined = null // { run, dir, invite }
+  let joined = null // { run, dir, invite }, or { run, dir, daemon, attached } in a folder another session syncs
+  // The session this agent's tools talk to: its own when it is attached to someone else's folder.
+  const daemonNow = () => joined && joined.daemon ? joined.daemon : findDaemon(joined ? joined.dir : undefined)
   let logs = []
   const clientTool = () => toolLabel(server.server.getClientVersion()?.name)
 
@@ -124,7 +126,7 @@ export async function runMcp () {
     return renderUnanswered(waiting, `call ${tool} again`)
   }
   const withDaemon = async (fn, { inbox = true, gate = null } = {}) => {
-    const d = findDaemon(joined ? joined.dir : undefined)
+    const d = daemonNow()
     if (!d) return { content: [{ type: 'text', text: NOT_RUNNING + stale() }], isError: true }
     const before = async () => (await notices(d)) + (inbox ? await arrivals(d) : '')
     try {
@@ -352,7 +354,7 @@ export async function runMcp () {
   const pushInbox = async () => {
     const channel = clientTool() === 'Claude Code'
     if (!channel && !subscribed.size) return
-    const d = findDaemon(joined ? joined.dir : undefined)
+    const d = daemonNow()
     if (!d) return
     const c = at(pushCursor, d)
     const r = await call(d, 'POST', '/inbox', { after: c.seq })
@@ -372,7 +374,7 @@ export async function runMcp () {
     description: 'Mentions of you, direct messages to you and tasks handed to you (the last 100). Subscribe to be told when something new arrives.',
     mimeType: 'text/markdown'
   }, async (uri) => {
-    const d = findDaemon(joined ? joined.dir : undefined)
+    const d = daemonNow()
     const r = d ? await call(d, 'POST', '/inbox', { after: 0 }).catch(() => ({ events: [] })) : { events: [] }
     return { contents: [{ uri: uri.href, mimeType: 'text/markdown', text: d ? (renderInbox(r.events) || 'Nothing has been waiting for you.') : NOT_RUNNING }] }
   })
@@ -380,7 +382,7 @@ export async function runMcp () {
     if (req.params.uri === INBOX_URI) {
       subscribed.add(INBOX_URI)
       // Take stock now, so only what arrives from here on is announced.
-      const d = findDaemon(joined ? joined.dir : undefined)
+      const d = daemonNow()
       if (d) call(d, 'POST', '/inbox', { after: 0 }).then((r) => { const c = at(pushCursor, d); if (c.fresh || c.seq < r.seq) { c.seq = r.seq; c.fresh = false } }).catch(() => {})
     }
     return {}
@@ -439,14 +441,36 @@ export async function runMcp () {
       const empty = !fs.existsSync(cwd) || fs.readdirSync(cwd).filter((n) => n !== '.quilt' && n !== '.DS_Store').length === 0
       dir = empty || (saved && saved.room === conn.room) ? cwd : saved ? null : roomFolder(cwd, conn.room)
     }
-    // A person is already syncing this folder: work through their session.
+    // Someone on this computer already syncs this folder (a person's app, another agent): share it.
+    // One copy of the files per computer, however many agents work in it; each still joins as itself.
     if (dir && runningElsewhere(dir)) {
       const saved = readConfig(dir)
-      if (saved && saved.room === conn.room) {
+      if (!saved || saved.room !== conn.room) throw new Error(`${dir} is already synced by another quilt session. Choose another folder.`)
+      const host = findDaemon(dir)
+      const info = host ? await call(host, 'GET', '/info').catch(() => null) : null
+      let auth = null
+      try { auth = sessionPasses({ agent: pickAgent({ agent }) }) } catch {}
+      // No agent of its own on this computer, or the folder's session is already this agent
+      // (its tool restarted): work through that session.
+      if (!auth || !host || (info && info.kind === 'agent' && info.name === auth.name)) {
         joined = { dir, attached: true }
-        return { dir, attached: true }
+        return { dir, attached: true, through: true }
       }
-      throw new Error(`${dir} is already synced by another quilt session. Choose another folder.`)
+      logs = []
+      const run = await attachSession({
+        dir,
+        conn,
+        host,
+        name: auth.name,
+        tool: clientTool(),
+        identity: auth.identity,
+        passes: auth.passes,
+        readerOptions: { chatDir: process.cwd() },
+        onLog: (line) => { logs.push(line); if (logs.length > 50) logs.shift() },
+        onFatal: async (err) => { logs.push(`stopped: ${err.message}`); await leave() }
+      })
+      joined = { run, dir, daemon: run.daemon, attached: true }
+      return { dir, attached: true, host: info ? info.name : '' }
     }
     // A person's folder that isn't being synced right now (they left, or closed the app) is
     // still theirs: taking it over would lock them out of their own session until the agent
@@ -489,7 +513,7 @@ export async function runMcp () {
   }
 
   const describeSession = async (dir, extra = '') => {
-    const d = findDaemon(dir)
+    const d = joined && joined.daemon && joined.dir === dir ? joined.daemon : findDaemon(dir)
     const st = d ? await call(d, 'GET', '/status') : null
     const info = d ? await call(d, 'GET', '/info') : null
     const lines = [extra]
@@ -500,7 +524,7 @@ export async function runMcp () {
     else if (acc && acc.controlled) lines.push(`Your access: ${acc.owner ? 'owner' : acc.role === 'viewer' ? 'view only (your file changes are undone)' : acc.scopes && acc.scopes.length ? `may change files only in ${acc.scopes.join(', ')}` : 'may change any file'}`)
     if (info && info.invite) lines.push(`Invite link to edit (for others to join): ${info.invite}`)
     if (info && info.viewInvite) lines.push(`Invite link to view only: ${info.viewInvite}`)
-    if (joined && joined.run) lines.push('The session runs inside this MCP server and ends when it stops, or with quilt_leave_session.')
+    if (joined && joined.run) lines.push(joined.daemon ? 'You are in the session through this MCP server until it stops, or until quilt_leave_session.' : 'The session runs inside this MCP server and ends when it stops, or with quilt_leave_session.')
     return lines.filter(Boolean).join('\n')
   }
 
@@ -515,9 +539,11 @@ export async function runMcp () {
     try {
       const conn = decodeInvite(invite)
       const r = await startAs({ conn, folder, agent })
-      const text = await describeSession(r.dir, r.attached
+      const text = await describeSession(r.dir, r.through
         ? `This folder is already in the session (someone runs quilt here), so you're working through their session.`
-        : `Joined room ${conn.room}. Files are synced into ${r.dir}; edit them there.${r.aside ? ` (${r.aside} is a person's own copy of this session on this computer and stays theirs: don't sync or edit it from here.)` : ''}`)
+        : r.attached
+          ? `Joined room ${conn.room}. You share ${r.dir} with ${r.host ? `${r.host}'s session` : 'the session'} on this computer, which keeps the files in sync: edit them there. Call quilt_before_edit before changing files, so the changes are credited to you.`
+          : `Joined room ${conn.room}. Files are synced into ${r.dir}; edit them there.${r.aside ? ` (${r.aside} is a person's own copy of this session on this computer and stays theirs: don't sync or edit it from here.)` : ''}`)
       return { content: [{ type: 'text', text }] }
     } catch (err) {
       return { content: [{ type: 'text', text: `Could not join: ${err.message}` }], isError: true }

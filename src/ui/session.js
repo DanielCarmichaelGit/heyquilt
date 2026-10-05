@@ -104,7 +104,7 @@ export function mountSession (id) {
         <div class="sv-mainbar" id="mainbar" hidden>
           <div class="sv-tabs" id="main-tabs" role="tablist"></div>
         </div>
-        <div class="ws-content" id="main"></div>
+        <div class="sv-content" id="main"></div>
       </main>
       <aside class="sv-chat" id="chat-pane" aria-label="Chat">
         <div class="chat-head"><h3>Chat</h3><span class="hint" id="chat-sub"></span></div>

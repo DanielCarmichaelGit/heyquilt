@@ -53,4 +53,6 @@ test('no em dashes', () => { for (const f of ['workspaces.js', 'home.js', 'app.j
 test('the session view no longer calls itself a workspace in code', () => {
   assert.ok(!ui('session.js').includes('state.ws.'), 'the session view no longer calls itself a workspace')
   assert.ok(!ui('app.css').includes('.ws-tab'))
+  assert.ok(!ui('session.js').includes('ws-content') && !ui('app.css').includes('.ws-content'), 'ws- is the workspaces screens\' prefix')
+  assert.ok(ui('session.js').includes('<div class="sv-content" id="main">') && ui('app.css').includes('.sv-content {'))
 })

@@ -365,9 +365,9 @@ test('a commit git fails to list is not taken as seen; one it lists is', async (
   const before = B.gitSeen.sha
   git(dirB, 'commit', '-qam', 'bob') // no file changes: no burst sees it
   process.env.QUILT_GIT = failingGit('diff')
-  try { B.noteCommits() } finally { delete process.env.QUILT_GIT }
+  try { await B.noteCommits() } finally { delete process.env.QUILT_GIT }
   assert.equal(B.gitSeen.sha, before, 'what the commit changed is unknown: not taken as the session\'s work')
-  B.noteCommits()
+  await B.noteCommits()
   assert.equal(B.gitSeen.sha, git(dirB, 'rev-parse', 'HEAD'))
 })
 
@@ -445,4 +445,45 @@ test('a folder without git is untouched by all of this', async (t) => {
   write(dirB, 'x.txt', 'y\n')
   await waitFor(() => read(dirA, 'x.txt') === 'y\n')
   assert.equal(A.status().git, null)
+})
+
+/** A git that answers every call, `secs` seconds late. */
+function slowGit (secs) {
+  const bin = path.join(tmp('slowgit'), 'git')
+  fs.writeFileSync(bin, `#!/bin/sh\nsleep ${secs}\nexec git "$@"\n`, { mode: 0o755 })
+  return bin
+}
+
+test('a slow git never stalls the app: the folder is held while git is asked, then settles', async (t) => {
+  const { B, dirA, dirB } = await pairRepos(t)
+  write(dirA, 'README.md', 'main work\n')
+  await waitFor(() => read(dirB, 'README.md') === 'main work\n')
+  let last = Date.now(); let worst = 0
+  const tick = setInterval(() => { const now = Date.now(); worst = Math.max(worst, now - last); last = now }, 10)
+  process.env.QUILT_GIT = slowGit(3)
+  try {
+    git(dirB, 'stash', '-q')
+    // Every git call takes 3 s: the stash is classified, then settled, all the while held.
+    await never(() => read(dirA, 'README.md') !== 'main work\n', 5000)
+    await waitFor(() => read(dirB, 'README.md') === 'main work\n' && B.status().git.hold === null, 60000)
+  } finally { delete process.env.QUILT_GIT; clearInterval(tick) }
+  assert.ok(worst < 200, `the event loop stalled for ${worst} ms`)
+  assert.equal(read(dirA, 'README.md'), 'main work\n')
+  assert.ok(B.logs.some((l) => l.includes('Quilt kept the session\'s work')), B.logs.join('\n'))
+})
+
+test('a change from the room while git is asked about a burst is merged with it, not lost', async (t) => {
+  const { A, B, dirA, dirB } = await pairRepos(t)
+  process.env.QUILT_GIT = slowGit(1)
+  try {
+    // bob stages his edit (git writes the index: a burst, asked of git); alice edits another line meanwhile.
+    write(dirB, 'src/app.js', 'line1 (bob)\nline2\nline3\nline4\nline5\n'); git(dirB, 'add', 'src/app.js')
+    await waitFor(() => B.classifying)
+    write(dirA, 'src/app.js', 'line1\nline2\nline3\nline4\nline5 (alice)\n')
+    await waitFor(() => B.heldPaths.has('src/app.js'))
+    assert.equal(read(dirB, 'src/app.js'), 'line1 (bob)\nline2\nline3\nline4\nline5\n', 'nothing written over bob\'s file while git is asked')
+    const both = 'line1 (bob)\nline2\nline3\nline4\nline5 (alice)\n'
+    await waitFor(() => read(dirA, 'src/app.js') === both && read(dirB, 'src/app.js') === both, 30000)
+  } finally { delete process.env.QUILT_GIT }
+  assert.equal(A.mergeList().filter((m) => m.state === 'open').length, 0)
 })

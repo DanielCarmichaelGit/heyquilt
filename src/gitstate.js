@@ -2,10 +2,11 @@
 // it asks git whether a burst of file changes was an edit, a discard (stash,
 // reset, restore), new commits (pull, merge, rebase) or a branch switch, and
 // what a file looked like at a commit, so the shared work can be kept apart
-// from what git did.
+// from what git did. Every git call is asynchronous (the app's window and its
+// relay connection never wait on git); the file reads below are synchronous.
 import fs from 'node:fs'
 import path from 'node:path'
-import { execFileSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { watch } from 'chokidar'
 import { looksBinary, sha1, MAX_STORED_BINARY_BYTES } from './fsutil.js'
 
@@ -24,65 +25,78 @@ const MAX_OUTPUT = 256 * 1024 * 1024
 const MAX_PATHSPECS = 200
 
 /** Runs git: its output (a string, or a Buffer with `buffer`), or null when it fails. */
-function run (root, args, opts) {
-  return call(root, args, opts).out
+async function run (root, args, opts) {
+  return (await call(root, args, opts)).out
 }
 
 const gitBinary = () => process.env.QUILT_GIT || 'git'
 
-let timedOut = false // whether the last git call was stopped at GIT_TIMEOUT_MS
+// Whether the last git call in a folder was stopped at GIT_TIMEOUT_MS (per folder: several
+// sessions can be asking git at once).
+const timedOut = new Map()
+let lastTimedOut = false
 
 /**
  * Runs git: { out } or, when it fails, { out: null, missing, timedOut }
  * (missing: the git binary could not be started at all; timedOut: it ran
- * past GIT_TIMEOUT_MS and was stopped).
+ * past GIT_TIMEOUT_MS and was stopped). Never rejects.
  */
 function call (root, args, { buffer = false, input } = {}) {
-  try {
-    // QUILT_GIT lets tests point at a git binary that doesn't exist, to exercise
-    // the "git is unreachable" path without touching the real PATH.
-    const out = execFileSync(gitBinary(), args, {
-      cwd: root,
-      encoding: buffer ? undefined : 'utf8', // undefined: a Buffer
-      timeout: GIT_TIMEOUT_MS,
-      maxBuffer: MAX_OUTPUT,
-      input,
-      stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'ignore'],
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }
-    })
-    runs.add(gitBinary())
-    timedOut = false
-    return { out, missing: false, timedOut }
-  } catch (err) {
-    const missing = err.code === 'ENOENT' || err.code === 'EACCES'
-    if (!missing) runs.add(gitBinary()) // it started, then failed or ran too long: git is there
-    timedOut = err.code === 'ETIMEDOUT' || err.signal === 'SIGTERM'
-    return { out: null, missing, timedOut }
-  }
+  // QUILT_GIT lets tests point at a git binary that doesn't exist, to exercise
+  // the "git is unreachable" path without touching the real PATH.
+  const bin = gitBinary()
+  return new Promise((resolve) => {
+    const done = (out, missing, late) => {
+      timedOut.set(root, late); lastTimedOut = late
+      resolve({ out, missing, timedOut: late })
+    }
+    let child
+    try {
+      child = execFile(bin, args, {
+        cwd: root,
+        encoding: buffer ? 'buffer' : 'utf8',
+        timeout: GIT_TIMEOUT_MS,
+        maxBuffer: MAX_OUTPUT,
+        env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }
+      }, (err, stdout) => {
+        if (!err) { runs.add(bin); return done(stdout, false, false) }
+        const missing = err.code === 'ENOENT' || err.code === 'EACCES'
+        if (!missing) runs.add(bin) // it started, then failed or ran too long: git is there
+        done(null, missing, !missing && (err.killed === true || err.signal === 'SIGTERM'))
+      })
+    } catch (err) { // a cwd that is gone, say
+      return done(null, err.code === 'ENOENT' || err.code === 'EACCES', false)
+    }
+    child.stdin.on('error', () => {}) // git may exit before reading all of it
+    child.stdin.end(input)
+  })
 }
 
 const runs = new Set() // git binaries seen to run
 
-/** Whether the last git call ran past GIT_TIMEOUT_MS: asking again would stall the app as long again. */
-export function lastCallTimedOut () { return timedOut }
+/**
+ * Whether the last git call (in `root`, or anywhere) ran past GIT_TIMEOUT_MS:
+ * asking again would stall the folder as long again.
+ */
+export function lastCallTimedOut (root) { return root === undefined ? lastTimedOut : !!timedOut.get(root) }
 
 /**
- * `ask()` (a read of git's that is null when git fails), asked once more when
- * it failed, unless that call timed out or git can't be run at all.
+ * `ask()` (a read of git's that resolves to null when git fails), asked once
+ * more when it failed, unless that call timed out or git can't be run at all.
  */
-export function askTwice (root, ask) {
-  const r = ask()
-  return r !== null || timedOut || !gitRuns(root) ? r : ask()
+export async function askTwice (root, ask) {
+  const r = await ask()
+  return r !== null || lastCallTimedOut(root) || !(await gitRuns(root)) ? r : ask()
 }
 
 /**
  * Whether git itself can be run here (`git --version`), as against one call
  * of it failing (a timeout, a filter, a big read). Remembered once it has run.
  */
-export function gitRuns (root) {
+export async function gitRuns (root) {
   const bin = gitBinary()
   if (runs.has(bin)) return true
-  if (run(root, ['--version']) === null) return false
+  if (await run(root, ['--version']) === null) return false
   runs.add(bin)
   return true
 }
@@ -121,12 +135,12 @@ export function gitDir (root) {
  * repo, when git is unreachable (sha lookup fails), or on an unborn branch (a fresh
  * `git init` with no commits yet) — in every case there's nothing to compare against.
  */
-export function headKey (root) {
+export async function headKey (root) {
   const dir = gitDir(root)
   if (!dir) return null
   let head
   try { head = fs.readFileSync(path.join(dir, 'HEAD'), 'utf8').trim() } catch { return null }
-  const sha = (run(root, ['rev-parse', '--verify', '-q', 'HEAD']) || '').trim() || null
+  const sha = ((await run(root, ['rev-parse', '--verify', '-q', 'HEAD'])) || '').trim() || null
   if (!sha) return null
   const ref = /^ref:\s*refs\/heads\/(.+)$/.exec(head)
   if (ref) return { key: ref[1], branch: ref[1], sha }
@@ -157,14 +171,14 @@ export function indexStamp (root) {
  * shares its burst with an unrelated save (an untracked file, an autosave) can
  * still be told apart from an edit.
  */
-export function classify (root, { changed = [], before = null } = {}) {
-  const head = headKey(root)
+export async function classify (root, { changed = [], before = null } = {}) {
+  const head = await headKey(root)
   if (!head) return { kind: 'edit', head: null, prevHead: before, putBack: [] }
   if (busy(root)) return { kind: 'busy', head, prevHead: before }
   if (before && head.key !== before.key) return { kind: 'switch', head, prevHead: before }
   if (before && head.sha !== before.sha) return { kind: 'advance', head, prevHead: before }
   if (!changed.length) return { kind: 'edit', head, prevHead: before, putBack: [] }
-  const tree = treeState(root, changed)
+  const tree = await treeState(root, changed)
   // git could not say (a timeout in a big repo): held as busy, and asked again when it settles.
   if (!tree) return { kind: 'busy', head, prevHead: before }
   // Clean paths print nothing, and so does a path git has never heard of (outside the repo, or nonexistent).
@@ -184,8 +198,8 @@ function exists (root, rel) {
  * binary), as checkout would write it (--filters), or null when it did not
  * exist there (or git failed).
  */
-export function fileAt (root, sha, rel) {
-  const out = filesAt(root, sha, [rel])
+export async function fileAt (root, sha, rel) {
+  const out = await filesAt(root, sha, [rel])
   return out ? out.get(rel) ?? null : null
 }
 
@@ -196,19 +210,19 @@ export function fileAt (root, sha, rel) {
  * `out.failed` counts the files a failed git call left unread. Null only
  * when git itself can't be run.
  */
-export function filesAt (root, sha, rels) {
+export async function filesAt (root, sha, rels) {
   const out = new Map()
   out.failed = 0
   if (!rels.length) return out
   const unread = (list) => { for (const rel of list) out.set(rel, undefined); out.failed += list.length }
   // Sizes first, so a huge file can't overflow the read of the contents.
-  const check = call(root, ['cat-file', '--batch-check=%(objectname) %(objecttype) %(objectsize)'], { input: rels.map((r) => `${sha}:${r}\n`).join('') })
+  const check = await call(root, ['cat-file', '--batch-check=%(objectname) %(objecttype) %(objectsize)'], { input: rels.map((r) => `${sha}:${r}\n`).join('') })
   if (check.missing) return null
   const lines = check.out === null ? [] : check.out.split('\n').slice(0, rels.length)
   if (lines.length !== rels.length) { unread(rels); return out }
   // A path with a filter (Git LFS, say) is never read: its smudged size is unknown (the blob is
   // a pointer), and running the filter can be slow or fail. The attributes are asked in one call.
-  const filtered = filterOf(root, rels)
+  const filtered = await filterOf(root, rels)
   if (filtered === null) { unread(rels); return out }
   const fetch = [] // [rel, blob id, size]
   rels.forEach((rel, i) => {
@@ -219,8 +233,8 @@ export function filesAt (root, sha, rels) {
   })
   // With --filters each line is "<blob> <path>": the path picks the line-ending conversion, as
   // checkout would. That can change a size, so each file's own size is read from the batch's headers.
-  const read = (chunk) => {
-    const buf = call(root, ['cat-file', '--batch', '--filters'], { buffer: true, input: chunk.map(([rel, id]) => `${id} ${rel}\n`).join('') })
+  const read = async (chunk) => {
+    const buf = await call(root, ['cat-file', '--batch', '--filters'], { buffer: true, input: chunk.map(([rel, id]) => `${id} ${rel}\n`).join('') })
     if (buf.missing) return false
     if (buf.out === null) { unread(chunk.map(([rel]) => rel)); return true }
     let at = 0
@@ -240,20 +254,20 @@ export function filesAt (root, sha, rels) {
   let chunk = []; let bytes = 0
   for (const f of fetch) {
     if (chunk.length && bytes + f[2] > MAX_OUTPUT / 4) {
-      if (!read(chunk)) return null
+      if (!(await read(chunk))) return null
       chunk = []; bytes = 0
     }
     chunk.push(f); bytes += f[2]
   }
-  if (chunk.length && !read(chunk)) return null
+  if (chunk.length && !(await read(chunk))) return null
   return out
 }
 
 const LFS_POINTER = 'version https://git-lfs'
 
 /** The paths with a `filter` attribute set (in .gitattributes), or null when git failed. */
-function filterOf (root, rels) {
-  const out = run(root, ['check-attr', '-z', '--stdin', 'filter'], { input: rels.join('\0') + '\0' })
+async function filterOf (root, rels) {
+  const out = await run(root, ['check-attr', '-z', '--stdin', 'filter'], { input: rels.join('\0') + '\0' })
   if (out === null) return null
   const f = out.split('\0')
   const filtered = new Set()
@@ -262,14 +276,14 @@ function filterOf (root, rels) {
 }
 
 /** The commit a branch points at (wherever HEAD is), or null. */
-export function branchTip (root, branch) {
+export async function branchTip (root, branch) {
   if (!branch || !gitDir(root)) return null
-  return (run(root, ['rev-parse', '--verify', '-q', `refs/heads/${branch}^{commit}`]) || '').trim() || null
+  return ((await run(root, ['rev-parse', '--verify', '-q', `refs/heads/${branch}^{commit}`])) || '').trim() || null
 }
 
 /** Paths that differ between two commits, each with git's status letter (A added, M modified, D deleted...); null when git fails. */
-export function changesBetween (root, shaA, shaB) {
-  const out = run(root, ['diff', '--no-renames', '--no-ext-diff', '--name-status', '-z', shaA, shaB])
+export async function changesBetween (root, shaA, shaB) {
+  const out = await run(root, ['diff', '--no-renames', '--no-ext-diff', '--name-status', '-z', shaA, shaB])
   if (out === null) return null
   const f = out.split('\0')
   const changes = new Map()
@@ -278,8 +292,8 @@ export function changesBetween (root, shaA, shaB) {
 }
 
 /** Paths that differ between two commits. */
-export function changedBetween (root, shaA, shaB) {
-  const changes = changesBetween(root, shaA, shaB)
+export async function changedBetween (root, shaA, shaB) {
+  const changes = await changesBetween(root, shaA, shaB)
   return changes ? [...changes.keys()] : []
 }
 
@@ -288,11 +302,11 @@ export function changedBetween (root, shaA, shaB) {
  * `dirty` (changed, staged, untracked or conflicted) and `tracked` (in the
  * index). Null when git fails.
  */
-export function treeState (root, paths) {
+export async function treeState (root, paths) {
   const spec = paths.length <= MAX_PATHSPECS ? ['--', ...paths] : []
-  const status = run(root, ['--literal-pathspecs', 'status', '--porcelain=v2', '-z', '--untracked-files=all', ...spec])
+  const status = await run(root, ['--literal-pathspecs', 'status', '--porcelain=v2', '-z', '--untracked-files=all', ...spec])
   if (status === null) return null // not asking for the second when the first failed (or timed out)
-  const listed = run(root, ['--literal-pathspecs', 'ls-files', '-z', ...spec])
+  const listed = await run(root, ['--literal-pathspecs', 'ls-files', '-z', ...spec])
   if (listed === null) return null
   const dirty = new Set()
   const f = status.split('\0')

@@ -15,7 +15,8 @@ import { runSession, decodeInvite, newConn, readConfig, runningElsewhere, person
 import { INVALID_INVITE } from './ui/invite.js'
 import { toolLabel } from './agents/common.js'
 import { sessionPasses } from './pass-source.js'
-import { pickAgent } from './agent-join.js'
+import { pickAgent, agentAccess } from './agent-join.js'
+import { setSessionWorkspace } from './account.js'
 import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, MAX_VERIFIED } from './agent-task-workflow.js'
 import { formatHistory } from './history.js'
 import { renderInbox, describeEvent, INBOX_HOW } from './inbox.js'
@@ -359,7 +360,7 @@ export async function runMcp () {
 
   // ------------------------------------------------ joining as an agent --
 
-  const startAs = async ({ conn, folder, agent, inviteServer, starting = false }) => {
+  const startAs = async ({ conn, folder, agent, inviteServer, starting = false, workspace = '' }) => {
     if (joined) throw new Error(`Already in session ${path.basename(joined.dir)} (${joined.dir}). Call quilt_leave_session first.`)
     const cwd = process.env.QUILT_DIR || process.cwd()
     let dir = folder ? path.resolve(cwd, folder) : null
@@ -383,7 +384,8 @@ export async function runMcp () {
     // still theirs: taking it over would lock them out of their own session until the agent
     // leaves. The agent is its own member, in its own copy of the room.
     // Each agent joins as itself: its name, key and passes come from its saved keys.
-    const auth = sessionPasses({ agent: pickAgent({ agent }) })
+    const agentKey = pickAgent({ agent })
+    const auth = sessionPasses({ agent: agentKey })
     let aside = null
     if (!dir || personsFolder(dir)) {
       if (starting) throw new Error(`${dir} already belongs to a session a person started on this computer. Ask them for its invite link and join that, or start from another folder.`)
@@ -405,10 +407,22 @@ export async function runMcp () {
       // This agent's own chat lives where it was started, which may be above the synced folder.
       readerOptions: { chatDir: process.cwd() },
       onLog: (line) => { logs.push(line); if (logs.length > 50) logs.shift() },
-      onFatal: async (err) => { logs.push(`stopped: ${err.message}`); await leave() }
+      onFatal: async (err) => { logs.push(`stopped: ${err.message}`); await leave() },
+      workspace
     })
     joined = { run, dir, invite: run.invite }
-    return { dir, invite: run.invite, aside }
+    // Puts the new room in its workspace with the agent's own key. A failure (offline, the
+    // workspace was removed, the API doesn't have workspaces on) is logged, never fatal: the
+    // session has already started and works without it.
+    if (workspace) {
+      try {
+        const saved = await agentAccess({ name: agentKey })
+        await setSessionWorkspace({ token: saved.accessKey, id: workspace, room: conn.room, api: saved.api })
+      } catch (err) {
+        run.session.log(`could not add this session to workspace ${workspace}: ${err.message}`)
+      }
+    }
+    return { dir, invite: run.invite, aside, workspace }
   }
 
   const leave = async () => {
@@ -425,6 +439,9 @@ export async function runMcp () {
     const info = d ? await call(d, 'GET', '/info') : null
     const lines = [extra]
     if (info) lines.push(`Project folder: ${info.dir}`, `You appear as: ${info.name}${info.kind === 'agent' ? ' (AI agent)' : ''}`)
+    // Only the id is known locally in phase 1 (its name comes from the accounts API later).
+    const cfg = readConfig(dir)
+    if (cfg && cfg.workspace) lines.push(`Workspace: ${cfg.workspace}`)
     if (st) lines.push(`Shared files: ${st.fileCount}`, `People online: ${st.peers.map((p) => p.name).join(', ') || 'nobody else yet'}`)
     const acc = info && info.access
     if (acc && acc.state === 'pending') lines.push('⏳ Waiting for the session owner to let you in. Nothing syncs until they approve you; check again with quilt_session_info.')
@@ -459,11 +476,12 @@ export async function runMcp () {
     description: 'Start a new live quilt session for a folder, as an AI agent, and get an invite link for others.',
     inputSchema: {
       folder: z.string().optional().describe('Folder to share, relative to the current folder (default: current folder)'),
-      agent: z.string().optional().describe('Which Quilt agent to join as (saved with `quilt agent join`). Optional when this computer has only one.')
+      agent: z.string().optional().describe('Which Quilt agent to join as (saved with `quilt agent join`). Optional when this computer has only one.'),
+      workspace: z.string().optional().describe('The workspace id this session belongs to (from quilt_workspaces, phase 3; or given by the person).')
     }
-  }, async ({ folder, agent }) => {
+  }, async ({ folder, agent, workspace }) => {
     try {
-      const r = await startAs({ conn: newConn(), folder: folder || '.', agent, starting: true })
+      const r = await startAs({ conn: newConn(), folder: folder || '.', agent, starting: true, workspace: workspace || '' })
       return { content: [{ type: 'text', text: await describeSession(r.dir, `Started a session for ${r.dir}. Share the invite link below with collaborators.`) }] }
     } catch (err) {
       return { content: [{ type: 'text', text: `Could not start: ${err.message}` }], isError: true }

@@ -34,3 +34,18 @@ test('renderStatus marks a session-side deletion distinctly from an ordinary con
   ]))
   assert.match(md, /dana changed it offline, it was deleted in the session/)
 })
+
+test('a session in a workspace says so in STATUS.md', () => {
+  const text = renderStatus({ ...baseStatus(), workspace: 'ws-1', workspaceName: 'Launch' })
+  assert.match(text, /Workspace: Launch/)
+})
+
+test('a session in a workspace with no known name falls back to the id', () => {
+  const text = renderStatus({ ...baseStatus(), workspace: 'ws-1' })
+  assert.match(text, /Workspace: ws-1/)
+})
+
+test('a session in no workspace prints no Workspace line', () => {
+  const text = renderStatus(baseStatus())
+  assert.doesNotMatch(text, /Workspace:/)
+})

@@ -238,6 +238,19 @@ test('agent edits sync back to people, and leaving removes the agent', async () 
   await waitFor(() => !human.status().peers.some((p) => p.kind === 'agent'))
 })
 
+test('quilt_start_session saves the workspace locally and reports it, even when linking it on the API fails', async (t) => {
+  const dir = tmp('ws-start')
+  const c3 = new Client({ name: 'claude-code', version: '1.0.0' })
+  await c3.connect(new StdioClientTransport({ command: process.execPath, args: [BIN, 'mcp'], cwd: dir, env: { ...process.env, HOME: home, QUILT_SERVER: `ws://127.0.0.1:${relay.port}` }, stderr: 'ignore' }))
+  t.after(() => c3.close().catch(() => {}))
+  const call3 = (name, args = {}) => c3.callTool({ name, arguments: args })
+  const r = await call3('quilt_start_session', { workspace: 'ws-1' })
+  assert.ok(!r.isError, text(r))
+  assert.match(text(r), /Workspace: ws-1/)
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, '.quilt', 'config.json'), 'utf8')).workspace, 'ws-1')
+  assert.match(text(await call3('quilt_session_info')), /Workspace: ws-1/)
+})
+
 const rx = (s) => new RegExp(s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
 
 test("an agent started in a person's folder works in its own copy and leaves theirs alone", async (t) => {

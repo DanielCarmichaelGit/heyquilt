@@ -16,6 +16,7 @@ export function renderStatus (st, { asAi = false, mentionYours = false } = {}) {
   out.push('')
   out.push(`Relay: ${st.connected ? 'connected' : '**disconnected** (edits are kept and will sync on reconnect)'} · ${st.fileCount} shared files`)
   out.push(`You: **${st.me.name}** (${st.me.tool})${st.me.focus ? ` · focus: ${st.me.focus}` : ''}`)
+  if (st.workspaceName || st.workspace) out.push(`Workspace: ${st.workspaceName || st.workspace}`)
   out.push('')
 
   out.push('## Partners online')

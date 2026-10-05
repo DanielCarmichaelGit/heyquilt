@@ -140,7 +140,9 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   session.on('fatal', (err) => onFatal && onFatal(err))
   const statusFile = path.join(dir, '.quilt', 'STATUS.md')
   session.on('status-changed', () => {
-    try { fs.writeFileSync(statusFile, renderStatus(session.status())) } catch {}
+    // Read config fresh: the workspace can change after the session started (the app's
+    // "move to workspace", or a later quilt_start_session call writing it here).
+    try { fs.writeFileSync(statusFile, renderStatus({ ...session.status(), workspace: readConfig(dir)?.workspace })) } catch {}
   })
 
   try {

@@ -64,20 +64,6 @@ function otherSync (dir) {
   }
 }
 
-/** Who the other process syncing a folder is in the session ({ name, kind, ... } from its /info), or null. */
-async function otherSyncInfo (other) {
-  try {
-    const res = await fetch(`http://127.0.0.1:${other.port}/info`, { headers: { authorization: `Bearer ${other.token}` }, signal: AbortSignal.timeout(1500) })
-    return res.ok ? await res.json() : null
-  } catch { return null }
-}
-
-/** Who is syncing `dir` in another process ({ name, kind, ... }), or null if nobody or unknown. */
-export async function syncedAs (dir) {
-  const other = otherSync(dir)
-  return other ? otherSyncInfo(other) : null
-}
-
 /** True if another process is already syncing this exact folder. */
 export function runningElsewhere (dir) {
   return !!otherSync(dir)
@@ -91,7 +77,11 @@ export function runningElsewhere (dir) {
 export async function describeOtherSync (dir) {
   const other = otherSync(dir)
   if (!other) return null
-  const info = await otherSyncInfo(other)
+  let info = null
+  try {
+    const res = await fetch(`http://127.0.0.1:${other.port}/info`, { headers: { authorization: `Bearer ${other.token}` }, signal: AbortSignal.timeout(1500) })
+    if (res.ok) info = await res.json()
+  } catch {}
   const proc = listProcesses().find((p) => p.pid === other.pid)
   const who = info && info.kind === 'agent'
     ? `your AI agent "${info.name}" joined it from its tool's quilt MCP server (process ${other.pid}). Ask the agent to leave with quilt_leave_session, or close that tool`

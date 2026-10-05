@@ -115,6 +115,29 @@ test('classify: busy wins, and a mix of clean and dirty paths is an edit', async
   assert.deepEqual(stash.putBack, ['a.txt'])
 })
 
+test('a gone untracked file is put away only when git wrote the index: stash -u is a discard, git clean a deletion', async () => {
+  const dir = repo()
+  const before = await headKey(dir)
+  const many = Array.from({ length: 25 }, (_, i) => `scratch/f${i}.txt`)
+  for (const rel of many) write(dir, rel, 'untracked\n')
+  const stamp = indexStamp(dir)
+  git(dir, 'clean', '-fdq')
+  assert.equal(indexStamp(dir), stamp, 'git clean leaves the index alone')
+  const cleaned = await classify(dir, { changed: many, before, indexWrote: false })
+  assert.equal(cleaned.kind, 'edit')
+  assert.deepEqual(cleaned.putBack, [], 'deleted, not put back')
+  for (const rel of many.slice(0, 3)) write(dir, rel, 'untracked\n')
+  git(dir, 'stash', '-uq')
+  assert.notEqual(indexStamp(dir), stamp, 'stash -u writes the index')
+  assert.equal((await classify(dir, { changed: many.slice(0, 3), before, indexWrote: true })).kind, 'discard')
+  // In a burst with an edit, the stashed-away files are still told apart from it.
+  write(dir, 'a.txt', 'edited\n')
+  const mixed = await classify(dir, { changed: ['a.txt', ...many.slice(0, 3)], before, indexWrote: true })
+  assert.equal(mixed.kind, 'edit')
+  assert.deepEqual(mixed.putBack, many.slice(0, 3))
+  assert.deepEqual((await classify(dir, { changed: ['a.txt', ...many.slice(0, 3)], before })).putBack, [], 'no index write: deletions')
+})
+
 test('fileAt and changedBetween', async () => {
   const dir = repo()
   const one = (await headKey(dir)).sha

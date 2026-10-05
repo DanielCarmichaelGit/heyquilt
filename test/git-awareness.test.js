@@ -117,6 +117,33 @@ test('a stash landing in the same flush as an unrelated save is still not shared
   assert.equal(git(dirB, 'stash', 'list').split('\n').filter(Boolean).length, 1, 'the stash is untouched')
 })
 
+/** Files just written into a new folder: lets bob's watcher (and its once-a-second scan) see them before they go. */
+const settleWatcher = () => new Promise((resolve) => setTimeout(resolve, 1500))
+
+test('git clean of many untracked files is shared as deletions', async (t) => {
+  const { dirA, dirB } = await pairRepos(t)
+  const many = Array.from({ length: 25 }, (_, i) => `scratch/f${i}.txt`)
+  for (const rel of many) write(dirA, rel, `scratch ${rel}\n`)
+  await waitFor(() => many.every((rel) => read(dirB, rel) === `scratch ${rel}\n`))
+  await settleWatcher()
+  // Untracked in bob's repo too: he meant to delete them. (Only scratch/: .quilt is untracked here as well.)
+  git(dirB, 'clean', '-fdq', '--', 'scratch')
+  await waitFor(() => many.every((rel) => read(dirA, rel) === null), 10000)
+  await never(() => many.some((rel) => read(dirB, rel) !== null), 2500)
+})
+
+test('git stash -u of untracked files brings them back from the room', async (t) => {
+  const { dirA, dirB } = await pairRepos(t)
+  const notes = ['notes/a.txt', 'notes/b.txt', 'notes/c.txt']
+  for (const rel of notes) write(dirA, rel, `alice's ${rel}\n`)
+  await waitFor(() => notes.every((rel) => read(dirB, rel) === `alice's ${rel}\n`))
+  await settleWatcher()
+  git(dirB, 'stash', 'push', '-uq', '--', 'notes') // only notes/: .quilt is untracked here as well
+  await never(() => notes.some((rel) => read(dirA, rel) !== `alice's ${rel}\n`), 2500)
+  await waitFor(() => notes.every((rel) => read(dirB, rel) === `alice's ${rel}\n`), 8000)
+  assert.equal(git(dirB, 'stash', 'list').split('\n').filter(Boolean).length, 1, 'the stash is untouched')
+})
+
 test('reset --hard by an agent is the same', async (t) => {
   const { dirA, dirB } = await pairRepos(t)
   write(dirA, 'README.md', 'hello from alice\n')

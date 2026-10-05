@@ -202,8 +202,11 @@ export function indexStamp (root) {
  * have put back all the same (clean, and tracked or gone), so a discard that
  * shares its burst with an unrelated save (an untracked file, an autosave) can
  * still be told apart from an edit.
+ * An untracked file that is gone counts as put back only when git wrote the
+ * index in the same burst (`indexWrote`: `stash -u` puts it away and resets
+ * the index); otherwise it was deleted (`git clean`, `rm`), and that is an edit.
  */
-export async function classify (root, { changed = [], before = null, leftover = null } = {}) {
+export async function classify (root, { changed = [], before = null, leftover = null, indexWrote = false } = {}) {
   const head = await headKey(root)
   if (!head) return { kind: 'edit', head: null, prevHead: before, putBack: [] }
   if (busy(root, undefined, leftover)) return { kind: 'busy', head, prevHead: before }
@@ -214,7 +217,8 @@ export async function classify (root, { changed = [], before = null, leftover = 
   // git could not say (a timeout in a big repo): held as busy, and asked again when it settles.
   if (!tree) return { kind: 'busy', head, prevHead: before }
   // Clean paths print nothing, and so does a path git has never heard of (outside the repo, or nonexistent).
-  const clean = changed.filter((rel) => !tree.dirty.has(rel))
+  const deleted = (rel) => !indexWrote && !tree.tracked.has(rel) && !exists(root, rel)
+  const clean = changed.filter((rel) => !tree.dirty.has(rel) && !deleted(rel))
   if (clean.length === changed.length) return { kind: 'discard', head, prevHead: before }
   // As the settle tells them (planSettle): an untracked file git calls clean is still an edit.
   const putBack = clean.filter((rel) => tree.tracked.has(rel) || !exists(root, rel))

@@ -1008,7 +1008,7 @@ export class Session extends EventEmitter {
     let r
     for (;;) {
       await this.noteCommits()
-      r = await classify(this.root, { changed: paths, before: this.gitSeen, leftover: this.leftoverLock })
+      r = await classify(this.root, { changed: paths, before: this.gitSeen, leftover: this.leftoverLock, indexWrote: this.burstByIndex || again })
       if (this.stopped) return
       // git wrote the index, yet HEAD hasn't moved and the paths aren't clean: a checkout or a pull
       // can be in the instant between writing the index and moving the branch. Asked once more, a flush later.

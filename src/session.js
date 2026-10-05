@@ -2038,7 +2038,7 @@ export class Session extends EventEmitter {
     if (!entries.length) return { shared: 0 }
     if (req) this.reportWorking(req.slice(0, 200))
     else this.agentReportedAt = now
-    this.pushAgentEntries(entries)
+    this.pushAgentEntries(entries, { shared: true })
     return { shared: entries.length }
   }
 
@@ -2246,8 +2246,9 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
    * Opens or extends a shared task when this person's AI edits files for a
    * request that is not already on the board. Failures stay out of the feed.
    */
-  noteAgentWork (entries) {
-    if (!this.autoTasks) return
+  noteAgentWork (entries, { shared = false } = {}) {
+    // Paused for AI chats Quilt reads; work an agent shares itself (quilt_share) still goes on the board.
+    if (!this.autoTasks && !shared) return
     let ops = []
     try {
       ops = planAutoTask({
@@ -2298,9 +2299,9 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
   }
 
   /** Adds entries from this person's AI chat reader. Dedupes by id, keeps the newest 300 per person. */
-  pushAgentEntries (entries) {
+  pushAgentEntries (entries, { shared = false } = {}) {
     if (!entries || !entries.length) return 0
-    this.noteAgentWork(entries)
+    this.noteAgentWork(entries, { shared })
     if (!this.agentSharing) return 0
     if (this.summarizer) {
       // Summaries take a moment; keep batches in order.

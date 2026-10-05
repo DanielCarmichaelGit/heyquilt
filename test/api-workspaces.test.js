@@ -11,7 +11,7 @@ after(() => t.close())
 test('flag off: every workspace route answers a plain 404, and the API does not file it as a missing route', async () => {
   const off = await startTestApi()
   try {
-    for (const [method, path, body] of [['GET', '/v1/me/workspaces'], ['POST', '/v1/workspaces', { name: 'x' }], ['GET', `/v1/workspaces/${crypto.randomUUID()}`], ['POST', `/v1/workspaces/${crypto.randomUUID()}/sessions`, { room: 'r1' }]]) {
+    for (const [method, path, body] of [['GET', '/v1/me/workspaces'], ['POST', '/v1/workspaces', { name: 'x' }], ['GET', `/v1/workspaces/${crypto.randomUUID()}`], ['POST', `/v1/workspaces/${crypto.randomUUID()}/sessions`, { room: 'r1' }], ['GET', '/v1/workspaces/x/files'], ['POST', '/v1/workspaces/x/folders', { path: 'a' }]]) {
       const r = await off.call(method, path, body, 'mem')
       assert.deepEqual([r.status, r.body], [404, { error: 'not found' }], `${method} ${path}`)
     }

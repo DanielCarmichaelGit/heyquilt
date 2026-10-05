@@ -6,7 +6,6 @@ import { renderFeed } from './feed.js'
 import { conversations } from './feed-convs.js'
 import { renderTree, openTreeMenu, closeTreeMenu, claimFolder } from './tree.js'
 import { renderFileView } from './fileview.js'
-import { gitMarkup, bindGit, unbindGit, renderGitButton, gitFilesChanged, gitSessionChanged } from './git.js'
 import { quiltMark } from './mark.js'
 import { openSettings } from './home.js'
 import { fileCardHref, renderable, textHtml, mentionAt, mentionCandidates, completeMention } from './chat.js'
@@ -71,13 +70,16 @@ export function mountSession (id) {
       <nav class="tabs" id="tabs" aria-label="Sessions"></nav>
       <span class="spacer"></span>
       <span class="access-pill" id="access-pill" hidden></span>
-      <button class="commit-chip" id="commit-chip" hidden></button>
+      <div class="commit-wrap" id="commit-wrap">
+        <button class="commit-chip" id="commit-chip" aria-haspopup="true" aria-expanded="false" aria-controls="commit-panel" hidden></button>
+        <div class="popover commit-panel" id="commit-panel" role="dialog" aria-label="Commit requests" hidden></div>
+      </div>
       <button class="btn sm ghost icon narrow-only" id="toggle-tree" title="Files" aria-label="Show files">${I.tree}</button>
       <div class="people" id="people">
         <button class="people-btn" id="people-btn" aria-haspopup="true" aria-expanded="false" aria-controls="people-menu"></button>
         <div class="popover people-menu" id="people-menu" role="dialog" aria-label="People in this session" hidden></div>
       </div>
-      ${gitMarkup()}
+      <span class="branch-label" id="branch-label" hidden></span>
       ${openInMarkup()}
       <button class="btn sm ghost" id="tasks-btn" type="button" aria-pressed="false" title="Tasks">${I.board}<span class="wide-only">Tasks</span><span class="tasks-n" id="tasks-count" hidden></span></button>
       <button class="btn sm primary" id="invite-btn">${I.link}<span class="wide-only">Invite</span></button>
@@ -129,7 +131,6 @@ export function mountSession (id) {
   bindTop()
   bindAccess()
   for (const el of [$('#merges'), $('#main')]) bindMerges(el, { sessionId: () => current, onCompare: openMerge, editors: editorsByPreference })
-  bindGit(id, mounted.signal)
   bindMain()
   bindTreeEvents()
   bindChat()
@@ -159,7 +160,6 @@ export function sessionUnmount () {
   if (mounted) mounted.abort()
   mounted = null
   closeTreeMenu()
-  unbindGit()
   pendingAssign = ''
   current = null
 }
@@ -212,7 +212,6 @@ export function sessionFeed (id, entries) {
 export function sessionFileChanged (id, { path }) {
   if (id !== current) return
   scheduleTree()
-  gitFilesChanged()
   const w = ws(id)
   if (w.mode === 'merge' && shownMerge()?.path === path) refreshFile(path, false)
   if (w.fileTabs.includes(path)) {
@@ -295,10 +294,7 @@ function bindTop () {
   bindOpenIn()
   $('#ask-commit').onclick = askForCommit
   $('#rename-btn').onclick = renameSession
-  $('#commit-chip').onclick = () => {
-    if (sum().git) $('#git-btn')?.click()
-    else toast($('#commit-chip').title)
-  }
+  bindCommitChip()
   $('#leave-btn').onclick = async () => {
     if (!await ask({ title: 'Leave this session?', message: 'Quilt stops syncing this folder. Your files stay where they are, and you can rejoin later.', ok: 'Leave', danger: true })) return
     await api('POST', `/api/sessions/${current}/stop`).catch((err) => toast(err.message))
@@ -465,8 +461,16 @@ function agentLine (p) {
 function renderTop () {
   if (!current || !$('#people-btn')) return
   renderTabs()
-  renderGitButton()
   const st = sum().status
+  const g = st.git
+  const label = $('#branch-label')
+  if (label) {
+    label.hidden = !g
+    if (g) {
+      label.innerHTML = `${I.branch}<span>${esc(g.key)}</span>${g.hold ? `<span class="tag">${g.hold.kind === 'switching' ? `paused · you're on ${esc(g.hold.to || '?')}` : 'syncing paused: git is busy'}</span>` : ''}`
+      label.title = g.hold ? (g.hold.kind === 'switching' ? `This session syncs ${g.key}. Sync resumes when you're back on it.` : 'Quilt waits for git to finish, then catches up.') : `This folder is on ${g.key}`
+    }
+  }
   const people = [st.me, ...st.peers]
   const shown = people.slice(0, 4)
   $('#people-btn').innerHTML = `<span class="stack">${shown.map((p, i) => `<span style="z-index:${10 - i}">${avatar(p.name, p.color)}</span>`).join('')}</span>
@@ -482,6 +486,30 @@ function renderTop () {
 }
 
 // ---------------------------------------------------------- commit timing --
+function bindCommitChip () {
+  const wrap = $('#commit-wrap')
+  const chip = $('#commit-chip')
+  const panel = $('#commit-panel')
+  const setOpen = (open) => {
+    panel.hidden = !open
+    chip.setAttribute('aria-expanded', String(open))
+    if (open) renderCommitPanel()
+  }
+  chip.onclick = () => setOpen(panel.hidden)
+  wrap.addEventListener('keydown', (e) => { if (e.key === 'Escape') { setOpen(false); chip.focus() } })
+  document.addEventListener('mousedown', (e) => { if (!wrap.contains(e.target)) setOpen(false) }, { signal: mounted.signal })
+  panel.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-done]')
+    if (!b) return
+    b.disabled = true
+    try {
+      const id = b.dataset.done === 'all' ? null : b.dataset.done
+      const r = await api('POST', `/api/sessions/${current}/commit-request/done`, id ? { id } : {})
+      toast(r.done === 1 ? 'Marked done' : `Marked ${r.done} done`)
+    } catch (err) { toast(err.message); b.disabled = false }
+  })
+}
+
 function renderCommitChip () {
   const chip = $('#commit-chip')
   if (!chip) return
@@ -490,17 +518,28 @@ function renderCommitChip () {
   const open = (st.commits || []).filter((r) => r.state === 'open')
   const busy = busyPeople(st)
   chip.hidden = !open.length
-  if (!open.length) return
+  if (!open.length) { $('#commit-panel').hidden = true; return }
   chip.className = `commit-chip${busy.length ? '' : ' ready'}`
   chip.innerHTML = busy.length
     ? `${I.branch}<span>Commit requested · waiting on ${busy.length}</span>`
     : `${I.branch}<span>Ready to commit</span>`
   chip.title = `${open.map((r) => `${r.by}: ${r.message}`).join('\n')}${busy.length ? `\nStill working: ${busy.join(', ')}` : ''}`
-  gitSessionChanged()
+  if (!$('#commit-panel').hidden) renderCommitPanel()
+}
+
+/** Open requests, each with a Done button, and Mark all done. */
+function renderCommitPanel () {
+  const panel = $('#commit-panel')
+  if (!panel) return
+  const open = (sum().status.commits || []).filter((r) => r.state === 'open')
+  panel.innerHTML = open.length
+    ? `<ul class="commit-reqs">${open.map((r) => `<li><b>${esc(r.by)}</b><div>${esc(r.message)}</div><button type="button" class="btn sm ghost" data-done="${esc(r.id)}">Done</button></li>`).join('')}</ul>
+       <div class="commit-foot"><button type="button" class="btn sm" data-done="all">Mark all done</button></div>`
+    : '<p class="hint">No open commit requests.</p>'
 }
 
 async function askForCommit () {
-  const message = await ask({ title: 'Ask for a commit', message: 'The host commits once everyone\'s AI is idle.', ok: 'Ask', input: { label: 'What is the commit for?', placeholder: 'Pricing page and download button' } })
+  const message = await ask({ title: 'Ask for a commit', message: 'Everyone sees the request until someone commits and marks it done.', ok: 'Ask', input: { label: 'What is the commit for?', placeholder: 'Pricing page and download button' } })
   if (!message) return
   try {
     await api('POST', `/api/sessions/${current}/commit-request`, { message: message.trim() })

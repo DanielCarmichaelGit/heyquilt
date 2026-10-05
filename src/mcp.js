@@ -606,14 +606,12 @@ export async function runMcp () {
     lines.push(c.ready ? '✅ Everyone else\'s AI is idle: a good moment to commit.' : `⏳ Still working: ${c.busy.map((b) => b.why).join('; ')}`)
     if (c.open.length) lines.push('Open commit requests:', ...c.open.map((r) => `- ${r.by}: ${r.message}`))
     else lines.push('No open commit requests.')
-    lines.push(c.host
-      ? 'You host git for this session: when it is ready, commit with quilt_commit (or git yourself).'
-      : 'Git lives with the session host. Ask for a commit with quilt_request_commit; the host commits when everyone is idle.')
+    lines.push('When a commit is made, mark the requests done with quilt_commit_request_done.')
     return lines.join('\n')
   }
 
   server.registerTool('quilt_set_work', {
-    description: 'Tell everyone whether you (this agent) are working or done, so the host knows when it is safe to commit. Set "working" when you start a task and "done" when you finish: ' +
+    description: 'Tell everyone whether you (this agent) are working or done, so people know when it is safe to commit. Set "working" when you start a task and "done" when you finish: ' +
       '"done" lets go of the files claimed for you while you edited. Like every tool that moves work on, it is refused while someone is waiting for an answer from you.',
     inputSchema: {
       state: z.enum(['working', 'done']),
@@ -622,7 +620,7 @@ export async function runMcp () {
   }, ({ state, note }) => withDaemon(async (d) => {
     if (state === 'working') {
       await call(d, 'POST', '/work', { state, note })
-      return 'Marked as working. Set "done" when you finish so the host can commit.'
+      return 'Marked as working. Set "done" when you finish so others know it is safe to commit.'
     }
     const { released } = await call(d, 'POST', '/finish', {})
     await call(d, 'POST', '/work', { state, note })
@@ -672,7 +670,7 @@ export async function runMcp () {
   }))
 
   server.registerTool('quilt_request_commit', {
-    description: 'Ask the session host to commit the shared changes, e.g. because you need a commit to test or deploy. The host commits once every AI in the session is idle.',
+    description: 'Ask the people in the session for a commit, e.g. because your changes are ready or you need one to test or deploy. Someone commits with git on their machine and marks the request done.',
     inputSchema: { message: z.string().describe('What the commit should say / why you need it') }
   }, ({ message }) => withDaemon(async (d) => {
     await call(d, 'POST', '/commit-request', { message })
@@ -697,13 +695,13 @@ export async function runMcp () {
     return `${c.ready ? '' : `Stopped waiting after ${timeout}s.\n`}${describeCommits(c)}`
   }, { gate: gateFor('quilt_wait_until_idle') }))
 
-  server.registerTool('quilt_commit', {
-    description: 'Host only: commit every change in the shared folder with git and close the open commit requests. Without a message, the open requests\' messages are used. Check quilt_commit_status first.',
-    inputSchema: { message: z.string().optional().describe('Commit message') }
-  }, ({ message }) => withDaemon(async (d) => {
-    const r = await call(d, 'POST', '/commit', { message })
-    return `Committed ${r.files} file${r.files === 1 ? '' : 's'} as ${r.hash}: ${r.subject}`
-  }, { gate: gateFor('quilt_commit') }))
+  server.registerTool('quilt_commit_request_done', {
+    description: 'Mark commit requests done after a commit was made with git (yours or someone\'s). Without an id, every open request is marked done.',
+    inputSchema: { id: z.string().optional().describe('One request id; omit for all open ones') }
+  }, ({ id }) => withDaemon(async (d) => {
+    const { done } = await call(d, 'POST', '/commit-request/done', { id })
+    return done ? `Marked ${done} commit request${done === 1 ? '' : 's'} done.` : 'No open commit requests.'
+  }, { gate: gateFor('quilt_commit_request_done') }))
 
   server.registerTool('quilt_session_info', {
     description: 'Where the shared project lives on disk, how you appear to others, who is online, and the invite link.',

@@ -72,6 +72,12 @@ test('create a session, chat, send a file, stop', async () => {
   assert.ok(created.body.invite)
   assert.equal(created.body.status.me.name, 'Mo', 'named after the account')
 
+  assert.equal((await api('GET', `/api/sessions/${id}/git`)).status, 404)
+  const asked = await api('POST', `/api/sessions/${id}/commit-request`, { message: 'ship it' })
+  assert.equal(asked.status, 200)
+  const done = await api('POST', `/api/sessions/${id}/commit-request/done`, {})
+  assert.equal(done.body.done, 1)
+
   const said = await api('POST', `/api/sessions/${id}/say`, { text: 'hi' })
   assert.equal(said.body.text, 'hi')
 

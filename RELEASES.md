@@ -41,6 +41,7 @@ A fix for the merge view, and webhooks that carry your receiver's key.
 
 - **The merge view follows the newest conflict.** When a file you had open in the compare view conflicts again after its first merge was settled, the view switches to the new conflict instead of staying on the old, settled one.
 - **Webhooks carry your receiver's key.** `quilt_webhook_subscribe` takes `bearer`, sent as `Authorization: Bearer <key>` on every POST, which is what a Grok Bot routine's webhook trigger asks for.
+- **Quilt doesn't run git for anyone.** The Git popover (pull, commit, push, open a PR) is gone; the top bar just names the branch you're on. Asking for a commit works the same as before, but once someone has actually committed with git, mark the request done from the commit chip's popover (**Done**, or **Mark all done**) or with the new `quilt_commit_request_done` tool — there's no more host-only `quilt_commit`.
 
 ## 0.3.6 — 2026-10-04
 

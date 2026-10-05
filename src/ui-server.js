@@ -103,7 +103,6 @@ export const STATIC = {
   '/merges.js': ['merges.js', 'text/javascript; charset=utf-8'],
   '/home.js': ['home.js', 'text/javascript; charset=utf-8'],
   '/signin.js': ['signin.js', 'text/javascript; charset=utf-8'],
-  '/git.js': ['git.js', 'text/javascript; charset=utf-8'],
   '/releases.js': ['releases.js', 'text/javascript; charset=utf-8'],
   '/feed-convs.js': ['feed-convs.js', 'text/javascript; charset=utf-8'],
   '/board.js': ['board.js', 'text/javascript; charset=utf-8']
@@ -280,14 +279,9 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
   }
   const summary = (id) => {
     const r = runs.get(id)
-    return { id, dir: r.run.dir, invite: r.run.invite, viewInvite: r.run.viewInvite, status: r.run.session.status(), logs: r.logs.slice(-80), git: hostsGit(r) }
+    return { id, dir: r.run.dir, invite: r.run.invite, viewInvite: r.run.viewInvite, status: r.run.session.status(), logs: r.logs.slice(-80) }
   }
   const pushStatus = (id) => runs.has(id) && broadcast('session', summary(id))
-  // Git lives only on the host's computer (sync never writes inside .git), so
-  // only a session you started, on a folder that's a repo, gets git actions.
-  // Git lives with the session's owner. Sessions without an owner (older
-  // clients) fall back to "didn't join it from an invite".
-  const hostsGit = (r) => gitops.hostsGit(r.run.session, { joined: r.joined })
 
   async function start ({ mode, dir, tool, invite, prefer, repo, branch, newBranch, base }) {
     const me = profile()
@@ -333,7 +327,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       conn = newConn()
     }
 
-    const entry = { logs: [], joined: mode === 'join' }
+    const entry = { logs: [] }
     const log = (line) => {
       entry.logs.push({ ts: Date.now(), line })
       if (entry.logs.length > 200) entry.logs.shift()
@@ -419,25 +413,6 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       if (err.status !== 404) throw httpError(502, `Renamed here, but heyquilt.com didn't take it: ${err.message}`)
     }
     return { name }
-  }
-
-  /** The session's folder, if this app may run git in it. */
-  const gitDir = (id) => {
-    get(id)
-    const r = runs.get(id)
-    if (!hostsGit(r)) throw httpError(400, r.joined ? 'Only the person who started this session can use git here.' : 'This folder isn\'t a git repository.')
-    return r.run.dir
-  }
-  // One git action at a time per session; the reply includes the new status.
-  const gitAction = async (id, fn) => {
-    const dir = gitDir(id)
-    const r = runs.get(id)
-    if (r.gitBusy) throw httpError(409, 'Git is still busy with the last action.')
-    r.gitBusy = true
-    try {
-      const result = await fn(dir)
-      return { ...result, status: await gitops.status(dir) }
-    } finally { r.gitBusy = false }
   }
 
   // Agent invites and the list of your agents come from the accounts API, as this computer's account.
@@ -666,15 +641,8 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     'GET /api/github/status': () => gitops.ghStatus(),
     'GET /api/github/repos': async (b, id, url) => ({ repos: await gitops.listRepos({ limit: url.searchParams.get('limit') || 100 }) }),
     'GET /api/github/branches': (b, id, url) => gitops.listBranches(url.searchParams.get('repo')),
-    'GET /api/sessions/:id/git': (b, id) => gitops.status(gitDir(id)),
-    'POST /api/sessions/:id/git/pull': (b, id) => gitAction(id, (dir) => gitops.pull(dir, { base: b.base })),
-    'POST /api/sessions/:id/git/commit': (b, id) => gitAction(id, async (dir) => {
-      const r = await gitops.commit(dir, b.message)
-      get(id).resolveCommitRequests({ hash: r.hash })
-      return r
-    }),
     'POST /api/sessions/:id/commit-request': (b, id) => get(id).requestCommit(b.message),
-    'POST /api/sessions/:id/git/pr': (b, id) => gitAction(id, (dir) => gitops.pushAndOpenPr(dir, { title: b.title, body: b.body, base: b.base })),
+    'POST /api/sessions/:id/commit-request/done': (b, id) => { const done = get(id).resolveCommitRequests({ ids: b.id ? [String(b.id)] : null }); pushStatus(id); return { done } },
     'GET /api/fs': (b, id, url) => listDir(url.searchParams.get('path') || os.homedir()),
     // Reply first, then shut down, so the page hears back before we exit.
     'POST /api/shutdown': () => {

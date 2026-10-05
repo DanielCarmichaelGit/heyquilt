@@ -1,5 +1,5 @@
-// Commit timing: people ask the host for a commit, the host sees who is still
-// working, and commits once everyone is idle.
+// Commit timing: people ask for a commit, see who else is still working, and
+// mark the open requests done once someone has committed with git.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -18,7 +18,7 @@ async function waitFor (fn, ms = 5000) {
   throw new Error('timed out')
 }
 
-test('commit requests, busy people, and the host committing', async () => {
+test('commit requests, busy people, and marking them done', async () => {
   const srv = await startServer({ port: 0, host: '127.0.0.1', log: () => {} })
   const server = `ws://127.0.0.1:${srv.port}`
   const hostDir = tmp('host')
@@ -49,19 +49,15 @@ test('commit requests, busy people, and the host committing', async () => {
   await waitFor(() => host.commitStatus().ready)
   await waitFor(() => fs.readFileSync(path.join(hostDir, 'app.js'), 'utf8') === 'v2\n')
 
-  // Only the host (the folder with git, who started it) can commit through the control API.
+  // Nobody commits through Quilt any more: a commit is made outside it, and
+  // anyone marks the open requests done.
   const hostCtl = await startControl(host, {})
   const guestCtl = await startControl(guest, { joined: true })
   const d = (c, s) => JSON.parse(fs.readFileSync(path.join(s.stateDir, 'daemon.json'), 'utf8'))
-  const status = await call(d(hostCtl, host), 'GET', '/commits')
-  assert.equal(status.host, true)
-  assert.equal((await call(d(guestCtl, guest), 'GET', '/commits')).host, false)
-  await assert.rejects(call(d(guestCtl, guest), 'POST', '/commit', {}), /Only the session host can commit/)
-  const r = await call(d(hostCtl, host), 'POST', '/commit', {})
-  assert.equal(r.subject, 'login works end to end', 'uses the open requests as the message')
-  assert.match(git('log', '-1', '--format=%s'), /login works end to end/)
+  await assert.rejects(call(d(guestCtl, guest), 'POST', '/commit', {}), /not found/)
+  const r = await call(d(hostCtl, host), 'POST', '/commit-request/done', {})
+  assert.equal(r.done, 1)
   await waitFor(() => guest.commitStatus().open.length === 0)
-  assert.equal(guest.commitStatus().recent[0].hash, r.hash)
 
   await hostCtl.close(); await guestCtl.close()
   await guest.stop(); await host.stop(); await srv.close()

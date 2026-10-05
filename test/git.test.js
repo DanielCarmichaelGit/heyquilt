@@ -19,7 +19,6 @@ Object.assign(process.env, {
 
 const g = (dir, ...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
 const write = (dir, file, text) => fs.writeFileSync(path.join(dir, file), text)
-const read = (dir, file) => fs.readFileSync(path.join(dir, file), 'utf8')
 
 // "GitHub": a bare repo with main and dev.
 const remote = path.join(root, 'remote.git')
@@ -68,16 +67,6 @@ else { process.stderr.write('fake gh: unknown ' + a.join(' ') + '\\n'); process.
 process.env.QUILT_GH = fakeGh
 
 const git = await import('../src/git.js')
-const clone = (name) => { const d = path.join(root, name); g(root, 'clone', '-q', remote, d); return d }
-/** Someone else pushes a commit to main. */
-function pushFromElsewhere (file, text) {
-  const d = path.join(root, `other-${Math.random().toString(36).slice(2, 8)}`)
-  g(root, 'clone', '-q', remote, d)
-  write(d, file, text)
-  g(d, 'add', '-A')
-  g(d, 'commit', '-q', '-m', `edit ${file}`)
-  g(d, 'push', '-q', 'origin', 'main')
-}
 
 test('branch names are validated with git check-ref-format', async () => {
   assert.equal(await git.checkBranchName(' feature/login '), 'feature/login')
@@ -86,90 +75,15 @@ test('branch names are validated with git check-ref-format', async () => {
   }
 })
 
-test('status: branch, upstream, ahead/behind and changed files', async () => {
-  const dir = clone('status')
-  let st = await git.status(dir)
-  assert.deepEqual(st, { isRepo: true, branch: 'main', upstream: 'origin/main', ahead: 0, behind: 0, changed: [], defaultBranch: 'main' })
-
-  write(dir, 'README.md', 'changed\n')
-  fs.mkdirSync(path.join(dir, 'src'))
-  write(dir, 'src/new file.js', 'x\n')
-  st = await git.status(dir)
-  assert.deepEqual(st.changed.sort((a, b) => a.path.localeCompare(b.path)), [
-    { path: 'README.md', status: 'modified' }, { path: 'src/new file.js', status: 'new' }
-  ])
-  g(dir, 'mv', 'README.md', 'READ.md')
-  st = await git.status(dir)
-  assert.ok(st.changed.some((c) => c.path === 'READ.md' && c.status === 'renamed'))
-
-  assert.deepEqual(await git.status(path.join(root, 'nope')), { isRepo: false })
-  assert.equal(git.isRepo(path.join(dir, 'src')), false, 'a subfolder of a repo is not a repo root')
-})
-
-test('commit: stages everything, refuses empty messages and empty commits', async () => {
-  const dir = clone('commit')
-  await assert.rejects(git.commit(dir, '   '), /commit message/)
-  await assert.rejects(git.commit(dir, 'nothing here'), /Nothing to commit/)
-  write(dir, 'a.txt', 'a\n')
-  write(dir, 'README.md', 'new readme\n')
-  const c = await git.commit(dir, 'Add a\n\nwith a body')
-  assert.equal(c.subject, 'Add a')
-  assert.equal(c.files, 2)
-  assert.match(c.hash, /^[0-9a-f]{7,}$/)
-  assert.equal(g(dir, 'log', '-1', '--format=%B'), 'Add a\n\nwith a body')
-  const st = await git.status(dir)
-  assert.equal(st.ahead, 1)
-  assert.deepEqual(st.changed, [])
-  await assert.rejects(git.commit(path.join(root, 'nope'), 'x'), /isn't a git repository/)
-})
-
-test('pull: fetches and rebases local commits on top', async () => {
-  const dir = clone('pull')
-  assert.equal((await git.pull(dir)).pulled, 0)
-  write(dir, 'mine.txt', 'mine\n')
-  await git.commit(dir, 'mine')
-  pushFromElsewhere('theirs.txt', 'theirs\n')
-
-  write(dir, 'mine.txt', 'uncommitted\n')
-  await assert.rejects(git.pull(dir), /Commit your changes first/)
-  g(dir, 'checkout', '--', 'mine.txt')
-  write(dir, 'untracked.txt', 'fine\n') // new files don't block a pull
-
-  const r = await git.pull(dir)
-  assert.equal(r.pulled, 1)
-  assert.equal(r.onto, 'origin/main')
-  assert.equal(read(dir, 'theirs.txt'), 'theirs\n')
-  assert.equal(g(dir, 'log', '--format=%s', '-3'), 'mine\nedit theirs.txt\nfirst', 'linear history, mine on top')
-  const st = await git.status(dir)
-  assert.equal(st.ahead, 1)
-  assert.equal(st.behind, 0)
-})
-
-test('pull: a conflict is aborted cleanly, leaving nothing half-done', async () => {
-  const dir = clone('conflict')
-  write(dir, 'README.md', 'line one (mine)\nline two\n')
-  await git.commit(dir, 'my readme')
-  const before = g(dir, 'rev-parse', 'HEAD')
-  pushFromElsewhere('README.md', 'line one (theirs)\nline two\n')
-
-  await assert.rejects(git.pull(dir), /conflicts with your commits in README\.md/)
-  assert.equal(g(dir, 'rev-parse', 'HEAD'), before)
-  assert.equal(read(dir, 'README.md'), 'line one (mine)\nline two\n')
-  assert.ok(!fs.existsSync(path.join(dir, '.git', 'rebase-merge')) && !fs.existsSync(path.join(dir, '.git', 'rebase-apply')))
-  assert.deepEqual((await git.status(dir)).changed, [])
-})
-
 test('clone: existing branch, new branch from a base, and bad input', async () => {
   const dev = path.join(root, 'clones', 'dev')
   assert.deepEqual(await git.cloneRepo({ repo: 'me/app', dir: dev, branch: 'dev' }), { dir: dev, branch: 'dev' })
-  assert.equal((await git.status(dev)).upstream, 'origin/dev')
+  assert.equal(g(dev, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'), 'origin/dev')
   assert.ok(fs.existsSync(path.join(dev, 'dev.txt')))
 
   const feat = path.join(root, 'clones', 'feat')
   assert.equal((await git.cloneRepo({ repo: 'me/app', dir: feat, newBranch: 'feature/a' })).branch, 'feature/a')
-  const st = await git.status(feat)
-  assert.equal(st.upstream, null, 'a new branch has no upstream until pushed')
-  assert.equal(st.defaultBranch, 'main')
+  assert.throws(() => g(feat, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'), 'a new branch has no upstream until pushed')
   assert.ok(!fs.existsSync(path.join(feat, 'dev.txt')), 'started from main')
 
   const fromDev = path.join(root, 'clones', 'from-dev')
@@ -183,25 +97,6 @@ test('clone: existing branch, new branch from a base, and bad input', async () =
   await assert.rejects(git.cloneRepo({ repo: 'me/app', dir: bad, newBranch: 'dev' }), /already exists/)
   await assert.rejects(git.cloneRepo({ repo: 'me/app', dir: feat, branch: 'main' }), /already has files/)
   await assert.rejects(git.cloneRepo({ repo: 'not a repo; rm -rf /', dir: bad }), /owner\/name/)
-})
-
-test('push and open a PR; a second push finds the existing PR', async () => {
-  const dir = path.join(root, 'clones', 'pr')
-  await git.cloneRepo({ repo: 'me/app', dir, newBranch: 'feature/pr' })
-  write(dir, 'pr.txt', 'pr\n')
-  await git.commit(dir, 'Add pr.txt')
-  const r = await git.pushAndOpenPr(dir, { title: '', body: 'Body' })
-  assert.deepEqual(r, { url: 'https://github.com/me/app/pull/1', created: true })
-  assert.ok(g(remote, 'rev-parse', '--verify', 'refs/heads/feature/pr'))
-  const args = JSON.parse(fs.readFileSync(path.join(remote, 'pr-feature_pr.json'), 'utf8'))
-  assert.equal(args[args.indexOf('--title') + 1], 'Add pr.txt', 'empty title falls back to the last commit')
-  assert.equal(args[args.indexOf('--base') + 1], 'main')
-  assert.equal((await git.status(dir)).upstream, 'origin/feature/pr')
-
-  assert.deepEqual(await git.pushAndOpenPr(dir, { title: 'Again' }), { url: 'https://github.com/me/app/pull/1', created: false })
-
-  const onMain = clone('pr-main')
-  await assert.rejects(git.pushAndOpenPr(onMain, { title: 'x' }), /Start a new branch/)
 })
 
 test('gh: status, repos (with orgs) and branches', async () => {
@@ -251,7 +146,7 @@ const api = (method, p, body) => fetch(base + p, {
   body: body ? JSON.stringify(body) : undefined
 }).then(async (r) => ({ status: r.status, body: await r.json() }))
 
-test('API: start a session from GitHub, then commit and open a PR', async () => {
+test('API: start a session from GitHub', async () => {
   assert.equal((await api('GET', '/api/github/status')).body.user, 'tester')
   assert.equal((await api('GET', '/api/github/repos')).body.repos.length, 2)
   assert.ok((await api('GET', '/api/github/branches?repo=me/app')).body.branches.includes('dev'))
@@ -263,37 +158,5 @@ test('API: start a session from GitHub, then commit and open a PR', async () => 
   const s = await api('POST', '/api/sessions', { mode: 'github', repo: 'me/app', newBranch: 'feature/api' })
   assert.equal(s.status, 200, JSON.stringify(s.body))
   assert.equal(s.body.dir, path.join(home, 'quilt', 'app'), 'defaults to the join folder')
-  assert.equal(s.body.git, true)
-  const id = s.body.id
-
-  let st = await api('GET', `/api/sessions/${id}/git`)
-  assert.equal(st.body.branch, 'feature/api')
-  assert.deepEqual(st.body.changed, [], '.quilt/ and the hook settings are kept out of git')
-
-  write(s.body.dir, 'api.txt', 'hi\n')
-  assert.equal((await api('POST', `/api/sessions/${id}/git/commit`, { message: '' })).status, 400)
-  const c = await api('POST', `/api/sessions/${id}/git/commit`, { message: 'From the app' })
-  assert.equal(c.status, 200, JSON.stringify(c.body))
-  assert.equal(c.body.status.ahead, 1)
-  const pulled = await api('POST', `/api/sessions/${id}/git/pull`)
-  assert.equal(pulled.status, 200, JSON.stringify(pulled.body))
-  const pr = await api('POST', `/api/sessions/${id}/git/pr`, { title: 'API PR', body: '' })
-  assert.equal(pr.status, 200, JSON.stringify(pr.body))
-  assert.equal(pr.body.url, 'https://github.com/me/app/pull/1')
-  assert.equal(pr.body.status.upstream, 'origin/feature/api')
-  await api('POST', `/api/sessions/${id}/stop`)
-})
-
-test('API: git endpoints refuse folders that are not repos', async () => {
-  const dir = path.join(root, 'plain')
-  fs.mkdirSync(dir)
-  const s = await api('POST', '/api/sessions', { mode: 'create', dir })
-  assert.equal(s.status, 200, JSON.stringify(s.body))
-  assert.equal(s.body.git, false)
-  for (const [m, p] of [['GET', 'git'], ['POST', 'git/pull'], ['POST', 'git/commit'], ['POST', 'git/pr']]) {
-    const r = await api(m, `/api/sessions/${s.body.id}/${p}`, m === 'POST' ? { message: 'x' } : undefined)
-    assert.equal(r.status, 400, p)
-    assert.match(r.body.error, /isn't a git repository/)
-  }
   await api('POST', `/api/sessions/${s.body.id}/stop`)
 })

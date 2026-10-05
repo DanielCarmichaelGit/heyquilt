@@ -1322,8 +1322,20 @@ function showTreeMenu (anchor, path, kind) {
     onOpen: () => openFile(path),
     onClaim: (note) => claimPath(path, note),
     onRelease: () => releasePattern(claimCovering(path, kind).pattern),
-    onClearAway: clearAwayClaims
+    onClearAway: clearAwayClaims,
+    onRequest: (req) => fileQueue('request-file', { path, ...req }, `Asked for ${path}`),
+    onWithdraw: (request) => fileQueue('withdraw-request', { request }, 'Request withdrawn'),
+    onHandoff: (h) => fileQueue('handoff', { path: claimCovering(path, kind).pattern, ...h }, `Handed off ${path}`)
   })
+}
+
+/** The file queue from the ⋯ menu: ask for a file, take a request back, or hand a file on. */
+async function fileQueue (route, body, done) {
+  try {
+    await api('POST', `/api/sessions/${current}/${route}`, body)
+    toast(done)
+    loadTree()
+  } catch (err) { toast(err.message) }
 }
 
 async function clearAwayClaims () {

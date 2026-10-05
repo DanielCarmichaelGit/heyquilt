@@ -1024,7 +1024,7 @@ class Room {
       const r = prev || { id: crypto.randomBytes(6).toString('hex'), by: name, ...(id ? { byId: id } : {}), ts: Date.now() }
       Object.assign(r, { path: file, title, description, ...(task ? { task } : {}) })
       if (!prev) c.queue.push(r)
-      this.postChat({ by: name, to: c.by, kind: 'queue', path: file, text: `📥 File queue · ${file}: ${title}${description ? ` — ${description}` : ''}. When you're done with it, hand it off to me with your context.` })
+      this.postChat({ by: name, to: c.by, kind: 'queue', path: file, text: `📥 File queue · ${file}: ${`${title}${description ? ` — ${description}` : ''}`.replace(/[.!?]+$/, '')}. When you're done with it, hand it off to me with your context.` })
       return { ok: true, request: r.id, position: c.queue.indexOf(r) + 1, holder: c.by, pattern: c.pattern }
     }
     if (req.op === 'withdraw') {

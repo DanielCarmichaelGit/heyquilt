@@ -21,12 +21,12 @@ export function renderFileView (el, { path, file, meta, me, prevText, bannerOnly
   const claim = meta && meta.claim
   const editedText = edited ? `Edited by ${edited.by === me ? 'you' : esc(edited.by)} ${agoLong(edited.ts)}` : 'Not edited recently'
   const claimText = claim
-    ? `<span class="fv-claim" title="${esc(claimTitle(claim, me))}">${I.lock}Claimed by ${esc(claimHolder(claim, me))}${claimFolder(claim.pattern) !== path ? ` (via <code>${esc(claim.pattern)}</code>)` : ''}${claim.note ? `: ${esc(claim.note)}` : ''}</span>`
+    ? `<span class="fv-claim" title="${esc(claimTitle(claim, me))}">${I.lock}Claimed by ${esc(claimHolder(claim, me))}${claimFolder(claim.pattern) !== path ? ` (via <code>${esc(claim.pattern)}</code>)` : ''}${claim.note ? `: ${esc(claim.note)}` : ''}${claim.queue && claim.queue.length ? ` · ${claim.queue.length} waiting` : ''}</span>`
     : '<span class="hint">Not claimed</span>'
   let action = ''
   if (!file || !file.missing) {
     if (!claim) action = `<button class="btn sm" data-fv="claim">${I.lock}Claim</button>`
-    else if (claim.by === me) action = `<button class="btn sm ghost" data-fv="release" data-pattern="${esc(claim.pattern)}">Release</button>`
+    else if (claim.by === me && !(claim.queue || []).length) action = `<button class="btn sm ghost" data-fv="release" data-pattern="${esc(claim.pattern)}">Release</button>`
   }
 
   const banner = `<div class="fv-banner"><span class="fv-path mono">${esc(path)}</span><span class="fv-edited">${editedText}</span>${claimText}<span class="spacer"></span>${action}<span class="tag">Read-only</span></div>`

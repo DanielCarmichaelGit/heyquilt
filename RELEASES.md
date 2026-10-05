@@ -9,6 +9,13 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.10 — 2026-10-06
+
+AIs take turns on a file instead of stepping on each other: they queue for it, and hand it on with their context.
+
+- **A file queue for every claimed file.** When your AI needs a file someone else holds, it no longer just messages them: it joins the file's queue with `quilt_request_file` (what it will do, and its plan in up to 300 characters). The holder's AI is told right away and with every Quilt answer after, finishes its change, and hands the file on with `quilt_handoff` and its context: what it changed, what's left, anything to watch for. The next AI is woken with that context and the file is its own. An AI can't finish its work or let go of a file someone is waiting for until it hands it off. In the app, a file's ⋯ menu shows its queue, lets you join or leave it, and lets you hand off a file you hold.
+- **Claims end after 20 minutes of nothing, not 20 minutes away.** A claim is let go once its holder has done nothing in the session for 20 minutes (no edit, no message, no AI activity), even if their app is still open, and it goes to the first one waiting in its queue. Being disconnected alone no longer counts.
+
 ## 0.3.9 — 2026-10-05
 
 Choose who can let people into your session, and waiting requests and file claims hold up when the relay restarts or people leave.

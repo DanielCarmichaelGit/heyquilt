@@ -268,3 +268,22 @@ test('a hosted agent (HTTP only, no connection) works with presence on, and reco
     assert.deepEqual(api.events.map((e) => [e.type, e.account || e.name]), [['start', 'person:user-olive'], ['name', 'hosted']])
   } finally { await grok.close() }
 })
+
+test("a hosted agent's claims show it present, and go when it leaves the session", async (t) => {
+  const srv = await relay(t)
+  const r = room()
+  const o = await connect(srv, r, { ...as('Olive', 'user-olive'), viewSecret: 'v' })
+  const pass = signPass({ v: 1, sub: 'agent-duncan', kind: 'agent', name: 'Duncan', key: '', exp: Date.now() + PASS_TTL_MS }, PASS_KEYS.privateKey)
+  const duncan = new Client({ name: 'duncan', version: '1.0.0' })
+  await duncan.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${srv.port}/mcp`), { requestInit: { headers: { 'x-quilt-pass': pass } } }))
+  try {
+    const call = async (name, args = {}) => (await duncan.callTool({ name, arguments: args })).content.map((c) => c.text).join('\n')
+    assert.match(await call('quilt_join_session', { invite: `https://join.heyquilt.com/${r}#s` }), /Asked to join/)
+    await admin(o, { op: 'approve', key: 'agent:agent-duncan' })
+    assert.match(await call('quilt_claim', { pattern: 'src/mcp.js' }), /Claimed/)
+    const rm = srv.rooms.get(r)
+    assert.deepEqual(rm.claimList().map((c) => [c.byId, c.active]), [['agent:agent-duncan', true]])
+    assert.match(await call('quilt_leave_session'), /Left room/)
+    assert.deepEqual(rm.claimList(), [])
+  } finally { await duncan.close() }
+})

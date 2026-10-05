@@ -1,7 +1,7 @@
 // A read-only view of one shared file, with who's editing it, its claim, and
 // freshly changed lines highlighted for a few seconds.
 import { esc, bytes, I } from './common.js'
-import { claimFolder } from './tree.js'
+import { claimFolder, claimHolder, claimTitle } from './tree.js'
 
 const MAX_LINES = 20000
 
@@ -21,7 +21,7 @@ export function renderFileView (el, { path, file, meta, me, prevText, bannerOnly
   const claim = meta && meta.claim
   const editedText = edited ? `Edited by ${edited.by === me ? 'you' : esc(edited.by)} ${agoLong(edited.ts)}` : 'Not edited recently'
   const claimText = claim
-    ? `<span class="fv-claim">${I.lock}Claimed by ${claim.by === me ? 'you' : esc(claim.by)}${claimFolder(claim.pattern) !== path ? ` (via <code>${esc(claim.pattern)}</code>)` : ''}${claim.note ? `: ${esc(claim.note)}` : ''}</span>`
+    ? `<span class="fv-claim" title="${esc(claimTitle(claim, me))}">${I.lock}Claimed by ${esc(claimHolder(claim, me))}${claimFolder(claim.pattern) !== path ? ` (via <code>${esc(claim.pattern)}</code>)` : ''}${claim.note ? `: ${esc(claim.note)}` : ''}</span>`
     : '<span class="hint">Not claimed</span>'
   let action = ''
   if (!file || !file.missing) {

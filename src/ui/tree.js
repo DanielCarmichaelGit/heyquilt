@@ -8,6 +8,17 @@ const shortAgo = (ts) => {
   return s < 60 ? `${s}s` : `${Math.round(s / 60)}m`
 }
 
+/** Who holds a claim, as the tree shows it: "you", "Duncan", or "Duncan (away)" when they aren't in the session. */
+export const claimHolder = (c, me) => c.by === me && c.active !== false ? 'you' : `${c.by}${c.active === false ? ' (away)' : ''}`
+
+/** A claim's tooltip: who, since when, their note, and the account that holds it. */
+export const claimTitle = (c, me) => [
+  `Claimed by ${claimHolder(c, me)}${c.ts ? ` at ${new Date(c.ts).toLocaleString()}` : ''}`,
+  c.note || '',
+  c.byId ? `Account: ${c.byId}` : '',
+  c.active === false ? 'Released automatically after 20 minutes away' : ''
+].filter(Boolean).join('\n')
+
 /** "src/auth", "src/auth/", "src/auth/**" all claim the folder src/auth. */
 export const claimFolder = (pattern) => String(pattern).replace(/\/\*\*$/, '').replace(/\/+$/, '')
 
@@ -44,7 +55,7 @@ export function renderTree (el, tree, { me, expanded, selected }) {
   const root = buildTree(tree.files)
   const rows = []
 
-  const claimBadge = (c) => c ? `<span class="t-badge claim" title="Claimed by ${esc(c.by === me ? 'you' : c.by)}${c.note ? `: ${esc(c.note)}` : ''}">${I.lock}${esc(c.by === me ? 'you' : c.by)}</span>` : ''
+  const claimBadge = (c) => c ? `<span class="t-badge claim${c.active === false ? ' away' : ''}" title="${esc(claimTitle(c, me))}">${I.lock}${esc(claimHolder(c, me))}</span>` : ''
   const walk = (node, depth) => {
     const dirs = [...node.dirs.values()].sort((a, b) => a.name.localeCompare(b.name))
     for (const d of dirs) {
@@ -73,20 +84,26 @@ export function renderTree (el, tree, { me, expanded, selected }) {
 
 /**
  * The ⋯ menu for a file or folder: claim it (with an optional note) or
- * release your claim. Others' claims are shown but can't be released here.
+ * release your claim. Others' claims are shown; the owner may release them, and
+ * anyone may release a claim left under their own name by an account that's gone.
  */
-export function openTreeMenu (anchor, { path, kind, claim, me, onClaim, onRelease, onOpen }) {
+export function openTreeMenu (anchor, { path, kind, claim, me, owner, onClaim, onRelease, onClearAway, onOpen }) {
   closeTreeMenu()
   const menu = document.createElement('div')
   menu.className = 'popover tree-menu'
   menu.setAttribute('role', 'menu')
-  const mine = claim && claim.by === me
-  const theirs = claim && claim.by !== me
+  const isAway = claim && claim.active === false
+  const mine = claim && claim.by === me && !isAway
+  const theirs = claim && !mine
+  // The owner may release anyone's claim; anyone may release one held under their name from before.
+  const canRelease = theirs && (owner || (isAway && claim.by === me))
   menu.innerHTML = `
     <div class="pop-title">${esc(path)}</div>
     ${kind === 'file' ? `<button class="pop-item" data-act="open" role="menuitem">${I.file}Open</button>` : ''}
     ${mine ? `<button class="pop-item" data-act="release" role="menuitem">${I.lock}Release your claim</button>` : ''}
-    ${theirs ? `<div class="pop-note">${I.lock}Claimed by <b>${esc(claim.by)}</b>${claim.note ? `: ${esc(claim.note)}` : ''}</div>` : ''}
+    ${theirs ? `<div class="pop-note" title="${esc(claimTitle(claim, me))}">${I.lock}Claimed by <b>${esc(claimHolder(claim, me))}</b>${claim.note ? `: ${esc(claim.note)}` : ''}</div>` : ''}
+    ${canRelease ? `<button class="pop-item" data-act="release" role="menuitem">${I.lock}Release ${esc(claim.by)}'s claim</button>` : ''}
+    ${isAway && owner && onClearAway ? '<button class="pop-item" data-act="clear-away" role="menuitem">Release every claim held by someone away</button>' : ''}
     ${!claim ? `<form class="pop-form"><label class="label" for="claim-note">Claim this ${kind === 'dir' ? 'folder' : 'file'}</label>
       <input class="input" id="claim-note" placeholder="What are you doing? (optional)" autocomplete="off">
       <button class="btn sm primary" type="submit">${I.lock}Claim</button></form>` : ''}`
@@ -100,6 +117,7 @@ export function openTreeMenu (anchor, { path, kind, claim, me, onClaim, onReleas
     if (!b) return
     if (b.dataset.act === 'open') onOpen()
     if (b.dataset.act === 'release') onRelease()
+    if (b.dataset.act === 'clear-away') onClearAway()
     closeTreeMenu()
   })
   const form = menu.querySelector('form')

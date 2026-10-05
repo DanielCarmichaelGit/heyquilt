@@ -1317,11 +1317,21 @@ function showTreeMenu (anchor, path, kind) {
     path,
     kind,
     me: me(),
+    owner: !!sum()?.status.access?.owner,
     claim: claimCovering(path, kind),
     onOpen: () => openFile(path),
     onClaim: (note) => claimPath(path, note),
-    onRelease: () => releasePattern(claimCovering(path, kind).pattern)
+    onRelease: () => releasePattern(claimCovering(path, kind).pattern),
+    onClearAway: clearAwayClaims
   })
+}
+
+async function clearAwayClaims () {
+  try {
+    const { released } = await api('POST', `/api/sessions/${current}/clear-claims`, {})
+    toast(released ? `Released ${released} claim${released === 1 ? '' : 's'}` : 'No claims to release')
+    loadTree()
+  } catch (err) { toast(err.message) }
 }
 
 async function claimPath (path, note) {

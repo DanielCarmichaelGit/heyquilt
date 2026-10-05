@@ -346,6 +346,7 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 .t-badge.edit { background: color-mix(in srgb, var(--edit) 15%, transparent); color: var(--edit); }
 .t-badge.mine { background: var(--panel-2); color: var(--muted); }
 .t-badge.claim { background: color-mix(in srgb, var(--violet) 16%, transparent); color: var(--violet); }
+.t-badge.claim.away { background: var(--panel-2); color: var(--muted); }
 .t-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--edit); flex: none; }
 .t-more { margin-left: auto; flex: none; width: 24px; height: 22px; border: 0; background: none; border-radius: 6px; color: var(--muted); cursor: pointer; display: grid; place-items: center; opacity: 0; }
 .t-row:hover .t-more, .t-row:focus-within .t-more, .t-more:focus-visible { opacity: 1; }

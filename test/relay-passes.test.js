@@ -425,3 +425,84 @@ test("in a session with an owner, files and stored files need the owner's approv
   srv.rooms.get(r).meta.members[old.publicKey] = { name: 'Lee', kind: 'human', role: 'editor', scopes: [], since: 1 }
   assert.equal((await routes(makePass({ identity: old, name: 'Lee', sub: 'user-lee' })).upload()).status, 201)
 })
+
+// Claims from accounts that are gone (a revoked or re-invited agent, someone removed) must not
+// hold files for good.
+async function claimRoom (t, opts = {}) {
+  const srv = await relay(t, opts)
+  const r = room()
+  const owner = generateIdentity()
+  const o = await connect(srv, r, { identity: owner, pass: makePass({ identity: owner, name: 'Olive', sub: 'user-olive' }), viewSecret: 'v' })
+  const rm = srv.rooms.get(r)
+  const agent = async (sub, name = 'Duncan') => {
+    rm.meta.members[`agent:${sub}`] = { name, kind: 'agent', role: 'editor', scopes: [], since: 1 }
+    const k = generateIdentity()
+    return connect(srv, r, { identity: k, kind: 'agent', pass: makePass({ identity: k, name, kind: 'agent', sub }) })
+  }
+  return { srv, r, o, rm, agent }
+}
+
+test('removing an agent releases its claims', async (t) => {
+  const { o, rm, agent } = await claimRoom(t)
+  const d = await agent('dd5b7a3a')
+  assert.equal((await claim(d, { op: 'claim', pattern: 'src/mcp.js' })).ok, true)
+  assert.equal((await claim(o, { op: 'claim', pattern: 'README.md' })).ok, true)
+  assert.equal((await admin(o, { op: 'remove', key: 'agent:dd5b7a3a' })).ok, true)
+  assert.deepEqual(Object.keys(rm.meta.claims), ['README.md'], "only the owner's claim is left")
+  await waitFor(() => o.claims.some((m) => m.claims && !m.claims.some((c) => c.pattern === 'src/mcp.js')))
+})
+
+test('a re-invited agent under the same name does not inherit the old claims, but may release them', async (t) => {
+  const { rm, agent } = await claimRoom(t)
+  const old = await agent('dd5b7a3a')
+  assert.equal((await claim(old, { op: 'claim', pattern: 'src/mcp.js' })).ok, true)
+  assert.equal((await claim(old, { op: 'claim', pattern: 'src/ui/app.css' })).ok, true)
+  old.ws.close()
+  await waitFor(() => rm.claimList().every((c) => !c.active))
+  const fresh = await agent('509a3f23')
+  assert.equal((await claim(fresh, { op: 'release', pattern: '*' })).released, 0, 'not its claims')
+  assert.equal(rm.meta.claims['src/mcp.js'].byId, 'agent:dd5b7a3a', 'nor adopted')
+  assert.equal((await claim(fresh, { op: 'claim', pattern: 'src/mcp.js' })).ok, false, 'claiming over it is refused')
+  assert.equal((await claim(fresh, { op: 'release', pattern: 'src/mcp.js' })).released, 1, 'but it may let go of one left under its name')
+  assert.equal((await claim(fresh, { op: 'claim', pattern: 'src/mcp.js' })).ok, true)
+  assert.equal(rm.meta.claims['src/mcp.js'].byId, 'agent:509a3f23')
+})
+
+test('claims say whether their holder is in the session, and go after the holder is away a while', async (t) => {
+  const { rm, agent, o } = await claimRoom(t, { claimAwayMs: 60 * 1000 })
+  const gone = await agent('gone', 'Gone')
+  const here = await agent('here', 'Here')
+  assert.equal((await claim(gone, { op: 'claim', pattern: 'a.js' })).ok, true)
+  assert.equal((await claim(here, { op: 'claim', pattern: 'b.js' })).ok, true)
+  assert.deepEqual(rm.claimList().map((c) => c.active), [true, true])
+  gone.ws.close()
+  await waitFor(() => rm.claimList().find((c) => c.pattern === 'a.js').active === false)
+  assert.equal(rm.sweepClaims(Date.now() + 30 * 1000), 0, 'not yet')
+  assert.equal(rm.sweepClaims(Date.now() + 61 * 1000), 1)
+  assert.deepEqual(Object.keys(rm.meta.claims), ['b.js'], 'a present holder keeps theirs')
+  await waitFor(() => o.claims.some((m) => m.claims && m.claims.length === 1 && m.claims[0].pattern === 'b.js'))
+  // A claim left from before the relay loaded the room counts from when it loaded.
+  rm.meta.claims['old.js'] = { by: 'Ghost', byId: 'agent:ghost', pattern: 'old.js', note: '', ts: 1 }
+  rm.loadedAt = Date.now() - 61 * 1000
+  assert.equal(rm.sweepClaims(), 1)
+  assert.equal(rm.meta.claims['old.js'], undefined)
+})
+
+test("an agent can't release another agent's claim; the owner can, and can clear everyone away", async (t) => {
+  const { rm, agent, o } = await claimRoom(t)
+  const a = await agent('aaa', 'Ann')
+  const b = await agent('bbb', 'Bob')
+  const c = await agent('ccc', 'Cal')
+  assert.equal((await claim(a, { op: 'claim', pattern: 'a.js' })).ok, true)
+  assert.equal((await claim(b, { op: 'claim', pattern: 'b.js' })).ok, true)
+  assert.equal((await claim(c, { op: 'claim', pattern: 'c.js' })).ok, true)
+  const refused = await claim(b, { op: 'release', pattern: 'a.js' })
+  assert.equal(refused.ok, false)
+  assert.match(refused.error, /only they can release it/)
+  assert.equal((await claim(b, { op: 'clear-inactive' })).ok, false, 'only the owner clears')
+  assert.equal((await claim(o, { op: 'release', pattern: 'a.js' })).released, 1, 'the owner may release an active claim')
+  c.ws.close()
+  await waitFor(() => rm.claimList().find((x) => x.pattern === 'c.js').active === false)
+  assert.equal((await claim(o, { op: 'clear-inactive' })).released, 1)
+  assert.deepEqual(Object.keys(rm.meta.claims), ['b.js'])
+})

@@ -82,6 +82,8 @@ export function relayConfig (opts = {}) {
     maxNewRoomsPerHour: num(opts.maxNewRoomsPerHour ?? env.QUILT_MAX_NEW_ROOMS_PER_HOUR, 30),
     roomTtlDays: num(opts.roomTtlDays ?? env.QUILT_ROOM_TTL_DAYS, 30),
     idleUnloadMs: num(opts.idleUnloadMs, 60 * 1000),
+    // A claim whose holder has been out of the session this long is released (see sweepClaims).
+    claimAwayMs: num(opts.claimAwayMs, 20 * 60 * 1000),
     trustProxy: opts.trustProxy ?? /^(1|true|yes)$/i.test(env.QUILT_TRUST_PROXY || ''),
     // Large files: Supabase Storage when both are set, otherwise the relay's own disk.
     storageUrl: opts.storageUrl ?? env.QUILT_STORAGE_URL ?? '',
@@ -125,6 +127,9 @@ class Room {
     }
     this.meta.identities = this.meta.identities || {} // name -> public key
     this.meta.claims = this.meta.claims || {} // pattern -> { by, byId?, pattern, note, ts }; byId is the account, with sign-in on
+    // Claim holder (see holderKey) -> when they were last in the session, for sweepClaims.
+    this.meta.seen = this.meta.seen || {}
+    this.loadedAt = Date.now()
     // Member id -> { name, kind, role, scopes, since }. The id is the public key, or
     // '<kind>:<sub>' for members approved with a pass (an account, on any computer).
     this.meta.members = this.meta.members || {}
@@ -438,6 +443,7 @@ class Room {
   hostedActive (id) {
     const was = this.hostedSeen.get(id) || 0
     this.hostedSeen.set(id, Date.now())
+    if (this.claimList().some((c) => c.byId === id)) this.meta.seen[id] = Date.now()
     for (const [k, p] of this.pending) if (k.hosted && p.id === id) this.pending.delete(k)
     // Newly online (or back after a while): everyone's member list shows it.
     if (Date.now() - was >= HOSTED_ONLINE_MS) this.broadcastMembers()
@@ -743,6 +749,9 @@ class Room {
     if (req.op === 'remove') {
       // An account goes with any older entries for keys it has used here, so it can't get back in by key.
       const gone = [key, ...((this.meta.accountKeys || {})[key] || [])]
+      // Their claims go with them: nobody left could release them.
+      const names = gone.map((id) => this.meta.members[id]?.name).filter(Boolean)
+      this.dropClaims((c) => c.byId ? gone.includes(c.byId) : names.includes(c.by))
       for (const id of gone) delete this.meta.members[id]
       // A pass issued before now can't bring them back by its grant (see passGrant). Removals
       // older than a pass lasts can match no valid pass, so they go; the newest are kept.
@@ -752,6 +761,7 @@ class Room {
       this.saveMeta()
       for (const [cws, a] of this.access) if (gone.includes(a.id)) cws.close(CLOSE_DENIED, 'The session owner removed you')
       for (const id of gone) this.hostedSeen.delete(id)
+      this.broadcastClaims()
       return { ok: true }
     }
     throw new Error('unknown request')
@@ -810,8 +820,51 @@ class Room {
     return { name, id: `${ws.pass.kind}:${ws.pass.sub}`, owner: !!(a && a.owner), talk: !(a && a.talk === false) }
   }
 
+  /** Each claim, with `active`: whether whoever holds it is in the session now. */
   claimList () {
-    return Object.values(this.meta.claims).sort((a, b) => a.ts - b.ts)
+    return Object.values(this.meta.claims).map((c) => ({ ...c, active: this.holderPresent(c) })).sort((a, b) => a.ts - b.ts)
+  }
+
+  /** Who holds a claim: their account with sign-in on, otherwise their name. */
+  holderKey (c) { return c.byId || `name:${c.by}` }
+
+  /** Whether a claim's holder is in the session now: connected, or a hosted agent seen lately. */
+  holderPresent (c) {
+    if (c.byId) {
+      const seen = this.hostedSeen.get(c.byId)
+      if (seen && Date.now() - seen < HOSTED_ONLINE_MS) return true
+      for (const ws of this.conns.keys()) if (ws.pass && `${ws.pass.kind}:${ws.pass.sub}` === c.byId) return true
+      return false
+    }
+    for (const n of this.names.values()) if (n === c.by) return true
+    return this.hostedOnline().some((h) => h.name === c.by)
+  }
+
+  /** Deletes the claims `pick` chooses. Returns how many. */
+  dropClaims (pick) {
+    let n = 0
+    for (const c of Object.values(this.meta.claims)) if (pick(c)) { delete this.meta.claims[c.pattern]; n++ }
+    for (const k of Object.keys(this.meta.seen)) if (!Object.values(this.meta.claims).some((c) => this.holderKey(c) === k)) delete this.meta.seen[k]
+    return n
+  }
+
+  /**
+   * Releases claims whose holder has been out of the session for claimAwayMs: a revoked
+   * or replaced agent, or someone who left without releasing, would hold them for good.
+   * Returns how many went (and tells everyone, when any did).
+   */
+  sweepClaims (now = Date.now()) {
+    const away = (c) => {
+      if (this.holderPresent(c)) return false
+      const since = Math.max(this.meta.seen[this.holderKey(c)] || this.loadedAt, c.ts || 0)
+      return now - since >= this.cfg.claimAwayMs
+    }
+    const n = this.dropClaims(away)
+    if (n) this.log(`[${this.name}] released ${n} claim(s) held by people away for ${Math.round(this.cfg.claimAwayMs / 60000)} minutes`)
+    // Also when a holder came or went: everyone's app shows whose claims are held by someone away.
+    const shown = this.claimList().map((c) => `${c.pattern}\0${c.active}`).join('\n')
+    if (n || shown !== this.claimsShown) { this.claimsShown = shown; this.broadcastClaims() }
+    return n
   }
 
   /**
@@ -839,15 +892,21 @@ class Room {
     }
     if (req.op === 'release') {
       if (pattern === '*' || !pattern) {
-        const all = this.claimList().filter(mine)
-        for (const c of all) delete this.meta.claims[c.pattern]
-        return { ok: true, released: all.length }
+        return { ok: true, released: this.dropClaims(mine) }
       }
       const c = this.meta.claims[pattern]
       if (!c) return { ok: true, released: 0 }
-      if (!mine(c) && !(id && who.owner && !c.byId)) throw new Error(`${pattern} is claimed by ${c.by}; only they can release it`)
-      delete this.meta.claims[pattern]
+      // The owner may release anyone's claim. Someone under the same name may release one
+      // held by an account that isn't here (theirs from before a re-invite), but not take it.
+      const stale = c.by === name && !this.holderPresent(c)
+      if (!mine(c) && !who.owner && !stale) throw new Error(`${pattern} is claimed by ${c.by}; only they can release it (or the session owner)`)
+      this.dropClaims((x) => x === c)
       return { ok: true, released: 1 }
+    }
+    if (req.op === 'clear-inactive') {
+      // The owner clears every claim held by someone who isn't in the session now.
+      if (!who.owner) throw new Error('only the session owner can clear claims')
+      return { ok: true, released: this.dropClaims((c) => !this.holderPresent(c)) }
     }
     throw new Error('unknown claim operation')
   }
@@ -984,8 +1043,14 @@ class Room {
   leave (ws) {
     if (ws.visit) { if (this.presence) this.presence.visitEnd(ws.visit); ws.visit = null }
     const ids = this.conns.get(ws)
+    const name = this.names.get(ws)
+    const account = ws.pass ? `${ws.pass.kind}:${ws.pass.sub}` : null
     this.conns.delete(ws)
     this.names.delete(ws)
+    // Their claims are released once they've been away a while (see sweepClaims).
+    const held = this.claimList().filter((c) => !c.active && (c.byId ? c.byId === account : c.by === name))
+    for (const c of held) this.meta.seen[this.holderKey(c)] = Date.now()
+    if (held.length) this.saveMeta()
     if (this.access.delete(ws)) {
       this.guard.trackedOrigins.delete(ws)
       this.broadcastMembers()
@@ -1555,6 +1620,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       ws.isAlive = false
       ws.ping()
     }
+    for (const room of rooms.values()) if (!room.ended) room.sweepClaims()
   }, 30000)
 
   // Delete rooms nobody has opened for a while (hosted relays shouldn't grow forever).

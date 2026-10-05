@@ -2083,6 +2083,12 @@ export class Session extends EventEmitter {
     return r.released || 0
   }
 
+  /** The owner clears every claim held by someone who isn't in the session. Resolves to the number released. */
+  async clearInactiveClaims () {
+    const r = await this.conn.claimRequest({ op: 'clear-inactive' })
+    return r.released || 0
+  }
+
   /** Takes the relay's claim list, logging what changed. */
   setClaims (list) {
     const next = new Map()
@@ -2455,9 +2461,11 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
       const editing = id === this.doc.clientID ? Object.fromEntries(this.myEdits) : (st.editing || {})
       for (const [p, ts] of Object.entries(editing)) note(p, st.name, ts)
     }
+    // `active` is false when whoever holds it isn't in the session (older relays don't say: active).
+    const shown = (c) => ({ by: c.by, ...(typeof c.byId === 'string' ? { byId: c.byId } : {}), pattern: c.pattern, note: c.note, ts: c.ts, active: c.active !== false })
     const claimFor = (p) => {
       const c = this.claimFor(p)
-      return c ? { by: c.by, pattern: c.pattern, note: c.note } : null
+      return c ? shown(c) : null
     }
     const out = []
     for (const p of this.sharedPaths()) {
@@ -2469,7 +2477,7 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
     return {
       files: out,
       // Claims on folders or globs that don't match a file yet still show up.
-      claims: [...this.claims.values()].map((c) => ({ by: c.by, pattern: c.pattern, note: c.note, ts: c.ts }))
+      claims: [...this.claims.values()].map(shown)
     }
   }
 

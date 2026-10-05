@@ -11,12 +11,34 @@ export const DELETED_KEEP_MS = 30 * 24 * 60 * 60 * 1000
 const KEEP_VERSIONS = 10
 
 export const fileView = (f) => ({ id: f.id, path: f.path, name: nameOf(f.path), folder: parentOf(f.path), kind: f.kind, size: f.size, mime: f.mime, sha256: f.sha256, version: f.version, note: f.note, uploadedBy: f.uploadedBy, uploadedAt: f.uploadedAt, confirmedAt: f.confirmedAt })
-/** Live rows people see: folders, and files whose current version landed. */
-export const listed = (rows) => rows.filter((f) => f.kind === 'folder' || f.confirmedAt)
+const LOOPBACK = /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i
+
+/** The version people get of a file: its current one once that has landed; while a new
+ * version is still uploading, the newest earlier one (the row's own facts belong to the
+ * pending upload). Null for a file whose first upload hasn't landed. */
+async function servedVersion (store, f) {
+  if (f.kind !== 'file' || f.confirmedAt) return null
+  return (await store.listWorkspaceFileVersions(f.id))[0] || null
+}
+
+/** A row as people see it, or null while a new file's first upload hasn't landed. */
+export async function viewOf (store, f) {
+  if (f.kind === 'folder' || f.confirmedAt) return fileView(f)
+  const v = await servedVersion(store, f)
+  if (!v) return null
+  return { ...fileView(f), version: v.version, size: v.size, sha256: v.sha256, note: v.note, uploadedBy: v.uploadedBy, uploadedAt: v.uploadedAt, confirmedAt: v.uploadedAt }
+}
+
+/** Live rows people see, as views: folders, and files with a version that landed. */
+export async function listedFiles (store, rows) {
+  const views = await Promise.all(rows.map((f) => viewOf(store, f)))
+  return views.filter(Boolean)
+}
 
 /** A workspace's storage limit. The API's option is a ceiling on the row's own quota: a
- * smaller server (or a test) can lower every workspace's limit without touching the rows. */
-export const quotaOf = (ws, ceiling = Infinity) => Math.min(ws.quotaBytes || Infinity, ceiling ?? Infinity)
+ * smaller server (or a test) can lower every workspace's limit without touching the rows.
+ * A row with no quota of its own gets the option; a quota of 0 means no storage. */
+export const quotaOf = (ws, ceiling = Infinity) => Math.min(ws.quotaBytes ?? ceiling ?? Infinity, ceiling ?? Infinity)
 
 /** What a workspace has used and may use, as the app shows it. */
 export async function usageView (store, ws, { workspaceQuotaBytes, maxWorkspaceFiles } = {}) {
@@ -30,15 +52,14 @@ export function workspaceFileRoutes (ctx) {
   const gated = (fn) => async (...a) => { if (!workspaces) throw new HttpError(404, 'not found'); return fn(...a) }
   const cleanNote = (v) => { const s = String(v ?? '').trim(); if (s.length > MAX_NOTE) throw new HttpError(400, `Keep the note under ${MAX_NOTE} characters.`); return s }
   const cleanFilePathOrRoot = (v) => (String(v) === '' ? '' : cleanFilePath(v))
-  const apiHost = new URL(apiUrl).host
-  // The disk store's links are paths on this API. They point at the address the caller
-  // used (a local or test API listens on a port the configured apiUrl doesn't know), or at
-  // apiUrl itself when that is the address, since it carries the https scheme a proxy hides.
-  // Storage links (Supabase) are absolute already and pass through.
+  // The disk store's links are paths on this API, made absolute on apiUrl. A caller on a
+  // loopback address (a local or test API, listening on a port apiUrl doesn't know) gets
+  // them on the address it used; any other Host header is ignored, so a forged one can't
+  // point links elsewhere. Storage links (Supabase) are absolute already and pass through.
   const absolute = (url, req) => {
     if (!url.startsWith('/')) return url
     const host = String(req.headers.host || '')
-    return (!host || host === apiHost ? apiUrl : `http://${host}`) + url
+    return (LOOPBACK.test(host) ? `http://${host}` : apiUrl) + url
   }
 
   async function fileIn (r, id) {
@@ -94,9 +115,9 @@ export function workspaceFileRoutes (ctx) {
     ['GET', /^\/v1\/workspaces\/([^/]+)\/files$/, gated(async (req, body, [id]) => {
       const r = await reach(req, id)
       const folder = new URL(req.url, 'http://x').searchParams.get('folder')
-      let rows = listed(await store.listWorkspaceFiles(r.ws.id))
+      let rows = await store.listWorkspaceFiles(r.ws.id)
       if (folder !== null) { const want = cleanFilePathOrRoot(folder); rows = rows.filter((f) => parentOf(f.path) === want) }
-      return { files: rows.map(fileView) }
+      return { files: await listedFiles(store, rows) }
     })],
 
     // Starts an upload: the row now, the bytes straight to storage through the link, then /done.
@@ -155,7 +176,12 @@ export function workspaceFileRoutes (ctx) {
         const v = (await store.listWorkspaceFileVersions(f.id)).find((x) => x.version === Number(want))
         if (!v) throw new HttpError(404, 'no such version')
         key = v.objectKey; size = v.size
-      } else if (!f.confirmedAt) throw new HttpError(409, 'the upload has not landed yet')
+      } else if (!f.confirmedAt) {
+        // A new version is still uploading: with no version asked for, serve the one before it.
+        const v = !want && await servedVersion(store, f)
+        if (!v) throw new HttpError(409, 'the upload has not landed yet')
+        key = v.objectKey; size = v.size
+      }
       const name = nameOf(f.path)
       const { url } = await fileStore.downloadTarget(key, { name, type: f.mime })
       return { url: absolute(url, req), expiresAt: now() + LINK_MS, name, mime: f.mime, size }
@@ -184,7 +210,8 @@ export function workspaceFileRoutes (ctx) {
           else patch.path = p
         }
       }
-      return { file: fileView(await store.updateWorkspaceFile(f.id, patch)) }
+      const file = await store.updateWorkspaceFile(f.id, patch)
+      return { file: (await viewOf(store, file)) || fileView(file) }
     })],
 
     // Soft: the bytes stay 30 days (the sweep removes them); a folder takes its contents.

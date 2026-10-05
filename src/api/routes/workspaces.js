@@ -4,7 +4,7 @@ import { HttpError, cleanName } from '../http.js'
 import { orgAccess } from '../org-access.js'
 import { workspaceAccess, cleanColor, cleanDescription, cleanAccess, autoColor } from '../workspace-access.js'
 import { workspaceReach } from '../workspace-reach.js'
-import { fileView, listed, usageView } from './workspace-files.js'
+import { listedFiles, usageView } from './workspace-files.js'
 
 const ROOM = /^[A-Za-z0-9_-]{1,64}$/
 const ACCOUNT = /^(person|agent):[A-Za-z0-9_-]{1,64}$/
@@ -84,7 +84,7 @@ export function workspaceRoutes (ctx) {
       const ownerAccount = ws.ownerUserId ? `person:${ws.ownerUserId}` : null
       const owner = ownerAccount ? { account: ownerAccount, name: (await nameOf(ownerAccount)) || '' } : { account: null, name: (await store.orgById(ws.orgId))?.name || '' }
       const sessions = (await store.listWorkspaceSessions(ws.id)).map((s) => sessionView(s, t))
-      const files = listed(await store.listWorkspaceFiles(ws.id)).map(fileView)
+      const files = await listedFiles(store, await store.listWorkspaceFiles(ws.id))
       return { workspace: ws, access, canDelete, owner, members, sessions, files, usage: await usageView(store, ws, ctx) }
     }],
 

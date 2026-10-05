@@ -1,9 +1,10 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
-import { startTestApi } from './api-helpers.js'
+import { startTestApi, API_URL } from './api-helpers.js'
 import { DiskStore } from '../src/api/file-store.js'
 
 let t, store
@@ -93,4 +94,46 @@ test('unconfirmed uploads are forgotten after an hour and deleted files swept af
   await t.api.sweepFiles(Date.now() + 31 * 24 * 60 * 60 * 1000)
   assert.equal(await t.store.workspaceFileById(gone.body.file.id), null)
   assert.equal(await store.exists(`${w.id}/${gone.body.file.id}/1`), null, 'bytes removed from storage')
+})
+
+// fetch() won't send a made-up Host header, so this goes through node:http.
+function callWithHost (method, p, body, userId, host) {
+  const u = new URL(t.api.url + p)
+  return new Promise((resolve, reject) => {
+    const req = http.request({ agent: false, hostname: u.hostname, port: u.port, path: u.pathname + u.search, method, headers: { host, 'content-type': 'application/json', authorization: `Bearer user:${userId}` } }, (res) => {
+      let data = ''
+      res.on('data', (c) => { data += c })
+      res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(data) }))
+    })
+    req.on('error', reject)
+    req.end(body ? JSON.stringify(body) : undefined)
+  })
+}
+
+test('links are on apiUrl unless the caller used a loopback address; a forged Host header is ignored', async () => {
+  const w = (await t.call('POST', '/v1/workspaces', { name: 'Hosts' }, 'mem')).body.workspace
+  const made = await upload('mem', w.id, 'a.txt', 'a')
+  const evil = await callWithHost('GET', `/v1/workspaces/${w.id}/files/${made.body.file.id}/download`, null, 'mem', 'evil.example')
+  assert.equal(evil.status, 200)
+  assert.ok(evil.body.url.startsWith(API_URL + '/v1/file-data/'), evil.body.url)
+  const up = await callWithHost('POST', `/v1/workspaces/${w.id}/files`, { path: 'b.txt', size: 1 }, 'mem', 'evil.example:8080')
+  assert.ok(up.body.upload.url.startsWith(API_URL + '/v1/file-data/'), up.body.upload.url)
+  const local = await callWithHost('GET', `/v1/workspaces/${w.id}/files/${made.body.file.id}/download`, null, 'mem', `localhost:${t.api.port}`)
+  assert.ok(local.body.url.startsWith(`http://localhost:${t.api.port}/v1/file-data/`), local.body.url)
+})
+
+test('a file whose new version is still uploading stays listed and downloadable as the version before', async () => {
+  const w = (await t.call('POST', '/v1/workspaces', { name: 'Pending' }, 'mem')).body.workspace
+  const v1 = await upload('mem', w.id, 'doc.txt', 'one', { note: 'v1' })
+  const pending = await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: 'doc.txt', size: 5, note: 'v2' }, 'mem')
+  assert.deepEqual([pending.status, pending.body.file.version], [200, 2])
+  for (const got of [(await t.call('GET', `/v1/workspaces/${w.id}/files`, null, 'mem')).body.files, (await t.call('GET', `/v1/workspaces/${w.id}`, null, 'mem')).body.files]) {
+    const f = got.find((x) => x.id === v1.body.file.id)
+    assert.ok(f, 'still listed')
+    assert.deepEqual([f.version, f.size, f.note, f.uploadedAt], [1, 3, 'v1', v1.body.file.uploadedAt])
+  }
+  const dl = await t.call('GET', `/v1/workspaces/${w.id}/files/${v1.body.file.id}/download`, null, 'mem')
+  assert.deepEqual([dl.status, dl.body.size], [200, 3])
+  assert.equal(await (await fetch(dl.body.url)).text(), 'one')
+  assert.equal((await t.call('GET', `/v1/workspaces/${w.id}/files/${v1.body.file.id}/download?version=2`, null, 'mem')).status, 409)
 })

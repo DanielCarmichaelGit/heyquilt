@@ -13,6 +13,7 @@ nothing else is.
 
 A fix for the merge view, and webhooks that carry your receiver's key.
 
+- **No more tasks made from your AI chats.** Quilt no longer adds a board task each time your AI starts editing files for a new request; it added too many tickets nobody needed. It is paused until it can tell real work apart.
 - **The merge view follows the newest conflict.** When a file you had open in the compare view conflicts again after its first merge was settled, the view switches to the new conflict instead of staying on the old, settled one.
 - **Webhooks carry your receiver's key.** `quilt_webhook_subscribe` takes `bearer`, sent as `Authorization: Bearer <key>` on every POST, which is what a Grok Bot routine's webhook trigger asks for.
 

@@ -146,6 +146,8 @@ export class Session extends EventEmitter {
     this.summaryQueue = Promise.resolve()
     // (request, files) -> Promise<string|null>; when set, auto tasks get a short title.
     this.taskTitler = null
+    // Paused: tasks made from AI chats added too many tickets nobody needed.
+    this.autoTasks = false
     this.agentState = null
     this.access = null // from the relay: { state, role, scopes, owner, controlled }
     this.members = [] // everyone approved into a controlled session
@@ -2146,6 +2148,7 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
    * request that is not already on the board. Failures stay out of the feed.
    */
   noteAgentWork (entries) {
+    if (!this.autoTasks) return
     let ops = []
     try {
       ops = planAutoTask({

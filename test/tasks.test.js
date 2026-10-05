@@ -159,6 +159,7 @@ test('an AI file edit becomes an in-progress task, and later edits extend it', (
   const bob = person('bob')
   link(alice, bob)
   alice.tool = 'Cursor'
+  alice.autoTasks = true
   const now = Date.now()
 
   assert.equal(alice.pushAgentEntries([
@@ -227,8 +228,19 @@ test('an AI file edit becomes an in-progress task, and later edits extend it', (
   assert.equal(alice.taskList().find((t) => t.conv === 'c5').title, 'Private request')
 })
 
+test('AI chats do not make tasks while auto tasks are paused', () => {
+  const alice = person('alice')
+  const now = Date.now()
+  alice.pushAgentEntries([
+    { id: 'p', tool: 'Cursor', conv: 'c1', kind: 'prompt', text: 'Add a dark mode toggle', ts: now },
+    { id: 'e', tool: 'Cursor', conv: 'c1', kind: 'action', text: 'Edited src/ui/app.css', ts: now }
+  ])
+  assert.equal(alice.taskList().length, 0)
+})
+
 test('a full board does not swallow the AI chat entry', () => {
   const alice = person('alice')
+  alice.autoTasks = true
   for (let i = 0; i < MAX_TASKS; i++) alice.addTask(`task ${i}`)
   const n = alice.pushAgentEntries([
     { id: 'p', tool: 'Cursor', conv: 'c', kind: 'prompt', text: 'One more', ts: Date.now() },

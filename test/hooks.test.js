@@ -176,21 +176,21 @@ test('stopping with an unanswered message asks Claude to reply first; then relea
   await waitFor(() => !sam.claimFor('src/app.js'))
 })
 
-test('an edit to a file someone asked about is refused until Claude answers them', async () => {
+test('chat never blocks a file: before an edit, Claude is shown what was said about it, once', async () => {
   sam.say('please leave src/auth.js alone for an hour')
+  sam.say('src/other.js is fine to touch') // about another file
   await waitFor(() => dana.messages({ markRead: false }).some((m) => m.text.startsWith('please leave')))
   await sam.release('src/auth.js')
   await waitFor(() => !dana.claimFor('src/auth.js'))
   const r = await edit('src/auth.js')
   const o = r.json.hookSpecificOutput
-  assert.equal(o.permissionDecision, 'deny')
-  assert.match(o.permissionDecisionReason, /^src\/auth\.js: sam asked about it and you haven't answered/)
-  assert.match(o.permissionDecisionReason, /quilt_message \(to: "sam"\)/)
-  assert.equal(sam.claimFor('src/auth.js'), null, 'not claimed while held')
-  // Answered: the edit goes through (and is claimed).
-  dana.say('ok, I will leave src/auth.js alone', { to: 'sam' })
-  assert.equal((await edit('src/auth.js')).out, '')
-  await waitFor(() => sam.claimFor('src/auth.js')?.by === 'dana')
+  assert.equal(o.hookEventName, 'PreToolUse')
+  assert.equal(o.permissionDecision, undefined, 'not refused: only a claim refuses an edit')
+  assert.match(o.additionalContext, /^What people said in chat about these files:\n- sam, just now, about src\/auth\.js: "please leave src\/auth\.js alone for an hour" \(you have not replied\)/)
+  assert.doesNotMatch(o.additionalContext, /fine to touch/)
+  await waitFor(() => sam.claimFor('src/auth.js')?.by === 'dana') // claimed for dana as usual
+  assert.equal((await edit('src/auth.js')).out, '', 'shown once per Claude session')
+  dana.say('sorry sam, I only touched the imports in src/auth.js')
   await hook({ hook_event_name: 'Stop', stop_hook_active: true })
   await waitFor(() => !sam.claimFor('src/auth.js'))
 })

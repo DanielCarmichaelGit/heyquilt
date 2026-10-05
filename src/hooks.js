@@ -4,7 +4,7 @@
 // file watcher undoes edits to files someone else holds whatever made them. The
 // hooks only make them automatic in Claude Code: before every edit, the file is
 // claimed for this person (or the edit is refused when someone else holds it, with
-// a nudge to ask them for help) and requests about it are shown; claims the hooks
+// a nudge to ask them for help) and what was said about it in chat is shown; claims the hooks
 // made are released when Claude finishes, once it has answered who wrote to it.
 // Direct messages, mentions and tasks handed over are shown as Claude works.
 //
@@ -16,7 +16,7 @@ import path from 'node:path'
 import { findDaemon } from './control.js'
 import { migrateDir } from './legacy.js'
 import { describeEvent } from './inbox.js'
-import { renderRequests, heldRefusal, askedRefusal } from './duties.js'
+import { renderChatAbout, heldRefusal } from './duties.js'
 import { quiltShellCommand } from './integrations.js'
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
@@ -102,16 +102,16 @@ async function preEdit (event, d, api, state) {
   const r = await api('POST', '/before-edit', { paths: [rel] })
   const f = r.files && r.files[0]
   if (!f || !f.shared) return { exitCode: 0 } // Quilt doesn't sync it, so nobody can clash on it
-  if (!f.ok && f.asked) return { exitCode: 0, output: { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: askedRefusal(rel, f.asked) } } }
   if (!f.ok) return deny(rel, f.claim, 'PreToolUse', f.error)
   const seen = new Set(state.read().seen)
-  const asked = (r.requests || []).filter((q) => q.id && !seen.has(`ask:${q.id}`))
+  // What people said about this file in chat, shown once per message per Claude session.
+  const said = (r.chat || []).filter((q) => q.id && !seen.has(`ask:${q.id}`))
   state.update((s) => {
     if (f.claimed && !s.claims.includes(rel)) s.claims.push(rel)
-    for (const q of asked) s.seen.push(`ask:${q.id}`)
+    for (const q of said) s.seen.push(`ask:${q.id}`)
   })
-  if (!asked.length) return { exitCode: 0 }
-  return { exitCode: 0, output: { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: renderRequests(asked) } } }
+  if (!said.length) return { exitCode: 0 }
+  return { exitCode: 0, output: { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: renderChatAbout(said) } } }
 }
 
 /** The refusal Claude sees: who holds the file, and what to do instead of retrying. */

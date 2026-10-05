@@ -1,21 +1,19 @@
-// What an agent owes the people it works with, whatever tool it runs in. Quilt's
-// rules used to live in Claude Code hooks (before an edit, after one, before
-// finishing); these pure checks are the same rules for every agent, so the local
-// MCP, the hosted MCP and the hooks all enforce them alike:
+// What an agent owes the people it works with, and what it should know before it acts,
+// whatever tool it runs in. Pure checks shared by the local MCP, the hosted MCP and the
+// Claude Code hooks, so every agent gets the same rules:
 //
-// - before editing a file: who holds it, and whether someone asked about it
-//   (a message naming the file that this agent has not answered);
-// - before finishing: every direct message and mention since it started is
-//   answered (a message back to that person, or to everyone, after theirs).
+// - before editing a file: who holds it (claims are what keep agents off each other's
+//   files), and what was said about it in chat lately, as context;
+// - before moving work on (claims, tasks, commits, "done"): every direct message and
+//   mention is answered (a message back to that person, or to everyone, after theirs).
+//
+// Chat never blocks a file: Quilt can't tell "don't touch it" from "is it done?". A file
+// is held by a claim; a message about it is something the agent reads.
 //
 // Messages are chat entries ({ id, by, to, text, ts }) the reader can see.
-//
-// These are enforced, not suggested: the daemon undoes an AI's edit to a file someone asked
-// about until it answers them (as it does for a claimed file), and the MCP tools that move
-// work forward (claims, tasks, commits, "done") refuse while someone is waiting for an answer.
 import { mentioned } from './inbox.js'
 
-// How far back a message naming a file still counts as a request about it.
+// How far back chat about a file is still worth reading before editing it.
 export const REQUEST_WINDOW_MS = 24 * 60 * 60 * 1000
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -41,19 +39,20 @@ export function answered (messages, me, who, ts) {
 }
 
 /**
- * Messages from others that name one of `paths` and that `me` has not answered:
- * people asking about, or warning off, a file this agent is about to change.
- * Each is { path, id, by, to, text, ts }, oldest first.
+ * Recent chat from others that names one of `paths`: what people said about the files this
+ * agent is about to change (asked for, warned off, planned). Each is
+ * { path, id, by, to, text, ts, answered }, oldest first; `answered` is whether `me` wrote
+ * back to that person (or everyone) since.
  */
-export function requestsAbout (paths, { messages = [], me, now = Date.now(), windowMs = REQUEST_WINDOW_MS } = {}) {
+export function chatAbout (paths, { messages = [], me, now = Date.now(), windowMs = REQUEST_WINDOW_MS } = {}) {
   const out = []
   for (const m of messages) {
     if (!m || !m.by || m.by === me || typeof m.text !== 'string') continue
     if (m.to && m.to !== me) continue
     if ((m.ts || 0) < now - windowMs) continue
     const hit = (paths || []).find((p) => namesPath(m.text, p))
-    if (!hit || answered(messages, me, m.by, m.ts)) continue
-    out.push({ path: hit, id: m.id, by: m.by, to: m.to || null, text: m.text, ts: m.ts })
+    if (!hit) continue
+    out.push({ path: hit, id: m.id, by: m.by, to: m.to || null, text: m.text, ts: m.ts, answered: answered(messages, me, m.by, m.ts) })
   }
   return out
 }
@@ -82,12 +81,19 @@ const quote = (t) => {
   return s.length > 300 ? s.slice(0, 300) + '…' : s
 }
 
-/** The lines an agent reads before editing files someone asked about, or '' when nobody did. */
-export function renderRequests (requests) {
-  if (!requests || !requests.length) return ''
-  const lines = requests.map((r) => `- ${r.by}${r.to ? ' (to you)' : ''} about ${r.path}: "${quote(r.text)}"`)
-  return 'Before you change these files, read what was asked about them:\n' + lines.join('\n') + '\n' +
-    'If someone asked you to leave a file alone, or to change it a certain way, do that, and answer them with quilt_message (to: their name) before or as you edit.'
+const ago = (ts, now) => {
+  const m = Math.max(0, Math.round((now - (ts || now)) / 60000))
+  return m < 1 ? 'just now' : m < 60 ? `${m}m ago` : `${Math.round(m / 60)}h ago`
+}
+
+/** What was said about the files an agent is about to change, newest last, or '' when nothing was. */
+export function renderChatAbout (said, { now = Date.now(), max = 8 } = {}) {
+  if (!said || !said.length) return ''
+  const shown = said.slice(-max)
+  const lines = shown.map((r) => `- ${r.by}${r.to ? ' (to you)' : ''}, ${ago(r.ts, now)}, about ${r.path}: "${quote(r.text)}"${r.answered ? '' : ' (you have not replied)'}`)
+  const more = said.length > shown.length ? `\n(and ${said.length - shown.length} earlier: quilt_read_messages)` : ''
+  return 'What people said in chat about these files:\n' + lines.join('\n') + more + '\n' +
+    'Take it into account: if they asked you to leave a file alone or to change it a certain way, do that, and reply to anyone you have not replied to with quilt_message.'
 }
 
 /**
@@ -100,14 +106,6 @@ export function renderUnanswered (events, then = 'finish again') {
   return 'Not yet: these people are still waiting for an answer from you:\n' + lines.join('\n') + '\n' +
     `Answer each with quilt_message (to: their name), even if only to say when you will get to it, then ${then}. ` +
     'Reading, messaging and checking files work meanwhile.'
-}
-
-/** Why an edit to a file someone asked about is refused until they're answered. */
-export function askedRefusal (rel, requests) {
-  const who = [...new Set(requests.map((r) => r.by))]
-  return `${rel}: ${who.join(' and ')} asked about it and you haven't answered, so Quilt holds edits to it until you do ` +
-    `(an edit made anyway is undone and your version kept aside). Answer with quilt_message (to: "${who[0]}"): do what they asked, ` +
-    'or say what you are about to change. Then edit it.'
 }
 
 /** One refusal for an edit to a file someone else holds: who, and what to do instead of retrying. */

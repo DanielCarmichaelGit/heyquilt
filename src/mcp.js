@@ -20,7 +20,7 @@ import { pickAgent } from './agent-join.js'
 import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, MAX_VERIFIED } from './agent-task-workflow.js'
 import { formatHistory } from './history.js'
 import { renderInbox, describeEvent, INBOX_HOW } from './inbox.js'
-import { renderRequests, renderUnanswered, heldRefusal, askedRefusal } from './duties.js'
+import { renderChatAbout, renderUnanswered, heldRefusal } from './duties.js'
 import { describeSubscription, WEBHOOK_EVENTS } from './webhooks.js'
 import { UpdateCheck } from './update-check.js'
 import { getSettings } from './settings.js'
@@ -58,12 +58,12 @@ export const MCP_INSTRUCTIONS =
   'quilt_history tells you who changed which file, when, with the diff: read it for the files you are about to touch. ' +
   'When you edit files for a request that is not already on the board, Quilt adds an In progress task from that chat: use it instead of adding a duplicate, and move it to Done when you finish. ' +
   'Before you change files, call quilt_before_edit with their paths: it tells you whether each is yours to edit (claiming free ones for you, so partners are refused instead of overwriting you), ' +
-  'and shows what people asked about those files that you have not answered yet. Do not edit a file it refuses: message the holder with quilt_message and carry on with other work. ' +
+  'and shows what people said about those files in chat, so you know what was asked or planned before you change them. Do not edit a file it refuses: message the holder with quilt_message and carry on with other work. ' +
   'Claims also follow your edits: a file you change that nobody holds is claimed for you until you finish. ' +
   'If an edit of yours was undone because someone else holds the file, your next quilt answer says so: do not retry; message them with quilt_message and carry on with other work. ' +
   'Every quilt answer starts with anything new for you (direct messages, mentions, tasks handed to you): act on it. ' +
   'These rules are enforced: while someone who messaged or mentioned you is waiting for an answer, the tools that move work on (claims, tasks, focus, merges, commits, quilt_set_work) refuse until you answer them with quilt_message; ' +
-  'an edit to a file someone asked about is undone until you answer them; an edit to a file someone else holds is undone. ' +
+  'an edit to a file someone else holds is undone. ' +
   'When you finish a piece of work, call quilt_set_work with "done": it lets go of the files claimed for you. ' +
   'Claim ahead (quilt_claim) only for a larger change across several files. ' +
   'Always re-read a file right before you edit it. ' +
@@ -593,8 +593,8 @@ export async function runMcp () {
 
   server.registerTool('quilt_before_edit', {
     description: 'Call before you change files (with your own edit tools), with the paths you are about to change. For each file: whether it is yours to edit ' +
-      '(a file nobody holds is claimed for you until you finish; one someone else holds is refused: do not edit it, message them instead), and what people asked ' +
-      'about those files that you have not answered. Works in every tool; it is how Quilt keeps agents from overwriting each other.',
+      '(a file nobody holds is claimed for you until you finish; one someone else holds is refused: do not edit it, message them instead), and what people said ' +
+      'about those files in chat lately (what they asked for, warned about or planned). Works in every tool; it is how Quilt keeps agents from overwriting each other.',
     inputSchema: {
       paths: z.array(z.string().min(1).max(500)).min(1).max(50).describe('Files you are about to change: relative to the project folder, or absolute inside it')
     }
@@ -606,17 +606,16 @@ export async function runMcp () {
       if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) outside.push(p)
       else rels.push(rel)
     }
-    const r = rels.length ? await call(d, 'POST', '/before-edit', { paths: rels }) : { files: [], requests: [] }
+    const r = rels.length ? await call(d, 'POST', '/before-edit', { paths: rels }) : { files: [], chat: [] }
     const lines = []
     for (const f of r.files) {
       if (!f.shared) lines.push(`- ${f.path}: not shared by Quilt (ignored or private): edit it as you like.`)
       else if (f.ok) lines.push(`- ${f.path}: ✅ yours to edit${f.claimed ? ' (claimed for you until you finish)' : ''}.`)
-      else if (f.asked) lines.push(`- ⏸ ${askedRefusal(f.path, f.asked)}`)
       else lines.push(`- ${f.path}: ⛔ ${heldRefusal(f.path, f.claim, f.error)}`)
     }
     for (const p of outside) lines.push(`- ${p}: not inside the project folder (${d.dir}).`)
-    const asked = renderRequests(r.requests.filter((q) => !r.files.some((f) => f.asked && f.path === q.path)))
-    return lines.join('\n') + (asked ? `\n\n${asked}` : '') + '\n\nRe-read each file right before you edit it.'
+    const said = renderChatAbout(r.chat)
+    return lines.join('\n') + (said ? `\n\n${said}` : '') + '\n\nRe-read each file right before you edit it.'
   }))
 
   server.registerTool('quilt_request_commit', {

@@ -32,7 +32,7 @@ ${TASK_WORKFLOW_MD}
   see it in their feed, it goes on the task board, and the host won't commit under you.
 - Before you change files, call \`quilt_before_edit\` with their paths. It tells you
   whether each one is yours to edit (claiming free ones for you) and shows what
-  people asked about those files. Don't edit a file it refuses.
+  people said about those files in chat. Don't edit a file it refuses.
 - Claims follow edits, whatever tool you are: the moment you change a file nobody
   holds, Quilt claims it for you, and lets go when you finish (your AI goes idle, or
   the file has been quiet for a few minutes). Claim ahead only for a larger change

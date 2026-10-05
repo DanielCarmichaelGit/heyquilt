@@ -145,9 +145,10 @@ and `AGENTS.md`.
 **Quilt's rules are enforced, in every tool.** They aren't instructions an agent
 may skip:
 
-- An edit to a file someone else holds is undone (Quilt watches the disk).
-- An edit to a file someone asked about, by an AI that hasn't answered them, is
-  undone too and kept aside, until it answers. `quilt_before_edit` says so up front.
+- An edit to a file someone else holds (claims it) is undone (Quilt watches the
+  disk). Only claims block files; chat never does.
+- Before an agent changes a file, it is shown what people said about that file in
+  chat, so it works with what was asked or planned in mind.
 - While someone who messaged or mentioned the agent is waiting for an answer, every
   tool that moves work on (claims, tasks, focus, merges, commits, `quilt_set_work`)
   refuses with who is waiting, until the agent answers with `quilt_message`.
@@ -196,7 +197,7 @@ See [Claims](#claims).
 | `quilt_list_files` | Shared files with recent editors and claims |
 | `quilt_set_focus` | Announce the current task |
 | `quilt_share` | Share what you're working on (the request, your plan, what you did, files changed): it reaches partners' feeds and the task board, and holds off commits while you work |
-| `quilt_before_edit` | Before changing files: whether each one is yours to edit (free ones are claimed for you; held ones are refused, with who to ask), and what people asked about them that you haven't answered |
+| `quilt_before_edit` | Before changing files: whether each one is yours to edit (free ones are claimed for you; held ones are refused, with who to ask), and what people said about them in chat lately |
 | `quilt_set_work` | Say you're working or done; "done" releases the files claimed for you, and is refused until you've answered everyone who wrote to you |
 | `quilt_claim` / `quilt_release` | Claim or release files by hand (Quilt claims files for you as your AI edits them) |
 | `quilt_message` | Message everyone, or one person with `to` |
@@ -248,21 +249,21 @@ follow edits, so nobody has to remember:
   AI hears about it with its next Quilt tool call: who holds the file and why, and to
   send you a direct message saying what it wanted to change rather than retry.
 - **Every MCP agent is checked before it edits, too.** `quilt_before_edit` refuses
-  a file someone else holds, claims a free one, and lists what people asked about
-  those files that the agent hasn't answered (a message naming the file). Every
+  a file someone else holds, claims a free one, and shows what people said about
+  those files in chat lately (marking any it hasn't replied to). Every
   Quilt answer starts with the direct messages, mentions and tasks that arrived
   since the last one. `quilt_set_work` "done" and moving a task to Done are refused
   while someone who wrote to the agent is still waiting for a reply. An agent that
   never says it's done stops counting as working once its files have been quiet
   for five minutes, so commits aren't held up.
 - **Claude Code gets the same rules automatically** through hooks in your own
-  `.claude/settings.local.json`: the edit is refused before it happens, requests
-  about the file are shown before the edit, the holder's Claude sees new messages
+  `.claude/settings.local.json`: an edit to a file someone else holds is refused
+  before it happens, chat about the file is shown before the edit, the holder's Claude sees new messages
   after its next edit, and if it tries to finish with an unanswered one it is asked
   to reply first. Hook claims end when Claude finishes its turn; a crashed Claude's
   leftovers are released by the next session.
-- **Hosted agents** (on `api.heyquilt.com/mcp`) are told what people asked about a
-  file each time they write it, until they answer.
+- **Hosted agents** (on `api.heyquilt.com/mcp`) are told what people said about a
+  file in chat when they write it.
 - **Hosted agents** (on `api.heyquilt.com/mcp`) are claimed for when they write a
   file and let go after ten quiet minutes; a write to someone else's file is refused
   with the same advice.

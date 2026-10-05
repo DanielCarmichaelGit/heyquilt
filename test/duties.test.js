@@ -1,7 +1,7 @@
 // The rules every agent is held to, whatever tool it runs in (src/duties.js).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { namesPath, requestsAbout, unanswered, renderUnanswered, renderRequests, heldRefusal } from '../src/duties.js'
+import { namesPath, chatAbout, unanswered, waitingOn, renderUnanswered, renderChatAbout, heldRefusal } from '../src/duties.js'
 
 test('a message names a file by its path, or by a file name with an extension, as its own word', () => {
   assert.ok(namesPath('please leave src/app.js alone', 'src/app.js'))
@@ -24,15 +24,27 @@ const msgs = [
   { id: '5', by: 'sam', to: null, text: 'old news about src/app.js', ts: now - 3 * 24 * 3600 * 1000 }
 ]
 
-test('requests about a file: from others, to me or everyone, recent, and not answered yet', () => {
-  const r = requestsAbout(['src/app.js', 'src/other.js'], { messages: msgs, me: 'helper', now })
-  assert.deepEqual(r.map((x) => x.id), ['1'])
+test('chat about a file: from others, to me or everyone, recent; answered or not', () => {
+  const r = chatAbout(['src/app.js', 'src/other.js'], { messages: msgs, me: 'helper', now })
+  assert.deepEqual(r.map((x) => [x.id, x.answered]), [['1', false], ['3', true]], 'not to someone else, not too old; helper answered kim, not sam')
   assert.equal(r[0].path, 'src/app.js')
-  assert.match(renderRequests(r), /sam \(to you\) about src\/app\.js: "please leave src\/app\.js alone"/)
-  assert.equal(renderRequests([]), '')
-  // A message to everyone answers every earlier one.
-  const later = [...msgs, { id: '6', by: 'helper', to: null, text: 'noted', ts: now - 1000 }]
-  assert.deepEqual(requestsAbout(['src/app.js'], { messages: later, me: 'helper', now }), [])
+  const fresh = [...msgs, { id: '7', by: 'sam', to: 'helper', text: 'and src/other.js too', ts: now - 500 }]
+  const said = chatAbout(['src/other.js'], { messages: fresh, me: 'helper', now })
+  assert.deepEqual(said.map((x) => [x.id, x.answered]), [['7', false]])
+  const text = renderChatAbout(said, { now })
+  assert.match(text, /^What people said in chat about these files:\n- sam \(to you\), just now, about src\/other\.js: "and src\/other\.js too" \(you have not replied\)/)
+  assert.match(text, /Take it into account/)
+  assert.equal(renderChatAbout([]), '')
+})
+
+test('waiting on: direct messages and mentions from the chat that were not answered', () => {
+  const chat = [
+    { id: 'a', by: 'sam', to: 'helper', text: 'got a minute?', ts: now - 3000 },
+    { id: 'b', by: 'kim', to: null, text: '@helper look at this', ts: now - 2000 },
+    { id: 'c', by: 'helper', to: 'kim', text: 'on it', ts: now - 1000 },
+    { id: 'd', by: 'sam', to: null, text: 'no mention here', ts: now - 900 }
+  ]
+  assert.deepEqual(waitingOn(chat, 'helper', { now }).map((e) => [e.id, e.kind]), [['a', 'dm']])
 })
 
 test('unanswered: direct messages and mentions with no later reply to that person or everyone', () => {

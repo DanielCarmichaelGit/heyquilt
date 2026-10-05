@@ -231,23 +231,18 @@ test('merges are listed and settled through the MCP tools', async () => {
   assert.match(listed2, /deleted it offline/)
 })
 
-test('without hooks, the MCP holds an agent to the rules: a file someone asked about waits for an answer, and so does every step that moves work on', async () => {
+test('without hooks, the MCP holds an agent to the rules: claims refuse files, chat is context, and an unanswered message holds up work', async () => {
   human.say('helper, please do not touch src/app.js, I am mid-refactor', { to: 'helper' })
   await waitFor(async () => text(await call('quilt_inbox', { all: true })).includes('mid-refactor'))
-  // Before editing: the file someone asked about is held (not claimed), a held one is refused, a free one is claimed.
-  const check = text(await call('quilt_before_edit', { paths: ['src/app.js', 'src/auth/login.js', 'src/new.js', '/etc/passwd'] }))
-  assert.match(check, /- ⏸ src\/app\.js: dana asked about it and you haven't answered, so Quilt holds edits to it until you do/)
+  // Before editing: a free file is claimed (chat about it is shown, never blocks it), a held one is refused.
+  const check = text(await call('quilt_before_edit', { paths: ['src/app.js', 'src/auth/login.js', '/etc/passwd'] }))
+  assert.match(check, /- src\/app\.js: ✅ yours to edit \(claimed for you until you finish\)/)
   assert.match(check, /- src\/auth\/login\.js: ⛔ src\/auth\/login\.js is claimed by dana \(refactoring\), as part of their claim on src\/auth.*Do not retry.*quilt_message \(to: "dana"\)/)
-  assert.match(check, /- src\/new\.js: ✅ yours to edit \(claimed for you until you finish\)/)
   assert.match(check, /- \/etc\/passwd: not inside the project folder/)
-  assert.equal(human.claimFor('src/app.js'), null)
-  // An edit made anyway (in any tool: it's the disk) is undone, kept aside, and the agent is told with its next answer.
-  fs.writeFileSync(path.join(agentCwd, 'src', 'app.js'), 'console.log("overwritten")\n')
-  await waitFor(() => fs.readFileSync(path.join(agentCwd, 'src', 'app.js'), 'utf8') !== 'console.log("overwritten")\n')
-  assert.doesNotMatch(fs.readFileSync(path.join(humanDir, 'src', 'app.js'), 'utf8'), /overwritten/, 'never reached dana')
-  // Every step that moves work on waits for the answer too.
+  assert.match(check, /What people said in chat about these files:\n- dana \(to you\), just now, about src\/app\.js: "helper, please do not touch src\/app\.js, I am mid-refactor" \(you have not replied\)/)
+  assert.equal((await waitFor(() => human.claimFor('src/app.js'))).by, 'helper')
+  // Every step that moves work on waits for an answer to dana.
   const held = text(await call('quilt_claim', { pattern: 'docs/**' }))
-  assert.match(held, /Your change to src\/app\.js was undone and kept aside/)
   assert.match(held, /Not yet: these people are still waiting for an answer from you:\n/)
   assert.match(held, /- dana sent you a direct message: "helper, please do not touch src\/app\.js/)
   assert.match(held, /then call quilt_claim again/)
@@ -258,11 +253,13 @@ test('without hooks, the MCP holds an agent to the rules: a file someone asked a
   const news = await waitFor(async () => { const t = text(await call('quilt_status')); return t.includes('📬') && t })
   assert.match(news, /^📬 Waiting for you:\n- dana mentioned you in chat: also @helper, ping me when you are done/)
   assert.doesNotMatch(text(await call('quilt_status')), /📬/)
-  // Answering opens everything up: the file, the tools, finishing (which lets go of the files claimed for it).
+  // Answering lets work move on; the chat stays as context, now marked answered; finishing lets go of the file.
   await call('quilt_message', { to: 'dana', text: 'Understood, leaving src/app.js to you.' })
-  assert.match(text(await call('quilt_before_edit', { paths: ['src/app.js'] })), /src\/app\.js: ✅ yours to edit/)
+  const again = text(await call('quilt_before_edit', { paths: ['src/app.js'] }))
+  assert.match(again, /about src\/app\.js: "helper, please do not touch src\/app\.js, I am mid-refactor"\n/)
+  assert.doesNotMatch(again, /\(you have not replied\)/)
   assert.match(text(await call('quilt_set_work', { state: 'done' })), /^Marked as done\. Let go of \d+ files? claimed for you while you edited\./)
-  await waitFor(() => !human.claimFor('src/app.js') && !human.claimFor('src/new.js'))
+  await waitFor(() => !human.claimFor('src/app.js'))
 })
 
 test('nothing is Claude-only: any MCP client is pushed what arrives, and shares its work into the feed, the board and commit timing', async (t) => {

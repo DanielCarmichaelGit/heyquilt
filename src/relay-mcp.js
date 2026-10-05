@@ -23,7 +23,7 @@ import { UpdateCheck } from './update-check.js'
 import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, pickChecklist, MAX_VERIFIED } from './agent-task-workflow.js'
 import { HistoryLog, queryHistory, parseSince, formatHistory, currentTask } from './history.js'
 import { changeRefusal, TALK_REFUSED } from './session-access.js'
-import { requestsAbout, waitingOn, renderUnanswered, askedRefusal } from './duties.js'
+import { chatAbout, renderChatAbout, waitingOn, renderUnanswered } from './duties.js'
 import { describeSubscription, WEBHOOK_EVENTS } from './webhooks.js'
 
 const FEED_CAP = 300
@@ -54,7 +54,8 @@ export const HOSTED_INSTRUCTIONS =
   'tell everyone what you are doing, and quilt_message to talk. The shared task board is quilt_tasks, quilt_add_task, quilt_assign_task and quilt_move_task. ' +
   'quilt_history tells you who changed which file, when, with the diff: read it for the files you are about to touch. ' +
   'Do not edit files someone else has claimed: a refused write tells you who holds the file; message them with quilt_message and carry on with other work. ' +
-  'These rules are enforced: a write to a file someone asked about is refused until you answer them, and while someone who messaged or mentioned you waits for an answer, writes, claims and task changes are refused until you answer with quilt_message. ' +
+  'Read what people said about a file before you change it: quilt_read_messages, and each write tells you what was said about that file. ' +
+  'This rule is enforced: while someone who messaged or mentioned you waits for an answer, writes, claims and task changes are refused until you answer with quilt_message. ' +
   'Everyone sees your changes on their own disk within moments. ' +
   'Mentions of you (@yourname), direct messages and tasks handed to you wait in quilt_inbox. To be woken instead of polling, ' +
   'call quilt_webhook_subscribe with a URL of yours: Quilt POSTs each one there as it happens. ' +
@@ -131,6 +132,13 @@ function sessionTools (server, ctx) {
   // The rules every agent is held to (duties.js), enforced here because hosted agents work through these tools.
   const seen = (doc) => doc.getArray('chat').toArray().filter(visible)
   const waitRefusal = (doc, name) => renderUnanswered(waitingOn(seen(doc), me), `call ${name} again`)
+  // Chat about a file this agent was already shown, by message id: kept with its inbox, since each
+  // request to the hosted MCP gets fresh tools.
+  const toldAbout = () => {
+    const box = ctx.inbox ? ctx.inbox() : {}
+    if (!Array.isArray(box.told)) box.told = []
+    return box
+  }
   // Claims follow this agent's writes: a file it changes that nobody holds is claimed for it, and let
   // go when it hasn't written the file for a while (it has no end of turn Quilt can see).
   const autoHeld = new Map() // `${roomId}\0${rel}` -> timer
@@ -472,8 +480,6 @@ function sessionTools (server, ctx) {
     if (a && a.role === 'viewer') return fail('You can only view this session; file changes are refused.')
     const refusal = a && changeRefusal(a, rel)
     if (refusal) return fail(`${refusal[0].toUpperCase()}${refusal.slice(1)}.`)
-    const askedNow = requestsAbout([rel], { messages: seen(doc), me })
-    if (askedNow.length) return fail(askedRefusal(rel, askedNow))
     const claim = claimsOf(room).find((c) => c.by !== me && globMatcher(c.pattern)(rel))
     if (claim) return fail(`${rel} is claimed by ${claim.by}${claim.note ? ` (${claim.note})` : ''}. Do not retry: send ${claim.by} a direct message with quilt_message saying what you wanted to change and why, then carry on with other work.`)
     if (blobs.get(rel)?.stored) return fail(`${rel} is a large file kept in storage; it can't be changed here.`)
@@ -495,7 +501,15 @@ function sessionTools (server, ctx) {
       if (activity.length > ACTIVITY_CAP) activity.delete(0, activity.length - ACTIVITY_CAP)
       historyOf(room).record({ by: me, path: rel, kind, before, after: content, task: currentTask(readTasks(taskMap(doc)), me) })
     }, AGENT)
-    return text(`${existed ? 'Updated' : 'Created'} ${rel}${detail ? ` (${detail} lines)` : ' (no change)'}. Everyone in the session has it now.${claimedNow ? ` ${rel} is claimed for you while you work on it; quilt_release it when you are done.` : ''}`)
+    // What people said about this file in chat, so the agent works with it in mind (each message once).
+    const box = toldAbout()
+    const said = chatAbout([rel], { messages: seen(doc), me }).filter((m) => m.id && !box.told.includes(m.id))
+    if (said.length) {
+      box.told = [...box.told, ...said.map((m) => m.id)].slice(-200)
+      if (ctx.saveInbox) ctx.saveInbox()
+    }
+    const context = renderChatAbout(said)
+    return text(`${existed ? 'Updated' : 'Created'} ${rel}${detail ? ` (${detail} lines)` : ' (no change)'}. Everyone in the session has it now.${claimedNow ? ` ${rel} is claimed for you while you work on it; quilt_release it when you are done.` : ''}${context ? `\n\n${context}` : ''}`)
   })
 
   tool('quilt_claim', {

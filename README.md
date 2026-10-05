@@ -412,10 +412,13 @@ relay for now.
   session's version wins and yours is copied to `.quilt/conflicts/<time>/`.
   Use `--prefer local` to push your versions instead.
 
-**Git:** the working tree is shared, but `.git` isn't. The simplest workflow
-is that one person commits and pushes. Avoid `git checkout`, `reset`, `stash`
-and `rebase` during a session unless you've agreed on it: they rewrite files,
-and the changes sync to everyone.
+**Git:** the working tree is shared, but `.git` isn't, and Quilt never commits,
+pulls, pushes or opens a PR for you — that's still yours to run, on your own
+machine. A `git stash`, `reset --hard` or `checkout -- .` reverts your files
+as git does, and the session's work comes back onto them a moment later
+(your stash keeps your copy); commits you pull are merged into the session's
+work line by line. Checking out another branch pauses that folder until
+you're back on the one the session syncs.
 
 ## Security
 

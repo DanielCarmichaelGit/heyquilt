@@ -244,6 +244,14 @@ test('quilt_start_session in a workspace the API will not link starts outside an
   await c3.connect(new StdioClientTransport({ command: process.execPath, args: [BIN, 'mcp'], cwd: dir, env: { ...process.env, HOME: home, QUILT_SERVER: `ws://127.0.0.1:${relay.port}` }, stderr: 'ignore' }))
   t.after(() => c3.close().catch(() => {}))
   const call3 = (name, args = {}) => c3.callTool({ name, arguments: args })
+  // Not a workspace id: refused before anything starts.
+  const bad = await call3('quilt_start_session', { workspace: 'ws-1' })
+  assert.ok(bad.isError)
+  assert.match(text(bad), /"ws-1" is not a workspace id/)
+  assert.equal(fs.existsSync(path.join(dir, '.quilt', 'config.json')), false)
+  const tools = await c3.listTools()
+  const arg = tools.tools.find((x) => x.name === 'quilt_start_session').inputSchema.properties.workspace
+  assert.equal(arg.description, 'The id of the workspace this session belongs to, if the person gave you one.')
   // This test API has workspaces off, so linking fails.
   const ws = '6f1d2c3b-4a5e-4f60-8a9b-0c1d2e3f4a5b'
   const r = await call3('quilt_start_session', { workspace: ws })

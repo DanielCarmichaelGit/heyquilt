@@ -24,6 +24,9 @@ import { describeSubscription, WEBHOOK_EVENTS } from './webhooks.js'
 import { UpdateCheck } from './update-check.js'
 import { getSettings } from './settings.js'
 
+// A workspace id, as the accounts API makes them (UUID in src/api/http.js).
+const WORKSPACE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 /**
  * The "quilt-<room>" folder inside `cwd`. Invites only carry plain room names, but a room that
  * would put the folder anywhere else is refused all the same.
@@ -480,9 +483,12 @@ export async function runMcp () {
     inputSchema: {
       folder: z.string().optional().describe('Folder to share, relative to the current folder (default: current folder)'),
       agent: z.string().optional().describe('Which Quilt agent to join as (saved with `quilt agent join`). Optional when this computer has only one.'),
-      workspace: z.string().optional().describe('The workspace id this session belongs to (from quilt_workspaces, phase 3; or given by the person).')
+      workspace: z.string().optional().describe('The id of the workspace this session belongs to, if the person gave you one.')
     }
   }, async ({ folder, agent, workspace }) => {
+    if (workspace && !WORKSPACE_ID.test(workspace)) {
+      return { content: [{ type: 'text', text: `Could not start: "${workspace}" is not a workspace id. A workspace id looks like 6f1d2c3b-4a5e-4f60-8a9b-0c1d2e3f4a5b; ask the person for it, or leave workspace out.` }], isError: true }
+    }
     try {
       const r = await startAs({ conn: newConn(), folder: folder || '.', agent, starting: true, workspace: workspace || '' })
       const started = `Started a session for ${r.dir}. Share the invite link below with collaborators.`

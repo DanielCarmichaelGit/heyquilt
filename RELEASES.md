@@ -11,10 +11,15 @@ nothing else is.
 
 ## 0.3.10 — 2026-10-06
 
-AIs take turns on a file instead of stepping on each other: they queue for it, and hand it on with their context.
+AIs take turns on a file instead of stepping on each other, and Quilt recognises what git does in a synced folder instead of sharing it as edits, leaving git itself to you.
 
 - **A file queue for every claimed file.** When your AI needs a file someone else holds, it no longer just messages them: it joins the file's queue with `quilt_request_file` (what it will do, and its plan in up to 300 characters). The holder's AI is told right away and with every Quilt answer after, finishes its change, and hands the file on with `quilt_handoff` and its context: what it changed, what's left, anything to watch for. The next AI is woken with that context and the file is its own. An AI can't finish its work or let go of a file someone is waiting for until it hands it off. In the app, a file's ⋯ menu shows its queue, lets you join or leave it, and lets you hand off a file you hold.
 - **Claims end after 20 minutes of nothing, not 20 minutes away.** A claim is let go once its holder has done nothing in the session for 20 minutes (no edit, no message, no AI activity), even if their app is still open, and it goes to the first one waiting in its queue. Being disconnected alone no longer counts.
+- **Git on one machine no longer undoes the room's work.** A `git stash`, `reset --hard` or `checkout -- .` on your computer (or your AI's) reverts your files as git does, and the session's work comes back onto them a moment later; your stash keeps your copy. Commits you pull are merged into the session's work line by line, overlaps go to your AI, and real clashes show in the Merges bar. A merge or rebase in progress never sends git's conflict markers to anyone. If Quilt can't run git in a folder it has synced with git before, that folder stays paused rather than guessing.
+- **Switching branches pauses that folder.** Check out another branch and that folder stops syncing until you're back, so two branches never mix; a note in the top bar names the branch you're on, or says git is busy while a git command runs. One live document per branch is coming next.
+- **Quilt stays out of git.** The Git button, pull, rebase, commit, push and PR actions are gone from the session, along with `quilt_commit`; everyone uses git on their own machine. Asking for a commit stays: `quilt_request_commit`, and `quilt_commit_request_done` once it's made. Starting a session from a GitHub repo and branch is unchanged.
+- **Quilt keeps git away from its own state.** When a session starts in a git folder, Quilt adds `.quilt/` to the project's `.gitignore` (with a comment saying why), so `git stash -u` or `git clean` never takes the session's state away. The line is shared like any edit, so your partners' git ignores it too; a `.gitignore` that already ignores `.quilt` is left as it is.
+- **git clean deletes; git stash -u puts away.** Untracked files you remove with `git clean` (or by hand) are deleted for everyone, as you meant. Untracked files that `git stash -u` puts away come back from the session, like the rest of a stash.
 
 ## 0.3.9 — 2026-10-05
 
@@ -41,7 +46,6 @@ A fix for the merge view, and webhooks that carry your receiver's key.
 
 - **The merge view follows the newest conflict.** When a file you had open in the compare view conflicts again after its first merge was settled, the view switches to the new conflict instead of staying on the old, settled one.
 - **Webhooks carry your receiver's key.** `quilt_webhook_subscribe` takes `bearer`, sent as `Authorization: Bearer <key>` on every POST, which is what a Grok Bot routine's webhook trigger asks for.
-- **Quilt doesn't run git for anyone.** The Git popover (pull, commit, push, open a PR) is gone; the top bar just names the branch you're on. Asking for a commit works the same as before, but once someone has actually committed with git, mark the request done from the commit chip's popover (**Done**, or **Mark all done**) or with the new `quilt_commit_request_done` tool — there's no more host-only `quilt_commit`.
 
 ## 0.3.6 — 2026-10-04
 

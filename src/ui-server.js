@@ -15,7 +15,7 @@ import * as gitops from './git.js'
 import { installedEditors, openIn } from './editors.js'
 import { migrateDir } from './legacy.js'
 import { writePrivateJson } from './private-file.js'
-import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession, createAgentInvite, listAgents, listAccessTypes, listCollaborators, listGrants, putGrant, deleteGrant, inviteToSession, listSessionInvites, cancelSessionInvite, listWorkspaces, listOrgs, createWorkspace, getWorkspace, updateWorkspace, deleteWorkspace, putWorkspaceMember, removeWorkspaceMember, setSessionWorkspace } from './account.js'
+import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession, createAgentInvite, listAgents, listAccessTypes, listCollaborators, listGrants, putGrant, deleteGrant, inviteToSession, listSessionInvites, cancelSessionInvite, listWorkspaces, listOrgs, createWorkspace, getWorkspace, updateWorkspace, deleteWorkspace, putWorkspaceMember, removeWorkspaceMember, setSessionWorkspace, listWorkspaceFiles, createWorkspaceFile, confirmWorkspaceFile, workspaceFileDownload, updateWorkspaceFile, deleteWorkspaceFile, createWorkspaceFolder, listWorkspaceFileVersions } from './account.js'
 import { effectiveAccess, builtinType } from './session-access.js'
 import { cleanSessionName, BAD_SESSION_NAME, SESSION_NAME_MAX } from './session-name.js'
 import { personPasses } from './pass-source.js'
@@ -25,6 +25,7 @@ import { currentVersion, localReleases, latestRelease, compareVersions, download
 import { createReporter } from './report.js'
 
 const TOOL_NAMES = ['Claude Code', 'Cursor', 'Codex', 'Windsurf', 'GitHub Copilot', 'Zed', 'Aider', 'Other']
+const MAX_WS_FILE_BYTES = 500 * 1024 * 1024
 const COLOR_RE = /^#[0-9a-f]{6}$/i
 const THEMES = ['light', 'dark', 'system']
 const SAVE_FAILED = "Quilt couldn't save your sign-in on this computer."
@@ -108,7 +109,8 @@ export const STATIC = {
   '/releases.js': ['releases.js', 'text/javascript; charset=utf-8'],
   '/feed-convs.js': ['feed-convs.js', 'text/javascript; charset=utf-8'],
   '/board.js': ['board.js', 'text/javascript; charset=utf-8'],
-  '/workspaces.js': ['workspaces.js', 'text/javascript; charset=utf-8']
+  '/workspaces.js': ['workspaces.js', 'text/javascript; charset=utf-8'],
+  '/files.js': ['files.js', 'text/javascript; charset=utf-8']
 }
 
 // The page's Content-Security-Policy: scripts only from our own files (no inline script or
@@ -559,6 +561,11 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       rememberWorkspace(dir, id)
       return { ok: true }
     }),
+    'GET /api/workspaces/:id/files': (b, id, url) => asAccount(async (token) => ({ files: await listWorkspaceFiles({ token, id: needWorkspaceId(id), folder: url.searchParams.get('folder') ?? undefined }) })),
+    'GET /api/workspaces/:id/files/:fid/versions': (b, id, url, fid) => asAccount(async (token) => ({ versions: await listWorkspaceFileVersions({ token, id: needWorkspaceId(id), fileId: fid }) })),
+    'POST /api/workspaces/:id/files/:fid/update': (b, id, url, fid) => asAccount(async (token) => ({ file: await updateWorkspaceFile({ token, id: needWorkspaceId(id), fileId: fid, patch: { path: b.path, note: b.note } }) })),
+    'POST /api/workspaces/:id/files/:fid/delete': (b, id, url, fid) => asAccount(async (token) => { await deleteWorkspaceFile({ token, id: needWorkspaceId(id), fileId: fid }); return { ok: true } }),
+    'POST /api/workspaces/:id/folders': (b, id) => asAccount(async (token) => ({ file: await createWorkspaceFolder({ token, id: needWorkspaceId(id), path: String(b.path || '') }) })),
     'POST /api/account/start': () => beginLink(),
     'POST /api/account/cancel': () => { link = null; return accountState() },
     'POST /api/account/signout': async () => {
@@ -719,11 +726,17 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       if (req.method === 'POST' && m) return json(200, await receiveUpload(req, get(m[1])))
       m = url.pathname.match(/^\/api\/sessions\/([a-f0-9]+)\/files\/([a-f0-9]+)$/)
       if (req.method === 'GET' && m) return await serveFile(res, get(m[1]), m[2])
+      const wu = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/upload$/)
+      if (req.method === 'PUT' && wu) return json(200, await receiveWorkspaceUpload(req, wu[1]))
+      const wd = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/files\/([^/]+)\/data$/)
+      if (req.method === 'GET' && wd) return await streamWorkspaceFile(req, res, wd[1], wd[2])
 
-      const pathKey = url.pathname
+      let pathKey = url.pathname
         .replace(/^\/api\/sessions\/[a-f0-9]+/, '/api/sessions/:id')
         .replace(/^\/api\/workspaces\/[^/]+/, '/api/workspaces/:id')
       const sid = (url.pathname.match(/^\/api\/sessions\/([a-f0-9]+)/) || url.pathname.match(/^\/api\/workspaces\/([^/]+)/) || [])[1]
+      const fid = (url.pathname.match(/^\/api\/workspaces\/[^/]+\/files\/([^/]+)/) || [])[1]
+      if (fid) pathKey = pathKey.replace(/\/files\/[^/]+/, '/files/:fid')
       const key = `${req.method} ${pathKey}`
       const handler = api[key]
       if (!handler) {
@@ -735,7 +748,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       const body = raw ? JSON.parse(raw) : {}
       const startedAt = Date.now()
       try {
-        const out = await handler(body, sid, url)
+        const out = await handler(body, sid, url, fid)
         json(200, out)
         return recordRoute(key, { startedAt, status: 200, body })
       } catch (err) {
@@ -785,6 +798,49 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       'content-disposition': `attachment; filename="${msg.file.name.replace(/[^\w.\- ]/g, '_')}"`
     })
     fs.createReadStream(local).pipe(res)
+  }
+
+  // A workspace upload from the page: the bytes go to a temp file, the API hands out a signed
+  // link, Node streams the file there, and the API confirms it. The page never talks to storage.
+  async function receiveWorkspaceUpload (req, id) {
+    const account = readAccount()
+    if (!account) throw Object.assign(httpError(401, 'Sign in to Quilt first.'), { signedOut: true })
+    const filePath = decodeURIComponent(req.headers['x-path'] || '')
+    const note = req.headers['x-note'] ? decodeURIComponent(req.headers['x-note']) : ''
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-wsup-'))
+    const tmp = path.join(dir, 'upload')
+    try {
+      const hash = crypto.createHash('sha256')
+      let size = 0
+      const out = fs.createWriteStream(tmp)
+      for await (const chunk of req) {
+        size += chunk.length
+        if (size > MAX_WS_FILE_BYTES) { out.destroy(); throw httpError(413, 'File is too large (500 MB at most).') }
+        hash.update(chunk)
+        if (!out.write(chunk)) await new Promise((r) => out.once('drain', r))
+      }
+      await new Promise((resolve, reject) => out.end((err) => (err ? reject(err) : resolve())))
+      if (!size) throw httpError(400, 'The file is empty.')
+      const mime = String(req.headers['content-type'] || '').split(';')[0] || ''
+      return await asAccount(async (token) => {
+        const { file, upload } = await createWorkspaceFile({ token, id: needWorkspaceId(id), path: filePath, size, mime: mime === 'application/octet-stream' ? '' : mime, sha256: hash.digest('hex'), note })
+        const put = await fetch(upload.url, { method: upload.method, headers: { 'content-type': file.mime || 'application/octet-stream', 'content-length': String(size), ...(upload.headers || {}) }, body: fs.createReadStream(tmp), duplex: 'half' })
+        if (!put.ok) throw httpError(502, `The file could not be stored (${put.status}).`)
+        return { file: await confirmWorkspaceFile({ token, id, fileId: file.id }) }
+      })
+    } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+  }
+
+  /** Streams a workspace file to the page, so previews stay same-origin. */
+  async function streamWorkspaceFile (req, res, id, fileId) {
+    const url = new URL(req.url, 'http://x')
+    const info = await asAccount((token) => workspaceFileDownload({ token, id: needWorkspaceId(id), fileId, version: url.searchParams.get('version') || undefined }))
+    const r = await fetch(info.url)
+    if (!r.ok) { res.writeHead(502, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: `The file could not be fetched (${r.status}).` })) }
+    const disposition = url.searchParams.get('download') ? 'attachment' : 'inline'
+    res.writeHead(200, { 'content-type': info.mime || 'application/octet-stream', ...(info.size ? { 'content-length': String(info.size) } : {}), 'content-disposition': `${disposition}; filename="${String(info.name).replace(/["\r\n]/g, '')}"`, 'cache-control': 'private, max-age=60' })
+    const { Readable } = await import('node:stream')
+    Readable.fromWeb(r.body).pipe(res)
   }
 
   const listen = (p) => new Promise((resolve, reject) => {

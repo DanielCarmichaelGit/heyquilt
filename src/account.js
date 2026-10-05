@@ -246,6 +246,47 @@ export async function unsetSessionWorkspace ({ token, id, room, api = apiUrl(), 
   await call(fetchImpl, api, 'DELETE', `${ws$(id)}/sessions/${encodeURIComponent(room)}`, null, token)
 }
 
+// Workspace files (phase 2). Each throws with .status when the API says no.
+const file$ = (id, fileId) => `${ws$(id)}/files/${encodeURIComponent(fileId)}`
+export async function listWorkspaceFiles ({ token, id, folder, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'GET', `${ws$(id)}/files${folder !== undefined ? `?folder=${encodeURIComponent(folder)}` : ''}`, null, token)
+  if (!Array.isArray(r.files)) throw new Error(BAD_REPLY)
+  return r.files
+}
+export async function createWorkspaceFile ({ token, id, path, size, mime = '', sha256 = '', note = '', api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'POST', `${ws$(id)}/files`, { path, size, mime, sha256, note }, token)
+  if (!r.file || !r.upload) throw new Error(BAD_REPLY)
+  return r
+}
+export async function confirmWorkspaceFile ({ token, id, fileId, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'POST', `${file$(id, fileId)}/done`, {}, token)
+  if (!r.file) throw new Error(BAD_REPLY)
+  return r.file
+}
+export async function workspaceFileDownload ({ token, id, fileId, version, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'GET', `${file$(id, fileId)}/download${version ? `?version=${encodeURIComponent(version)}` : ''}`, null, token)
+  if (!r.url) throw new Error(BAD_REPLY)
+  return r
+}
+export async function updateWorkspaceFile ({ token, id, fileId, patch, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'PATCH', file$(id, fileId), patch, token)
+  if (!r.file) throw new Error(BAD_REPLY)
+  return r.file
+}
+export async function deleteWorkspaceFile ({ token, id, fileId, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  await call(fetchImpl, api, 'DELETE', file$(id, fileId), null, token)
+}
+export async function createWorkspaceFolder ({ token, id, path, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'POST', `${ws$(id)}/folders`, { path }, token)
+  if (!r.file) throw new Error(BAD_REPLY)
+  return r.file
+}
+export async function listWorkspaceFileVersions ({ token, id, fileId, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'GET', `${file$(id, fileId)}/versions`, null, token)
+  if (!Array.isArray(r.versions)) throw new Error(BAD_REPLY)
+  return r.versions
+}
+
 /** Revokes a token on the server, best effort, without touching account.json. */
 export async function revokeToken ({ token, api = apiUrl(), fetch: fetchImpl = globalThis.fetch, timeoutMs = 5000 } = {}) {
   if (token) await call(fetchImpl, api, 'POST', '/v1/me/signout', {}, token, { signal: AbortSignal.timeout(timeoutMs) }).catch(() => {})

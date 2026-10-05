@@ -3,9 +3,10 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { mergePath, pathFromOutput, loginShellPath } from '../src/shell-path.js'
+import { mergePath, pathFromOutput, loginShellPath, adoptLoginShellPath } from '../src/shell-path.js'
 
 test('mergePath puts the shell\'s PATH first, keeps the current one after, each directory once, in order', () => {
+  if (path.delimiter !== ':') return // the POSIX cases; Windows is below
   assert.equal(
     mergePath('/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', '/usr/bin:/bin:/usr/sbin:/sbin'),
     '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
@@ -27,4 +28,19 @@ test('loginShellPath reads a shell\'s PATH, and gives up on one that does not an
   const started = Date.now()
   assert.equal(await loginShellPath({ shell: slow, timeoutMs: 200 }), null)
   assert.ok(Date.now() - started < 2000)
+})
+
+test('on Windows the PATH is left as it is: split on ";", and no /usr/bin', async () => {
+  assert.equal(mergePath(null, 'C:\\Windows;C:\\Program Files\\Git\\cmd;C:\\Windows', ';'), 'C:\\Windows;C:\\Program Files\\Git\\cmd')
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform')
+  const before = process.env.PATH
+  Object.defineProperty(process, 'platform', { value: 'win32' })
+  try {
+    process.env.PATH = 'C:\\Windows;C:\\Program Files\\Git\\cmd'
+    assert.equal(await adoptLoginShellPath(), 'C:\\Windows;C:\\Program Files\\Git\\cmd')
+    assert.equal(process.env.PATH, 'C:\\Windows;C:\\Program Files\\Git\\cmd')
+  } finally {
+    Object.defineProperty(process, 'platform', platform)
+    process.env.PATH = before
+  }
 })

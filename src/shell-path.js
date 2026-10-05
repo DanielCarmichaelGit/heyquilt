@@ -2,17 +2,18 @@
 // so git from Homebrew or Xcode's tools isn't found. The PATH your login shell sets up is
 // read once at startup and put in front of it.
 import { execFile } from 'node:child_process'
+import path from 'node:path'
 
 const MARK = '__QUILT_PATH__'
 
 /**
  * The shell's PATH entries first, then the current ones, each once, in order;
- * /usr/bin is always there (the system git lives in it).
+ * on macOS and Linux (`sep` ":"), /usr/bin is always there (the system git lives in it).
  */
-export function mergePath (shellPath, currentPath, sep = ':') {
+export function mergePath (shellPath, currentPath, sep = path.delimiter) {
   const seen = new Set()
   const out = []
-  for (const dir of [...String(shellPath || '').split(sep), ...String(currentPath || '').split(sep), '/usr/bin']) {
+  for (const dir of [...String(shellPath || '').split(sep), ...String(currentPath || '').split(sep), ...(sep === ':' ? ['/usr/bin'] : [])]) {
     if (!dir || seen.has(dir)) continue
     seen.add(dir)
     out.push(dir)
@@ -36,8 +37,9 @@ export function loginShellPath ({ shell = process.env.SHELL || '/bin/zsh', timeo
   })
 }
 
-/** Sets process.env.PATH to your login shell's PATH merged with the current one. */
+/** Sets process.env.PATH to your login shell's PATH merged with the current one. Not on Windows: its PATH is left as it is. */
 export async function adoptLoginShellPath (opts) {
+  if (process.platform === 'win32') return process.env.PATH
   const shellPath = await loginShellPath(opts)
   process.env.PATH = mergePath(shellPath, process.env.PATH)
   return process.env.PATH

@@ -9,13 +9,13 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
-## 0.3.6 — 2026-10-05
+## 0.3.8 — 2026-10-05
 
 Workspaces gather your sessions, people and agents in one place, behind a flag while they settle.
 
-- **Workspaces (turned on per server while they settle).** A workspace gathers your sessions, the people and agents in them, and soon files, in one place. Home becomes a grid of workspace cards with an **Add workspace** card; a workspace's page shows its sessions and its people and agents, and **New session** starts one inside it. Members of a workspace are let into every session in it at their workspace access (edit or view), and a session owner can still tighten someone or invite an outsider by link. Sessions outside any workspace keep working as before and show under the grid.
-- **Org workspaces.** In an org, workspaces belong to the org: the new **Workspaces** row in each role decides who creates, sees, edits and deletes them. heyquilt.com lists workspaces in the personal and org spaces and lets admins manage members without the app.
-- **Agents can start a session inside a workspace** with the `workspace` argument of `quilt_start_session`; `quilt status` and `.quilt/STATUS.md` name the workspace.
+- **Workspaces (turned on per server while they settle).** A workspace gathers your sessions, the people and agents in them, and soon files, in one place. Home becomes a grid of workspace cards with an **Add workspace** card; a workspace's page shows its sessions and its people and agents, and **New session** starts one inside it. Members of a workspace who open one of its sessions are let in at their workspace access (edit or view), without waiting for approval, and a session owner can still tighten someone or invite an outsider by link. Sessions outside any workspace keep working as before and show under the grid.
+- **Org workspaces.** In an org, workspaces belong to the org: the new **Workspaces** row in each role decides who creates, sees, edits and deletes them. heyquilt.com lists workspaces in the personal and org spaces and lets admins manage members without the app. Roles that hand out the Member role now need Workspaces: Read too.
+- **Agents can start a session inside a workspace** with the `workspace` argument of `quilt_start_session`; `quilt status` and `.quilt/STATUS.md` name the workspace by id for now.
 
 ## 0.3.5 — 2026-10-02
 

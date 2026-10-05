@@ -399,6 +399,18 @@ class Room {
   }
 
   /**
+   * Puts a hosted agent back on the waiting list after a relay restart (the list lives in
+   * memory; relay.hosted remembers who was waiting). Skips anyone already let in.
+   */
+  restoreHosted (id, { name, kind, invitedAs }) {
+    if (!this.controlled || !name) return
+    if (this.meta.members[id] || id === this.meta.owner || id === this.meta.ownerSub) return
+    if ([...this.pending].some(([k, p]) => k.hosted && p.id === id)) return
+    this.pending.set({ hosted: id }, { key: '', id, name, kind: kind === 'agent' ? 'agent' : 'human', invitedAs: invitedAs || 'viewer', since: Date.now() })
+    this.broadcastMembers()
+  }
+
+  /**
    * A hosted agent's current standing: approved (with its access) or pending. A room pass
    * with a grant approves it, and puts it on the member list.
    */
@@ -700,9 +712,11 @@ class Room {
     }
     if (req.op === 'deny') {
       if (!waiting.length) throw new Error('nobody with that key is waiting')
-      for (const [pws] of waiting) {
+      for (const [pws, w] of waiting) {
         this.pending.delete(pws)
-        if (!pws.hosted) pws.close(CLOSE_DENIED, 'The session owner did not let you in')
+        // A hosted agent finds out on its next tool call; relay.hosted remembers it, across restarts.
+        if (pws.hosted) { if (this.onHostedDenied) this.onHostedDenied(w.id); continue }
+        pws.close(CLOSE_DENIED, 'The session owner did not let you in')
       }
       return { ok: true }
     }
@@ -1149,6 +1163,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
 
   /** The room, loading it if needed; null if it's too big to load, or its files can't be read. */
   let webhooks = null // hosted agents' webhook subscriptions (set below, once `hosted` exists)
+  let adoptHosted = null // puts back hosted agents waiting on a room (set below, once `hosted` exists)
   const getRoom = (name) => {
     let room = rooms.get(name)
     if (!room) {
@@ -1164,6 +1179,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       unreadable.delete(name)
       rooms.set(name, room)
       if (webhooks) webhooks.watch(room) // hosted agents' webhooks fire on its chat and board
+      if (adoptHosted) adoptHosted(room)
       room.presence = presence
       // Idle rooms are saved and dropped from memory (only when they're on disk).
       room.onEmpty = () => {
@@ -1236,18 +1252,29 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
   const hosted = new Map()
   try { for (const [k, v] of Object.entries(JSON.parse(fs.readFileSync(hostedFile, 'utf8')))) hosted.set(k, v) } catch {}
   let hostedTimer = null
+  const writeHosted = () => {
+    hostedTimer = null
+    const cutoff = Date.now() - 30 * DAY
+    for (const [k, v] of hosted) if ((v.seenAt || 0) < cutoff) hosted.delete(k)
+    try { fs.writeFileSync(hostedFile, JSON.stringify(Object.fromEntries(hosted))) } catch {}
+  }
   const saveHosted = () => {
     if (!hostedFile || hostedTimer) return
-    hostedTimer = setTimeout(() => {
-      hostedTimer = null
-      const cutoff = Date.now() - 30 * DAY
-      for (const [k, v] of hosted) if ((v.seenAt || 0) < cutoff) hosted.delete(k)
-      try { fs.writeFileSync(hostedFile, JSON.stringify(Object.fromEntries(hosted))) } catch {}
-    }, 2000)
+    hostedTimer = setTimeout(writeHosted, 2000)
     hostedTimer.unref()
   }
   webhooks = hostedWebhooks({ hosted, saveHosted, log, fetch: opts.webhookFetch, delays: opts.webhookDelays })
   for (const room of rooms.values()) webhooks.watch(room)
+  // Hosted agents waiting to be let in are back on the owner's list when their room loads,
+  // without having to call a tool first; one the owner turns away is told on its next call.
+  adoptHosted = (room) => {
+    for (const [id, h] of hosted) if (h.room === room.name && h.pending && !h.denied) room.restoreHosted(id, h)
+    room.onHostedDenied = (id) => {
+      const h = hosted.get(id)
+      if (h && h.room === room.name && h.pending) { h.denied = true; saveHosted() }
+    }
+  }
+  for (const room of rooms.values()) adoptHosted(room)
 
   // Files shared in chat are stored on the relay, not in the synced project.
   const filesDir = path.join(dataDir || fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-relay-')), 'files')
@@ -1573,6 +1600,8 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
           clearInterval(heartbeat)
           clearInterval(sweeper)
           updates.stop()
+          // A join or a denial in the last moments before a deploy is kept.
+          if (hostedTimer) { clearTimeout(hostedTimer); writeHosted() }
           // Rooms are saved first, synchronously: Fly's kill timeout is about as long as
           // presence gets to reach the accounts API, so a hung or slow API must never be
           // able to delay saving a room's data.

@@ -13,6 +13,7 @@ nothing else is.
 
 Quilt works the same in every AI tool: it connects itself to the ones on your computer, and its rules hold whichever one you use.
 
+- **Agents waiting to join survive a relay restart.** A chat agent that asked to join your session through the relay stays on your "wants to join" list when the relay restarts or redeploys, instead of being stuck waiting while you never see it. An agent you turn away is now told so, rather than being told it is still waiting.
 - **Stay signed in.** Quilt no longer asks you to sign in again every few days. Your computer is linked to your account by its own key, so when its sign-in is lost or turned away it signs itself back in, without a browser. It only asks again after you sign out or unlink the computer on heyquilt.com, and then the website recognises a computer you linked before instead of asking you to approve it again.
 - **No more tasks made from your AI chats.** Quilt no longer adds a board task each time your AI starts editing files for a new request; it added too many tickets nobody needed. Work an agent shares itself with `quilt_share` still goes on the board.
 - **Every AI tool on your computer is connected, by itself.** Quilt adds its MCP server to Claude Code, Claude Desktop, Cursor, Windsurf, Codex, VS Code (GitHub Copilot, Cline, Roo Code), Gemini CLI, GitHub Copilot CLI, Zed, opencode, Kiro, Amp, Junie and Continue whenever the app or a session starts, by full path, so there is nothing to install or configure and nothing depends on your PATH. Claude Code's hooks use the full path too.

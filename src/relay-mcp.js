@@ -65,6 +65,7 @@ const NOT_LINKED = 'Your user is not in a quilt session in their browser right n
   'browser and share a folder or join one from an invite link, then try again. (This link is theirs and works for every session.)'
 const NOT_JOINED = 'You are not in a session. Call quilt_join_session with an invite link (https://join.heyquilt.com/<room>#<secret>).'
 const WAITING = 'The session owner has not let you in yet. They see you on their list; call quilt_session_info to check again.'
+const DENIED = 'The session owner did not let you in. Ask them for a new invite and call quilt_join_session again.'
 const REMOVED = 'You are no longer in that session. Ask for a new invite and call quilt_join_session again.'
 // Let in by a grant, but the pass named no room: the accounts API retries with one for the
 // room in x-quilt-room. A client that reaches the relay some other way just calls again.
@@ -589,12 +590,17 @@ export async function handleHostedMcp ({ req, res, pass, relay }) {
     if (!room) return { error: relay.refused(h.room)[1] }
     touched.add(room)
     if (!room.exists) { relay.hosted.delete(account); relay.saveHosted(); return { error: REMOVED } }
+    if (h.denied) { relay.hosted.delete(account); relay.saveHosted(); tellRoom(); return { error: DENIED } }
     const access = room.hostedAccess(pass)
     if (access.needsRoomPass) {
       if (!res.headersSent) res.setHeader('x-quilt-retry', 'room-pass')
       return { error: NEEDS_ROOM_PASS, room, access }
     }
-    if (access.state !== 'approved') return { error: h.pending ? WAITING : REMOVED, room, access }
+    if (access.state !== 'approved') {
+      // Still waiting, but the relay restarted and forgot: back on the owner's list.
+      if (h.pending && ![...room.pending].some(([k, p]) => k.hosted && p.id === account)) room.hostedRequest(pass, h.invitedAs || 'viewer')
+      return { error: h.pending ? WAITING : REMOVED, room, access }
+    }
     h.seenAt = Date.now()
     relay.saveHosted()
     room.hostedActive(account)
@@ -641,7 +647,7 @@ export async function handleHostedMcp ({ req, res, pass, relay }) {
     const a = room.hostedRequest(pass, auth)
     // A webhook outlives the session it was set in: it carries over to the next one, with a fresh take of its room.
     const webhook = relay.webhooks ? relay.webhooks.rejoin(relay.hosted.get(account)?.webhook, { name: me, room }) : undefined
-    relay.hosted.set(account, { room: inv.room, since: Date.now(), seenAt: Date.now(), pending: a.state === 'pending', inbox: takeStock(room.doc, me), ...(webhook ? { webhook } : {}) })
+    relay.hosted.set(account, { room: inv.room, since: Date.now(), seenAt: Date.now(), pending: a.state === 'pending', ...(a.state === 'pending' ? { invitedAs: auth, name: me, kind: pass.kind } : {}), inbox: takeStock(room.doc, me), ...(webhook ? { webhook } : {}) })
     relay.saveHosted()
     tellRoom()
     if (a.state === 'pending') return text(`Asked to join room ${inv.room} as ${auth === 'viewer' ? 'a viewer' : 'an editor'}. ${WAITING}`)

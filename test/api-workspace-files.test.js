@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
-import { startTestApi, API_URL } from './api-helpers.js'
+import { startTestApi, API_URL, makeOrg } from './api-helpers.js'
 import { DiskStore } from '../src/api/file-store.js'
 import { removeObjects } from '../src/api/routes/workspace-files.js'
 
@@ -232,4 +232,22 @@ test('removeObjects asks storage in batches of 100 and carries on past a failed 
   assert.deepEqual(logged, ['file store: storage: nope'])
   await removeObjects(fake, [], () => {})
   assert.equal(calls.length, 3, 'nothing to remove, no call')
+})
+
+test('an org member with Workspaces: Read alone sees the workspace but not its files; members and admins do', async () => {
+  const o = await makeOrg(t, 'Files Co')
+  const w = (await t.call('POST', '/v1/workspaces', { name: 'Org files', org: o.slug }, 'owner')).body.workspace
+  const f = await upload('owner', w.id, 'plan.txt', 'secret')
+  assert.equal(f.status, 200, JSON.stringify(f.body))
+  const page = await t.call('GET', `/v1/workspaces/${w.id}`, null, 'mem')
+  assert.deepEqual([page.status, page.body.access.via, page.body.access.access, page.body.files], [200, 'org', 'view', []])
+  assert.equal(page.body.usage.usedBytes, 6, 'usage still shows')
+  for (const [method, p] of [['GET', '/files'], ['GET', `/files/${f.body.file.id}/download`], ['GET', `/files/${f.body.file.id}/versions`], ['POST', '/folders'], ['POST', '/files'], ['PATCH', `/files/${f.body.file.id}`], ['DELETE', `/files/${f.body.file.id}`], ['POST', `/files/${f.body.file.id}/done`]]) {
+    const r = await t.call(method, `/v1/workspaces/${w.id}${p}`, method === 'GET' || method === 'DELETE' ? null : { path: 'x.txt', size: 1 }, 'mem')
+    assert.deepEqual([r.status, r.body.error], [404, 'not found'], `${method} ${p}`)
+  }
+  assert.deepEqual((await t.call('GET', `/v1/workspaces/${w.id}`, null, 'admin')).body.files.map((x) => x.path), ['plan.txt'], 'an org admin sees them')
+  assert.equal((await t.call('PUT', `/v1/workspaces/${w.id}/members/person:mem`, { access: 'view' }, 'owner')).status, 200)
+  assert.deepEqual((await t.call('GET', `/v1/workspaces/${w.id}`, null, 'mem')).body.files.map((x) => x.path), ['plan.txt'], 'a view member sees them')
+  assert.equal((await t.call('GET', `/v1/workspaces/${w.id}/files`, null, 'mem')).status, 200)
 })

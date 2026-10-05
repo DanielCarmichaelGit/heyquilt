@@ -6,6 +6,11 @@ import { workspaceAccess } from './workspace-access.js'
 
 const NOT_FOUND = 'no such workspace'
 
+/** Whether a caller's access lets them see the workspace's files (the spec's Access rule 2):
+ * explicit members (even view) and admins do; an org member who reaches the workspace only
+ * through Workspaces: Read sees the page, but not its files. */
+export const canSeeFiles = (access) => !(access.via === 'org' && access.access === 'view')
+
 export function workspaceReach ({ store, person, agentAuth, bearer }) {
   /** The caller as an account string: a person (website or linked computer) or an agent (qa_ key). */
   async function caller (req) {

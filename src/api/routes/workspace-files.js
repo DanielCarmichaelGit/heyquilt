@@ -1,7 +1,7 @@
 // A workspace's file library: the index in Postgres, the bytes behind signed links.
 // Behind the QUILT_WORKSPACES flag like the other workspace routes: off, each answers 404.
 import { HttpError, needId } from '../http.js'
-import { workspaceReach } from '../workspace-reach.js'
+import { workspaceReach, canSeeFiles } from '../workspace-reach.js'
 import { cleanFilePath, parentOf, nameOf, mimeOf } from '../file-paths.js'
 import { LINK_MS } from '../file-store.js'
 
@@ -56,7 +56,13 @@ export async function removeObjects (fileStore, keys, log = () => {}) {
 
 export function workspaceFileRoutes (ctx) {
   const { store, now, files: fileStore, apiUrl, maxFileBytes, workspaceQuotaBytes, maxWorkspaceFiles, workspaces = false, log = () => {} } = ctx
-  const { reach } = workspaceReach(ctx)
+  const { reach: reachWorkspace } = workspaceReach(ctx)
+  /** The workspace, for a caller who may see its files; to anyone else the files aren't there. */
+  const reach = async (req, id) => {
+    const r = await reachWorkspace(req, id)
+    if (!canSeeFiles(r.access)) throw new HttpError(404, 'not found')
+    return r
+  }
   const gated = (fn) => async (...a) => { if (!workspaces) throw new HttpError(404, 'not found'); return fn(...a) }
   const cleanNote = (v) => { const s = String(v ?? '').trim(); if (s.length > MAX_NOTE) throw new HttpError(400, `Keep the note under ${MAX_NOTE} characters.`); return s }
   const cleanFilePathOrRoot = (v) => (String(v) === '' ? '' : cleanFilePath(v))

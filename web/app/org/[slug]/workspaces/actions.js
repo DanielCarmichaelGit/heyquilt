@@ -18,7 +18,7 @@ export async function createWorkspace (formData) {
   const { slug, base } = baseOf(formData)
   const user = await requireUser(base)
   const r = await apiCall(user, 'POST', '/v1/workspaces', { name: formData.get('name'), description: formData.get('description') || '', color: formData.get('color') || '', org: slug })
-  if (!r.ok) back(base, { error: r.data?.error || 'Could not create the workspace.' })
+  if (!r.ok) return back(base, { error: r.data?.error || 'Could not create the workspace.' })
   revalidatePath(base)
   redirect(`${base}/${r.data.workspace.id}`)
 }
@@ -38,7 +38,7 @@ export async function deleteWorkspace (formData) {
   const user = await requireUser(base)
   const r = await apiCall(user, 'DELETE', `/v1/workspaces/${id}`)
   revalidatePath(base)
-  if (!r.ok) back(`${base}/${id}`, { error: r.data?.error || 'Could not delete.' })
+  if (!r.ok) return back(`${base}/${id}`, { error: r.data?.error || 'Could not delete.' })
   back(base, { message: 'Deleted. Its sessions are still yours.' })
 }
 

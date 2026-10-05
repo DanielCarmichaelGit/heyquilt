@@ -9,7 +9,7 @@ const back = (path, q) => redirect(`${path}?${new URLSearchParams(q)}`)
 export async function createWorkspace (formData) {
   const user = await requireUser('/dashboard/workspaces')
   const r = await apiCall(user, 'POST', '/v1/workspaces', { name: formData.get('name'), description: formData.get('description') || '', color: formData.get('color') || '' })
-  if (!r.ok) back('/dashboard/workspaces', { error: r.data?.error || 'Could not create the workspace.' })
+  if (!r.ok) return back('/dashboard/workspaces', { error: r.data?.error || 'Could not create the workspace.' })
   revalidatePath('/dashboard/workspaces')
   redirect(`/dashboard/workspaces/${r.data.workspace.id}`)
 }
@@ -27,7 +27,7 @@ export async function deleteWorkspace (formData) {
   const id = String(formData.get('id'))
   const r = await apiCall(user, 'DELETE', `/v1/workspaces/${id}`)
   revalidatePath('/dashboard/workspaces')
-  if (!r.ok) back(`/dashboard/workspaces/${id}`, { error: r.data?.error || 'Could not delete.' })
+  if (!r.ok) return back(`/dashboard/workspaces/${id}`, { error: r.data?.error || 'Could not delete.' })
   back('/dashboard/workspaces', { message: 'Deleted. Its sessions are still yours.' })
 }
 

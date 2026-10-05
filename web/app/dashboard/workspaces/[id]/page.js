@@ -30,7 +30,8 @@ export default async function WorkspacePage ({ params, searchParams }) {
   const user = await requireUser(`/dashboard/workspaces/${id}`)
   const r = await apiCall(user, 'GET', `/v1/workspaces/${id}`)
   if (r.status === 404) notFound()
-  if (!r.ok) {
+  const w = r.data?.workspace
+  if (!w) {
     return (
       <>
         <AppHeader user={user} space='personal' />
@@ -40,7 +41,7 @@ export default async function WorkspacePage ({ params, searchParams }) {
       </>
     )
   }
-  const { workspace: w, access, owner, members, sessions } = r.data
+  const { access = {}, owner = {}, members = [], sessions = [] } = r.data
   const [collabsRes, agentsRes] = access.admin
     ? await Promise.all([apiCall(user, 'GET', '/v1/me/collaborators'), apiCall(user, 'GET', '/v1/agents')])
     : [null, null]

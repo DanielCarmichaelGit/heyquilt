@@ -17,7 +17,7 @@ function addable (members, orgMembers) {
   const existing = new Set((members || []).map((m) => m.account))
   const out = []
   for (const m of (orgMembers || [])) {
-    const account = `${m.kind === 'agent' ? 'agent' : 'person'}:${m.id}`
+    const account = `${m.kind === 'agent' ? 'agent' : 'person'}:${m.kind === 'agent' ? m.agentId : m.userId}`
     if (!existing.has(account)) out.push({ account, name: m.name, kind: m.kind })
   }
   return out
@@ -30,8 +30,9 @@ export default async function WorkspacePage ({ params, searchParams }) {
   await orgMe(user.accessToken, slug)
   const r = await apiCall(user, 'GET', `/v1/workspaces/${id}`)
   if (r.status === 404) notFound()
-  if (!r.ok) return <p className='notice bad'>Could not load this workspace right now.</p>
-  const { workspace: w, access, owner, members, sessions } = r.data
+  const w = r.data?.workspace
+  if (!w) return <p className='notice bad'>Could not load this workspace right now.</p>
+  const { access = {}, owner = {}, members = [], sessions = [] } = r.data
   const membersRes = access.admin ? await apiCall(user, 'GET', `/v1/orgs/${slug}/members`) : null
   const toAdd = access.admin ? addable(members, membersRes?.data?.members) : []
   const now = Date.now()

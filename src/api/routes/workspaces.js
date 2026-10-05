@@ -1,5 +1,5 @@
 // Workspaces: a container owned by a person or an org, holding sessions and members.
-// Behind the QUILT_WORKSPACES flag (startApi({ workspaces })): off, none of these routes exist.
+// Behind the QUILT_WORKSPACES flag (startApi({ workspaces })): off, every route answers 404.
 import { HttpError, needId, cleanName } from '../http.js'
 import { orgAccess, orgGrantsFor } from '../org-access.js'
 import { workspaceAccess, cleanColor, cleanDescription, cleanAccess } from '../workspace-access.js'
@@ -9,7 +9,13 @@ const ACCOUNT = /^(person|agent):[A-Za-z0-9_-]{1,64}$/
 const OPEN_MS = 10 * 60 * 1000
 const NOT_FOUND = 'no such workspace'
 
-export function workspaceRoutes ({ store, person, now, agentAuth, bearer }) {
+export function workspaceRoutes ({ store, person, now, agentAuth, bearer, workspaces = false }) {
+  /** A handler that answers 404 while the flag is off (a route's own 404, not a missing route). */
+  const gated = (fn) => (...args) => {
+    if (!workspaces) throw new HttpError(404, 'not found')
+    return fn(...args)
+  }
+
   /** The caller as an account string: a person (website or linked computer) or an agent (qa_ key). */
   async function caller (req) {
     if (bearer(req).startsWith('qa_')) { const { agent } = await agentAuth.agentFromRequest(req); return { account: `agent:${agent.id}`, userId: null, agent } }
@@ -54,7 +60,7 @@ export function workspaceRoutes ({ store, person, now, agentAuth, bearer }) {
     }
   }
 
-  return [
+  const routes = [
     // Every workspace the caller can reach: their own, their orgs' (per their role), and the ones they're a member of.
     ['GET', /^\/v1\/me\/workspaces$/, async (req) => {
       const me = await caller(req)
@@ -157,4 +163,5 @@ export function workspaceRoutes ({ store, person, now, agentAuth, bearer }) {
       return { ok: true }
     }]
   ]
+  return routes.map(([method, pattern, fn, ...options]) => [method, pattern, gated(fn), ...options])
 }

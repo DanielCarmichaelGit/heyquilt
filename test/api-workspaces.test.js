@@ -8,11 +8,15 @@ let t
 before(async () => { t = await startTestApi({ workspaces: true }) })
 after(() => t.close())
 
-test('flag off: the routes do not exist', async () => {
+test('flag off: every workspace route answers a plain 404, and the API does not file it as a missing route', async () => {
   const off = await startTestApi()
   try {
-    assert.equal((await off.call('GET', '/v1/me/workspaces', null, 'mem')).status, 404)
-    assert.equal((await off.call('POST', '/v1/workspaces', { name: 'x' }, 'mem')).status, 404)
+    for (const [method, path, body] of [['GET', '/v1/me/workspaces'], ['POST', '/v1/workspaces', { name: 'x' }], ['GET', `/v1/workspaces/${crypto.randomUUID()}`], ['POST', `/v1/workspaces/${crypto.randomUUID()}/sessions`, { room: 'r1' }]]) {
+      const r = await off.call(method, path, body, 'mem')
+      assert.deepEqual([r.status, r.body], [404, { error: 'not found' }], `${method} ${path}`)
+    }
+    await new Promise((r) => setTimeout(r, 20))
+    assert.deepEqual(off.store.listEvents().filter((e) => e.kind === 'http404'), [])
   } finally { off.close() }
 })
 

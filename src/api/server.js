@@ -261,7 +261,9 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   // Org routes live in their own modules and share the caller check and the limiter.
   const ctx = { store, user, person, device, bearer, now, site, apiUrl: api, mailer, log, limit: limitInvites, limitSend: limitInviteSend, limitTokens, limitJoin, agentAuth, reportKey, limitReports, relaySecret }
   routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx), ...agentRoutes(ctx), ...agentInviteRoutes(ctx), ...joinRoutes(ctx), ...relayRoutes(ctx), ...sessionRoutes(ctx), ...accessTypeRoutes(ctx), ...grantRoutes(ctx), ...sessionInviteRoutes(ctx), ...issueRoutes(ctx))
-  if (workspaces) routes.push(...workspaceRoutes(ctx))
+  // Always routed: with the flag off each answers a plain 404 of its own, so the app's
+  // check at every launch isn't filed as a missing route.
+  routes.push(...workspaceRoutes({ ...ctx, workspaces }))
 
   async function openLink (code) {
     const userCode = normalizeUserCode(code)

@@ -31,7 +31,7 @@ import { canAdmit } from './admit-policy.js'
 import { merge3, withMarkers, hasMarkers } from './merge3.js'
 import { aiMerge, findMergeCli } from './merge-ai.js'
 import { openMerge, updateMerge, readMerges, pruneMerges, cleanName } from './merges.js'
-import { gitDir, headKey, headRef, gitRuns, busy as gitBusy, indexStamp, classify, filesAt, changesBetween, changedBetween, treeState, branchTip, watchGit, SETTLE_MS, BURST_PATHS } from './gitstate.js'
+import { gitDir, headKey, headRef, gitRuns, askTwice, lastCallTimedOut, busy as gitBusy, indexStamp, classify, filesAt, changesBetween, treeState, branchTip, watchGit, SETTLE_MS, BURST_PATHS } from './gitstate.js'
 
 export { applyTextDiff }
 
@@ -209,9 +209,10 @@ export class Session extends EventEmitter {
     const hadState = this.loadState()
     this.git = headKey(this.root)
     this.gitSeen = this.git
-    // A repo whose git can't be run (not on the PATH of an app started from the Dock, say), as
-    // against a branch with no commits yet, which git reads fine.
-    const gitUnreadable = !this.git && !!gitDir(this.root) && !(headRef(this.root) && gitRuns(this.root))
+    // A repo whose git can't be run (not on the PATH of an app started from the Dock, say) or
+    // didn't answer in time, as against a branch with no commits yet, which git reads fine.
+    const headTimedOut = !this.git && lastCallTimedOut()
+    const gitUnreadable = !this.git && !!gitDir(this.root) && (headTimedOut || !(headRef(this.root) && gitRuns(this.root)))
     if (hadState) this.loadClaims()
 
     this.conn = new Connection({
@@ -1028,7 +1029,9 @@ export class Session extends EventEmitter {
     if (!seen || !seen.branch) return
     const tip = branchTip(this.root, seen.branch)
     if (!tip || tip === seen.sha) return
-    const changed = changedBetween(this.root, seen.sha, tip).filter((rel) => this.syncable(rel))
+    const changes = changesBetween(this.root, seen.sha, tip)
+    if (!changes) return // git could not say: gitSeen stays, and the burst merges against it
+    const changed = [...changes.keys()].filter((rel) => this.syncable(rel))
     const now = filesAt(this.root, tip, changed)
     if (!now) return
     for (const rel of changed) if ((now.get(rel) ?? undefined) !== this.lastKnown.get(rel)) return // new content: the burst merges it
@@ -1106,8 +1109,9 @@ export class Session extends EventEmitter {
   /**
    * What ending the hold does, all asked of git before anything changes, in a
    * handful of git calls whatever the number of paths. Null only when git
-   * can't be run (the hold stays on); a git call that fails is retried once,
-   * then the settle goes on with less (never parks the folder for good).
+   * can't be run (the hold stays on); a git call that fails is retried once
+   * (one that timed out is not), then the settle goes on with less (never
+   * parks the folder for good).
    * - advance: each path the new commits changed, merged three-way into the
    *   doc: base = the file at the old commit, ours = the disk, theirs = the room.
    * - discarded: held paths git put back (clean, and tracked or gone from
@@ -1122,7 +1126,7 @@ export class Session extends EventEmitter {
     // Restarted held: changes made while stopped were never seen, so every path is checked.
     if (this.rejoin) for (const rel of [...this.sharedPaths(), ...walk(this.root, this.ig)]) paths.add(rel)
     const free = (rel) => this.syncable(rel) && !this.merging.has(rel)
-    const twice = (ask) => { const r = ask(); return r !== null || !gitRuns(this.root) ? r : ask() }
+    const twice = (ask) => askTwice(this.root, ask) // not again after a timeout: that would stall the app as long again
     let changes = new Map()
     if (prev && prev.sha && prev.sha !== head.sha) {
       changes = twice(() => changesBetween(this.root, prev.sha, head.sha))
@@ -1208,8 +1212,12 @@ export class Session extends EventEmitter {
 
   /** While switched away: did HEAD come back to the branch this session syncs? */
   checkBackOnBranch () {
+    if (!this.git) return
+    // .git/HEAD first (no git call): this runs on every flush while away.
+    const ref = headRef(this.root)
+    if (this.git.branch ? ref !== this.git.key : ref !== null) return
     const head = headKey(this.root)
-    if (!head || !this.git || head.key !== this.git.key) return
+    if (!head || head.key !== this.git.key) return
     // Back: let it settle, then merge whatever the commits did and restore the rest.
     this.hold = { kind: 'settling', since: Date.now(), prevHead: this.hold.prevHead }
     this.emit('hold', this.hold)

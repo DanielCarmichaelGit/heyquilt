@@ -30,7 +30,13 @@ function run (root, args, opts) {
 
 const gitBinary = () => process.env.QUILT_GIT || 'git'
 
-/** Runs git: { out } or, when it fails, { out: null, missing } (missing: the git binary could not be started at all). */
+let timedOut = false // whether the last git call was stopped at GIT_TIMEOUT_MS
+
+/**
+ * Runs git: { out } or, when it fails, { out: null, missing, timedOut }
+ * (missing: the git binary could not be started at all; timedOut: it ran
+ * past GIT_TIMEOUT_MS and was stopped).
+ */
 function call (root, args, { buffer = false, input } = {}) {
   try {
     // QUILT_GIT lets tests point at a git binary that doesn't exist, to exercise
@@ -44,11 +50,30 @@ function call (root, args, { buffer = false, input } = {}) {
       stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'ignore'],
       env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }
     })
-    return { out, missing: false }
-  } catch (err) { return { out: null, missing: err.code === 'ENOENT' || err.code === 'EACCES' } }
+    runs.add(gitBinary())
+    timedOut = false
+    return { out, missing: false, timedOut }
+  } catch (err) {
+    const missing = err.code === 'ENOENT' || err.code === 'EACCES'
+    if (!missing) runs.add(gitBinary()) // it started, then failed or ran too long: git is there
+    timedOut = err.code === 'ETIMEDOUT' || err.signal === 'SIGTERM'
+    return { out: null, missing, timedOut }
+  }
 }
 
 const runs = new Set() // git binaries seen to run
+
+/** Whether the last git call ran past GIT_TIMEOUT_MS: asking again would stall the app as long again. */
+export function lastCallTimedOut () { return timedOut }
+
+/**
+ * `ask()` (a read of git's that is null when git fails), asked once more when
+ * it failed, unless that call timed out or git can't be run at all.
+ */
+export function askTwice (root, ask) {
+  const r = ask()
+  return r !== null || timedOut || !gitRuns(root) ? r : ask()
+}
 
 /**
  * Whether git itself can be run here (`git --version`), as against one call
@@ -266,8 +291,9 @@ export function changedBetween (root, shaA, shaB) {
 export function treeState (root, paths) {
   const spec = paths.length <= MAX_PATHSPECS ? ['--', ...paths] : []
   const status = run(root, ['--literal-pathspecs', 'status', '--porcelain=v2', '-z', '--untracked-files=all', ...spec])
+  if (status === null) return null // not asking for the second when the first failed (or timed out)
   const listed = run(root, ['--literal-pathspecs', 'ls-files', '-z', ...spec])
-  if (status === null || listed === null) return null
+  if (listed === null) return null
   const dirty = new Set()
   const f = status.split('\0')
   for (let i = 0; i < f.length; i++) {

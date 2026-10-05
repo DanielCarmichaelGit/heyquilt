@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { gitDir, headKey, headRef, gitRuns, busy, indexStamp, classify, fileAt, filesAt, changedBetween, changesBetween, treeState, branchTip, watchGit } from '../src/gitstate.js'
+import { gitDir, headKey, headRef, gitRuns, askTwice, lastCallTimedOut, GIT_TIMEOUT_MS, busy, indexStamp, classify, fileAt, filesAt, changedBetween, changesBetween, treeState, branchTip, watchGit } from '../src/gitstate.js'
 import { sha1 } from '../src/fsutil.js'
 
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-git-${n}-`))
@@ -120,6 +120,30 @@ function failingGit (...failOn) {
   return bin
 }
 const withGit = (bin, fn) => { process.env.QUILT_GIT = bin; try { return fn() } finally { delete process.env.QUILT_GIT } }
+
+/** A git that runs, but never answers a call with `slowOn` in its arguments (stopped at GIT_TIMEOUT_MS). */
+function slowGit (slowOn) {
+  const bin = path.join(tmp('slowgit'), 'git')
+  fs.writeFileSync(bin, `#!/bin/sh\nfor a in "$@"; do case "$a" in '${slowOn}') exec sleep 30;; esac; done\nexec git "$@"\n`, { mode: 0o755 })
+  return bin
+}
+
+test('a git call that times out says so, and is not asked again; one that fails is', () => {
+  const dir = repo()
+  const sha = headKey(dir).sha
+  let asked = 0
+  const started = Date.now()
+  const r = withGit(slowGit('diff'), () => askTwice(dir, () => { asked++; return changesBetween(dir, sha, sha) }))
+  assert.equal(r, null)
+  assert.equal(lastCallTimedOut(), true)
+  assert.equal(asked, 1, 'a timeout is not retried')
+  assert.ok(Date.now() - started < GIT_TIMEOUT_MS * 2 - 500, 'one timeout, not two')
+  asked = 0
+  assert.equal(withGit(failingGit('diff'), () => askTwice(dir, () => { asked++; return changesBetween(dir, sha, sha) })), null)
+  assert.equal(lastCallTimedOut(), false)
+  assert.equal(asked, 2, 'a failure is asked once more')
+  assert.deepEqual([...askTwice(dir, () => changesBetween(dir, sha, sha))], [])
+})
 
 test('filesAt never reads a filtered path or an LFS pointer, and a failed read leaves files unread, not the call', () => {
   const dir = repo()

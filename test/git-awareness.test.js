@@ -358,6 +358,35 @@ function failingGit (...failOn) {
 }
 const POINTER = (oid) => `version https://git-lfs.github.com/spec/v1\noid sha256:${oid}\nsize 123456789\n`
 
+test('a commit git fails to list is not taken as seen; one it lists is', async (t) => {
+  const { B, dirA, dirB } = await pairRepos(t)
+  write(dirB, 'README.md', 'committed here\n')
+  await waitFor(() => read(dirA, 'README.md') === 'committed here\n')
+  const before = B.gitSeen.sha
+  git(dirB, 'commit', '-qam', 'bob') // no file changes: no burst sees it
+  process.env.QUILT_GIT = failingGit('diff')
+  try { B.noteCommits() } finally { delete process.env.QUILT_GIT }
+  assert.equal(B.gitSeen.sha, before, 'what the commit changed is unknown: not taken as the session\'s work')
+  B.noteCommits()
+  assert.equal(B.gitSeen.sha, git(dirB, 'rev-parse', 'HEAD'))
+})
+
+test('while paused on another branch, a save asks no git (only .git/HEAD is read)', async (t) => {
+  const { B, dirB } = await pairRepos(t)
+  git(dirB, 'checkout', '-qb', 'feature')
+  await waitFor(() => B.status().git.hold?.kind === 'switching')
+  const calls = path.join(tmp('calls'), 'log')
+  const bin = path.join(tmp('countgit'), 'git')
+  fs.writeFileSync(bin, `#!/bin/sh\necho "$@" >> '${calls}'\nexec git "$@"\n`, { mode: 0o755 })
+  process.env.QUILT_GIT = bin
+  try {
+    for (let i = 0; i < 5; i++) { write(dirB, 'src/app.js', `feature ${i}\n`); await new Promise((resolve) => setTimeout(resolve, 120)) }
+    await new Promise((resolve) => setTimeout(resolve, 300))
+  } finally { delete process.env.QUILT_GIT }
+  assert.equal(B.status().git.hold?.kind, 'switching')
+  assert.equal(fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8') : '', '', 'no git call while away')
+})
+
 test('a pull over a Git LFS file whose filter fails settles; nothing is parked', async (t) => {
   const { B, dirA, dirB } = await pairRepos(t, { '.gitattributes': '*.lfs filter=lfs\n', 'model.lfs': POINTER('aaa') })
   const c = tmp('c'); git(c, 'clone', '-q', git(dirA, 'remote', 'get-url', 'origin'), '.')

@@ -144,17 +144,23 @@ export function workspaceFileRoutes (ctx) {
       const sha256 = String(body.sha256 || '').slice(0, 64)
       let existing = await store.workspaceFileByPath(r.ws.id, p)
       if (existing && existing.kind === 'folder') throw new HttpError(409, `${p} is a folder`)
-      // An earlier upload to this path that never landed (a retry after a dropped
-      // connection): undo it first, so it leaves no phantom version or bytes behind.
-      if (existing && !existing.confirmedAt) existing = await abandon(existing)
+      // An earlier upload to this path that hasn't landed. Once its link has expired it
+      // never will (a dropped connection): undo it, so it leaves no phantom version or bytes
+      // behind. Before then someone may still be uploading it: they go first.
+      if (existing && !existing.confirmedAt) {
+        if (now() - existing.uploadedAt <= LINK_MS) throw new HttpError(409, 'someone is uploading this file right now; try again in a moment')
+        existing = await abandon(existing)
+      }
       const usage = await store.workspaceUsage(r.ws.id)
       if (!existing && usage.fileCount >= maxWorkspaceFiles) throw new HttpError(413, 'this workspace has too many files')
       if (usage.usedBytes + size > quotaOf(r.ws, workspaceQuotaBytes)) throw new HttpError(413, 'this workspace has used its storage')
       await ensureFolders(r.ws, p, r.me.account)
       let file
       if (existing) {
-        const v = await store.newWorkspaceFileVersion(existing.id, { size, mime, sha256, objectKey: `${r.ws.id}/${existing.id}/${existing.version + 1}`, note, uploadedBy: r.me.account, at: now(), keep: KEEP_VERSIONS })
-        file = v.file
+        // The version comes from the store (another upload may have got in since `existing`
+        // was read), so the object key, which holds it, is set once the store has answered.
+        const v = await store.newWorkspaceFileVersion(existing.id, { size, mime, sha256, objectKey: '', note, uploadedBy: r.me.account, at: now(), keep: KEEP_VERSIONS })
+        file = await store.setWorkspaceFileObjectKey(existing.id, `${r.ws.id}/${existing.id}/${v.file.version}`)
         await removeKeys(v.droppedKeys)
       } else {
         // The object key holds the file's id, so it is set once the row exists.

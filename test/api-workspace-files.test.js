@@ -251,3 +251,33 @@ test('an org member with Workspaces: Read alone sees the workspace but not its f
   assert.deepEqual((await t.call('GET', `/v1/workspaces/${w.id}`, null, 'mem')).body.files.map((x) => x.path), ['plan.txt'], 'a view member sees them')
   assert.equal((await t.call('GET', `/v1/workspaces/${w.id}/files`, null, 'mem')).status, 200)
 })
+
+test('a re-upload names its object after the version the store gave it, not one guessed beforehand', async () => {
+  const w = (await t.call('POST', '/v1/workspaces', { name: 'Race' }, 'mem')).body.workspace
+  const v1 = await upload('mem', w.id, 'r.txt', 'one')
+  assert.equal((await upload('mem', w.id, 'r.txt', 'two')).status, 200)
+  // Another upload got in between this one reading the row and asking for a new version.
+  const real = t.store.workspaceFileByPath
+  t.store.workspaceFileByPath = async (...a) => { const f = await real.apply(t.store, a); return f && f.path === 'r.txt' ? { ...f, version: 1 } : f }
+  let made
+  try { made = await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: 'r.txt', size: 5 }, 'mem') } finally { t.store.workspaceFileByPath = real }
+  assert.deepEqual([made.status, made.body.file.version], [200, 3])
+  assert.ok(made.body.upload.url.includes(`/v1/file-data/${w.id}/${v1.body.file.id}/3?`), made.body.upload.url)
+  assert.equal((await t.store.workspaceFileById(v1.body.file.id)).objectKey, `${w.id}/${v1.body.file.id}/3`)
+})
+
+test('an upload to a path someone is still uploading to waits its turn, unless that upload is stale', async () => {
+  const w = (await t.call('POST', '/v1/workspaces', { name: 'Turns' }, 'mem')).body.workspace
+  const first = await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: 'busy.txt', size: 3 }, 'mem')
+  assert.equal(first.status, 200)
+  const second = await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: 'busy.txt', size: 3 }, 'mem')
+  assert.deepEqual([second.status, second.body.error], [409, 'someone is uploading this file right now; try again in a moment'])
+  assert.ok(await t.store.workspaceFileById(first.body.file.id), 'the first upload is left alone')
+  // Eleven minutes on, its link has expired: the next upload takes over.
+  const real = t.store.workspaceFileByPath
+  t.store.workspaceFileByPath = async (...a) => { const f = await real.apply(t.store, a); return f && f.path === 'busy.txt' ? { ...f, uploadedAt: f.uploadedAt - 11 * 60 * 1000 } : f }
+  let third
+  try { third = await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: 'busy.txt', size: 3 }, 'mem') } finally { t.store.workspaceFileByPath = real }
+  assert.equal(third.status, 200, JSON.stringify(third.body))
+  assert.equal(await t.store.workspaceFileById(first.body.file.id), null, 'the stale upload was forgotten')
+})

@@ -126,22 +126,42 @@ test('git clean of many untracked files is shared as deletions', async (t) => {
   for (const rel of many) write(dirA, rel, `scratch ${rel}\n`)
   await waitFor(() => many.every((rel) => read(dirB, rel) === `scratch ${rel}\n`))
   await settleWatcher()
-  // Untracked in bob's repo too: he meant to delete them. (Only scratch/: .quilt is untracked here as well.)
-  git(dirB, 'clean', '-fdq', '--', 'scratch')
+  git(dirB, 'clean', '-fdq') // untracked in bob's repo too: he meant to delete them
+  assert.ok(fs.existsSync(path.join(dirB, '.quilt', 'state.json')), 'git clean leaves Quilt\'s state: .gitignore ignores it')
   await waitFor(() => many.every((rel) => read(dirA, rel) === null), 10000)
   await never(() => many.some((rel) => read(dirB, rel) !== null), 2500)
 })
 
-test('git stash -u of untracked files brings them back from the room', async (t) => {
-  const { dirA, dirB } = await pairRepos(t)
+test('git stash -u of untracked files brings them back from the room, and leaves Quilt\'s state in place', async (t) => {
+  const { B, dirA, dirB } = await pairRepos(t)
   const notes = ['notes/a.txt', 'notes/b.txt', 'notes/c.txt']
   for (const rel of notes) write(dirA, rel, `alice's ${rel}\n`)
   await waitFor(() => notes.every((rel) => read(dirB, rel) === `alice's ${rel}\n`))
   await settleWatcher()
-  git(dirB, 'stash', 'push', '-uq', '--', 'notes') // only notes/: .quilt is untracked here as well
+  git(dirB, 'stash', '-uq')
+  assert.ok(fs.existsSync(path.join(dirB, '.quilt', 'state.json')), '.gitignore ignores .quilt/: the stash leaves it')
   await never(() => notes.some((rel) => read(dirA, rel) !== `alice's ${rel}\n`), 2500)
   await waitFor(() => notes.every((rel) => read(dirB, rel) === `alice's ${rel}\n`), 8000)
   assert.equal(git(dirB, 'stash', 'list').split('\n').filter(Boolean).length, 1, 'the stash is untouched')
+  assert.ok(fs.existsSync(path.join(dirB, '.quilt', 'state.json')))
+  assert.equal(B.status().git.hold, null)
+})
+
+test('a session in a git folder makes .gitignore ignore .quilt/, once, and partners get the line', async (t) => {
+  const { A, B, dirA, dirB } = await pairRepos(t)
+  const want = "# Quilt keeps this session's local state here\n.quilt/\n"
+  assert.equal(read(dirA, '.gitignore'), want)
+  await waitFor(() => read(dirB, '.gitignore') === want)
+  for (const s of [A, B]) assert.ok(s.logs.filter((l) => l === 'Added .quilt/ to .gitignore so git leaves Quilt\'s state alone.').length <= 1, s.logs.join('\n'))
+  assert.equal(A.logs.filter((l) => l.startsWith('Added .quilt/ to .gitignore')).length, 1)
+  assert.equal(git(dirA, 'check-ignore', '.quilt/state.json'), '.quilt/state.json')
+  assert.equal(A.mergeList().filter((m) => m.state === 'open').length, 0)
+  // Already ignored: left byte for byte at the next start.
+  const dirC = tmp('c'); git(dirC, 'clone', '-q', git(dirA, 'remote', 'get-url', 'origin'), '.')
+  write(dirC, '.gitignore', 'dist\r\n/.quilt\r\n')
+  const C = await open(t, dirC, 'carol', { room: `ga-own-${rooms}` })
+  assert.equal(read(dirC, '.gitignore'), 'dist\r\n/.quilt\r\n')
+  assert.ok(!C.logs.some((l) => l.startsWith('Added .quilt/')), C.logs.join('\n'))
 })
 
 test('reset --hard by an agent is the same', async (t) => {
@@ -488,6 +508,8 @@ test('a folder without git is untouched by all of this', async (t) => {
   write(dirB, 'x.txt', 'y\n')
   await waitFor(() => read(dirA, 'x.txt') === 'y\n')
   assert.equal(A.status().git, null)
+  assert.equal(read(dirA, '.gitignore'), null, 'no .gitignore written where there is no git')
+  assert.equal(read(dirB, '.gitignore'), null)
 })
 
 /** A git that answers every call, `secs` seconds late. */

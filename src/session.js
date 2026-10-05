@@ -31,6 +31,7 @@ import { canAdmit } from './admit-policy.js'
 import { merge3, withMarkers, hasMarkers } from './merge3.js'
 import { aiMerge, findMergeCli } from './merge-ai.js'
 import { openMerge, updateMerge, readMerges, pruneMerges, cleanName } from './merges.js'
+import { ensureQuiltIgnored } from './gitignore.js'
 import { gitDir, headKey, headRef, gitRuns, askTwice, lastCallTimedOut, busy as gitBusy, leftoverLock, indexStamp, classify, filesAt, changesBetween, treeState, branchTip, watchGit, SETTLE_MS, BURST_PATHS } from './gitstate.js'
 
 export { applyTextDiff }
@@ -205,12 +206,28 @@ export class Session extends EventEmitter {
     this.emit('identity', { name, kind })
   }
 
+  /**
+   * A git folder's .gitignore ignores .quilt/ (gitignore.js), so git leaves this
+   * session's state alone. Before the watcher starts: the line is shared like any
+   * edit of .gitignore, and partners' git ignores it too.
+   */
+  ignoreQuiltState () {
+    const r = ensureQuiltIgnored(this.root)
+    if (r.added) {
+      this.ig = loadIgnore(this.root)
+      this.log('Added .quilt/ to .gitignore so git leaves Quilt\'s state alone.')
+    } else if (r.error) {
+      this.log(`⚠️ couldn't add .quilt/ to .gitignore (${r.error.message}); git stash -u or git clean could take Quilt's state away`)
+    }
+  }
+
   log (msg) { this.logs.push(msg); if (this.logs.length > 200) this.logs.shift(); this.emit('log', msg) }
 
   async start ({ waitTimeoutMs = 0 } = {}) {
     fs.mkdirSync(this.stateDir, { recursive: true })
     this.loadWebhook()
     const hadState = this.loadState()
+    this.ignoreQuiltState()
     this.git = await headKey(this.root)
     this.gitSeen = this.git
     // A repo whose git can't be run (not on the PATH of an app started from the Dock, say) or

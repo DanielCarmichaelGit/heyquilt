@@ -8,7 +8,9 @@
 // require a relay key, and rooms have size quotas.
 //
 // Access: a room created with a view-only secret has an owner (the first
-// person to sign in) who approves everyone else and gives them a role:
+// person to sign in). By default only the owner lets people in; they can
+// open that to editors or anyone in the session. People who may admit
+// approve joiners and give them a role:
 // editors change files, viewers only watch and chat, and agents can be
 // limited to some folders. The relay enforces it by undoing file changes a
 // member isn't allowed to make, before anyone else sees them.
@@ -32,6 +34,7 @@ import {
 import { parsePublicKey, verifyChallenge } from './identity.js'
 import { verifyPass, PASS_TTL_MS } from './passes.js'
 import { cleanAccess, narrowAccess, relayAccess, fromRelay, sameAccess, mayChange, TALK_REFUSED } from './session-access.js'
+import { canAdmit, cleanAdmitBy, DEFAULT_ADMIT_BY, BAD_ADMIT_BY } from './admit-policy.js'
 import { patternsOverlap } from './fsutil.js'
 import { adoptLegacyEnv } from './legacy.js'
 import { makeStore, DiskStore } from './blobstore.js'
@@ -572,8 +575,13 @@ class Room {
     }
   }
 
+  get admitBy () { return cleanAdmitBy(this.meta.admitBy) || DEFAULT_ADMIT_BY }
+
+  /** May this connection's access let people in, under the room's setting? */
+  personCanAdmit (a) { return canAdmit(a, this.admitBy) }
+
   accessMessage (a) {
-    return { state: 'approved', role: a.role, scopes: a.scopes || [], scopesExcept: a.scopesExcept || [], talk: a.talk !== false, owner: !!a.owner, controlled: this.controlled }
+    return { state: 'approved', role: a.role, scopes: a.scopes || [], scopesExcept: a.scopesExcept || [], talk: a.talk !== false, owner: !!a.owner, controlled: this.controlled, admitBy: this.admitBy, canAdmit: this.personCanAdmit(a) }
   }
 
   /** Tracks restricted connections so their file changes are checked. */
@@ -601,21 +609,39 @@ class Room {
     return [...this.pending.values()].map((p) => ({ key: p.id, name: p.name, kind: p.kind, invitedAs: p.invitedAs, since: p.since }))
   }
 
-  /** Sends everyone the member list; only the owner sees who's waiting. */
+  /** Sends everyone the member list; people who may let others in also see who's waiting. */
   broadcastMembers (replyTo = null, reply = null) {
     if (!this.controlled) return
     const members = this.memberList()
     const pending = this.pendingList()
+    const admitBy = this.admitBy
     for (const [ws, a] of this.access) {
-      const msg = { members, sessionName: this.meta.name || '', ...(a.owner ? { pending } : {}), ...(ws === replyTo && reply ? { reply } : {}) }
+      const msg = { members, sessionName: this.meta.name || '', admitBy, pending: this.personCanAdmit(a) ? pending : [], ...(ws === replyTo && reply ? { reply } : {}) }
       send(ws, jsonMessage(MSG_MEMBERS, msg))
     }
   }
 
-  /** Owner-only changes to who's in the room. Returns the reply fields. */
+  /** Changes to who's in the room. Letting people in follows admitBy; the rest is owner-only. Returns the reply fields. */
   adminRequest (ws, req) {
     const me = this.access.get(ws)
-    if (!me || !me.owner) throw new Error('only the session owner can do that')
+    if (!me) throw new Error('only the session owner can do that')
+    if (req.op === 'admitBy') {
+      if (!me.owner) throw new Error('only the session owner can do that')
+      const next = cleanAdmitBy(req.admitBy)
+      if (!next) throw new Error(BAD_ADMIT_BY)
+      if (next !== this.admitBy) {
+        this.meta.admitBy = next
+        this.saveMeta()
+        // Everyone's access follows the new setting (canAdmit / admitBy on the access message).
+        for (const [cws, a] of this.access) send(cws, jsonMessage(MSG_ACCESS, this.accessMessage(a)))
+      }
+      return { ok: true }
+    }
+    if (req.op === 'approve' || req.op === 'deny') {
+      if (!this.personCanAdmit(me)) throw new Error('you cannot let people into this session')
+    } else if (!me.owner) {
+      throw new Error('only the session owner can do that')
+    }
     if (req.op === 'name') {
       // The owner's app names the session after its folder, and the owner can rename it.
       const name = cleanSessionName(req.name)
@@ -1009,7 +1035,10 @@ class Room {
         reply = { id: req.id, ok: false, error: err.message }
       }
       if (reply.ok) this.broadcastMembers(ws, reply)
-      else send(ws, jsonMessage(MSG_MEMBERS, { members: this.memberList(), sessionName: this.meta.name || '', ...(this.access.get(ws)?.owner ? { pending: this.pendingList() } : {}), reply }))
+      else {
+        const a = this.access.get(ws)
+        send(ws, jsonMessage(MSG_MEMBERS, { members: this.memberList(), sessionName: this.meta.name || '', admitBy: this.admitBy, pending: this.personCanAdmit(a) ? this.pendingList() : [], reply }))
+      }
     }
   }
 

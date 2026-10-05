@@ -60,7 +60,7 @@ test('the API serves disk-store links: PUT within the signed size, GET with name
     const got = await fetch(t.api.url + down.url)
     assert.equal(got.status, 200)
     assert.equal(got.headers.get('content-type'), 'text/plain')
-    assert.equal(got.headers.get('content-disposition'), 'attachment; filename="a b.txt"')
+    assert.equal(got.headers.get('content-disposition'), `attachment; filename="a b.txt"; filename*=UTF-8''a%20b.txt`)
     assert.equal(got.headers.get('x-content-type-options'), 'nosniff')
     assert.equal(await got.text(), 'abcd')
     // The signature covers name and type too, so a link holder can't swap in

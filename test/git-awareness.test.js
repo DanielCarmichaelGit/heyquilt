@@ -76,6 +76,9 @@ test('an index.lock a crashed git left behind holds the folder only until it is 
   await never(() => read(dirA, 'src/app.js') !== 'line1\nline2\nline3\nline4\nline5\n', 2500)
   const old = (Date.now() - 2 * 60 * 1000) / 1000
   fs.utimesSync(lock, old, old) // as if left two minutes ago
+  // bob's save is under a minute old: a long checkout (Git LFS, say) writes files all along. Still held.
+  await never(() => B.status().git.hold === null, 2500)
+  B.lastFileEventAt -= 2 * 60 * 1000 // as if the tree had been quiet as long as the lock
   await waitFor(() => read(dirA, 'src/app.js') === 'line1 (bob)\nline2\nline3\nline4\nline5\n' && B.status().git.hold === null, 10000)
   write(dirB, 'README.md', 'after\n')
   await waitFor(() => read(dirA, 'README.md') === 'after\n')
@@ -162,6 +165,27 @@ test('a session in a git folder makes .gitignore ignore .quilt/, once, and partn
   const C = await open(t, dirC, 'carol', { room: `ga-own-${rooms}` })
   assert.equal(read(dirC, '.gitignore'), 'dist\r\n/.quilt\r\n')
   assert.ok(!C.logs.some((l) => l.startsWith('Added .quilt/')), C.logs.join('\n'))
+})
+
+test('a first join takes the room\'s .gitignore, then adds the line to it; a viewer\'s start leaves .gitignore alone', async (t) => {
+  const room = `ga${++rooms}`
+  const plain = tmp('plain'); write(plain, '.gitignore', 'dist\n'); write(plain, 'x.txt', 'x\n')
+  const P = await open(t, plain, 'pat', { room })
+  const dirB = tmp('b'); git(dirB, 'init', '-q', '-b', 'main')
+  write(dirB, '.gitignore', 'node_modules\n') // the room's version wins on a first join (prefer: remote)
+  const B = await open(t, dirB, 'bob', { room })
+  const want = "dist\n# Quilt keeps this session's local state here\n.quilt/\n"
+  assert.equal(read(dirB, '.gitignore'), want)
+  await waitFor(() => read(plain, '.gitignore') === want)
+  assert.equal(P.mergeList().filter((m) => m.state === 'open').length, 0)
+  // A viewer (as state.json last knew them): their edit would only be refused, so none is made.
+  await close(B)
+  write(dirB, '.gitignore', 'dist\n')
+  const stateFile = path.join(dirB, '.quilt', 'state.json')
+  fs.writeFileSync(stateFile, JSON.stringify({ ...JSON.parse(fs.readFileSync(stateFile, 'utf8')), role: 'viewer' }))
+  const B2 = await open(t, dirB, 'bob', { room })
+  assert.equal(read(dirB, '.gitignore'), 'dist\n')
+  assert.ok(!B2.logs.some((l) => l.includes('.gitignore')), B2.logs.join('\n'))
 })
 
 test('reset --hard by an agent is the same', async (t) => {
@@ -551,6 +575,21 @@ test('a change from the room while git is asked about a burst is merged with it,
     await waitFor(() => read(dirA, 'src/app.js') === both && read(dirB, 'src/app.js') === both, 30000)
   } finally { delete process.env.QUILT_GIT }
   assert.equal(A.mergeList().filter((m) => m.state === 'open').length, 0)
+})
+
+test('new files from the room while git is asked about a burst land as they are: no merge records', async (t) => {
+  const { A, B, dirA, dirB } = await pairRepos(t)
+  process.env.QUILT_GIT = slowGit(1)
+  const mine = Array.from({ length: 25 }, (_, i) => `bob/f${i}.txt`)
+  const theirs = Array.from({ length: 40 }, (_, i) => `alice/f${i}.txt`)
+  try {
+    for (const rel of mine) write(dirB, rel, `bob ${rel}\n`) // 20 paths or more in a flush: asked of git
+    await waitFor(() => B.classifying)
+    for (const rel of theirs) write(dirA, rel, `alice ${rel}\n`)
+    await waitFor(() => theirs.some((rel) => B.heldPaths.has(rel)))
+    await waitFor(() => theirs.every((rel) => read(dirB, rel) === `alice ${rel}\n`) && mine.every((rel) => read(dirA, rel) === `bob ${rel}\n`), 30000)
+  } finally { delete process.env.QUILT_GIT }
+  await never(() => A.mergeList().some((m) => m.state === 'open') || B.mergeList().some((m) => m.state === 'open'), 1500)
 })
 
 test('a resumed hold settles while a partner keeps typing, even with git slow to answer', async (t) => {

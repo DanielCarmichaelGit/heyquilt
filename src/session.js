@@ -32,7 +32,7 @@ import { merge3, withMarkers, hasMarkers } from './merge3.js'
 import { aiMerge, findMergeCli } from './merge-ai.js'
 import { openMerge, updateMerge, readMerges, pruneMerges, cleanName } from './merges.js'
 import { ensureQuiltIgnored } from './gitignore.js'
-import { gitDir, headKey, headRef, gitRuns, askTwice, lastCallTimedOut, busy as gitBusy, leftoverLock, indexStamp, classify, filesAt, changesBetween, treeState, branchTip, watchGit, SETTLE_MS, BURST_PATHS } from './gitstate.js'
+import { gitDir, headKey, headRef, gitRuns, askTwice, lastCallTimedOut, busy as gitBusy, leftoverLock, STALE_LOCK_MS, indexStamp, classify, filesAt, changesBetween, treeState, branchTip, watchGit, SETTLE_MS, BURST_PATHS } from './gitstate.js'
 
 export { applyTextDiff }
 
@@ -184,6 +184,10 @@ export class Session extends EventEmitter {
     this.classifying = null // { behind } while a burst is classified: the folder is held meanwhile (see held)
     this.checkingBack = false // a look at HEAD while switched away is queued (checkBackOnBranch)
     this.leftoverLock = null // the stamp of an index.lock left behind by a crashed git, paid no attention to
+    this.settleGen = 0 // counts settleSoon calls (see onSettled)
+    this.lastFileEventAt = 0 // the watcher's last event in the working tree
+    this.savedRole = null // this member's role at the last stop (state.json), until the relay says
+    this.quiltIgnoreSaid = false
     this.holdAwaitsSync = false // a hold resumed at start settles only once the relay has synced
     if (passes) this.adoptPass(passes.payload)
   }
@@ -211,12 +215,18 @@ export class Session extends EventEmitter {
    * session's state alone. Before the watcher starts: the line is shared like any
    * edit of .gitignore, and partners' git ignores it too.
    */
-  ignoreQuiltState () {
+  ignoreQuiltState ({ share = false } = {}) {
+    // A viewer's edit would only be refused (and kept aside) at every start.
+    const role = this.access && this.access.state === 'approved' ? this.access.role : this.savedRole
+    if (role === 'viewer') return
     const r = ensureQuiltIgnored(this.root)
     if (r.added) {
       this.ig = loadIgnore(this.root)
-      this.log('Added .quilt/ to .gitignore so git leaves Quilt\'s state alone.')
-    } else if (r.error) {
+      if (share) this.queue('.gitignore') // the watcher's first scan takes the folder as it is
+      if (!this.quiltIgnoreSaid) this.log('Added .quilt/ to .gitignore so git leaves Quilt\'s state alone.')
+      this.quiltIgnoreSaid = true
+    } else if (r.error && !this.quiltIgnoreSaid) {
+      this.quiltIgnoreSaid = true
       this.log(`⚠️ couldn't add .quilt/ to .gitignore (${r.error.message}); git stash -u or git clean could take Quilt's state away`)
     }
   }
@@ -227,7 +237,9 @@ export class Session extends EventEmitter {
     fs.mkdirSync(this.stateDir, { recursive: true })
     this.loadWebhook()
     const hadState = this.loadState()
-    this.ignoreQuiltState()
+    // Back in a folder we synced before: the line is an offline edit, merged once synced. A first
+    // join adds it after taking the room's files (reconcileFirstJoin), which may replace .gitignore.
+    if (hadState) this.ignoreQuiltState()
     this.git = await headKey(this.root)
     this.gitSeen = this.git
     // A repo whose git can't be run (not on the PATH of an app started from the Dock, say) or
@@ -304,6 +316,7 @@ export class Session extends EventEmitter {
           this.admitted = sync.then(async () => {
             this.reconcileFirstJoin()
             this.goLive()
+            this.ignoreQuiltState({ share: true })
             await this.startWatcher()
             this.log('✅ you were let in')
             this.emit('status-changed')
@@ -316,6 +329,7 @@ export class Session extends EventEmitter {
       }
       this.reconcileFirstJoin()
       this.goLive()
+      this.ignoreQuiltState({ share: true })
     }
     await this.startWatcher()
     return this
@@ -484,6 +498,7 @@ export class Session extends EventEmitter {
       this.storedOnDisk = new Map(Object.entries(meta.storedOnDisk || {}))
       this.known = meta.known ? new Map(Object.entries(meta.known)) : null
       // No gitKey (an older state file): taken as the branch the folder is on now.
+      this.savedRole = typeof meta.role === 'string' ? meta.role : null
       this.savedGit = typeof meta.gitKey === 'string' && meta.gitKey ? { key: meta.gitKey, sha: typeof meta.gitSha === 'string' ? meta.gitSha : null, held: !!meta.gitHeld } : null
       return true
     } catch {
@@ -511,7 +526,13 @@ export class Session extends EventEmitter {
     // tell a file the room changed behind our back from one edited offline.
     const known = {}
     for (const [rel, key] of this.lastKnown) known[rel] = sha1(key)
-    fs.writeFileSync(path.join(this.stateDir, 'state.json'), JSON.stringify({ room: this.room, server: this.server, storedOnDisk: Object.fromEntries(this.storedOnDisk), known, ...this.gitState() }))
+    fs.writeFileSync(path.join(this.stateDir, 'state.json'), JSON.stringify({ room: this.room, server: this.server, storedOnDisk: Object.fromEntries(this.storedOnDisk), known, ...this.gitState(), ...this.roleState() }))
+  }
+
+  /** This member's role, so the next start knows it before the relay says (ignoreQuiltState). */
+  roleState () {
+    const role = this.access && this.access.state === 'approved' ? this.access.role : this.savedRole
+    return role ? { role } : {}
   }
 
   /**
@@ -710,7 +731,8 @@ export class Session extends EventEmitter {
       if (ours === null) this.lastKnown.delete(rel); else this.lastKnown.set(rel, ours)
       return null
     }
-    if (ours === base) {
+    // Not on disk and never known here (a file new from the room) is no change of ours either.
+    if (ours === base || (ours === null && base === undefined)) {
       // Only they changed it. (lastKnown may hold a newer doc's text when the base came from merging.json.)
       release()
       if (ours !== null) this.lastKnown.set(rel, ours)
@@ -1067,13 +1089,20 @@ export class Session extends EventEmitter {
         this.settleSoon()
         return
       }
-      // What changed while git was asked (from the room, or a retried write) was held: merged
-      // now against the version both sides last had, as a settle merges what changed during a hold.
+      // What changed while git was asked (from the room, or a retried write) was held. A path
+      // outside the burst whose disk is as Quilt left it gets the room's version as it is; the
+      // rest merge against the version both sides last had, as a settle merges what changed during a hold.
       const late = [...this.heldPaths]
       this.heldPaths.clear()
       const waited = new Set(late)
+      const burst = new Set(paths)
       this.ingestAll(paths.filter((rel) => !waited.has(rel)))
-      const entries = late.filter((rel) => this.syncable(rel) && !this.merging.has(rel)).map((rel) => ({ rel, base: this.lastKnown.get(rel) }))
+      const entries = []
+      for (const rel of late) {
+        if (!this.syncable(rel) || this.merging.has(rel)) continue
+        if (!burst.has(rel) && this.untouchedHere(rel)) this.tryWrite(rel)
+        else entries.push({ rel, base: this.lastKnown.get(rel) })
+      }
       if (entries.length) this.mergeHeld(entries).catch((err) => this.log(`could not merge: ${err.message}`))
       return
     }
@@ -1088,6 +1117,13 @@ export class Session extends EventEmitter {
       this.setHold('settling', { prevHead: r.prevHead })
       this.settleSoon()
     }
+  }
+
+  /** The disk at rel is as Quilt last wrote or read it (or still absent, for a path it never had). */
+  untouchedHere (rel) {
+    const disk = this.readDisk(rel)
+    if (disk && (disk.skip || disk.tooLarge)) return false
+    return (disk ? disk.key : undefined) === this.lastKnown.get(rel)
   }
 
   /**
@@ -1176,9 +1212,10 @@ export class Session extends EventEmitter {
   settleSoon () {
     if (!this.hold || this.hold.kind === 'switching' || this.stopped || this.holdAwaitsSync) return
     clearTimeout(this.settleTimer)
+    const gen = ++this.settleGen
     this.settleTimer = setTimeout(() => {
       this.settleTimer = null
-      this.gitTask(() => this.onSettled()).catch((err) => {
+      this.gitTask(() => this.onSettled(gen)).catch((err) => {
         this.log(`could not settle: ${err.message}`)
         this.settleSoon() // every hold has a way out: asked again
       })
@@ -1191,12 +1228,13 @@ export class Session extends EventEmitter {
     return !!this.hold && this.hold.kind !== 'switching' && !this.stopped && !this.holdAwaitsSync
   }
 
-  async onSettled () {
-    this.settleTimer = null
+  /** `gen`: the settleSoon that armed it. A later one (a file or git event since) means not settled yet. */
+  async onSettled (gen = this.settleGen) {
     if (!this.settleable()) return
     let busy = this.gitBusy()
-    if (busy === 'index-lock') {
-      // Only the index lock, and it's been there a while: a git that crashed may have left it.
+    if (busy === 'index-lock' && Date.now() - this.lastFileEventAt >= STALE_LOCK_MS) {
+      // Only the index lock, there a while, and the tree quiet as long (a long checkout writes files
+      // all along): a git that crashed may have left it.
       const stamp = await leftoverLock(this.root)
       if (!this.settleable()) return
       if (stamp) {
@@ -1220,9 +1258,9 @@ export class Session extends EventEmitter {
     }
     const plan = await this.planSettle(head)
     if (!this.settleable()) return
-    // A file or git event while git was asked (it re-armed the settle), or a path the room changed
-    // that the plan never saw: the folder hasn't settled. Asked again, the hold on meanwhile.
-    if (this.settleTimer || (plan && [...this.heldPaths].some((rel) => !plan.considered.has(rel)))) { this.settleSoon(); return }
+    // A file or git event since this settle's timer was armed (it armed another), or a path the room
+    // changed that the plan never saw: the folder hasn't settled. Asked again, the hold on meanwhile.
+    if (gen !== this.settleGen || (plan && [...this.heldPaths].some((rel) => !plan.considered.has(rel)))) { this.settleSoon(); return }
     if (!plan) return this.gitUnreadable()
     // Out of normal sync from here on: a partner's edit arriving
     // during a merge must not land on a pulled file before it is merged.
@@ -2050,6 +2088,7 @@ export class Session extends EventEmitter {
       }
     })
     const onFile = (p) => {
+      this.lastFileEventAt = Date.now()
       const rel = toPosix(path.relative(this.root, p))
       if (rel && !rel.startsWith('..')) this.queue(rel)
     }
@@ -2062,6 +2101,7 @@ export class Session extends EventEmitter {
     }
     this.watcher.on('add', onFile).on('change', onChange).on('unlink', onFile)
     this.watcher.on('unlinkDir', (p) => {
+      this.lastFileEventAt = Date.now()
       const relDir = toPosix(path.relative(this.root, p))
       for (const rel of this.sharedPaths()) if (rel.startsWith(relDir + '/')) this.queue(rel)
     })

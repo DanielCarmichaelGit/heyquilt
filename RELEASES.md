@@ -13,6 +13,7 @@ nothing else is.
 
 Quilt works the same in every AI tool: it connects itself to the ones on your computer, and its rules hold whichever one you use.
 
+- **Choose who can let people in.** In the people menu, under **Who can get in**, the session owner picks whether only they, anyone who can edit, or anyone in the session may approve people asking to join. Whoever may let people in sees the "wants to join" bar; letting someone in as an access type stays with the owner.
 - **Agents waiting to join survive a relay restart.** A chat agent that asked to join your session through the relay stays on your "wants to join" list when the relay restarts or redeploys, instead of being stuck waiting while you never see it. An agent you turn away is now told so, rather than being told it is still waiting.
 - **Stay signed in.** Quilt no longer asks you to sign in again every few days. Your computer is linked to your account by its own key, so when its sign-in is lost or turned away it signs itself back in, without a browser. It only asks again after you sign out or unlink the computer on heyquilt.com, and then the website recognises a computer you linked before instead of asking you to approve it again.
 - **No more tasks made from your AI chats.** Quilt no longer adds a board task each time your AI starts editing files for a new request; it added too many tickets nobody needed. Work an agent shares itself with `quilt_share` still goes on the board.

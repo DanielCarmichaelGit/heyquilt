@@ -27,6 +27,7 @@ import { chatAbout, waitingOn } from './duties.js'
 import { makeSubscription, deliverEvents } from './webhooks.js'
 import { pickChecklist } from './agent-task-workflow.js'
 import { changeRefusal, TALK_REFUSED } from './session-access.js'
+import { canAdmit } from './admit-policy.js'
 import { merge3, withMarkers, hasMarkers } from './merge3.js'
 import { aiMerge, findMergeCli } from './merge-ai.js'
 import { openMerge, updateMerge, readMerges, pruneMerges, cleanName } from './merges.js'
@@ -152,7 +153,8 @@ export class Session extends EventEmitter {
     this.agentState = null
     this.access = null // from the relay: { state, role, scopes, owner, controlled }
     this.members = [] // everyone approved into a controlled session
-    this.waiting = [] // people asking to join (only the owner hears about them)
+    this.waiting = [] // people asking to join (shown to anyone who may let people in)
+    this.admitBy = 'owner' // who may let people in (from the relay)
     this.sessionName = '' // what the owner named the session (the relay sends it with the member list)
     this.startName = startName // a new session's name (its folder), sent once the relay lets us in as owner
     this.startNameSent = false
@@ -279,13 +281,15 @@ export class Session extends EventEmitter {
     this.scheduleStatusWrite()
   }
 
-  setMembers ({ members, pending, sessionName }) {
+  setMembers ({ members, pending, sessionName, admitBy }) {
     this.members = members || []
     if (typeof sessionName === 'string') this.sessionName = sessionName
-    if (pending) {
+    if (admitBy !== undefined) this.admitBy = admitBy
+    if (pending !== undefined) {
+      const list = pending || []
       const known = new Set(this.waiting.map((p) => p.key))
-      for (const p of pending) if (!known.has(p.key)) this.log(`🙋 ${p.name}${p.kind === 'agent' ? ' (an agent)' : ''} wants to join as ${p.invitedAs === 'viewer' ? 'a viewer' : 'an editor'}`)
-      this.waiting = pending
+      for (const p of list) if (!known.has(p.key)) this.log(`🙋 ${p.name}${p.kind === 'agent' ? ' (an agent)' : ''} wants to join as ${p.invitedAs === 'viewer' ? 'a viewer' : 'an editor'}`)
+      this.waiting = list
     }
     this.emit('members', { members: this.members, pending: this.waiting })
     this.emit('status-changed')
@@ -304,6 +308,16 @@ export class Session extends EventEmitter {
   }
 
   get isOwner () { return !!(this.access && this.access.owner) }
+  /**
+   * May this session let people in (owner, or under the room's who-can-admit setting)?
+   * A relay older than admitBy sends no canAdmit: work it out, so its owner still sees who's waiting.
+   */
+  get canAdmit () {
+    const a = this.access
+    if (!a || a.state !== 'approved') return false
+    if (typeof a.canAdmit === 'boolean') return a.canAdmit
+    return canAdmit(a, a.admitBy || this.admitBy)
+  }
 
   /**
    * Owner only: let someone in, as an access type (`typeId`, with the `access` it comes to:
@@ -314,6 +328,8 @@ export class Session extends EventEmitter {
   deny (key) { return this.conn.adminRequest({ op: 'deny', key }) }
   setMember (key, { role, scopes, access } = {}) { return this.conn.adminRequest({ op: 'set', key, role, scopes, access }) }
   removeMember (key) { return this.conn.adminRequest({ op: 'remove', key }) }
+  /** Owner only: who may let people into this session (owner | editors | members). */
+  setAdmitBy (admitBy) { return this.conn.adminRequest({ op: 'admitBy', admitBy }) }
 
   /** Owner only: names the session for everyone in it (1 to 80 characters). */
   rename (name) { return this.conn.adminRequest({ op: 'name', name }) }
@@ -2495,7 +2511,8 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
       access: this.access,
       sessionName: this.sessionName,
       members: this.members,
-      ...(this.isOwner ? { waiting: this.waiting } : {}),
+      ...(this.canAdmit ? { waiting: this.waiting } : {}),
+      admitBy: this.access?.admitBy || this.admitBy || 'owner',
       me: {
         name: this.name,
         tool: this.tool,

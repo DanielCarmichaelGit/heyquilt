@@ -469,6 +469,11 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     if (!s.isOwner) throw httpError(403, 'Only the session owner can do that.')
     return s
   }
+  const admitter = (id) => {
+    const s = get(id)
+    if (!s.canAdmit) throw httpError(403, 'You cannot let people into this session.')
+    return s
+  }
   const typeById = async (token, typeId) => {
     // The built-ins are known here, so letting someone in as one works while the API is down.
     const type = builtinType(typeId) || (await listAccessTypes({ token })).find((t) => t.id === typeId)
@@ -616,8 +621,13 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       if (!f) throw httpError(404, 'That file is not in this session.')
       return f
     },
-    'POST /api/sessions/:id/members/approve': async (b, id) => b.typeId ? approveAs(id, b) : (await get(id).approve(b.key, { role: b.role, scopes: b.scopes }), { ok: true }),
-    'POST /api/sessions/:id/members/deny': async (b, id) => (await get(id).deny(b.key), { ok: true }),
+    'POST /api/sessions/:id/members/approve': async (b, id) => {
+      if (b.typeId) return approveAs(id, b) // access types: owner only (their types / grants)
+      await admitter(id).approve(b.key, { role: b.role, scopes: b.scopes })
+      return { ok: true }
+    },
+    'POST /api/sessions/:id/members/deny': async (b, id) => (await admitter(id).deny(b.key), { ok: true }),
+    'POST /api/sessions/:id/admit-by': async (b, id) => (await owned(id).setAdmitBy(b.admitBy), { ok: true, admitBy: b.admitBy }),
     'POST /api/sessions/:id/members/set': async (b, id) => (await get(id).setMember(b.key, { role: b.role, scopes: b.scopes }), { ok: true }),
     'POST /api/sessions/:id/members/remove': (b, id) => removeMember(id, b.key),
     'POST /api/sessions/:id/rename': (b, id) => rename(id, b.name),

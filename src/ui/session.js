@@ -344,6 +344,14 @@ function bindTop () {
       } catch (err) { toast(err.message); e.target.checked = !on }
       return
     }
+    if (e.target.matches('[data-admit-by]')) {
+      const admitBy = e.target.value
+      try {
+        await api('POST', `/api/sessions/${current}/admit-by`, { admitBy })
+        toast(admitBy === 'owner' ? 'Only you can let people in' : admitBy === 'editors' ? 'Anyone who can edit may let people in' : 'Anyone in the session may let people in')
+      } catch (err) { toast(err.message); renderPeopleMenu({ force: true }) }
+      return
+    }
     if (!e.target.matches('[data-summarize]')) return
     const on = e.target.checked
     try {
@@ -505,7 +513,7 @@ const roleLabel = (r) => r === 'owner' ? 'Owner' : r === 'viewer' ? 'View only' 
 const scopesText = (scopes) => (scopes || []).join(', ')
 const parseScopes = (text) => String(text || '').split(',').map((x) => x.trim()).filter(Boolean)
 
-/** The access pill, the owner's request bar, and the "waiting to be let in" screen. */
+/** The access pill, the request bar for anyone who may let people in, and the waiting screen. */
 function renderAccess () {
   const st = sum().status
   const acc = st.access || {}
@@ -524,17 +532,19 @@ function renderAccess () {
   const bar = $('#requests')
   if (!bar) return
   const waiting = st.waiting || []
-  // Don't redraw while the owner is filling in a request (the type picker is a button, see
+  // Don't redraw while someone is filling in a request (the type picker is a button, see
   // startDropdowns), only once they've let someone in or denied them.
   const active = document.activeElement
   if (bar.contains(active) && !active.closest('[type=submit],[data-deny]')) return
   bar.hidden = !waiting.length
+  // Access types (and their grants) belong to the owner; others who may admit pick a role.
+  const asType = !!(state.accessTypes && acc.owner)
   bar.innerHTML = waiting.map((p) => `
     <form class="request" data-key="${esc(p.key)}">
       ${avatar(p.name, null)}
       <div class="rq-main"><b>${esc(p.name)}</b>${p.kind === 'agent' ? `<span class="tag bot">${I.bot}agent</span>` : ''}
         <span class="hint">wants to join · invited to ${p.invitedAs === 'viewer' ? 'view' : 'edit'}</span></div>
-      ${state.accessTypes
+      ${asType
         ? `<select class="input" name="typeId" aria-label="Let ${esc(p.name)} in as" title="What they may do: an access type">${typeOptions()}</select>`
         : `<select class="input" name="role" aria-label="Role for ${esc(p.name)}">
         <option value="editor" ${p.invitedAs !== 'viewer' ? 'selected' : ''}>Can edit</option>
@@ -642,7 +652,16 @@ function membersHtml (st) {
     return list.length || st.members?.length ? `<div class="pm-section"><div class="pm-title">Access</div>
       ${(st.members || []).map((m) => `<div class="pm-member"><span class="nm">${esc(m.name)}${m.kind === 'agent' ? ' (agent)' : ''}</span><span class="tag">${roleLabel(m.role)}</span>${m.scopes && m.scopes.length ? `<span class="hint">${esc(scopesText(m.scopes))}</span>` : ''}</div>`).join('')}</div>` : ''
   }
+  const admitBy = st.admitBy || acc.admitBy || 'owner'
+  const admitOpts = [
+    ['owner', 'Only the owner'],
+    ['editors', 'Anyone who can edit'],
+    ['members', 'Anyone in the session']
+  ].map(([v, label]) => `<option value="${v}" ${admitBy === v ? 'selected' : ''}>${label}</option>`).join('')
   return `<div class="pm-section"><div class="pm-title">Who can get in</div>
+    <label class="pm-admit"><span>Who can let people in</span>
+      <select class="input" name="admitBy" data-admit-by aria-label="Who can let people into this session">${admitOpts}</select>
+    </label>
     ${list.length ? list.map((m) => state.accessTypes && ACCOUNT_KEY.test(m.key) ? accessForm(m) : `
       <form class="pm-member edit" data-key="${esc(m.key)}">
         <span class="nm" title="${m.online ? 'Online' : 'Offline'}"><span class="dot" style="background:${m.online ? 'var(--ok)' : 'var(--faint)'}"></span>${esc(m.name)}${m.kind === 'agent' ? ' (agent)' : ''}</span>

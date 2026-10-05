@@ -31,6 +31,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
   const relaySessions = new Map(); const visits = new Map(); const seenEvents = new Map()
   const accessTypes = new Map(); const grants = new Map(); const sessionInvites = new Map()
   const workspaces = new Map(); const workspaceMembers = new Map()
+  const workspaceFiles = new Map(); const workspaceFileVersions = new Map()
   const wmKey = (workspaceId, account) => `${workspaceId}\n${account}`
   const grantKey = (room, account) => `${room}\n${account}`
   const inviteOpenAt = (i, at) => !i.usedAt && !i.cancelledAt && i.expiresAt > at
@@ -46,6 +47,11 @@ export function createMemoryStore ({ now = Date.now } = {}) {
   const dropMember = (id) => {
     members.delete(id)
     for (const [k, tm] of teamMembers) if (tm.memberId === id) teamMembers.delete(k)
+  }
+  // Hard-deletes a workspace file and cascades its versions, like the FK in Postgres.
+  const removeFile = (id) => {
+    workspaceFiles.delete(id)
+    for (const k of [...workspaceFileVersions.keys()]) if (k.startsWith(`${id}\n`)) workspaceFileVersions.delete(k)
   }
   // An org member is a person (named by their profile) or an agent (named when it joined).
   const memberName = (m) => (m?.agentId ? agents.get(m.agentId)?.name || '' : nameOf(m?.userId))
@@ -614,7 +620,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     // Workspaces (see 20261004000000_workspaces.sql).
     async createWorkspace ({ ownerUserId = null, orgId = null, name, description = '', color = '', createdBy }) {
       if ((ownerUserId == null) === (orgId == null)) throw checkViolation('a workspace belongs to a person or an org')
-      const row = { id: uuid(), ownerUserId, orgId, name, description, color, createdBy, createdAt: now(), archivedAt: null }
+      const row = { id: uuid(), ownerUserId, orgId, name, description, color, createdBy, createdAt: now(), archivedAt: null, quotaBytes: 5368709120, usedBytes: 0, fileCount: 0 }
       workspaces.set(row.id, row); return copy(row)
     },
     async workspaceById (id) { return copy(workspaces.get(id)) },
@@ -635,6 +641,11 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     async deleteWorkspace (id) {
       for (const s of relaySessions.values()) if (s.workspaceId === id) s.workspaceId = null
       for (const [k, m] of workspaceMembers) if (m.workspaceId === id) workspaceMembers.delete(k)
+      for (const [k, f] of workspaceFiles) {
+        if (f.workspaceId !== id) continue
+        for (const vk of [...workspaceFileVersions.keys()]) if (vk.startsWith(`${f.id}\n`)) workspaceFileVersions.delete(vk)
+        workspaceFiles.delete(k)
+      }
       workspaces.delete(id)
     },
     async workspaceMember (workspaceId, account) { return copy(workspaceMembers.get(wmKey(workspaceId, account))) },
@@ -658,6 +669,87 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       return copy(s)
     },
     async listWorkspaceSessions (workspaceId) { return all(relaySessions, (s) => s.workspaceId === workspaceId).sort((a, b) => b.lastActiveAt - a.lastActiveAt).map(copy) },
+
+    // Workspace files (see 20261005000000_workspace_files.sql).
+    async createWorkspaceFile ({ workspaceId, path, kind, size = 0, mime = '', sha256 = '', objectKey = '', note = '', uploadedBy }) {
+      if (!workspaces.has(workspaceId)) throw fkViolation('workspace', 'does not exist')
+      if (all(workspaceFiles, (f) => f.workspaceId === workspaceId && f.path === path && !f.deletedAt).length) throw duplicate('file')
+      const row = { id: uuid(), workspaceId, path, kind, size, mime, sha256, version: 1, objectKey, note, uploadedBy, uploadedAt: now(), confirmedAt: null, deletedAt: null }
+      workspaceFiles.set(row.id, row); return copy(row)
+    },
+    async workspaceFileById (id) { return copy(workspaceFiles.get(id)) },
+    async workspaceFileByPath (workspaceId, path) { return copy(all(workspaceFiles, (f) => f.workspaceId === workspaceId && f.path === path && !f.deletedAt)[0]) },
+    async listWorkspaceFiles (workspaceId, { includeDeleted = false } = {}) {
+      return all(workspaceFiles, (f) => f.workspaceId === workspaceId && (includeDeleted || !f.deletedAt))
+        .sort((a, b) => (a.kind === b.kind ? a.path.localeCompare(b.path) : a.kind === 'folder' ? -1 : 1)).map(copy)
+    },
+    async newWorkspaceFileVersion (id, { size, mime, sha256, objectKey, note = '', uploadedBy, at, keep = 10 }) {
+      const f = workspaceFiles.get(id)
+      if (!f) return null
+      workspaceFileVersions.set(`${id}\n${f.version}`, { fileId: id, version: f.version, size: f.size, sha256: f.sha256, objectKey: f.objectKey, note: f.note, uploadedBy: f.uploadedBy, uploadedAt: f.uploadedAt })
+      Object.assign(f, { version: f.version + 1, size, mime, sha256, objectKey, note, uploadedBy, uploadedAt: at, confirmedAt: null })
+      const old = all(workspaceFileVersions, (v) => v.fileId === id).sort((a, b) => b.version - a.version).slice(keep)
+      for (const v of old) workspaceFileVersions.delete(`${id}\n${v.version}`)
+      return { file: copy(f), droppedKeys: old.map((v) => v.objectKey).filter(Boolean) }
+    },
+    async listWorkspaceFileVersions (id) { return all(workspaceFileVersions, (v) => v.fileId === id).sort((a, b) => b.version - a.version).map(copy) },
+    async confirmWorkspaceFile (id, { size, at }) { const f = workspaceFiles.get(id); if (!f) return null; Object.assign(f, { size, confirmedAt: at }); return copy(f) },
+    async updateWorkspaceFile (id, { path, note }) {
+      const f = workspaceFiles.get(id)
+      if (!f) return null
+      if (path !== undefined && path !== f.path && all(workspaceFiles, (x) => x.workspaceId === f.workspaceId && x.path === path && !x.deletedAt && x.id !== id).length) throw duplicate('file')
+      if (path !== undefined) f.path = path
+      if (note !== undefined) f.note = note
+      return copy(f)
+    },
+    // Moves a folder and everything in it: 'cuts' -> 'final' renames 'cuts', 'cuts/a', 'cuts/x/b'.
+    async renameWorkspaceFolder (workspaceId, from, to, at) {
+      const rows = all(workspaceFiles, (f) => f.workspaceId === workspaceId && !f.deletedAt && (f.path === from || f.path.startsWith(from + '/')))
+      for (const f of rows) f.path = to + f.path.slice(from.length)
+      return rows.length
+    },
+    async deleteWorkspaceFile (id, at) {
+      const f = workspaceFiles.get(id)
+      if (!f) return null
+      const rows = f.kind === 'folder' ? all(workspaceFiles, (x) => x.workspaceId === f.workspaceId && !x.deletedAt && (x.id === id || x.path.startsWith(f.path + '/'))) : [f]
+      for (const x of rows) x.deletedAt = at
+      return copy(f)
+    },
+    async unconfirmedWorkspaceFiles (before) { return all(workspaceFiles, (f) => f.kind === 'file' && !f.confirmedAt && f.uploadedAt < before).map(copy) },
+    async removeWorkspaceFile (id) { removeFile(id) },
+    async sweepDeletedWorkspaceFiles (before) {
+      const gone = all(workspaceFiles, (f) => f.deletedAt && f.deletedAt < before)
+      const keys = []
+      for (const f of gone) {
+        if (f.objectKey) keys.push(f.objectKey)
+        for (const v of all(workspaceFileVersions, (v) => v.fileId === f.id)) if (v.objectKey) keys.push(v.objectKey)
+        removeFile(f.id)
+      }
+      return keys
+    },
+    async workspaceUsage (workspaceId) {
+      const live = all(workspaceFiles, (f) => f.workspaceId === workspaceId && !f.deletedAt && f.kind === 'file')
+      let usedBytes = 0
+      for (const f of live) {
+        if (f.confirmedAt) usedBytes += f.size
+        for (const v of all(workspaceFileVersions, (v) => v.fileId === f.id)) usedBytes += v.size
+      }
+      return { usedBytes, fileCount: live.length }
+    },
+    async setWorkspaceUsage (workspaceId, { usedBytes, fileCount }) { const w = workspaces.get(workspaceId); if (w) Object.assign(w, { usedBytes, fileCount }) },
+    async setWorkspaceFileObjectKey (id, objectKey) { const f = workspaceFiles.get(id); if (!f) return null; f.objectKey = objectKey; return copy(f) },
+    // Undoes a version bump that never confirmed: restores the newest kept version's bytes
+    // onto the file row (with that version's own version number and confirmedAt), and removes
+    // the version row. A file with no earlier version is returned unchanged.
+    async revertWorkspaceFileVersion (id) {
+      const f = workspaceFiles.get(id)
+      if (!f) return null
+      const v = all(workspaceFileVersions, (v) => v.fileId === id).sort((a, b) => b.version - a.version)[0]
+      if (!v) return copy(f)
+      Object.assign(f, { version: v.version, size: v.size, sha256: v.sha256, objectKey: v.objectKey, note: v.note, uploadedBy: v.uploadedBy, uploadedAt: v.uploadedAt, confirmedAt: v.uploadedAt })
+      workspaceFileVersions.delete(`${id}\n${v.version}`)
+      return copy(f)
+    },
 
     // Test-only views (production reads the tables in the Supabase dashboard).
     listEvents () { return [...events.values()].map(copy) },

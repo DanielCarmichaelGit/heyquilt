@@ -24,8 +24,10 @@ const RELAY_SESSION = 'room, name, owner_account, created_at, last_active_at, re
 const ACCESS_TYPE = 'id, owner_account, name, files, folders, talk, created_at, updated_at'
 const GRANT = 'room, account, type_id, tighten, granted_by, created_at, updated_at'
 const SESSION_INVITE = 'id, room, email, account, account_name, type_id, invited_by, created_at, expires_at, used_at, used_by, cancelled_at'
-const WORKSPACE = 'id, owner_user_id, org_id, name, description, color, created_by, created_at, archived_at'
+const WORKSPACE = 'id, owner_user_id, org_id, name, description, color, created_by, created_at, archived_at, quota_bytes, used_bytes, file_count'
 const WORKSPACE_MEMBER = 'workspace_id, account, access, added_by, added_at'
+const WORKSPACE_FILE = 'id, workspace_id, path, kind, size, mime, sha256, version, object_key, note, uploaded_by, uploaded_at, confirmed_at, deleted_at'
+const WORKSPACE_FILE_VERSION = 'file_id, version, size, sha256, object_key, note, uploaded_by, uploaded_at'
 // PostgREST hands back at most 1000 rows per request: longer lists are read a page at a time.
 const PAGE = 1000
 
@@ -216,6 +218,34 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
       return rowFrom(await one(db.rpc('set_session_workspace', { p_room: room, p_workspace: workspaceId || null, p_linked_by: linkedBy || null, p_at: ts(at) })))
     },
     async listWorkspaceSessions (workspaceId) { return (await one(db.from('relay_sessions').select(RELAY_SESSION).eq('workspace_id', workspaceId).order('last_active_at', { ascending: false }))).map(rowFrom) },
+
+    // Workspace files (see 20261005000000_workspace_files.sql).
+    async createWorkspaceFile ({ workspaceId, path, kind, size = 0, mime = '', sha256 = '', objectKey = '', note = '', uploadedBy }) {
+      return rowFrom(await one(db.from('workspace_files').insert({ workspace_id: workspaceId, path, kind, size, mime, sha256, object_key: objectKey, note, uploaded_by: uploadedBy }).select(WORKSPACE_FILE).single()))
+    },
+    async workspaceFileById (id) { return rowFrom(await one(db.from('workspace_files').select(WORKSPACE_FILE).eq('id', id).maybeSingle())) },
+    async workspaceFileByPath (workspaceId, path) { return rowFrom(await one(db.from('workspace_files').select(WORKSPACE_FILE).eq('workspace_id', workspaceId).eq('path', path).is('deleted_at', null).maybeSingle())) },
+    async listWorkspaceFiles (workspaceId, { includeDeleted = false } = {}) {
+      const rows = await pages(() => { const q = db.from('workspace_files').select(WORKSPACE_FILE).eq('workspace_id', workspaceId).order('kind', { ascending: false }).order('path'); return includeDeleted ? q : q.is('deleted_at', null) })
+      return rows.map(rowFrom)
+    },
+    async newWorkspaceFileVersion (id, { size, mime, sha256, objectKey, note = '', uploadedBy, at, keep = 10 }) {
+      const r = await one(db.rpc('new_workspace_file_version', { p_id: id, p_size: size, p_mime: mime, p_sha256: sha256, p_object_key: objectKey, p_note: note, p_uploaded_by: uploadedBy, p_at: ts(at), p_keep: keep }))
+      return r ? { file: rowFrom(r.file), droppedKeys: r.dropped_keys || [] } : null
+    },
+    async listWorkspaceFileVersions (id) { return (await one(db.from('workspace_file_versions').select(WORKSPACE_FILE_VERSION).eq('file_id', id).order('version', { ascending: false }))).map(rowFrom) },
+    async confirmWorkspaceFile (id, { size, at }) { return rowFrom(await one(db.from('workspace_files').update({ size, confirmed_at: ts(at) }).eq('id', id).select(WORKSPACE_FILE).maybeSingle())) },
+    async updateWorkspaceFile (id, { path, note }) { return rowFrom(await one(db.from('workspace_files').update(toSnake({ path, note })).eq('id', id).select(WORKSPACE_FILE).maybeSingle())) },
+    async renameWorkspaceFolder (workspaceId, from, to, at) { return await one(db.rpc('rename_workspace_folder', { p_workspace: workspaceId, p_from: from, p_to: to })) },
+    async deleteWorkspaceFile (id, at) { return rowFrom(await one(db.rpc('delete_workspace_file', { p_id: id, p_at: ts(at) }))) },
+    async unconfirmedWorkspaceFiles (before) { return (await one(db.from('workspace_files').select(WORKSPACE_FILE).eq('kind', 'file').is('confirmed_at', null).lt('uploaded_at', ts(before)))).map(rowFrom) },
+    async removeWorkspaceFile (id) { await one(db.from('workspace_files').delete().eq('id', id)) },
+    async sweepDeletedWorkspaceFiles (before) { return (await one(db.rpc('sweep_deleted_workspace_files', { p_before: ts(before) }))) || [] },
+    async workspaceUsage (workspaceId) { const [r] = await one(db.rpc('workspace_usage', { p_workspace: workspaceId })); return { usedBytes: Number(r?.used_bytes || 0), fileCount: Number(r?.file_count || 0) } },
+    async setWorkspaceUsage (workspaceId, { usedBytes, fileCount }) { await one(db.from('workspaces').update({ used_bytes: usedBytes, file_count: fileCount }).eq('id', workspaceId)) },
+    async setWorkspaceFileObjectKey (id, objectKey) { return rowFrom(await one(db.from('workspace_files').update({ object_key: objectKey }).eq('id', id).select(WORKSPACE_FILE).maybeSingle())) },
+    async revertWorkspaceFileVersion (id) { return rowFrom(await one(db.rpc('revert_workspace_file_version', { p_id: id }))) },
+
     async pruneActivity ({ before, seenBefore }) {
       await one(db.rpc('prune_activity', { p_before: ts(before), p_seen_before: ts(seenBefore) }))
     },

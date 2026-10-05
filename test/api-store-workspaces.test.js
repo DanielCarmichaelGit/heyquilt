@@ -6,7 +6,7 @@ test('create, read, list by owner, org and member; update; archive', async () =>
   const store = createMemoryStore({ now: () => 1000 })
   const a = await store.createWorkspace({ ownerUserId: 'u1', name: 'Launch', description: 'Teaser', color: 'lilac', createdBy: 'person:u1' })
   const b = await store.createWorkspace({ orgId: 'o1', name: 'Core', createdBy: 'person:u2' })
-  assert.deepEqual(a, { id: a.id, ownerUserId: 'u1', orgId: null, name: 'Launch', description: 'Teaser', color: 'lilac', createdBy: 'person:u1', createdAt: 1000, archivedAt: null })
+  assert.deepEqual(a, { id: a.id, ownerUserId: 'u1', orgId: null, name: 'Launch', description: 'Teaser', color: 'lilac', createdBy: 'person:u1', createdAt: 1000, archivedAt: null, quotaBytes: 5368709120, usedBytes: 0, fileCount: 0 })
   assert.deepEqual(await store.workspaceById(a.id), a)
   assert.equal(await store.workspaceById('nope'), null)
   assert.deepEqual((await store.listWorkspacesOwnedBy('u1')).map((w) => w.id), [a.id])

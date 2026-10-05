@@ -67,6 +67,20 @@ test('file bytes are never sniffed, and run sandboxed unless they are a PDF', as
   assert.equal(p.get('content-security-policy'), null, 'Chromium will not render a sandboxed PDF')
 })
 
+test('a file named outside Latin-1 streams back, with its UTF-8 name in the header', async () => {
+  const id = (await api('POST', '/api/workspaces', { name: 'Names' })).body.workspace.id
+  const name = 'Shot 9.41\u202fPM \u{1F3AC}.txt'
+  const up = await fetch(`${base()}/api/workspaces/${id}/upload`, { method: 'PUT', headers: { 'x-quilt-token': ui.token, 'x-path': encodeURIComponent(name), 'content-type': 'text/plain' }, body: 'hi' })
+  const { file } = await up.json()
+  assert.equal(up.status, 200)
+  for (const [q, kind] of [['', 'inline'], ['&download=1', 'attachment']]) {
+    const data = await fetch(`${base()}/api/workspaces/${id}/files/${file.id}/data?t=${ui.token}${q}`)
+    assert.equal(data.status, 200)
+    assert.equal(data.headers.get('content-disposition'), `${kind}; filename="Shot 9.41_PM _.txt"; filename*=UTF-8''Shot%209.41%E2%80%AFPM%20%F0%9F%8E%AC.txt`)
+    assert.equal(await data.text(), 'hi')
+  }
+})
+
 test('an upload over 500 MB is refused from its content-length, before the bytes', { timeout: 10000 }, async () => {
   const id = (await api('POST', '/api/workspaces', { name: 'Big' })).body.workspace.id
   const http = await import('node:http')

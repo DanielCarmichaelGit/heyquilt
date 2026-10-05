@@ -29,3 +29,12 @@ export const parentOf = (p) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/'))
 export const nameOf = (p) => p.slice(p.lastIndexOf('/') + 1)
 export const mimeOf = (name) => MIMES[String(name).toLowerCase().split('.').pop()] || 'application/octet-stream'
 export const isTextual = (mime) => /^text\//.test(mime) || mime === 'application/json'
+
+/** A Content-Disposition header for any file name. Header values must be Latin-1 (Node
+ * throws on anything else), so `filename` is an ASCII fallback (anything outside printable
+ * ASCII, a quote or a backslash becomes `_`) and `filename*` carries the real name (RFC 6266). */
+export function contentDisposition (kind, name) {
+  const ascii = [...String(name)].map((c) => (/^[\x20-\x7e]$/.test(c) && c !== '"' && c !== '\\' ? c : '_')).join('')
+  const utf8 = encodeURIComponent(String(name)).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
+  return `${kind}; filename="${ascii}"; filename*=UTF-8''${utf8}`
+}

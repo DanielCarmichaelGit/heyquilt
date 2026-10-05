@@ -11,6 +11,7 @@ import { parsePublicKey, verifyDeviceLink } from '../identity.js'
 import { signPass, passPublicKey, PASS_VERSION, PASS_TTL_MS } from '../passes.js'
 import { HttpError, Raw } from './http.js'
 import { DiskStore } from './file-store.js'
+import { contentDisposition } from './file-paths.js'
 import { orgRoutes } from './routes/orgs.js'
 import { memberRoutes } from './routes/members.js'
 import { teamRoutes } from './routes/teams.js'
@@ -450,7 +451,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     let stat
     try { stat = fs.statSync(file) } catch { return send(404, { error: 'not found' }) }
     const headers = { 'content-type': type || 'application/octet-stream', 'content-length': stat.size, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...cors(req) }
-    if (name) headers['content-disposition'] = `attachment; filename="${name.replace(/["\r\n]/g, '')}"`
+    if (name) headers['content-disposition'] = contentDisposition('attachment', name)
     res.writeHead(200, headers)
     fs.createReadStream(file).pipe(res)
   }

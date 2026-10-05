@@ -23,6 +23,7 @@ import { INVALID_INVITE } from './ui/invite.js'
 import { loadIdentity } from './identity.js'
 import { currentVersion, localReleases, latestRelease, compareVersions, downloadUrl, seenVersion, markSeen } from './releases.js'
 import { createReporter } from './report.js'
+import { contentDisposition } from './api/file-paths.js'
 
 const TOOL_NAMES = ['Claude Code', 'Cursor', 'Codex', 'Windsurf', 'GitHub Copilot', 'Zed', 'Aider', 'Other']
 const MAX_WS_FILE_BYTES = 500 * 1024 * 1024
@@ -861,7 +862,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     // the token): no sniffing, and a sandbox for every type but PDF, which Chromium won't
     // render sandboxed. <img>, <video> and <audio> ignore the header.
     const guard = { 'x-content-type-options': 'nosniff', ...(type.split(';')[0].trim().toLowerCase() === 'application/pdf' ? {} : { 'content-security-policy': 'sandbox' }) }
-    res.writeHead(200, { ...guard, 'content-type': type, ...(info.size ? { 'content-length': String(info.size) } : {}), 'content-disposition': `${disposition}; filename="${String(info.name).replace(/["\r\n]/g, '')}"`, 'cache-control': 'private, max-age=60' })
+    res.writeHead(200, { ...guard, 'content-type': type, ...(info.size ? { 'content-length': String(info.size) } : {}), 'content-disposition': contentDisposition(disposition, info.name), 'cache-control': 'private, max-age=60' })
     const { Readable } = await import('node:stream')
     Readable.fromWeb(r.body).pipe(res)
   }

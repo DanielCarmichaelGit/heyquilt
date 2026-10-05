@@ -197,3 +197,15 @@ test('moving a folder never asks the store for an empty update (Supabase refuses
   } finally { t.store.updateWorkspaceFile = real }
   assert.equal(patches.some((p) => !Object.keys(p).length), false, JSON.stringify(patches))
 })
+
+test('a file named outside Latin-1 downloads, with its UTF-8 name in the header', async () => {
+  const w = (await t.call('POST', '/v1/workspaces', { name: 'Names' }, 'mem')).body.workspace
+  const name = 'Shot 9.41 PM \u{1F3AC}.txt'
+  const made = await upload('mem', w.id, name, 'hi')
+  assert.equal(made.status, 200, JSON.stringify(made.body))
+  const dl = await t.call('GET', `/v1/workspaces/${w.id}/files/${made.body.file.id}/download`, null, 'mem')
+  const res = await fetch(dl.body.url)
+  assert.equal(res.status, 200)
+  assert.match(res.headers.get('content-disposition'), /^attachment; filename="Shot 9\.41_PM _\.txt"; filename\*=UTF-8''Shot%209\.41%E2%80%AFPM%20%F0%9F%8E%AC\.txt$/)
+  assert.equal(await res.text(), 'hi')
+})

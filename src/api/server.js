@@ -422,6 +422,8 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     if (!files.verify(key, method, q.get('exp'), q.get('sig'), size, name, type)) return send(403, { error: 'this link is not valid' })
     const file = files.file(key)
     if (method === 'PUT') {
+      // Like Supabase's upsert: false, an object that has landed is never replaced.
+      if (fs.existsSync(file)) return send(409, { error: 'already stored' })
       const tmp = `${file}.part`
       let out = null
       let failed = null

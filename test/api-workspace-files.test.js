@@ -281,3 +281,12 @@ test('an upload to a path someone is still uploading to waits its turn, unless t
   assert.equal(third.status, 200, JSON.stringify(third.body))
   assert.equal(await t.store.workspaceFileById(first.body.file.id), null, 'the stale upload was forgotten')
 })
+
+test('the disk store never overwrites an object that has landed, as Supabase would not', async () => {
+  const w = (await t.call('POST', '/v1/workspaces', { name: 'Once' }, 'mem')).body.workspace
+  const made = await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: 'once.txt', size: 5 }, 'mem')
+  assert.equal((await fetch(made.body.upload.url, { method: 'PUT', body: 'first' })).status, 200)
+  const again = await fetch(made.body.upload.url, { method: 'PUT', body: 'other' })
+  assert.deepEqual([again.status, (await again.json()).error], [409, 'already stored'])
+  assert.equal(fs.readFileSync(store.file(`${w.id}/${made.body.file.id}/1`), 'utf8'), 'first')
+})

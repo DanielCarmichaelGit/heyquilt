@@ -20,5 +20,5 @@ test('the pages show the Files section and the download route redirects', () => 
     assert.ok(s.includes("from '@/components/WorkspaceFiles.js'") && s.includes('<WorkspaceFiles '), p)
   }
   const r = fs.readFileSync(new URL('../app/api/workspaces/[id]/files/[fileId]/route.js', import.meta.url), 'utf8')
-  for (const bit of ['export async function GET', 'currentUser', "'/download", 'redirect(', '401', '404']) assert.ok(r.includes(bit), bit)
+  for (const bit of ['export async function GET', 'currentUser', "'/download", 'NextResponse.redirect(', '302', '401', '404']) assert.ok(r.includes(bit), bit)
 })

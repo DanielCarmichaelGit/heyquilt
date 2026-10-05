@@ -268,16 +268,18 @@ test('a re-upload names its object after the version the store gave it, not one 
 
 test('an upload to a path someone is still uploading to waits its turn, unless that upload is stale', async () => {
   const w = (await t.call('POST', '/v1/workspaces', { name: 'Turns' }, 'mem')).body.workspace
+  await t.call('PUT', `/v1/workspaces/${w.id}/members/person:lim`, { access: 'edit' }, 'mem')
   const first = await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: 'busy.txt', size: 3 }, 'mem')
   assert.equal(first.status, 200)
-  const second = await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: 'busy.txt', size: 3 }, 'mem')
+  // Someone else must wait; the uploader may retry their own attempt at once (tested below).
+  const second = await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: 'busy.txt', size: 3 }, 'lim')
   assert.deepEqual([second.status, second.body.error], [409, 'someone is uploading this file right now; try again in a moment'])
   assert.ok(await t.store.workspaceFileById(first.body.file.id), 'the first upload is left alone')
   // Eleven minutes on, its link has expired: the next upload takes over.
   const real = t.store.workspaceFileByPath
   t.store.workspaceFileByPath = async (...a) => { const f = await real.apply(t.store, a); return f && f.path === 'busy.txt' ? { ...f, uploadedAt: f.uploadedAt - 11 * 60 * 1000 } : f }
   let third
-  try { third = await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: 'busy.txt', size: 3 }, 'mem') } finally { t.store.workspaceFileByPath = real }
+  try { third = await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: 'busy.txt', size: 3 }, 'lim') } finally { t.store.workspaceFileByPath = real }
   assert.equal(third.status, 200, JSON.stringify(third.body))
   assert.equal(await t.store.workspaceFileById(first.body.file.id), null, 'the stale upload was forgotten')
 })
@@ -299,4 +301,23 @@ test('a mime type that is not one falls back to the one the name suggests', asyn
   assert.equal(await mimeFor('c.txt', 'text/html; charset=utf-8'), 'text/plain')
   assert.equal(await mimeFor('d.txt', 'text/html\r\nx-evil: 1'), 'text/plain')
   assert.equal(await mimeFor('f.txt', `text/${'x'.repeat(100)}`), 'text/plain')
+})
+
+test('done twice is harmless, and the same uploader may retry their own unlanded upload', async () => {
+  const w = (await t.call('POST', '/v1/workspaces', { name: 'Retry' }, 'mem')).body.workspace
+  await t.call('PUT', `/v1/workspaces/${w.id}/members/person:lim`, { access: 'edit' }, 'mem')
+  const first = await upload('mem', w.id, 'a.txt', 'x'.repeat(90))
+  assert.equal(first.status, 200)
+  const again = await t.call('POST', `/v1/workspaces/${w.id}/files/${first.body.file.id}/done`, {}, 'mem')
+  assert.deepEqual([again.status, again.body.file.size, again.body.file.version], [200, 90, 1], 'a repeat done confirms nothing twice and abandons nothing')
+  assert.equal((await t.call('GET', `/v1/workspaces/${w.id}`, null, 'mem')).body.usage.usedBytes, 90)
+  // A re-upload that never lands: the uploader retries at once; someone else must wait.
+  const pending = await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: 'a.txt', size: 5 }, 'mem')
+  assert.equal(pending.status, 200)
+  const other = await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: 'a.txt', size: 5 }, 'lim')
+  assert.equal(other.status, 409)
+  const retry = await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: 'a.txt', size: 5 }, 'mem')
+  assert.equal(retry.status, 200, JSON.stringify(retry.body))
+  assert.equal(retry.body.file.version, 2, 'the abandoned attempt was reverted to version 1, and the retry starts version 2 again')
+  assert.equal((await t.store.workspaceFileById(first.body.file.id)).objectKey, `${w.id}/${first.body.file.id}/2`)
 })

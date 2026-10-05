@@ -490,7 +490,7 @@ export function previewBusy () {
 /** A dialog to choose one of the workspace's files. Resolves { id, name }, or null. */
 export async function workspaceFilePicker (id) {
   let files
-  try { files = (await api('GET', wsUrl(id, '/files'))).files.filter((f) => f.kind !== 'folder').sort((a, b) => a.path.localeCompare(b.path)) } catch (err) { toast(err.message); return null }
+  try { files = (await api('GET', wsUrl(id, '/files'))).files.filter((f) => f.kind !== 'folder').sort((a, b) => a.path.localeCompare(b.path)) } catch (err) { toast(err.status === 404 || /not found/i.test(err.message) ? "Only this workspace's members can see its files." : err.message); return null }
   return new Promise((resolve) => {
     const back = document.createElement('div')
     back.className = 'modal-back'

@@ -798,7 +798,13 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     return {
       async write (chunk) {
         check()
-        if (!out.write(chunk)) await new Promise((resolve) => { out.once('drain', resolve); out.once('close', resolve) })
+        if (!out.write(chunk)) {
+          // Wait for drain, or for the stream to close on an error; whichever fires, drop the other.
+          await new Promise((resolve) => {
+            const done = () => { out.off('drain', done); out.off('close', done); resolve() }
+            out.once('drain', done); out.once('close', done)
+          })
+        }
         check()
       },
       async end () {

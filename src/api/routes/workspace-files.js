@@ -151,7 +151,8 @@ export function workspaceFileRoutes (ctx) {
       // never will (a dropped connection): undo it, so it leaves no phantom version or bytes
       // behind. Before then someone may still be uploading it: they go first.
       if (existing && !existing.confirmedAt) {
-        if (now() - existing.uploadedAt <= LINK_MS) throw new HttpError(409, 'someone is uploading this file right now; try again in a moment')
+        // The same person may take over their own attempt (a retry after a dropped upload).
+        if (existing.uploadedBy !== r.me.account && now() - existing.uploadedAt <= LINK_MS) throw new HttpError(409, 'someone is uploading this file right now; try again in a moment')
         existing = await abandon(existing)
       }
       const usage = await store.workspaceUsage(r.ws.id)
@@ -179,6 +180,9 @@ export function workspaceFileRoutes (ctx) {
       needEdit(r)
       const f = await fileIn(r, fid)
       if (f.kind !== 'file') throw new HttpError(404, 'no such file')
+      // Done twice (a client retrying after a lost answer): nothing to do; the checks below
+      // would otherwise count the file's own bytes against the quota and abandon a landed file.
+      if (f.confirmedAt) return { file: fileView(f) }
       const there = await fileStore.exists(f.objectKey)
       if (!there) throw new HttpError(409, 'the upload did not land')
       // The declared size was checked when the upload started, but storage may hold more

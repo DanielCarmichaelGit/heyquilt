@@ -51,3 +51,11 @@ test('linking a room never sets its owner: the relay alone does, and the linker 
   assert.doesNotMatch(fn, /owner_account/)
   assert.match(fn, /on conflict \(room\) do update set workspace_id = excluded\.workspace_id, workspace_linked_by = excluded\.workspace_linked_by/)
 })
+
+test('existing orgs get the Workspaces permission their built-in Admin and Member roles now carry', () => {
+  const s = sql()
+  assert.ok(s.includes(`update public.roles set grants = grants || '{"workspaces": {"c": true, "r": true, "u": true, "d": true}}'::jsonb where builtin = 'admin';`))
+  assert.ok(s.includes(`update public.roles set grants = grants || '{"workspaces": {"r": true}}'::jsonb where builtin = 'member';`))
+  // Only built-in roles: custom roles keep exactly what their org gave them.
+  assert.equal([...s.matchAll(/update public\.roles /g)].length, 2)
+})

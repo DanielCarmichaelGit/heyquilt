@@ -39,6 +39,12 @@ create index relay_sessions_workspace_id on public.relay_sessions (workspace_id)
 -- owner (as the relay reports it): linking a room is never a way to claim it.
 alter table public.relay_sessions add column workspace_linked_by text check (workspace_linked_by ~ '^(person|agent):[A-Za-z0-9_-]{1,64}$');
 
+-- Data, not shape: built-in role grants are copied into each org when it is made, so orgs
+-- made before this get the Workspaces cells BUILTIN now gives Admin and Member
+-- (src/api/permissions.js). Custom roles are left as their org made them.
+update public.roles set grants = grants || '{"workspaces": {"c": true, "r": true, "u": true, "d": true}}'::jsonb where builtin = 'admin';
+update public.roles set grants = grants || '{"workspaces": {"r": true}}'::jsonb where builtin = 'member';
+
 alter table public.workspaces enable row level security;
 alter table public.workspace_members enable row level security;
 revoke all on public.workspaces, public.workspace_members from anon, authenticated;

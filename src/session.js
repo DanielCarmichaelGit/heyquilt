@@ -1856,6 +1856,18 @@ export class Session extends EventEmitter {
     return path.join(this.stateDir, 'inbox', `${msg.id.slice(0, 6)}-${safeName(msg.file.name)}`)
   }
 
+  /**
+   * Owner only: a link a chat-only AI (ChatGPT, claude.ai, Grok…) pastes in and works through by
+   * opening pages: read and send messages, read and add tasks, read files, add pictures,
+   * documents and notes (see chat-links.js). It joins as its own member; removing it ends the link.
+   */
+  async createChatLink ({ name = '', hours } = {}) {
+    if (!this.conn) throw new Error('not connected to the relay')
+    if (!this.isOwner) throw new Error('only the session owner can make a chat link')
+    const r = await this.conn.adminRequest({ op: 'chatlink', name: String(name || ''), ...(hours ? { hours: Number(hours) } : {}) })
+    return { url: `${this.httpBase()}/c/${this.room}/${r.token}`, name: r.name, expiresAt: r.expiresAt }
+  }
+
   httpBase () {
     return this.server.replace(/^ws/, 'http').replace(/\/+$/, '')
   }

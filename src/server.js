@@ -13,6 +13,7 @@
 // limited to some folders. The relay enforces it by undoing file changes a
 // member isn't allowed to make, before anyone else sees them.
 import http from 'node:http'
+import { makeChatLink, handleChatLink, fetchPublicFile } from './chat-links.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -634,6 +635,13 @@ class Room {
         if (this.presence) this.presence.rename({ room: this.name, name })
       }
       return { ok: true }
+    }
+    if (req.op === 'chatlink') {
+      // A link a chat-only AI (ChatGPT, claude.ai, Grok…) works through by opening pages (chat-links.js).
+      // It joins as a member of its own; the token is in this reply only, to the owner who asked.
+      const l = makeChatLink(this, { name: req.name, hours: req.hours, by: me.name })
+      this.log(`[${this.name}] chat link made for ${l.name}`)
+      return { ok: true, token: l.token, name: l.name, expiresAt: l.expiresAt }
     }
     if (req.op === 'end') {
       // Reply first; the relay then sends everyone away and deletes the room.
@@ -1325,6 +1333,8 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         .finally(() => { if (room && !room.conns.size && room.onEmpty) room.onEmpty() })
       return
     }
+    // Chat links: GET pages a chat-only AI opens to read and talk (chat-links.js).
+    if (url.pathname.startsWith('/c/') && handleChatLink(req, res, url, { getRoom, roomEnded, refused, dropIfUnused, endedMessage: ENDED_MESSAGE, fetchFile: opts.chatFetch || ((u) => fetchPublicFile(u)) })) return
     const bm = url.pathname.match(/^\/blobs\/([A-Za-z0-9_-]{1,64})\/([a-f0-9]{32})\/(upload|download|data)$/)
     if (bm) {
       const [, name, id, action] = bm

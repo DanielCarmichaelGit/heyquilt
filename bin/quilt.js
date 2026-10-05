@@ -32,6 +32,7 @@ Usage:
   quilt focus <what you're doing>                     Tell collaborators what you're working on
   quilt claim <path|glob> [reason]                    Mark files as yours for now
   quilt release <path|glob|*>                         Release a claim
+  quilt chat-link [name] [--hours N]                  Owner: a link for a chat-only AI (ChatGPT, claude.ai, Grok)
   quilt invite                                        Print this session's invite code
   quilt stop                                          Shut down everything quilt is running (relay, app, syncs)
   quilt doctor [folder] [--watch 30]                  Check what quilt can see of your Claude Code / Cursor chats
@@ -74,6 +75,12 @@ async function main () {
     case 'claim': return simple('/claim', { pattern: argv[0], note: argv.slice(1).join(' ') }, (r) =>
       `claimed ${argv[0]}` + (r.overlapping?.length ? `\nwarning: overlaps ${r.overlapping.map((c) => `${c.by}'s ${c.pattern}`).join(', ')}` : ''))
     case 'release': return simple('/release', { pattern: argv[0] || '*' }, (r) => `released ${r.released} claim(s)`)
+    case 'chat-link': {
+      const i = argv.indexOf('--hours')
+      const hours = i >= 0 ? Number(argv[i + 1]) : undefined
+      const name = argv.filter((a, k) => !(i >= 0 && (k === i || k === i + 1))).join(' ')
+      return simple('/chat-link', { name, hours }, (r) => `Chat link for ${r.name}, until ${new Date(r.expiresAt).toLocaleString()}:\n\n  ${r.url}\n\nPaste it into ChatGPT, claude.ai or Grok with "Open this link and follow it to join our Quilt session."\nAnyone with it can act as ${r.name}; remove ${r.name} from the session to end it.`)
+    }
     case 'invite': return invite()
     case 'stop': return stopAll()
     case 'doctor': {

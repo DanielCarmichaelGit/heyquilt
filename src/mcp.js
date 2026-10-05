@@ -592,6 +592,20 @@ export async function runMcp () {
     return r.shared ? 'Shared with the session.' : 'Nothing to share: give a summary.'
   }))
 
+  server.registerTool('quilt_chat_link', {
+    description: 'Session owner only: make a link for an AI that only has a chat window (ChatGPT, claude.ai, Grok and the like). ' +
+      'Your user pastes it into that chat; the AI then reads and sends messages, reads and adds tasks, reads files, and adds pictures, documents and notes ' +
+      'by opening links, with nothing to install. It joins as its own member (removing it ends the link) and expires.',
+    inputSchema: {
+      name: z.string().max(40).optional().describe('How it appears in the session, e.g. "ChatGPT"'),
+      hours: z.number().int().min(1).max(720).optional().describe('How long the link works (default a week, at most 30 days)')
+    }
+  }, ({ name, hours }) => withDaemon(async (d) => {
+    const r = await call(d, 'POST', '/chat-link', { name, hours })
+    return `Chat link for ${r.name} (works until ${new Date(r.expiresAt).toISOString().slice(0, 16).replace('T', ' ')} UTC):\n${r.url}\n\n` +
+      'Give it to your user to paste into the chat AI, with a line like "Open this link and follow it to join our Quilt session." Anyone with the link can act as that member, so share it only there.'
+  }))
+
   server.registerTool('quilt_before_edit', {
     description: 'Call before you change files (with your own edit tools), with the paths you are about to change. For each file: whether it is yours to edit ' +
       '(a file nobody holds is claimed for you until you finish; one someone else holds is refused: do not edit it, message them instead), and what people said ' +

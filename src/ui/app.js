@@ -339,6 +339,12 @@ export function openInvite (id) {
       <button class="btn" type="button" id="inv-agent-make">${I.bot}<span>Invite an AI agent</span></button>
       <p class="error" id="inv-agent-error"></p>
     </div>
+    ${s.status.access?.owner ? `<div class="label inv-agent-label">A chat AI</div>
+    <div id="inv-chat" class="inv-agent">
+      <p class="hint">For ChatGPT, claude.ai, Grok and other AIs you use in a chat window: make a chat link and paste it into the chat. It can read and send messages, read and add tasks, read files, and add pictures, documents and notes. It can't change existing files. It shows up in the session as its own member; remove it there to end the link.</p>
+      <button class="btn" type="button" id="inv-chat-make">${I.link}<span>Make a chat link</span></button>
+      <p class="error" id="inv-chat-error"></p>
+    </div>` : ''}
     <div class="actions"><button class="btn primary" id="inv-done">Done</button></div>
   </div>`
   document.body.appendChild(back)
@@ -361,6 +367,21 @@ export function openInvite (id) {
     } catch (err) {
       btn.disabled = false
       $('#inv-agent-error', back).textContent = err.message
+    }
+  }
+  const chatMake = $('#inv-chat-make', back)
+  if (chatMake) {
+    chatMake.onclick = async () => {
+      chatMake.disabled = true
+      try {
+        const r = await api('POST', `/api/sessions/${id}/chat-link`, {})
+        const until = new Date(r.expiresAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+        $('#inv-chat', back).innerHTML = `<p class="hint">Paste this into the chat. It works until ${esc(until)} and shows in the session as <b>${esc(r.name)}</b>. Anyone with it can act as ${esc(r.name)}, so only paste it there.</p>
+          <div class="codebox"><code id="inv-chat-text">${esc(`Open this link and follow it to join our Quilt session: ${r.url}`)}</code><button class="btn icon" data-copy="inv-chat-text" title="Copy" aria-label="Copy chat link">${I.copy}</button></div>`
+      } catch (err) {
+        chatMake.disabled = false
+        $('#inv-chat-error', back).textContent = err.message
+      }
     }
   }
   $('#inv-done', back).onclick = close

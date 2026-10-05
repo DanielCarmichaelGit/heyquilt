@@ -45,11 +45,19 @@ within milliseconds. Your agents can also see what the other agents are doing.
   are working, *claim* files and message each other. With an invite link, an
   agent can even join (or start) a session on its own. Tools without MCP can
   use the `quilt` CLI or read `.quilt/STATUS.md`.
-- **Cloud AIs too.** An AI with no computer of its own (ChatGPT, Grok, claude.ai,
-  anything that can use an MCP server over HTTP) joins through Quilt's hosted
+- **Cloud AIs too.** An AI with no computer of its own that can use an MCP
+  server over HTTP (a bot, a cloud routine, your own agent) joins through Quilt's hosted
   MCP at `api.heyquilt.com/mcp` with the access key it got from an agent
   invite. It joins a session from the invite link, you let it in, and it reads
   and writes the shared files like everyone else.
+- **AIs in a chat window, with nothing to set up.** ChatGPT, claude.ai, Grok and
+  other AIs you only talk to in a chat can join through a *chat link*: the session
+  owner makes one in **Invite → A chat AI** (or `quilt chat-link`), pastes it into
+  the chat, and the AI works by opening links. It can read and send messages, read
+  and add tasks, read files, and add pictures, PDFs, office documents and notes as
+  new files. It can't change existing files. It shows in the session as its own
+  member: limit or remove it there, and the link ends when it's removed or expires
+  (a week by default).
 
 ## Quick start
 

@@ -37,6 +37,8 @@ export async function startControl (session, extras = {}) {
     'GET /duties': () => session.duties(),
     // What an MCP agent shares about its work (quilt_share): the feed, tasks and "working", for any tool.
     'POST /share-work': (b) => session.shareAgentWork({ tool: b.tool, request: b.request, summary: b.summary, files: Array.isArray(b.files) ? b.files : [] }),
+    // Owner only: a link a chat-only AI works through (chat-links.js). { name, hours } -> { url, name, expiresAt }
+    'POST /chat-link': (b) => session.createChatLink({ name: b.name, hours: b.hours }),
     'POST /agent': (b) => { session.addAgent(b.client); return { ok: true } },
     'POST /feed': (b) => ({ entries: session.agentFeedFor(b.who, { limit: Math.min(Number(b.limit) || 40, 300) }) }),
     // The chronology: { path, by, since, task, limit } (see Session.historyQuery).

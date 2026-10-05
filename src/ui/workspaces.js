@@ -1,7 +1,7 @@
 // Workspaces: the home grid of cards, the Add workspace card, and a workspace's page
 // (Sessions, Files, People & agents, Settings). Sessions stay in session.js; the file library
 // (the Files section, All files and uploads) is files.js.
-import { I, state, $, esc, basename, toast, api, ask, avatar, colorFor, ago } from './common.js'
+import { I, state, $, esc, basename, toast, api, ask, avatar, colorFor, ago, bytes } from './common.js'
 import { filesSectionHtml, bindFilesSection } from './files.js'
 
 export const COLORS = { lilac: '#d9c6ea', mint: '#cfe6d4', peach: '#f6dcc0', rose: '#f3d3d0', periwinkle: '#e0dcf0', sky: '#cfe0ee' }
@@ -256,6 +256,14 @@ export function bindWorkspacePage (root, { go, rerender, newSessionDialog, invit
   bindFilesSection(root, { id, reload, go })
 }
 
+/** "1.2 GB of 5.0 GB used · 34 files", from the workspace's usage; nothing without one. */
+function usageLine (u) {
+  if (!u) return ''
+  const used = Number.isFinite(u.quotaBytes) ? `${bytes(u.usedBytes || 0)} of ${bytes(u.quotaBytes)}` : bytes(u.usedBytes || 0)
+  const n = u.fileCount || 0
+  return `<p class="hint" data-ws-usage>${esc(`${used} used · ${n} ${n === 1 ? 'file' : 'files'}`)}</p>`
+}
+
 /** `dialog(html)` is home.js's: a modal form that closes on Cancel, Escape or a click outside. */
 function settingsDialog (reload, go, dialog) {
   const w = state.workspace.workspace
@@ -265,6 +273,7 @@ function settingsDialog (reload, go, dialog) {
     <div class="field"><label for="wss-desc">About</label><input class="input" id="wss-desc" name="description" maxlength="500" value="${esc(w.description || '')}"></div>
     <div class="field"><span class="label">Colour</span><div class="swatches">${Object.entries(COLORS).map(([k, c]) => `<label class="swatch"><input type="radio" name="color" value="${k}" ${(w.color || 'lilac') === k ? 'checked' : ''}><span style="background:${c}"></span></label>`).join('')}</div></div>
     <label class="toggle"><input type="checkbox" name="archived" ${w.archivedAt ? 'checked' : ''}><span class="track"><span class="knob"></span></span><span class="tg-text"><b>Archived</b><span class="hint">Kept, but out of the way.</span></span></label>
+    ${usageLine(state.workspace.usage)}
     <p class="error" data-error></p>
     <div class="actions">${state.workspace.canDelete ? '<button type="button" class="btn ghost danger" data-delete>Delete workspace</button>' : ''}<span class="spacer"></span><button type="button" class="btn ghost" data-cancel>Cancel</button><button class="btn primary" type="submit">Save</button></div>`)
   // Focus inside the dialog, so Escape (bound on the dialog) closes it straight away.

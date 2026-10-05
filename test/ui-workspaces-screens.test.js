@@ -100,3 +100,12 @@ test('Settings sits at the bottom of the sidebar under a rule; Shut down lives i
   assert.ok(h.includes('data-shutdown>${I.power}<span>Shut down Quilt</span>'), 'still in Settings')
 })
 
+
+test('the settings dialog shows the workspace\'s storage: used of quota and how many files', () => {
+  const w = ui('workspaces.js')
+  const dialog = w.slice(w.indexOf('function settingsDialog'))
+  assert.ok(/import \{[^}]*\bbytes\b[^}]*\} from '\.\/common\.js'/.test(w), 'bytes() from common.js')
+  assert.ok(dialog.includes('${usageLine(state.workspace.usage)}'), 'under the fields')
+  const line = w.slice(w.indexOf('function usageLine'), w.indexOf('function settingsDialog'))
+  for (const bit of ['bytes(u.usedBytes || 0)', 'bytes(u.quotaBytes)', ' used · ', "'file' : 'files'", 'data-ws-usage']) assert.ok(line.includes(bit), bit)
+})

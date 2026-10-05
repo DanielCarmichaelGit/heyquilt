@@ -40,3 +40,8 @@ test('app routes ws: views through the shell and loads workspaces at boot', () =
 })
 
 test('no em dashes', () => { for (const f of ['workspaces.js', 'home.js', 'app.js', 'app.css']) assert.ok(!ui(f).includes(EM_DASH), f) })
+
+test('the session view no longer calls itself a workspace in code', () => {
+  assert.ok(!ui('session.js').includes('state.ws.'), 'the session view no longer calls itself a workspace')
+  assert.ok(!ui('app.css').includes('.ws-tab'))
+})

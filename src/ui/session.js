@@ -1,4 +1,4 @@
-// The session workspace: file tree on the left, a partner's live AI chat, a
+// The session view lives here: file tree on the left, a partner's live AI chat, a
 // shared file, or the task board in the middle, and the team chat on the right.
 import { TOKEN, I, state, $, esc, basename, bytes, clock, avatar, toast, api, ask, remember, recall, toolsOf, busyPeople, NO_POSTING, ACCOUNT_KEY, loadAccessTypes, typeOptions, accessLine } from './common.js'
 import { openInvite, renderTabs, markRead } from './app.js'
@@ -22,10 +22,10 @@ let mounted = null // AbortController for document-level listeners of this mount
 // ------------------------------------------------------------ layout state --
 // Per session: mode ('ai' | 'files' | 'merge'), open tabs per mode, expanded folders.
 function ws (id) {
-  if (!state.ws.has(id)) {
+  if (!state.sv.has(id)) {
     let saved = null
     try { saved = JSON.parse(recall(`ws-${id}`, 'null')) } catch {}
-    state.ws.set(id, {
+    state.sv.set(id, {
       mode: 'ai',
       aiTabs: [],
       aiSel: null,
@@ -39,7 +39,7 @@ function ws (id) {
       drawer: null
     })
   }
-  return state.ws.get(id)
+  return state.sv.get(id)
 }
 
 function saveWs (id) {
@@ -66,7 +66,7 @@ export function mountSession (id) {
 
   $('#app').innerHTML = `
   <div class="ws" id="ws">
-    <header class="ws-top">
+    <header class="sv-top">
       <button class="brand" data-go="home" aria-label="Home">${quiltMark({ sew: 'first' })}</button>
       <nav class="tabs" id="tabs" aria-label="Sessions"></nav>
       <span class="spacer"></span>
@@ -93,20 +93,20 @@ export function mountSession (id) {
         </div>
       </div>
     </header>
-    <div class="ws-body" id="ws-body">
-      <aside class="ws-tree" aria-label="Project files">
+    <div class="sv-body" id="sv-body">
+      <aside class="sv-tree" aria-label="Project files">
         <div class="pane-head"><span>Files</span><span class="hint" id="file-count"></span></div>
         <div class="tree-scroll" id="tree"></div>
       </aside>
-      <main class="ws-main">
+      <main class="sv-main">
         <div class="requests" id="requests" hidden></div>
         <div class="requests merges" id="merges" hidden></div>
-        <div class="ws-mainbar" id="mainbar" hidden>
-          <div class="ws-tabs" id="main-tabs" role="tablist"></div>
+        <div class="sv-mainbar" id="mainbar" hidden>
+          <div class="sv-tabs" id="main-tabs" role="tablist"></div>
         </div>
         <div class="ws-content" id="main"></div>
       </main>
-      <aside class="ws-chat" id="chat-pane" aria-label="Chat">
+      <aside class="sv-chat" id="chat-pane" aria-label="Chat">
         <div class="chat-head"><h3>Chat</h3><span class="hint" id="chat-sub"></span></div>
         <div class="messages" id="messages"></div>
         <div class="drop">Drop files to send</div>
@@ -442,7 +442,7 @@ function toggleDrawer (which) {
 function openDrawer (which) {
   const w = ws(current)
   w.drawer = which
-  $('#ws-body').dataset.drawer = which || ''
+  $('#sv-body').dataset.drawer = which || ''
 }
 
 function agentLine (p) {
@@ -857,11 +857,11 @@ function renderMainBar () {
   el.innerHTML = w.aiTabs.map((name) => {
     const p = personInfo(name)
     const working = p.agent && p.agent.sharing !== false && p.agent.status === 'working'
-    return `<div class="ws-tab${aiOn(name) ? ' on' : ''}" role="tab" aria-selected="${aiOn(name)}" tabindex="0" data-kind="ai" data-tab="${esc(name)}" title="${esc(p.isMe ? 'Your AI chat' : `${name}'s AI chat`)}">
+    return `<div class="sv-tab${aiOn(name) ? ' on' : ''}" role="tab" aria-selected="${aiOn(name)}" tabindex="0" data-kind="ai" data-tab="${esc(name)}" title="${esc(p.isMe ? 'Your AI chat' : `${name}'s AI chat`)}">
       ${avatar(name, p.color, p.online)}<span class="nm">${esc(p.isMe ? 'Your AI' : `${name}'s AI`)}</span>${working ? '<span class="pulse" title="AI is working"></span>' : ''}
       <button class="x" data-kind="ai" data-close="${esc(name)}" aria-label="Close ${esc(name)}">${I.x}</button></div>`
-  }).join('') + (w.aiTabs.length && w.fileTabs.length ? '<span class="ws-tab-sep"></span>' : '') +
-  w.fileTabs.map((path) => `<div class="ws-tab${fileOn(path) ? ' on' : ''}" role="tab" aria-selected="${fileOn(path)}" tabindex="0" data-kind="file" data-tab="${esc(path)}" title="${esc(path)}">
+  }).join('') + (w.aiTabs.length && w.fileTabs.length ? '<span class="sv-tab-sep"></span>' : '') +
+  w.fileTabs.map((path) => `<div class="sv-tab${fileOn(path) ? ' on' : ''}" role="tab" aria-selected="${fileOn(path)}" tabindex="0" data-kind="file" data-tab="${esc(path)}" title="${esc(path)}">
       <span class="ico">${I.file}</span><span class="nm">${esc(basename(path))}</span>${w.stale[path] ? '<span class="changed" title="Changed"></span>' : ''}
       <button class="x" data-kind="file" data-close="${esc(path)}" aria-label="Close ${esc(basename(path))}">${I.x}</button></div>`).join('') +
   (w.mergeSel ? mergeTabHtml(w) : '')
@@ -872,7 +872,7 @@ function mergeTabHtml (w) {
   const m = shownMerge()
   const on = w.mode === 'merge'
   const name = m ? `Merge ${basename(m.path)}` : 'Merge'
-  return `${w.aiTabs.length || w.fileTabs.length ? '<span class="ws-tab-sep"></span>' : ''}<div class="ws-tab${on ? ' on' : ''}" role="tab" aria-selected="${on}" tabindex="0" data-kind="merge" data-tab="${esc(w.mergeSel)}" title="${esc(m ? `Compare the two versions of ${m.path}` : 'Merge')}">
+  return `${w.aiTabs.length || w.fileTabs.length ? '<span class="sv-tab-sep"></span>' : ''}<div class="sv-tab${on ? ' on' : ''}" role="tab" aria-selected="${on}" tabindex="0" data-kind="merge" data-tab="${esc(w.mergeSel)}" title="${esc(m ? `Compare the two versions of ${m.path}` : 'Merge')}">
       <span class="ico">${I.branch}</span><span class="nm">${esc(name)}</span>
       <button class="x" data-kind="merge" data-close="${esc(w.mergeSel)}" aria-label="Close merge">${I.x}</button></div>`
 }

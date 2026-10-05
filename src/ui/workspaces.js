@@ -1,6 +1,8 @@
 // Workspaces: the home grid of cards, the Add workspace card, and a workspace's page
-// (Sessions, People & agents, Settings). Files come in phase 2. Sessions stay in session.js.
+// (Sessions, Files, People & agents, Settings). Sessions stay in session.js; the file library
+// (the Files section, All files and uploads) is files.js.
 import { I, state, $, esc, basename, toast, api, ask, avatar, colorFor, ago } from './common.js'
+import { filesSectionHtml, bindFilesSection } from './files.js'
 
 export const COLORS = { lilac: '#d9c6ea', mint: '#cfe6d4', peach: '#f6dcc0', rose: '#f3d3d0', periwinkle: '#e0dcf0', sky: '#cfe0ee' }
 const coverOf = (w) => COLORS[w.color] || COLORS.lilac
@@ -29,10 +31,14 @@ export async function loadWorkspaces () {
   }
 }
 
+/** The workspace id in a `ws:<id>` (its page) or `wsfiles:<id>` (All files) view. */
+export const wsIdOf = (view) => String(view).replace(/^(ws|wsfiles):/, '')
+
 export async function openWorkspace (id) {
   const d = await api('GET', wsUrl(id))
   // A slow answer for a workspace you've since left mustn't replace the one on screen.
-  if (state.view === `ws:${id}`) state.workspace = d
+  // Its files and usage come in the same answer.
+  if (state.view === `ws:${id}` || state.view === `wsfiles:${id}`) state.workspace = d
 }
 
 // ------------------------------------------------------------------ grid --
@@ -216,6 +222,7 @@ export function workspacePageHtml () {
       ${d.access.access === 'edit' ? `<button class="sc add" data-new-session-in="${esc(w.id)}">${I.plus}<span>New session</span></button>` : ''}
     </div>
   </section>
+  ${filesSectionHtml(d)}
 
   <section class="sec">
     <div class="sec-head"><h2>People &amp; agents</h2><span class="count">${members.length}</span></div>
@@ -246,6 +253,7 @@ export function bindWorkspacePage (root, { go, rerender, newSessionDialog, invit
     }
   })
   root.querySelector('[data-ws-settings]')?.addEventListener('click', () => settingsDialog(reload, go, dialog))
+  bindFilesSection(root, { id, reload, go })
 }
 
 /** `dialog(html)` is home.js's: a modal form that closes on Cancel, Escape or a click outside. */

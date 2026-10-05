@@ -6,6 +6,7 @@ import { agentPaste } from './invite.js'
 import { quiltMark } from './mark.js'
 import { updateControl } from './releases.js'
 import { workspacesHtml, bindWorkspaces, workspacePageHtml, bindWorkspacePage, loadWorkspaces, openWorkspace, COLORS } from './workspaces.js'
+import { allFilesHtml, bindAllFiles } from './files.js'
 
 export const tildify = (p) => state.defaults.home && String(p).startsWith(state.defaults.home) ? `~${String(p).slice(state.defaults.home.length)}` : p
 const hostOf = (url) => { try { return new URL(String(url).replace(/^ws/, 'http')).host } catch { return url } }
@@ -23,13 +24,17 @@ export function renderShell (view) {
   $('#app').innerHTML = `
     <div class="app-shell">
       ${sidebarHtml(view)}
-      <main class="page" id="page">${view === 'settings' ? settingsHtml() : view.startsWith('ws:') ? workspacePageHtml() : homeHtml()}</main>
+      <main class="page" id="page">${view === 'settings' ? settingsHtml() : view.startsWith('wsfiles:') ? allFilesHtml(state.workspace) : view.startsWith('ws:') ? workspacePageHtml() : homeHtml()}</main>
     </div>`
   if (page && view === state.shellView) $('#page').scrollTop = scroll
   state.shellView = view
   bindSidebar()
   if (view === 'settings') bindSettings($('#page'), () => renderShell('settings'))
-  else if (view.startsWith('ws:')) {
+  else if (view.startsWith('wsfiles:')) {
+    const id = view.slice('wsfiles:'.length)
+    const rerender = () => { if (state.view === view) renderShell(view) }
+    bindAllFiles($('#page'), { id, go, rerender, reload: async () => { await openWorkspace(id).catch((err) => toast(err.message)); rerender() } })
+  } else if (view.startsWith('ws:')) {
     bindWorkspacePage($('#page'), { go, rerender: () => renderShell(view), newSessionDialog, inviteDialog: workspaceInviteDialog, dialog })
     bindSessionActions($('#page'))
   } else bindHome()
@@ -74,6 +79,7 @@ function sidebarHtml (view) {
 
 /** The sidebar's Workspaces list, with the open one marked. Only once the API has workspaces on. */
 function sideWorkspacesHtml (view) {
+  view = String(view).replace(/^wsfiles:/, 'ws:') // All files marks its workspace too
   const list = state.workspacesOn ? (state.workspaces || []) : []
   if (!list.length) return ''
   return `
@@ -321,7 +327,7 @@ function workspaceInviteDialog (id) {
       toast(`Added ${b.dataset.name}`)
       await openWorkspace(id)
       await loadWorkspaces()
-      if (state.view === `ws:${id}`) renderShell(state.view)
+      if (state.view === `ws:${id}` || state.view === `wsfiles:${id}`) renderShell(state.view)
     } catch (err) {
       $('#wi-error', back).textContent = err.message
       b.disabled = false

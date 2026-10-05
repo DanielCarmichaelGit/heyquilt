@@ -49,6 +49,8 @@ export const I = {
   board: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="7.5"/><path d="m8.4 12.1 2.4 2.4 4.8-5"/></svg>',
   pencil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
   arrowRight: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>',
+  play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.9l10.4-6.5a1 1 0 0 0 0-1.8L9.5 4.6A1 1 0 0 0 8 5.5z"/></svg>',
+  upload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
   arrowLeft: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m11 18-6-6 6-6"/></svg>'
 }
 
@@ -79,14 +81,16 @@ export const state = {
   addingWorkspace: false, // the Add workspace card is showing its form
   workspacesOn: false, // the accounts API has workspaces on
   workspace: null, // the open workspace page's data
-  spaceFilter: 'all' // the home grid's Personal / org switch
+  spaceFilter: 'all', // the home grid's Personal / org switch
+  filesView: { folder: '', picked: null, mode: 'tiles' }, // the All files view: folder shown, file previewed, tiles or list
+  pollTimer: null // refreshes the open workspace (ws: or wsfiles:) every 20 seconds
 }
 
 // -------------------------------------------------------------- helpers --
 export const $ = (sel, root = document) => root.querySelector(sel)
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 export const basename = (p) => String(p).split(/[\\/]/).filter(Boolean).pop() || p
-export const bytes = (n) => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`
+export const bytes = (n) => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(1)} GB`
 export const ago = (ts) => {
   const s = Math.max(0, Math.round((Date.now() - ts) / 1000))
   if (s < 45) return 'now'

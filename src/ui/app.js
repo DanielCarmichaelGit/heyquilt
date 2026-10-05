@@ -6,7 +6,8 @@ import { mountSession, sessionUpdated, sessionMessage, sessionFeed, sessionFileC
 import { quiltMark } from './mark.js'
 import { renderSignIn } from './signin.js'
 import { checkRelease, openReleaseNotes } from './releases.js'
-import { loadWorkspaces, openWorkspace } from './workspaces.js'
+import { loadWorkspaces, openWorkspace, wsIdOf } from './workspaces.js'
+import { previewBusy } from './files.js'
 import { agentPaste } from './invite.js'
 
 // ---------------------------------------------------------------- boot --
@@ -37,10 +38,11 @@ async function boot () {
     clearTimeout(waiting)
     const last = recall('view')
     state.view = state.sessions.has(last) || last === 'settings' || isWorkspace(last) ? last : (state.sessions.size ? [...state.sessions.keys()][0] : 'home')
-    if (isWorkspace(state.view)) await openWorkspace(state.view.slice(3)).catch(() => { state.view = 'home' })
+    if (isWorkspace(state.view)) await openWorkspace(wsIdOf(state.view)).catch(() => { state.view = 'home' })
     if (isSession(state.view)) await loadMessages(state.view)
     if (!state.events) connectEvents()
     render()
+    pollWorkspace()
     // Invite links that opened the desktop app wait until you're signed in.
     if (!boot.invites) { boot.invites = true; window.quiltDesktop?.onInvite(openInviteLink); window.quiltDesktop?.onReleaseNotes?.(openReleaseNotes) }
     // Is a newer Quilt out, and has this version's "what's new" been shown? Never blocks the app.
@@ -54,6 +56,8 @@ async function boot () {
 /** Back to the sign-in screen: after Sign out, or when the API turned this computer away. */
 export function signedOutNow (message = '') {
   sessionUnmount() // stops an open session view's timers and bindings
+  clearInterval(state.pollTimer)
+  state.pollTimer = null
   state.events?.close()
   state.events = null
   state.loaded = false
@@ -87,8 +91,8 @@ function connectEvents () {
     state.sessions.set(sum.id, prev ? { ...sum, logs: prev.logs } : sum)
     if (state.view === sum.id) sessionUpdated(sum.id)
     else renderTabs()
-    // A session's status changes its card on the open workspace page.
-    if (isWorkspace(state.view) && state.workspace?.running.includes(sum.id)) renderShell(state.view)
+    // A session's status changes its card on the open workspace page (All files shows no sessions).
+    if (isWorkspace(state.view) && !isFiles(state.view) && state.workspace?.running.includes(sum.id)) renderShell(state.view)
   })
   es.addEventListener('feed', (e) => {
     const { id, entries } = JSON.parse(e.data)
@@ -127,7 +131,7 @@ function connectEvents () {
     // On a workspace page the stopped session moves from running to recent.
     if (isWorkspace(state.view)) {
       const view = state.view
-      refreshRecent().then(() => openWorkspace(view.slice(3))).then(() => { if (state.view === view) render() }).catch(() => {})
+      refreshRecent().then(() => openWorkspace(wsIdOf(view))).then(() => { if (state.view === view) render() }).catch(() => {})
     }
     // The folder moves from "open" to "recent", but the recent list is the
     // server's: draw Home again once the fresh one arrives, or the session you
@@ -140,7 +144,25 @@ function connectEvents () {
   })
 }
 
-const isWorkspace = (v) => typeof v === 'string' && v.startsWith('ws:')
+// A workspace's page (ws:<id>) or its All files view (wsfiles:<id>).
+const isFiles = (v) => typeof v === 'string' && v.startsWith('wsfiles:')
+const isWorkspace = (v) => typeof v === 'string' && (v.startsWith('ws:') || isFiles(v))
+
+/** While a workspace is open, fetch it again every 20 seconds and redraw if it changed
+ * (someone else's upload shows up). go() and signing out stop it. */
+function pollWorkspace () {
+  clearInterval(state.pollTimer)
+  state.pollTimer = null
+  if (!isWorkspace(state.view)) return
+  const view = state.view
+  state.pollTimer = setInterval(async () => {
+    if (state.view !== view) { clearInterval(state.pollTimer); state.pollTimer = null; return }
+    if (document.querySelector('.modal-back')) return // a dialog is open: leave the page under it alone
+    const before = JSON.stringify(state.workspace)
+    try { await openWorkspace(wsIdOf(view)) } catch { return }
+    if (state.view === view && JSON.stringify(state.workspace) !== before && !previewBusy()) render()
+  }, 20000)
+}
 const isSession = (view) => view !== 'home' && view !== 'settings' && !isWorkspace(view)
 
 document.addEventListener('visibilitychange', () => {
@@ -191,20 +213,26 @@ async function resync () {
 }
 
 export async function go (view) {
+  clearInterval(state.pollTimer)
+  state.pollTimer = null
   state.view = view
   state.pending = []
   state.to = ''
   if (view !== 'home') state.addingWorkspace = false
   if (isWorkspace(view)) {
-    if (state.workspace?.workspace?.id !== view.slice(3)) state.workspace = null // "Loading…", not the last one's page
+    if (state.workspace?.workspace?.id !== wsIdOf(view)) {
+      state.workspace = null // "Loading…", not the last one's page
+      state.filesView = { folder: '', picked: null, mode: state.filesView.mode }
+    }
     await refreshRecent()
-    await openWorkspace(view.slice(3)).catch((err) => { toast(err.message); view = 'home' })
+    await openWorkspace(wsIdOf(view)).catch((err) => { toast(err.message); view = 'home' })
     state.view = view
   }
   remember('view', view)
   if (view === 'home') { await refreshRecent(); if (state.workspacesOn) await loadWorkspaces() }
   if (isSession(view) && !state.messages.has(view)) await loadMessages(view)
   render()
+  pollWorkspace()
   if (isSession(view)) markRead(view)
 }
 

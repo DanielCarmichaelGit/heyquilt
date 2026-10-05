@@ -474,3 +474,7 @@ Layout: `src/ui/` + `src/ui-server.js` (the app), `src/runner.js` (start/stop a 
 reconnect), `src/session.js` (folder ⇄ CRDT sync, presence, claims, chat),
 `src/control.js` (local API for CLI/MCP), `src/mcp.js`, `src/setup.js`,
 `bin/quilt.js` (CLI).
+
+## License
+
+Quilt is proprietary, paid software. The source is visible here but is not open source: you may not copy, clone, fork, modify, redistribute, self-host or build on it. See [LICENSE](LICENSE).

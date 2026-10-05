@@ -1,0 +1,83 @@
+Quilt Proprietary License
+
+Copyright (c) 2026 Daniel Carmichael. All rights reserved.
+
+This license covers the Quilt software in this repository and in any package,
+installer or app built from it, including its source code, object code,
+documentation, designs and assets (the "Software"). The Software is
+proprietary. It is not open source. Its source code may be publicly visible,
+but being able to see it does not give you any right to use it.
+
+1. Paid use only
+
+   You may install and use the Software only (a) as distributed by Quilt
+   through heyquilt.com or an official Quilt release, and (b) while you hold a
+   valid, paid Quilt account or subscription, or a free trial or other written
+   permission that Quilt has granted to you. That use is limited to the plan
+   you have, is non-exclusive and non-transferable, and ends when your account,
+   subscription or permission ends.
+
+2. What you may not do
+
+   Except as Quilt expressly allows in writing, you may not, and may not help
+   or allow anyone else to:
+
+   a. copy, clone, fork, mirror or download the source code for any purpose
+      other than the use allowed in section 1;
+   b. modify, translate, adapt or create derivative works of the Software;
+   c. use the Software, or any part, design, protocol, algorithm or idea taken
+      from its source code, to build, train, improve or offer any product or
+      service, including one that competes with Quilt;
+   d. sell, sublicense, rent, lend, publish, distribute, host or otherwise make
+      the Software available to anyone else, including as a hosted or managed
+      service;
+   e. run your own relay, API or other server from the Software, or connect
+      the Software to servers other than Quilt's;
+   f. remove, bypass or interfere with any sign-in, account, licence or
+      payment check, or any notice of ownership;
+   g. reverse engineer, decompile or disassemble any part of the Software that
+      is not provided as source, except where the law forbids this restriction;
+   h. use the Software or its source code as training, fine-tuning or
+      evaluation data for any machine-learning or AI model.
+
+3. Ownership
+
+   Quilt and its licensors own the Software and all intellectual property in
+   it. This license grants you no rights except the limited right in section
+   1. Quilt reserves every right not expressly granted. Any feedback or
+   suggestions you give may be used by Quilt without obligation to you.
+
+4. Third-party components
+
+   The Software includes or depends on third-party open-source components.
+   Those components are licensed to you under their own licenses, and nothing
+   in this license limits your rights under them. This license applies only to
+   the code and materials written by or for Quilt.
+
+5. Termination
+
+   Your rights under this license end automatically and immediately if you
+   break any of its terms. When they end you must stop using the Software and
+   delete every copy you have, including any copy of its source code.
+
+6. No warranty
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+   PARTICULAR PURPOSE AND NON-INFRINGEMENT, TO THE FULLEST EXTENT THE LAW
+   ALLOWS.
+
+7. Limitation of liability
+
+   TO THE FULLEST EXTENT THE LAW ALLOWS, IN NO EVENT WILL QUILT, DANIEL
+   CARMICHAEL OR ANY CONTRIBUTOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+   IN CONNECTION WITH THE SOFTWARE OR ITS USE.
+
+8. Other terms
+
+   Your use of Quilt's website and hosted services is also governed by the
+   terms published at heyquilt.com. If any part of this license is found
+   unenforceable, the rest stays in effect.
+
+For licensing, partnership or permission requests, visit https://heyquilt.com.

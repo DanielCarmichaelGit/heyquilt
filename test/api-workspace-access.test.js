@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createMemoryStore } from '../src/api/memory-store.js'
-import { workspaceAccess, cleanColor, cleanDescription, cleanAccess, COLORS } from '../src/api/workspace-access.js'
+import { workspaceAccess, cleanColor, cleanDescription, cleanAccess, autoColor, COLORS } from '../src/api/workspace-access.js'
 import { orgGrantsFor } from '../src/api/org-access.js'
 import { BUILTIN } from '../src/api/permissions.js'
 
@@ -69,3 +69,10 @@ test('cleaners', () => {
   assert.equal(cleanAccess('view'), 'view')
   assert.throws(() => cleanAccess('owner'), /Access is edit or view\./)
 })
+
+test('autoColor: one of the palette, stable for a name, varied across names', () => {
+  for (const n of ['Launch', 'Website', 'Quilt core', '']) assert.ok(COLORS.includes(autoColor(n)), n)
+  assert.equal(autoColor('Launch'), autoColor('Launch'))
+  assert.ok(new Set(['Launch', 'Website', 'Quilt core', 'Design', 'Ops', 'Docs', 'Sales'].map(autoColor)).size > 1)
+})
+

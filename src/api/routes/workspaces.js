@@ -2,7 +2,7 @@
 // Behind the QUILT_WORKSPACES flag (startApi({ workspaces })): off, every route answers 404.
 import { HttpError, needId, cleanName } from '../http.js'
 import { orgAccess, orgGrantsFor } from '../org-access.js'
-import { workspaceAccess, cleanColor, cleanDescription, cleanAccess } from '../workspace-access.js'
+import { workspaceAccess, cleanColor, cleanDescription, cleanAccess, autoColor } from '../workspace-access.js'
 
 const ROOM = /^[A-Za-z0-9_-]{1,64}$/
 const ACCOUNT = /^(person|agent):[A-Za-z0-9_-]{1,64}$/
@@ -87,7 +87,8 @@ export function workspaceRoutes ({ store, person, now, agentAuth, bearer, worksp
       const me = await caller(req)
       if (!me.userId) throw new HttpError(403, 'agents do not make workspaces')
       const name = cleanName(body.name, 80, 'give the workspace a name')
-      const fields = { name, description: cleanDescription(body.description), color: cleanColor(body.color), createdBy: me.account }
+      // Colour and description are set later, in settings; a new workspace gets a colour from its name.
+      const fields = { name, description: cleanDescription(body.description), color: cleanColor(body.color) || autoColor(name), createdBy: me.account }
       if (body.org) {
         const a = await orgAccess(store, me.userId, body.org)
         a.need('workspaces', 'c')

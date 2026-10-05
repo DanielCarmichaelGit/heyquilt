@@ -12,6 +12,13 @@ export function cleanColor (value) {
   return value
 }
 
+/** A colour for a workspace that was made without one: the same name always gets the same one. */
+export function autoColor (name) {
+  let h = 0
+  for (const c of String(name || '')) h = (h * 31 + c.codePointAt(0)) >>> 0
+  return COLORS[h % COLORS.length]
+}
+
 export function cleanDescription (value) {
   const chars = stripInvisible(String(value ?? ''))
   if (chars.length > MAX_DESCRIPTION) throw new HttpError(400, `Keep the description under ${MAX_DESCRIPTION} characters.`)

@@ -66,23 +66,20 @@ function addCardHtml () {
 
 function addFormHtml () {
   const orgs = [...spaces()].filter(([k]) => k !== 'all' && k !== 'personal')
+  // Just a name and where it lives: colour and a description are set later, in the workspace's settings.
   return `
   <form class="ws-card form" data-add-ws-form>
     <div class="ws-cover" style="--c:${COLORS.lilac};height:36px"></div>
     <div class="ws-card-body">
       <label class="label" for="ws-name">Name</label><input class="input" id="ws-name" name="name" maxlength="80" required placeholder="Launch">
-      <label class="label" for="ws-org">Where</label>
-      <select class="input" id="ws-org" name="org"><option value="">Personal</option>${orgs.map(([slug, name]) => `<option value="${esc(slug)}">${esc(name)}</option>`).join('')}</select>
-      <span class="label">Colour</span>
-      <div class="swatches">${Object.entries(COLORS).map(([k, c], i) => `<label class="swatch"><input type="radio" name="color" value="${k}" ${i === 0 ? 'checked' : ''}><span style="background:${c}"></span></label>`).join('')}</div>
-      <label class="label" for="ws-desc">About (optional)</label><input class="input" id="ws-desc" name="description" maxlength="500" placeholder="What this workspace is for">
+      ${orgs.length ? `<label class="label" for="ws-org">Where</label>
+      <select class="input" id="ws-org" name="org"><option value="">Personal</option>${orgs.map(([slug, name]) => `<option value="${esc(slug)}">${esc(name)}</option>`).join('')}</select>` : ''}
       <p class="error" data-add-ws-error></p>
       <div class="actions"><button type="button" class="btn sm ghost" data-add-ws-cancel>Cancel</button><button class="btn sm primary" type="submit">Create</button></div>
     </div>
   </form>`
 }
 
-// Sessions in no workspace you can see: none, or one deleted or no longer yours.
 function looseRows () {
   const known = new Set((state.workspaces || []).map((w) => w.id))
   const loose = (ws) => !ws || !known.has(ws)
@@ -136,7 +133,7 @@ export function bindWorkspaces (root, { go, rerender }) {
     form.onsubmit = async (e) => {
       e.preventDefault()
       const f = new FormData(form)
-      const body = { name: f.get('name'), description: f.get('description'), color: f.get('color'), org: f.get('org') || undefined }
+      const body = { name: f.get('name'), org: f.get('org') || undefined }
       form.querySelector('button[type=submit]').disabled = true
       try {
         const { workspace } = await api('POST', '/api/workspaces', body)

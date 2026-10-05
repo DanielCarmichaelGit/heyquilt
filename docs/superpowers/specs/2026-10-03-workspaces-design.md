@@ -228,7 +228,8 @@ room is linked before anyone else connects. When the folder being started is und
 cover with the workspace's initial, name, a pill for the space (Personal or the org's name), one line of
 description, counts (sessions, files, storage), member avatars with online dots, and a green "N open" pill when
 sessions are live. The last card is a dashed **Add workspace**; clicking it turns the card into the form in
-place (name, where it lives, colour, optional description) and Create opens the new workspace. A Personal / org
+place (just a name, and where it lives when the person is in an org) and Create opens the new workspace. A
+new workspace gets a colour from its name; colour and description are changed later in its settings. A Personal / org
 switch at the top right filters the grid. **Sessions not in a workspace** is a small strip of chips under the
 grid with Open or Rejoin, and the Join and New session buttons that live on the home page today; a chip's menu
 has "Move to…".

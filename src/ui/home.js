@@ -5,7 +5,7 @@ import { go, pickFolder, signedOutNow, agentInviteHtml } from './app.js'
 import { agentPaste } from './invite.js'
 import { quiltMark } from './mark.js'
 import { updateControl } from './releases.js'
-import { workspacesHtml, bindWorkspaces, workspacePageHtml, bindWorkspacePage, loadWorkspaces, openWorkspace } from './workspaces.js'
+import { workspacesHtml, bindWorkspaces, workspacePageHtml, bindWorkspacePage, loadWorkspaces, openWorkspace, COLORS } from './workspaces.js'
 
 export const tildify = (p) => state.defaults.home && String(p).startsWith(state.defaults.home) ? `~${String(p).slice(state.defaults.home.length)}` : p
 const hostOf = (url) => { try { return new URL(String(url).replace(/^ws/, 'http')).host } catch { return url } }
@@ -65,11 +65,23 @@ function sidebarHtml (view) {
       <button data-view="home" class="${view === 'home' ? 'on' : ''}">${I.home}<span>Home</span></button>
       <button data-view="settings" class="${view === 'settings' ? 'on' : ''}">${I.gear}<span>Settings</span></button>
     </nav>
+    ${sideWorkspacesHtml(view)}
 
     <div class="side-foot">
       <button class="btn sm ghost side-off" data-shutdown>${I.power}<span>Shut down</span></button>
     </div>
   </aside>`
+}
+
+/** The sidebar's Workspaces list, with the open one marked. Only once the API has workspaces on. */
+function sideWorkspacesHtml (view) {
+  const list = state.workspacesOn ? (state.workspaces || []) : []
+  if (!list.length) return ''
+  return `
+    <div class="side-label">Workspaces</div>
+    <nav class="side-nav side-workspaces" aria-label="Workspaces">${list.map((w) => `
+      <button data-view="ws:${esc(w.id)}" class="${view === `ws:${w.id}` ? 'on' : ''}" title="${esc(w.name)}"><span class="sw" style="background:${COLORS[w.color] || COLORS.lilac}"></span><span class="nm">${esc(w.name)}${w.space?.kind === 'org' ? `<span class="org"> · ${esc(w.space.name)}</span>` : ''}</span>${w.counts?.open ? `<span class="ct">${w.counts.open}</span>` : ''}</button>`).join('')}
+    </nav>`
 }
 
 function bindSidebar () {

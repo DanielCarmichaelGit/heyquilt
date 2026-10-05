@@ -84,3 +84,9 @@ test('the space filter shows only when the person is in an org (more than All an
   assert.ok(ui('workspaces.js').includes('spaces().size > 2 ? `<div class="segmented ws-filter"'))
 })
 
+test('the sidebar lists workspaces and marks the open one', () => {
+  const h = ui('home.js')
+  for (const bit of ['function sideWorkspacesHtml (view)', '<div class="side-label">Workspaces</div>', 'class="side-nav side-workspaces"', "data-view=\"ws:${esc(w.id)}\"", "view === `ws:${w.id}` ? 'on' : ''"]) assert.ok(h.includes(bit), bit)
+  assert.ok(h.includes('${sideWorkspacesHtml(view)}'))
+})
+

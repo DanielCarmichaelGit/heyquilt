@@ -683,7 +683,9 @@ export async function handleHostedMcp ({ req, res, pass, relay }) {
       room.hostedSeen.delete(account)
       for (const [k, p] of room.pending) if (k.hosted && p.id === account) room.pending.delete(k)
       // Leaving lets go of its claims: nobody else could.
-      if (room.dropClaims((c) => c.byId === account)) room.broadcastClaims()
+      room.dropRequests((r) => r.byId === account)
+      room.dropClaims((c) => c.byId === account, (c) => `${c.by} left the session.`)
+      room.broadcastClaims()
       room.broadcastMembers()
     }
     return text(`Left room ${h.room}.`)

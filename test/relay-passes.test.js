@@ -8,6 +8,8 @@ import path from 'node:path'
 import WebSocket from 'ws'
 import { startServer, relayConfig } from '../src/server.js'
 import { generateIdentity, signChallenge } from '../src/identity.js'
+import * as Y from 'yjs'
+import { updateMessage } from '../src/protocol.js'
 import { MSG_AUTH, MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS, MSG_CLAIM, MSG_CLAIMS, MSG_PASS, CLOSE_PASS_EXPIRED, CLOSE_DENIED, decoding, bytesMessage, jsonMessage } from '../src/protocol.js'
 import { newPassKeys } from '../src/passes.js'
 import { PASS_KEYS, makePass } from './pass-helpers.js'
@@ -468,24 +470,90 @@ test('a re-invited agent under the same name does not inherit the old claims, bu
   assert.equal(rm.meta.claims['src/mcp.js'].byId, 'agent:509a3f23')
 })
 
-test('claims say whether their holder is in the session, and go after the holder is away a while', async (t) => {
-  const { rm, agent, o } = await claimRoom(t, { claimAwayMs: 60 * 1000 })
-  const gone = await agent('gone', 'Gone')
-  const here = await agent('here', 'Here')
-  assert.equal((await claim(gone, { op: 'claim', pattern: 'a.js' })).ok, true)
-  assert.equal((await claim(here, { op: 'claim', pattern: 'b.js' })).ok, true)
-  assert.deepEqual(rm.claimList().map((c) => c.active), [true, true])
-  gone.ws.close()
-  await waitFor(() => rm.claimList().find((c) => c.pattern === 'a.js').active === false)
-  assert.equal(rm.sweepClaims(Date.now() + 30 * 1000), 0, 'not yet')
-  assert.equal(rm.sweepClaims(Date.now() + 61 * 1000), 1)
-  assert.deepEqual(Object.keys(rm.meta.claims), ['b.js'], 'a present holder keeps theirs')
+test('a claim goes once its holder has done nothing for a while, even if still connected', async (t) => {
+  const { rm, agent, o } = await claimRoom(t, { claimIdleMs: 60 * 1000 })
+  const idle = await agent('idle', 'Idle')
+  const busy = await agent('busy', 'Busy')
+  assert.equal((await claim(idle, { op: 'claim', pattern: 'a.js' })).ok, true)
+  assert.equal((await claim(busy, { op: 'claim', pattern: 'b.js' })).ok, true)
+  assert.deepEqual(rm.claimList().map((c) => c.active), [true, true], 'both in the session')
+  const t0 = Date.now()
+  // Busy changes the document (a file, a message, its feed) 50s later; Idle does nothing.
+  const doc = new Y.Doc()
+  doc.getMap('files').set('b.js', new Y.Text('x'))
+  busy.ws.send(updateMessage(Y.encodeStateAsUpdate(doc)))
+  await waitFor(() => rm.meta.seen['agent:busy'] >= t0)
+  rm.meta.seen['agent:busy'] = t0 + 50 * 1000
+  assert.equal(rm.sweepClaims(t0 + 30 * 1000), 0, 'not yet')
+  assert.equal(rm.sweepClaims(t0 + 61 * 1000), 1)
+  assert.deepEqual(Object.keys(rm.meta.claims), ['b.js'], 'activity keeps a claim')
   await waitFor(() => o.claims.some((m) => m.claims && m.claims.length === 1 && m.claims[0].pattern === 'b.js'))
   // A claim left from before the relay loaded the room counts from when it loaded.
   rm.meta.claims['old.js'] = { by: 'Ghost', byId: 'agent:ghost', pattern: 'old.js', note: '', ts: 1 }
   rm.loadedAt = Date.now() - 61 * 1000
-  assert.equal(rm.sweepClaims(), 1)
+  assert.equal(rm.sweepClaims(t0 + 70 * 1000), 1)
   assert.equal(rm.meta.claims['old.js'], undefined)
+})
+
+const chatOf = (rm) => rm.doc.getArray('chat').toArray()
+
+test('the file queue: ask for a claimed file, and its holder must hand it off with context', async (t) => {
+  const { rm, agent } = await claimRoom(t)
+  const mine = await agent('mine', 'Mine')
+  const other = await agent('other', 'Other')
+  const third = await agent('third', 'Third')
+  assert.equal((await claim(mine, { op: 'claim', pattern: 'src/**' })).ok, true)
+  assert.match((await claim(other, { op: 'request', path: 'free.js', title: 'x' })).error, /not claimed/)
+  assert.match((await claim(other, { op: 'request', path: 'src/mcp.js', title: '' })).error, /title required/)
+  const r = await claim(other, { op: 'request', path: 'src/mcp.js', title: 'Working on tools for task 12', description: 'Add quilt_handoff. '.repeat(30), task: '12' })
+  assert.deepEqual([r.ok, r.position, r.holder, r.pattern], [true, 1, 'Mine', 'src/**'])
+  assert.equal(rm.meta.claims['src/**'].queue[0].description.length, 300, 'kept to 300 characters')
+  assert.equal((await claim(third, { op: 'request', path: 'src/ui/app.css', title: 'Restyle' })).position, 2)
+  assert.equal((await claim(other, { op: 'request', path: 'src/mcp.js', title: 'Tools, again' })).position, 1, 'asking again keeps its place')
+  // The holder hears about it in a direct message that asks for no answer.
+  const told = chatOf(rm).filter((m) => m.kind === 'queue' && m.to === 'Mine')
+  assert.equal(told.length, 3)
+  assert.match(told[0].text, /src\/mcp\.js: Working on tools/)
+  // It can't just let go of the file now.
+  assert.match((await claim(mine, { op: 'release', pattern: 'src/**' })).error, /Other, Third are waiting for src\/\*\* in its file queue/)
+  assert.deepEqual(await claim(mine, { op: 'release', pattern: '*' }), { id: claimIds, ok: true, released: 0, held: ['src/**'] })
+  assert.match((await claim(mine, { op: 'handoff', pattern: 'src/**' })).error, /context required/)
+  assert.match((await claim(other, { op: 'handoff', pattern: 'src/**', context: 'mine now' })).error, /Mine's to hand off/)
+  const h = await claim(mine, { op: 'handoff', pattern: 'src/**', context: 'Changed the claim ops; tests in relay-passes still to update.' })
+  assert.deepEqual([h.ok, h.to, h.waiting], [true, 'Other', 1])
+  const c = rm.meta.claims['src/**']
+  assert.deepEqual([c.by, c.byId, c.note, c.from, c.queue.map((x) => x.by)], ['Other', 'agent:other', 'Tools, again', 'Mine', ['Third']])
+  const dm = chatOf(rm).find((m) => m.kind === 'handoff')
+  assert.deepEqual([dm.by, dm.to, dm.path], ['Mine', 'Other', 'src/**'])
+  assert.match(dm.text, /My context: Changed the claim ops/)
+  // Third withdraws; then Other can release it.
+  const rid = c.queue[0].id
+  assert.match((await claim(other, { op: 'withdraw', request: rid })).error, /not yours/)
+  assert.equal((await claim(third, { op: 'withdraw', request: rid })).withdrawn, 1)
+  assert.equal((await claim(other, { op: 'release', pattern: 'src/**' })).released, 1)
+  assert.deepEqual(rm.meta.claims, {})
+})
+
+test('an idle, removed or released-by-owner holder passes the file to the first one waiting', async (t) => {
+  const { rm, agent, o } = await claimRoom(t, { claimIdleMs: 60 * 1000 })
+  const a = await agent('a1', 'Ann')
+  const b = await agent('b1', 'Bob')
+  const c = await agent('c1', 'Cal')
+  assert.equal((await claim(a, { op: 'claim', pattern: 'x.js' })).ok, true)
+  await claim(b, { op: 'request', path: 'x.js', title: 'Bob next' })
+  await claim(c, { op: 'request', path: 'x.js', title: 'Cal after' })
+  rm.meta.seen['agent:b1'] = Date.now()
+  assert.equal(rm.sweepClaims(Date.now() + 61 * 1000), 1)
+  assert.equal(rm.meta.claims['x.js'].by, 'Bob', 'idle Ann: handed to Bob')
+  assert.match(chatOf(rm).filter((m) => m.kind === 'handoff').pop().text, /Ann had done nothing in the session for 1 minutes/)
+  assert.equal((await claim(o, { op: 'release', pattern: 'x.js' })).released, 1)
+  assert.equal(rm.meta.claims['x.js'].by, 'Cal', "the owner's release: handed to Cal")
+  await claim(a, { op: 'request', path: 'x.js', title: 'Ann again' })
+  await claim(b, { op: 'request', path: 'x.js', title: 'Bob again' })
+  assert.equal((await admin(o, { op: 'remove', key: 'agent:a1' })).ok, true)
+  assert.deepEqual(rm.meta.claims['x.js'].queue.map((r) => r.by), ['Bob'], "a removed member's requests go")
+  assert.equal((await admin(o, { op: 'remove', key: 'agent:c1' })).ok, true)
+  assert.equal(rm.meta.claims['x.js'].by, 'Bob', 'removed Cal: handed to Bob')
 })
 
 test("an agent can't release another agent's claim; the owner can, and can clear everyone away", async (t) => {

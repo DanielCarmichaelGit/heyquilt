@@ -36,6 +36,7 @@ import { verifyPass, PASS_TTL_MS } from './passes.js'
 import { cleanAccess, narrowAccess, relayAccess, fromRelay, sameAccess, mayChange, TALK_REFUSED } from './session-access.js'
 import { canAdmit, cleanAdmitBy, DEFAULT_ADMIT_BY, BAD_ADMIT_BY } from './admit-policy.js'
 import { patternsOverlap } from './fsutil.js'
+import { globMatcher } from './pathrules.js'
 import { adoptLegacyEnv } from './legacy.js'
 import { makeStore, DiskStore } from './blobstore.js'
 import { JOIN_HOST } from './ui/invite.js'
@@ -50,6 +51,11 @@ const HOSTED_ONLINE_MS = 3 * 60 * 1000
 // A room's renames: each one saves the room and queues a presence report, so they're rationed.
 const RENAME_MS = 2000
 const MAX_PATTERN = 500
+// The file queue: requests for a claimed file (a title, and a summary of the plan), and handoffs.
+const MAX_REQUEST_TITLE = 120
+const MAX_REQUEST_TEXT = 300
+const MAX_HANDOFF_TEXT = 2000
+const MAX_QUEUE = 20
 const MAX_SCOPES = 20
 // Removed accounts remembered per room, so an older pass's grant can't bring them back.
 const MAX_REMOVED = 200
@@ -82,8 +88,9 @@ export function relayConfig (opts = {}) {
     maxNewRoomsPerHour: num(opts.maxNewRoomsPerHour ?? env.QUILT_MAX_NEW_ROOMS_PER_HOUR, 30),
     roomTtlDays: num(opts.roomTtlDays ?? env.QUILT_ROOM_TTL_DAYS, 30),
     idleUnloadMs: num(opts.idleUnloadMs, 60 * 1000),
-    // A claim whose holder has been out of the session this long is released (see sweepClaims).
-    claimAwayMs: num(opts.claimAwayMs, 20 * 60 * 1000),
+    // A claim whose holder has done nothing in the session this long is let go (see sweepClaims):
+    // handed to the first one waiting in its file queue, or released.
+    claimIdleMs: num(opts.claimIdleMs, 20 * 60 * 1000),
     trustProxy: opts.trustProxy ?? /^(1|true|yes)$/i.test(env.QUILT_TRUST_PROXY || ''),
     // Large files: Supabase Storage when both are set, otherwise the relay's own disk.
     storageUrl: opts.storageUrl ?? env.QUILT_STORAGE_URL ?? '',
@@ -127,7 +134,8 @@ class Room {
     }
     this.meta.identities = this.meta.identities || {} // name -> public key
     this.meta.claims = this.meta.claims || {} // pattern -> { by, byId?, pattern, note, ts }; byId is the account, with sign-in on
-    // Claim holder (see holderKey) -> when they were last in the session, for sweepClaims.
+    // Claim holder (see holderKey) -> when they last did something in the session (changed the
+    // document: a file, a message, their AI's feed; or used a hosted tool), for sweepClaims.
     this.meta.seen = this.meta.seen || {}
     this.loadedAt = Date.now()
     // Member id -> { name, kind, role, scopes, since }. The id is the public key, or
@@ -169,6 +177,7 @@ class Room {
     this.doc.on('update', (update, origin, doc, tr) => {
       if (origin === this.guard && this.undoing) { this.undoing.push(update); return } // sent merged, below
       if (origin && origin !== this.guard && this.guard.trackedOrigins.has(origin) && !this.checkChange(origin, update, tr)) return
+      if (origin && this.conns.has(origin)) this.noteActivity(this.holderKeys(origin))
       const msg = updateMessage(update)
       for (const ws of this.conns.keys()) if (ws !== origin) send(ws, msg)
       this.bytes += update.length
@@ -443,7 +452,7 @@ class Room {
   hostedActive (id) {
     const was = this.hostedSeen.get(id) || 0
     this.hostedSeen.set(id, Date.now())
-    if (this.claimList().some((c) => c.byId === id)) this.meta.seen[id] = Date.now()
+    this.noteActivity([id])
     for (const [k, p] of this.pending) if (k.hosted && p.id === id) this.pending.delete(k)
     // Newly online (or back after a while): everyone's member list shows it.
     if (Date.now() - was >= HOSTED_ONLINE_MS) this.broadcastMembers()
@@ -751,7 +760,9 @@ class Room {
       const gone = [key, ...((this.meta.accountKeys || {})[key] || [])]
       // Their claims go with them: nobody left could release them.
       const names = gone.map((id) => this.meta.members[id]?.name).filter(Boolean)
-      this.dropClaims((c) => c.byId ? gone.includes(c.byId) : names.includes(c.by))
+      const theirs = (x) => x.byId ? gone.includes(x.byId) : names.includes(x.by)
+      this.dropRequests(theirs)
+      this.dropClaims(theirs, (c) => `${c.by} was removed from the session.`)
       for (const id of gone) delete this.meta.members[id]
       // A pass issued before now can't bring them back by its grant (see passGrant). Removals
       // older than a pass lasts can match no valid pass, so they go; the newest are kept.
@@ -820,13 +831,42 @@ class Room {
     return { name, id: `${ws.pass.kind}:${ws.pass.sub}`, owner: !!(a && a.owner), talk: !(a && a.talk === false) }
   }
 
-  /** Each claim, with `active`: whether whoever holds it is in the session now. */
+  /**
+   * Each claim, with `active` (whoever holds it is in the session now), `activeAt` (when they
+   * last did something there) and its file queue: who asked for it next ({ id, path, by,
+   * title, description, task, ts }), oldest first.
+   */
   claimList () {
-    return Object.values(this.meta.claims).map((c) => ({ ...c, active: this.holderPresent(c) })).sort((a, b) => a.ts - b.ts)
+    return Object.values(this.meta.claims).map((c) => ({ ...c, queue: c.queue || [], active: this.holderPresent(c), activeAt: this.lastActive(c) })).sort((a, b) => a.ts - b.ts)
   }
 
   /** Who holds a claim: their account with sign-in on, otherwise their name. */
   holderKey (c) { return c.byId || `name:${c.by}` }
+
+  /** The holder keys a connection speaks for: its account, and its name (claims older than sign-in). */
+  holderKeys (ws) {
+    const keys = [`name:${this.names.get(ws)}`]
+    if (ws.pass) keys.push(`${ws.pass.kind}:${ws.pass.sub}`)
+    return keys
+  }
+
+  /** Someone did something in the session: their claims' idle time starts again. */
+  noteActivity (keys) {
+    const now = Date.now()
+    let save = false
+    for (const k of keys) {
+      if (!Object.values(this.meta.claims).some((c) => this.holderKey(c) === k)) continue
+      // Saved now and then, so a relay restart doesn't count them idle for longer than they were.
+      if (now - (this.meta.seen[k] || 0) > 60 * 1000) save = true
+      this.meta.seen[k] = now
+    }
+    if (save) this.saveMeta()
+  }
+
+  /** When a claim's holder last did something in the session (since the relay loaded it, at the earliest). */
+  lastActive (c) {
+    return Math.max(this.meta.seen[this.holderKey(c)] ?? this.loadedAt, c.ts || 0)
+  }
 
   /** Whether a claim's holder is in the session now: connected, or a hosted agent seen lately. */
   holderPresent (c) {
@@ -840,27 +880,82 @@ class Room {
     return this.hostedOnline().some((h) => h.name === c.by)
   }
 
-  /** Deletes the claims `pick` chooses. Returns how many. */
-  dropClaims (pick) {
-    let n = 0
-    for (const c of Object.values(this.meta.claims)) if (pick(c)) { delete this.meta.claims[c.pattern]; n++ }
-    for (const k of Object.keys(this.meta.seen)) if (!Object.values(this.meta.claims).some((c) => this.holderKey(c) === k)) delete this.meta.seen[k]
-    return n
+  /** The claim covering a file: its own, or a folder or glob claim that matches it (the earliest). */
+  claimFor (file) {
+    if (this.meta.claims[file]) return this.meta.claims[file]
+    return Object.values(this.meta.claims).filter((c) => globMatcher(c.pattern)(file)).sort((a, b) => a.ts - b.ts)[0] || null
   }
 
   /**
-   * Releases claims whose holder has been out of the session for claimAwayMs: a revoked
-   * or replaced agent, or someone who left without releasing, would hold them for good.
-   * Returns how many went (and tells everyone, when any did).
+   * Lets go of the claims `pick` chooses. A claim someone is waiting for in its file queue goes
+   * to the first of them instead of being released (`why` says why, in the message they get).
+   * Returns how many went.
+   */
+  dropClaims (pick, why = null) {
+    let n = 0
+    for (const c of Object.values(this.meta.claims)) {
+      if (!pick(c)) continue
+      n++
+      if (c.queue && c.queue.length) this.handOff(c, c.queue[0], { context: why ? why(c) : `${c.by} let go of it.`, auto: true })
+      else delete this.meta.claims[c.pattern]
+    }
+    this.forgetSeen()
+    return n
+  }
+
+  /** Takes the requests `pick` chooses out of every file queue (someone removed, or gone). */
+  dropRequests (pick) {
+    for (const c of Object.values(this.meta.claims)) {
+      if (!c.queue) continue
+      c.queue = c.queue.filter((r) => !pick(r))
+      if (!c.queue.length) delete c.queue
+    }
+  }
+
+  forgetSeen () {
+    for (const k of Object.keys(this.meta.seen)) if (!Object.values(this.meta.claims).some((c) => this.holderKey(c) === k)) delete this.meta.seen[k]
+  }
+
+  /**
+   * Gives claim `c` to the one who asked for it in request `r`, with the holder's context,
+   * and tells them in a direct message (which wakes their agent). The rest of the queue
+   * stays with the claim: the new holder hands it on in turn.
+   */
+  handOff (c, r, { context = '', auto = false } = {}) {
+    const now = Date.now()
+    const queue = (c.queue || []).filter((x) => x.id !== r.id)
+    const next = { by: r.by, ...(r.byId ? { byId: r.byId } : {}), pattern: c.pattern, note: String(r.title || '').slice(0, 500), ts: now, from: c.by }
+    if (queue.length) next.queue = queue
+    this.meta.claims[c.pattern] = next
+    this.meta.seen[this.holderKey(next)] = now
+    const text = auto
+      ? `📦 ${c.pattern} is yours now: you asked for it ("${r.title}"). ${context}`.trim()
+      : `📦 I'm handing you ${c.pattern} (you asked: "${r.title}"). My context: ${context}`
+    // Sent as from the holder; marked as a handoff, it wakes them but asks for no answer (duties.js).
+    this.postChat({ by: c.by, to: r.by, text, kind: 'handoff', path: c.pattern })
+    this.log(`[${this.name}] ${c.pattern} handed from ${c.by} to ${r.by}${auto ? ' (automatically)' : ''}`)
+  }
+
+  /** A chat entry written by the relay itself (file queue requests and handoffs). */
+  postChat ({ by, to = null, text, kind, path: file }) {
+    const chat = this.doc.getArray('chat')
+    const msg = { id: crypto.randomBytes(8).toString('hex'), by, to, text: String(text).slice(0, 4000), ts: Date.now(), kind, path: file }
+    this.doc.transact(() => {
+      chat.push([msg])
+      if (chat.length > 500) chat.delete(0, chat.length - 500)
+    })
+    return msg
+  }
+
+  /**
+   * Lets go of claims whose holder has done nothing in the session for claimIdleMs (no edit,
+   * no message, no tool call): handed to the first one waiting for it, or released. Returns
+   * how many went (and tells everyone, when any did).
    */
   sweepClaims (now = Date.now()) {
-    const away = (c) => {
-      if (this.holderPresent(c)) return false
-      const since = Math.max(this.meta.seen[this.holderKey(c)] || this.loadedAt, c.ts || 0)
-      return now - since >= this.cfg.claimAwayMs
-    }
-    const n = this.dropClaims(away)
-    if (n) this.log(`[${this.name}] released ${n} claim(s) held by people away for ${Math.round(this.cfg.claimAwayMs / 60000)} minutes`)
+    const mins = Math.round(this.cfg.claimIdleMs / 60000)
+    const n = this.dropClaims((c) => now - this.lastActive(c) >= this.cfg.claimIdleMs, (c) => `${c.by} had done nothing in the session for ${mins} minutes.`)
+    if (n) this.log(`[${this.name}] let go of ${n} claim(s) idle for ${mins} minutes`)
     // Also when a holder came or went: everyone's app shows whose claims are held by someone away.
     const shown = this.claimList().map((c) => `${c.pattern}\0${c.active}`).join('\n')
     if (n || shown !== this.claimsShown) { this.claimsShown = shown; this.broadcastClaims() }
@@ -887,21 +982,78 @@ class Room {
       const paths = [...this.doc.getMap('files').keys(), ...this.doc.getMap('blobs').keys()]
       const other = this.claimList().find((c) => !mine(c) && patternsOverlap(c.pattern, pattern, paths))
       if (other) throw new Error(`${pattern} overlaps ${other.by}'s claim on ${other.pattern}`)
-      this.meta.claims[pattern] = { by: name, ...(id ? { byId: id } : {}), pattern, note: who.talk === false ? '' : String(req.note ?? '').slice(0, 500), ts: Date.now() }
+      this.meta.claims[pattern] = { by: name, ...(id ? { byId: id } : {}), pattern, note: who.talk === false ? '' : String(req.note ?? '').slice(0, 500), ts: Date.now(), ...(existing?.queue ? { queue: existing.queue } : {}) }
       return { ok: true }
     }
     if (req.op === 'release') {
+      // A holder can't just let go of a file someone is waiting for: they hand it off, with
+      // their context (op 'handoff'). Releasing everything lets go of the rest.
+      const queued = (c) => c.queue && c.queue.length
       if (pattern === '*' || !pattern) {
-        return { ok: true, released: this.dropClaims(mine) }
+        const held = Object.values(this.meta.claims).filter((c) => mine(c) && queued(c)).map((c) => c.pattern)
+        return { ok: true, released: this.dropClaims((c) => mine(c) && !queued(c)), ...(held.length ? { held } : {}) }
       }
       const c = this.meta.claims[pattern]
       if (!c) return { ok: true, released: 0 }
       // The owner may release anyone's claim. Someone under the same name may release one
       // held by an account that isn't here (theirs from before a re-invite), but not take it.
+      // Either way, the first one waiting for it gets it.
       const stale = c.by === name && !this.holderPresent(c)
       if (!mine(c) && !who.owner && !stale) throw new Error(`${pattern} is claimed by ${c.by}; only they can release it (or the session owner)`)
-      this.dropClaims((x) => x === c)
+      if (mine(c) && queued(c)) throw new Error(`${c.queue.map((r) => r.by).join(', ')} ${c.queue.length === 1 ? 'is' : 'are'} waiting for ${pattern} in its file queue: hand it off with your context instead of releasing it`)
+      this.dropClaims((x) => x === c, () => mine(c) ? `${c.by} let go of it.` : `${name} (the session owner) released ${c.by}'s claim.`)
       return { ok: true, released: 1 }
+    }
+    if (req.op === 'request') {
+      // Asking for a file someone else holds: a line in that claim's file queue. Its holder is
+      // told now, and must hand it off (with context) before letting go.
+      const file = String(req.path ?? '').trim().replace(/^\.\//, '')
+      if (!file || file.length > MAX_PATTERN) throw new Error('path required')
+      if (who.talk === false) throw new Error('you may not post in this session')
+      const c = this.claimFor(file)
+      if (!c) throw new Error(`${file} is not claimed: claim it and go ahead`)
+      if (mine(c)) throw new Error(`${file} is already yours`)
+      const title = String(req.title ?? '').trim().slice(0, MAX_REQUEST_TITLE)
+      if (!title) throw new Error('title required: what you want to do, in a few words')
+      const description = String(req.description ?? '').trim().slice(0, MAX_REQUEST_TEXT)
+      const task = req.task ? String(req.task).slice(0, 80) : undefined
+      c.queue = c.queue || []
+      // One request per person per claim: asking again updates it and keeps its place.
+      const prev = c.queue.find((r) => id ? r.byId === id : r.by === name)
+      if (!prev && c.queue.length >= MAX_QUEUE) throw new Error(`${c.queue.length} are already waiting for ${c.pattern}`)
+      const r = prev || { id: crypto.randomBytes(6).toString('hex'), by: name, ...(id ? { byId: id } : {}), ts: Date.now() }
+      Object.assign(r, { path: file, title, description, ...(task ? { task } : {}) })
+      if (!prev) c.queue.push(r)
+      this.postChat({ by: name, to: c.by, kind: 'queue', path: file, text: `📥 File queue · ${file}: ${title}${description ? ` — ${description}` : ''}. When you're done with it, hand it off to me with your context.` })
+      return { ok: true, request: r.id, position: c.queue.indexOf(r) + 1, holder: c.by, pattern: c.pattern }
+    }
+    if (req.op === 'withdraw') {
+      // The one who asked (or the owner) takes a request back.
+      for (const c of Object.values(this.meta.claims)) {
+        const r = (c.queue || []).find((x) => x.id === req.request)
+        if (!r) continue
+        if (!(id ? r.byId === id : r.by === name) && !who.owner) throw new Error('that request is not yours')
+        c.queue = c.queue.filter((x) => x !== r)
+        if (!c.queue.length) delete c.queue
+        return { ok: true, withdrawn: 1 }
+      }
+      return { ok: true, withdrawn: 0 }
+    }
+    if (req.op === 'handoff') {
+      // The holder passes a claim to someone waiting for it (the first, unless `to` names a
+      // request id or a person), with what they know: what they changed, what's left, gotchas.
+      const c = this.meta.claims[pattern] || (pattern && this.claimFor(pattern))
+      if (!c) throw new Error(`${pattern || 'that'} is not claimed`)
+      if (!mine(c) && !who.owner) throw new Error(`${c.pattern} is ${c.by}'s to hand off`)
+      const queue = c.queue || []
+      if (!queue.length) throw new Error(`nobody is waiting for ${c.pattern}: release it instead`)
+      const to = req.to ? String(req.to) : ''
+      const r = to ? queue.find((x) => x.id === to || x.by === to) : queue[0]
+      if (!r) throw new Error(`${to} is not waiting for ${c.pattern}`)
+      const context = String(req.context ?? '').trim().slice(0, MAX_HANDOFF_TEXT)
+      if (!context && mine(c)) throw new Error('context required: what you changed, what is left and anything they should know')
+      this.handOff(c, r, { context: context || `${name} (the session owner) handed it on.`, auto: !mine(c) })
+      return { ok: true, to: r.by, pattern: c.pattern, waiting: queue.length - 1 }
     }
     if (req.op === 'clear-inactive') {
       // The owner clears every claim held by someone who isn't in the session now.
@@ -1043,14 +1195,8 @@ class Room {
   leave (ws) {
     if (ws.visit) { if (this.presence) this.presence.visitEnd(ws.visit); ws.visit = null }
     const ids = this.conns.get(ws)
-    const name = this.names.get(ws)
-    const account = ws.pass ? `${ws.pass.kind}:${ws.pass.sub}` : null
     this.conns.delete(ws)
     this.names.delete(ws)
-    // Their claims are released once they've been away a while (see sweepClaims).
-    const held = this.claimList().filter((c) => !c.active && (c.byId ? c.byId === account : c.by === name))
-    for (const c of held) this.meta.seen[this.holderKey(c)] = Date.now()
-    if (held.length) this.saveMeta()
     if (this.access.delete(ws)) {
       this.guard.trackedOrigins.delete(ws)
       this.broadcastMembers()
@@ -1096,6 +1242,7 @@ class Room {
       try {
         req = JSON.parse(decoding.readVarString(dec))
         reply = { id: req.id, ...this.claimRequest(this.claimant(ws), req) }
+        this.noteActivity(this.holderKeys(ws))
       } catch (err) {
         return send(ws, jsonMessage(MSG_CLAIMS, { claims: this.claimList(), reply: { id: req.id, ok: false, error: err.message } }))
       }

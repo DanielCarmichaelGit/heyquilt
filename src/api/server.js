@@ -25,6 +25,7 @@ import { accessTypeRoutes } from './routes/access-types.js'
 import { grantRoutes } from './routes/grants.js'
 import { sessionInviteRoutes } from './routes/session-invites.js'
 import { workspaceRoutes } from './routes/workspaces.js'
+import { workspaceFileRoutes } from './routes/workspace-files.js'
 import { HOSTED_RELAY } from '../settings.js'
 import { roomAccess } from './access.js'
 import { parseInvite } from '../ui/invite.js'
@@ -269,6 +270,8 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   // Always routed: with the flag off each answers a plain 404 of its own, so the app's
   // check at every launch isn't filed as a missing route.
   routes.push(...workspaceRoutes({ ...ctx, workspaces }))
+  const wsFiles = workspaceFileRoutes({ ...ctx, workspaces })
+  routes.push(...wsFiles.routes)
 
   async function openLink (code) {
     const userCode = normalizeUserCode(code)
@@ -462,6 +465,9 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   async function pruneNow () {
     try { await store.pruneEvents(now() - keepEventsMs) } catch (err) { log(`issue prune failed: ${err?.message || err}`) }
     try { await store.pruneIssues(now() - keepIssuesMs) } catch (err) { log(`issue prune failed: ${err?.message || err}`) }
+    // Workspace files: uploads that never landed, and deleted files past their 30 days
+    // (only with the flag on: before then the tables may not exist yet).
+    if (workspaces) try { await wsFiles.sweep() } catch (err) { log(`file sweep failed: ${err?.message || err}`) }
   }
   const prune = setInterval(() => { pruneNow() }, pruneEveryMs)
   prune.unref()
@@ -471,7 +477,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
 
   return new Promise((resolve) => server.listen(port, host, () => {
     const p = server.address().port
-    resolve({ port: p, url: `http://${host}:${p}`, close: () => { clearInterval(prune); clearTimeout(firstPrune); return new Promise((r) => server.close(r)) }, startKeys: () => limitStarts.size() })
+    resolve({ port: p, url: `http://${host}:${p}`, close: () => { clearInterval(prune); clearTimeout(firstPrune); return new Promise((r) => server.close(r)) }, startKeys: () => limitStarts.size(), sweepFiles: (at) => wsFiles.sweep(at) })
   }))
 }
 

@@ -1,42 +1,22 @@
 // Workspaces: a container owned by a person or an org, holding sessions and members.
 // Behind the QUILT_WORKSPACES flag (startApi({ workspaces })): off, every route answers 404.
-import { HttpError, needId, cleanName } from '../http.js'
-import { orgAccess, orgGrantsFor } from '../org-access.js'
+import { HttpError, cleanName } from '../http.js'
+import { orgAccess } from '../org-access.js'
 import { workspaceAccess, cleanColor, cleanDescription, cleanAccess, autoColor } from '../workspace-access.js'
+import { workspaceReach } from '../workspace-reach.js'
+import { fileView, listed, usageView } from './workspace-files.js'
 
 const ROOM = /^[A-Za-z0-9_-]{1,64}$/
 const ACCOUNT = /^(person|agent):[A-Za-z0-9_-]{1,64}$/
 const OPEN_MS = 10 * 60 * 1000
-const NOT_FOUND = 'no such workspace'
 
-export function workspaceRoutes ({ store, person, now, agentAuth, bearer, workspaces = false }) {
+export function workspaceRoutes (ctx) {
+  const { store, now, workspaces = false } = ctx
+  const { caller, grantsIn, reach } = workspaceReach(ctx)
   /** A handler that answers 404 while the flag is off (a route's own 404, not a missing route). */
   const gated = (fn) => (...args) => {
     if (!workspaces) throw new HttpError(404, 'not found')
     return fn(...args)
-  }
-
-  /** The caller as an account string: a person (website or linked computer) or an agent (qa_ key). */
-  async function caller (req) {
-    if (bearer(req).startsWith('qa_')) { const { agent } = await agentAuth.agentFromRequest(req); return { account: `agent:${agent.id}`, userId: null, agent } }
-    const p = await person(req)
-    return { account: `person:${p.userId}`, userId: p.userId }
-  }
-
-  /** The caller's org access for a workspace's org, or null (a person outside it, or an agent). Never throws. */
-  const grantsIn = (ws, me) => (ws.orgId ? orgGrantsFor(store, ws.orgId, me.account) : null)
-
-  /** A workspace the caller may at least see, with their access; 404 otherwise (outsiders can't probe ids). */
-  async function reach (req, id) {
-    const me = await caller(req)
-    const ws = await store.workspaceById(needId(id, 'workspace'))
-    const orgGrants = ws && await grantsIn(ws, me)
-    const access = ws && await workspaceAccess(store, ws, me.account, { orgGrants })
-    if (!access) throw new HttpError(404, NOT_FOUND)
-    // Who may delete it, as the DELETE route decides: the owner of a personal one; for an
-    // org's, a person whose role holds Workspaces: Delete (never an agent).
-    const canDelete = ws.orgId ? !!(me.userId && orgGrants && orgGrants.can('workspaces', 'd')) : access.via === 'owner'
-    return { me, ws, access, canDelete, needAdmin () { if (!access.admin) throw new HttpError(403, "you don't manage this workspace") } }
   }
 
   const nameOf = async (account) => {
@@ -103,7 +83,9 @@ export function workspaceRoutes ({ store, person, now, agentAuth, bearer, worksp
       const members = await Promise.all((await store.listWorkspaceMembers(ws.id)).map(async (m) => ({ account: m.account, name: (await nameOf(m.account)) || '', kind: kindOf(m.account), access: m.access, addedAt: m.addedAt })))
       const ownerAccount = ws.ownerUserId ? `person:${ws.ownerUserId}` : null
       const owner = ownerAccount ? { account: ownerAccount, name: (await nameOf(ownerAccount)) || '' } : { account: null, name: (await store.orgById(ws.orgId))?.name || '' }
-      return { workspace: ws, access, canDelete, owner, members, sessions: (await store.listWorkspaceSessions(ws.id)).map((s) => sessionView(s, t)) }
+      const sessions = (await store.listWorkspaceSessions(ws.id)).map((s) => sessionView(s, t))
+      const files = listed(await store.listWorkspaceFiles(ws.id)).map(fileView)
+      return { workspace: ws, access, canDelete, owner, members, sessions, files, usage: await usageView(store, ws, ctx) }
     }],
 
     ['PATCH', /^\/v1\/workspaces\/([^/]+)$/, async (req, body, [id]) => {

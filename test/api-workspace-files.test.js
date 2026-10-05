@@ -1,0 +1,96 @@
+import { test, before, after } from 'node:test'
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { startTestApi } from './api-helpers.js'
+import { DiskStore } from '../src/api/file-store.js'
+
+let t, store
+before(async () => {
+  store = new DiskStore(fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-wsfiles-')))
+  t = await startTestApi({ workspaces: true, fileStore: store, maxFileBytes: 100, workspaceQuotaBytes: 250, maxWorkspaceFiles: 4 })
+})
+after(() => t.close())
+
+async function upload (who, wsId, p, body, extra = {}) {
+  const r = await t.call('POST', `/v1/workspaces/${wsId}/files`, { path: p, size: body.length, ...extra }, who)
+  if (r.status !== 200) return r
+  const put = await fetch(r.body.upload.url, { method: 'PUT', body })
+  assert.equal(put.status, 200)
+  const done = await t.call('POST', `/v1/workspaces/${wsId}/files/${r.body.file.id}/done`, {}, who)
+  return done
+}
+
+test('upload, list, download, versions, rename, move folder, delete; viewers read only', async () => {
+  const w = (await t.call('POST', '/v1/workspaces', { name: 'Files' }, 'mem')).body.workspace
+  await t.call('PUT', `/v1/workspaces/${w.id}/members/person:lim`, { access: 'view' }, 'mem')
+  const made = await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: 'cuts/teaser.txt', size: 5, note: 'first' }, 'mem')
+  assert.equal(made.status, 200, JSON.stringify(made.body))
+  assert.deepEqual([made.body.file.path, made.body.file.name, made.body.file.folder, made.body.file.version, made.body.file.mime, made.body.upload.method], ['cuts/teaser.txt', 'teaser.txt', 'cuts', 1, 'text/plain', 'PUT'])
+  assert.equal('objectKey' in made.body.file, false)
+  const before = await t.call('GET', `/v1/workspaces/${w.id}`, null, 'mem')
+  assert.deepEqual(before.body.files.map((f) => [f.path, f.kind]), [['cuts', 'folder']], 'unconfirmed uploads are not listed; the parent folder is')
+  assert.equal((await t.call('POST', `/v1/workspaces/${w.id}/files/${made.body.file.id}/done`, {}, 'mem')).status, 409, 'nothing landed yet')
+  assert.ok(made.body.upload.url.startsWith(t.api.url + '/v1/file-data/'), 'disk links are absolute, on the address the caller used')
+  assert.equal((await fetch(made.body.upload.url, { method: 'PUT', body: 'hello' })).status, 200)
+  const done = await t.call('POST', `/v1/workspaces/${w.id}/files/${made.body.file.id}/done`, {}, 'mem')
+  assert.deepEqual([done.status, done.body.file.size], [200, 5])
+  const got = await t.call('GET', `/v1/workspaces/${w.id}`, null, 'lim')
+  assert.deepEqual(got.body.files.map((f) => f.path), ['cuts', 'cuts/teaser.txt'])
+  assert.deepEqual(got.body.usage, { usedBytes: 5, quotaBytes: 250, fileCount: 1, maxFiles: 4 })
+  const inFolder = await t.call('GET', `/v1/workspaces/${w.id}/files?folder=cuts`, null, 'lim')
+  assert.deepEqual(inFolder.body.files.map((f) => f.name), ['teaser.txt'])
+  const dl = await t.call('GET', `/v1/workspaces/${w.id}/files/${made.body.file.id}/download`, null, 'lim')
+  assert.deepEqual([dl.status, dl.body.name, dl.body.mime, dl.body.size], [200, 'teaser.txt', 'text/plain', 5])
+  assert.ok(dl.body.url.startsWith(t.api.url + '/v1/file-data/'))
+  assert.equal(await (await fetch(dl.body.url)).text(), 'hello')
+  // A viewer cannot write.
+  assert.equal((await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: 'x.txt', size: 1 }, 'lim')).status, 403)
+  assert.equal((await t.call('DELETE', `/v1/workspaces/${w.id}/files/${made.body.file.id}`, null, 'lim')).status, 403)
+  assert.equal((await t.call('GET', `/v1/workspaces/${w.id}/files`, null, 'out')).status, 404)
+  // A second upload to the same path is a new version.
+  const v2 = await upload('mem', w.id, 'cuts/teaser.txt', 'hello world', { note: 'longer' })
+  assert.deepEqual([v2.status, v2.body.file.id, v2.body.file.version, v2.body.file.size, v2.body.file.note], [200, made.body.file.id, 2, 11, 'longer'])
+  const vs = await t.call('GET', `/v1/workspaces/${w.id}/files/${made.body.file.id}/versions`, null, 'lim')
+  assert.deepEqual(vs.body.versions.map((v) => [v.version, v.size, v.note]), [[1, 5, 'first']])
+  const old = await t.call('GET', `/v1/workspaces/${w.id}/files/${made.body.file.id}/download?version=1`, null, 'lim')
+  assert.equal(await (await fetch(old.body.url)).text(), 'hello')
+  assert.equal((await t.call('GET', `/v1/workspaces/${w.id}`, null, 'mem')).body.usage.usedBytes, 16)
+  // Rename, move a folder, make a folder, delete.
+  assert.equal((await t.call('PATCH', `/v1/workspaces/${w.id}/files/${made.body.file.id}`, { path: 'cuts/final.txt' }, 'mem')).body.file.name, 'final.txt')
+  const folder = got.body.files.find((f) => f.kind === 'folder')
+  assert.equal((await t.call('PATCH', `/v1/workspaces/${w.id}/files/${folder.id}`, { path: 'done' }, 'mem')).status, 200)
+  assert.deepEqual((await t.call('GET', `/v1/workspaces/${w.id}/files`, null, 'mem')).body.files.map((f) => f.path), ['done', 'done/final.txt'])
+  assert.equal((await t.call('POST', `/v1/workspaces/${w.id}/folders`, { path: 'done' }, 'mem')).status, 409)
+  assert.equal((await t.call('POST', `/v1/workspaces/${w.id}/folders`, { path: 'raw' }, 'mem')).body.file.kind, 'folder')
+  assert.equal((await t.call('DELETE', `/v1/workspaces/${w.id}/files/${folder.id}`, null, 'mem')).status, 200)
+  assert.deepEqual((await t.call('GET', `/v1/workspaces/${w.id}/files`, null, 'mem')).body.files.map((f) => f.path), ['raw'])
+  assert.equal((await t.call('GET', `/v1/workspaces/${w.id}`, null, 'mem')).body.usage.usedBytes, 0)
+})
+
+test('limits: file size, workspace quota, file count, bad paths', async () => {
+  const w = (await t.call('POST', '/v1/workspaces', { name: 'Limits' }, 'mem')).body.workspace
+  assert.equal((await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: 'big.bin', size: 101 }, 'mem')).status, 413)
+  assert.equal((await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: '../x', size: 1 }, 'mem')).status, 400)
+  assert.equal((await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: 'x', size: 0 }, 'mem')).status, 400)
+  for (const n of [1, 2, 3]) assert.equal((await upload('mem', w.id, `f${n}.txt`, 'x'.repeat(80))).status, 200)
+  const r = await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: 'f4.txt', size: 20 }, 'mem')
+  assert.deepEqual([r.status, r.body.error], [413, 'this workspace has used its storage'])
+  assert.equal((await upload('mem', w.id, 'f4.txt', 'y')).status, 200)
+  const r5 = await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: 'f5.txt', size: 1 }, 'mem')
+  assert.deepEqual([r5.status, r5.body.error], [413, 'this workspace has too many files'])
+})
+
+test('unconfirmed uploads are forgotten after an hour and deleted files swept after 30 days', async () => {
+  const w = (await t.call('POST', '/v1/workspaces', { name: 'Sweep' }, 'mem')).body.workspace
+  const stale = (await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: 'never.txt', size: 1 }, 'mem')).body.file
+  const gone = await upload('mem', w.id, 'gone.txt', 'z')
+  assert.equal((await t.call('DELETE', `/v1/workspaces/${w.id}/files/${gone.body.file.id}`, null, 'mem')).status, 200)
+  await t.api.sweepFiles(Date.now() + 61 * 60 * 1000)
+  assert.equal(await t.store.workspaceFileById(stale.id), null)
+  assert.ok(await t.store.workspaceFileById(gone.body.file.id), 'kept 30 days')
+  await t.api.sweepFiles(Date.now() + 31 * 24 * 60 * 60 * 1000)
+  assert.equal(await t.store.workspaceFileById(gone.body.file.id), null)
+  assert.equal(await store.exists(`${w.id}/${gone.body.file.id}/1`), null, 'bytes removed from storage')
+})

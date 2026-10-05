@@ -90,3 +90,10 @@ test('the sidebar lists workspaces and marks the open one', () => {
   assert.ok(h.includes('${sideWorkspacesHtml(view)}'))
 })
 
+test('Settings sits at the bottom of the sidebar with Shut down, under a rule', () => {
+  const h = ui('home.js')
+  assert.ok(h.includes('<nav class="side-nav side-foot" aria-label="App">'))
+  assert.ok(h.indexOf('data-view="settings" class="${view') > h.indexOf('${sideWorkspacesHtml(view)}'))
+  assert.ok(ui('app.css').includes('.side-foot { margin-top: auto; display: flex; flex-direction: column; gap: 2px; padding-top: 10px; border-top: 1px solid var(--border); }'))
+})
+

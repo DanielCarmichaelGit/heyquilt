@@ -63,13 +63,13 @@ function sidebarHtml (view) {
 
     <nav class="side-nav" aria-label="Main">
       <button data-view="home" class="${view === 'home' ? 'on' : ''}">${I.home}<span>Home</span></button>
-      <button data-view="settings" class="${view === 'settings' ? 'on' : ''}">${I.gear}<span>Settings</span></button>
     </nav>
     ${sideWorkspacesHtml(view)}
 
-    <div class="side-foot">
-      <button class="btn sm ghost side-off" data-shutdown>${I.power}<span>Shut down</span></button>
-    </div>
+    <nav class="side-nav side-foot" aria-label="App">
+      <button data-view="settings" class="${view === 'settings' ? 'on' : ''}">${I.gear}<span>Settings</span></button>
+      <button class="side-off" data-shutdown>${I.power}<span>Shut down</span></button>
+    </nav>
   </aside>`
 }
 

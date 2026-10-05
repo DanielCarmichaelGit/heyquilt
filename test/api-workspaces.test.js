@@ -73,6 +73,7 @@ test('org workspaces: Workspaces: Create makes, Update manages, Read sees; the o
   assert.deepEqual((await t.call('GET', `/v1/workspaces/${w.id}`, null, 'mem')).body.access, { access: 'edit', admin: false, via: 'member' })
   assert.equal((await t.call('DELETE', `/v1/workspaces/${w.id}`, null, 'mem')).status, 403)
   const { agent, accessKey } = await makeAgent(t, { orgId: o.org.id })
+  await t.store.addAgentMember({ orgId: o.org.id, agentId: agent.id })
   assert.equal((await t.call('PUT', `/v1/workspaces/${w.id}/members/agent:${agent.id}`, { access: 'edit' }, 'admin')).status, 200)
   assert.equal((await t.call('DELETE', `/v1/workspaces/${w.id}`, null, null, { authorization: `Bearer ${accessKey}` })).status, 403, 'agents do not delete org workspaces')
   assert.equal((await t.call('DELETE', `/v1/workspaces/${w.id}`, null, 'owner')).status, 200)
@@ -117,4 +118,21 @@ test('linking a room the API has not seen does not claim it; its owner can still
   assert.equal((await t.call('DELETE', `/v1/workspaces/${w.id}/sessions/room-claim1`, null, 'mem')).status, 200)
   const loose = await t.store.sessionByRoom('room-claim1')
   assert.deepEqual([loose.workspaceId, loose.workspaceLinkedBy, loose.ownerAccount], [null, null, 'person:mem'])
+})
+
+test('removed from the org: the workspace is gone for them, person or agent', async () => {
+  const o = await makeOrg(t, 'Leavers')
+  const w = (await t.call('POST', '/v1/workspaces', { name: 'Core', org: o.slug }, 'admin')).body.workspace
+  const { agent, accessKey } = await makeAgent(t, { orgId: o.org.id })
+  const agentRow = await t.store.addAgentMember({ orgId: o.org.id, agentId: agent.id })
+  assert.equal((await t.call('PUT', `/v1/workspaces/${w.id}/members/person:mem`, { access: 'edit' }, 'admin')).status, 200)
+  assert.equal((await t.call('PUT', `/v1/workspaces/${w.id}/members/agent:${agent.id}`, { access: 'edit' }, 'admin')).status, 200)
+  const asAgent = { authorization: `Bearer ${accessKey}` }
+  assert.equal((await t.call('GET', `/v1/workspaces/${w.id}`, null, 'mem')).status, 200)
+  assert.equal((await t.call('GET', `/v1/workspaces/${w.id}`, null, null, asAgent)).status, 200)
+  await t.store.removeMember(o.mem.id)
+  await t.store.removeMember(agentRow.id)
+  assert.equal((await t.call('GET', `/v1/workspaces/${w.id}`, null, 'mem')).status, 404)
+  assert.equal((await t.call('GET', `/v1/workspaces/${w.id}`, null, null, asAgent)).status, 404)
+  assert.equal((await t.call('GET', '/v1/me/workspaces', null, 'mem')).body.workspaces.some((x) => x.id === w.id), false)
 })

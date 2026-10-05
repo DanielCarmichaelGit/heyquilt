@@ -26,14 +26,23 @@ export function cleanAccess (value) {
 /**
  * `account`'s place in `workspace`: { access, admin, via } or null.
  * Personal: the owner is admin. Org: Workspaces: Update is admin; Workspaces: Read alone
- * is view. A member row gives its access and beats org Read. `orgGrants` is the caller's
- * org access ({ can }) or null when they aren't in the org.
+ * is view. A member row gives its access and beats org Read; in an org workspace it counts
+ * only while its person or agent is still in the org. `orgGrants` is the caller's org
+ * access ({ can }) or null when they aren't in the org.
  */
 export async function workspaceAccess (store, workspace, account, { orgGrants = null } = {}) {
   if (workspace.ownerUserId && account === `person:${workspace.ownerUserId}`) return { access: 'edit', admin: true, via: 'owner' }
   if (workspace.orgId && orgGrants && orgGrants.can('workspaces', 'u')) return { access: 'edit', admin: true, via: 'org' }
   const member = await store.workspaceMember(workspace.id, account)
-  if (member) return { access: member.access, admin: false, via: 'member' }
+  if (member && await stillInOrg(store, workspace, account, orgGrants)) return { access: member.access, admin: false, via: 'member' }
   if (workspace.orgId && orgGrants && orgGrants.can('workspaces', 'r')) return { access: 'view', admin: false, via: 'org' }
   return null
+}
+
+/** Whether a member row still counts: always in a personal workspace; in an org's, only for its people and agents. */
+async function stillInOrg (store, workspace, account, orgGrants) {
+  if (!workspace.orgId) return true
+  const [kind, id] = account.split(':')
+  if (kind === 'agent') return !!(await store.memberByAgent(workspace.orgId, id))
+  return !!orgGrants
 }

@@ -319,7 +319,7 @@ sees both files and versions in the Files tab and the thread in the session.
   tab shows it on the row; the tools return it as text.
 - Upload interrupted: the row stays `version n, size 0` until `done`; rows never confirmed are removed after
   an hour and don't count against quota.
-- Realtime down: the app falls back to refetching every 30 seconds and shows nothing different.
+- Accounts API unreachable: the Files section keeps what it last showed, the 20-second refetch keeps trying, and uploads report the error.
 - Workspace deleted: its sessions become loose; nothing in them is lost. Agents placed through it lose that
   placement's access to those sessions on their next connection.
 
@@ -342,7 +342,7 @@ sees both files and versions in the Files tab and the thread in the session.
    workspace page with the Sessions and People & agents sections, the website lists, starting a session inside
    a workspace, access fallback.
 2. **Files.** The file routes, bucket, the Files section and All files view with upload, preview and versions,
-   Attach from workspace, Supabase Realtime.
+   Attach from workspace, a 20-second refetch while a workspace page is open (Supabase Realtime later).
 3. **Agents.** Add an agent to a workspace (existing or by invite link), the library tools, placements with reach
    and sessions default in Settings › Agents and on the org agent page, workspace overrides, per-session keep-out,
    guide text.

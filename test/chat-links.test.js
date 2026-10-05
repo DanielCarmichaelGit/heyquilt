@@ -7,7 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { startServer } from '../src/server.js'
 import { Session } from '../src/session.js'
-import { makeChatLink, findChatLink, publicAddress, fetchPublicFile, addRefusal } from '../src/chat-links.js'
+import { makeChatLink, extendChatLink, findChatLink, publicAddress, fetchPublicFile, addRefusal } from '../src/chat-links.js'
 
 process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-chat-home-'))
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-chat-${n}-`))
@@ -143,6 +143,27 @@ test('a claimed folder, and a message waiting for an answer, hold the AI back li
   assert.match((await open('task', 'title=Pick%20a%20logo')).text, /^Added to To do: Pick a logo/)
 })
 
+test('a link works for ten minutes; the owner extends it while it works, and one that ran out needs a new link', async () => {
+  const now = Date.now()
+  assert.ok(link.expiresAt > now + 9 * 60000 && link.expiresAt <= now + 10 * 60000, 'ten minutes by default')
+  assert.match((await open()).text, /This link works for (9|10) more minutes\. When it runs out, it stops working and a new link is needed/)
+  const m = await waitFor(() => dana.members.find((x) => x.name === 'ChatGPT'))
+  assert.equal(m.chat, true)
+  assert.equal(m.expiresAt, link.expiresAt, 'the owner sees when it runs out')
+  const r = await dana.extendChatLink('ChatGPT', 120)
+  assert.ok(r.expiresAt > Date.now() + 119 * 60000, 'two hours from now')
+  await waitFor(() => dana.members.find((x) => x.name === 'ChatGPT')?.expiresAt === r.expiresAt)
+  assert.match((await open()).text, /This link works for 2 more hours/)
+  // Ran out: gone from the page, the member list, and can't be brought back.
+  const room = { meta: { members: {}, identities: {} }, saveMeta () {} }
+  const short = makeChatLink(room, { name: 'Grok', minutes: 10 }, 0)
+  assert.deepEqual(extendChatLink(room, `chat:${short.id}`, 60, 5 * 60000), { name: 'Grok', expiresAt: 65 * 60000 })
+  assert.throws(() => extendChatLink(room, `chat:${short.id}`, 60, 66 * 60000), /run out or was removed; make a new one/)
+  assert.equal(room.meta.members[`chat:${short.id}`], undefined)
+  assert.equal(findChatLink(room, short.token, 66 * 60000), null)
+  await assert.rejects(dana.extendChatLink('Nobody', 10), /no chat link called Nobody/)
+})
+
 test('the owner\'s controls apply: messages off, then removing the member ends the link', async () => {
   const m = await waitFor(() => dana.members.find((x) => x.name === 'ChatGPT'))
   await dana.setMember(m.key, { access: { files: 'edit', folders: [], foldersExcept: [], talk: false } })
@@ -155,9 +176,9 @@ test('the owner\'s controls apply: messages off, then removing the member ends t
 
 test('only the owner can make a link', async () => {
   const other = { meta: { members: {}, identities: {} }, saveMeta () {} }
-  const l = makeChatLink(other, { name: 'Grok', hours: 1 }, 1000)
+  const l = makeChatLink(other, { name: 'Grok', minutes: 60 }, 1000)
   assert.ok(findChatLink(other, l.token, 2000), 'live')
-  assert.equal(findChatLink(other, l.token, 1000 + 3600 * 1000 + 1), null, 'expired after its hours')
+  assert.equal(findChatLink(other, l.token, 1000 + 60 * 60000 + 1), null, 'expired after its minutes')
   assert.equal(other.meta.members[`chat:${l.id}`], undefined, 'and its member is gone with it')
   // Names never clash with someone already in the session.
   const room = { meta: { members: { a: { name: 'ChatGPT' } }, identities: { dana: 'k' } }, saveMeta () {} }

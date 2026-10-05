@@ -595,15 +595,27 @@ export async function runMcp () {
   server.registerTool('quilt_chat_link', {
     description: 'Session owner only: make a link for an AI that only has a chat window (ChatGPT, claude.ai, Grok and the like). ' +
       'Your user pastes it into that chat; the AI then reads and sends messages, reads and adds tasks, reads files, and adds pictures, documents and notes ' +
-      'by opening links, with nothing to install. It joins as its own member (removing it ends the link) and expires.',
+      'by opening links, with nothing to install. It joins as its own member (removing it ends the link). ' +
+      'It works for ten minutes unless extended with quilt_extend_chat_link; once it runs out, a new link is needed.',
     inputSchema: {
       name: z.string().max(40).optional().describe('How it appears in the session, e.g. "ChatGPT"'),
-      hours: z.number().int().min(1).max(720).optional().describe('How long the link works (default a week, at most 30 days)')
+      minutes: z.number().int().min(1).max(43200).optional().describe('How long the link works (default 10 minutes, at most 30 days)')
     }
-  }, ({ name, hours }) => withDaemon(async (d) => {
-    const r = await call(d, 'POST', '/chat-link', { name, hours })
+  }, ({ name, minutes }) => withDaemon(async (d) => {
+    const r = await call(d, 'POST', '/chat-link', { name, minutes })
     return `Chat link for ${r.name} (works until ${new Date(r.expiresAt).toISOString().slice(0, 16).replace('T', ' ')} UTC):\n${r.url}\n\n` +
       'Give it to your user to paste into the chat AI, with a line like "Open this link and follow it to join our Quilt session." Anyone with the link can act as that member, so share it only there.'
+  }))
+
+  server.registerTool('quilt_extend_chat_link', {
+    description: 'Session owner only: set how long a chat link still works, from now (shorter or longer). Only a link that still works can be extended; one that ran out needs a new link (quilt_chat_link).',
+    inputSchema: {
+      who: z.string().max(80).describe('The chat AI\'s name in the session, e.g. "ChatGPT"'),
+      minutes: z.number().int().min(1).max(43200).describe('Minutes from now, e.g. 60 for an hour')
+    }
+  }, ({ who, minutes }) => withDaemon(async (d) => {
+    const r = await call(d, 'POST', '/chat-link/extend', { who, minutes })
+    return `${r.name}'s chat link now works until ${new Date(r.expiresAt).toISOString().slice(0, 16).replace('T', ' ')} UTC.`
   }))
 
   server.registerTool('quilt_before_edit', {

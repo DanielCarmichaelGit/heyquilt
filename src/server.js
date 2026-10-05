@@ -13,7 +13,7 @@
 // limited to some folders. The relay enforces it by undoing file changes a
 // member isn't allowed to make, before anyone else sees them.
 import http from 'node:http'
-import { makeChatLink, handleChatLink, fetchPublicFile } from './chat-links.js'
+import { makeChatLink, extendChatLink, pruneChatLinks, handleChatLink, fetchPublicFile } from './chat-links.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -594,7 +594,8 @@ class Room {
       const ownerName = this.meta.ownerName || Object.entries(this.meta.identities).find(([, k]) => k === this.meta.owner)?.[0] || 'owner'
       list.push({ key: this.ownerId, name: ownerName, kind: 'human', role: 'owner', scopes: [], online: online.has(this.ownerId) })
     }
-    for (const [key, m] of Object.entries(this.meta.members)) list.push({ key, name: m.name, kind: m.kind, ...memberAccess(m), online: online.has(key) })
+    pruneChatLinks(this) // chat links that ran out leave the list
+    for (const [key, m] of Object.entries(this.meta.members)) list.push({ key, name: m.name, kind: m.kind, ...memberAccess(m), online: online.has(key), ...(m.chat ? { chat: true, expiresAt: m.expiresAt } : {}) })
     return list
   }
 
@@ -639,9 +640,14 @@ class Room {
     if (req.op === 'chatlink') {
       // A link a chat-only AI (ChatGPT, claude.ai, Grok…) works through by opening pages (chat-links.js).
       // It joins as a member of its own; the token is in this reply only, to the owner who asked.
-      const l = makeChatLink(this, { name: req.name, hours: req.hours, by: me.name })
+      const l = makeChatLink(this, { name: req.name, minutes: req.minutes, by: me.name })
       this.log(`[${this.name}] chat link made for ${l.name}`)
       return { ok: true, token: l.token, name: l.name, expiresAt: l.expiresAt }
+    }
+    if (req.op === 'chatextend') {
+      // How long a chat link still works, from now. One that ran out is gone: a new link is needed.
+      const l = extendChatLink(this, String(req.key || ''), req.minutes)
+      return { ok: true, name: l.name, expiresAt: l.expiresAt }
     }
     if (req.op === 'end') {
       // Reply first; the relay then sends everyone away and deletes the room.

@@ -341,7 +341,7 @@ export function openInvite (id) {
     </div>
     ${s.status.access?.owner ? `<div class="label inv-agent-label">A chat AI</div>
     <div id="inv-chat" class="inv-agent">
-      <p class="hint">For ChatGPT, claude.ai, Grok and other AIs you use in a chat window: make a chat link and paste it into the chat. It can read and send messages, read and add tasks, read files, and add pictures, documents and notes. It can't change existing files. It shows up in the session as its own member; remove it there to end the link.</p>
+      <p class="hint">For ChatGPT, claude.ai, Grok and other AIs you use in a chat window: make a chat link and paste it into the chat. It can read and send messages, read and add tasks, read files, and add pictures, documents and notes. It can't change existing files. It shows up in the session as its own member and works for 10 minutes: extend it from the people menu while it works, or make a new one after.</p>
       <button class="btn" type="button" id="inv-chat-make">${I.link}<span>Make a chat link</span></button>
       <p class="error" id="inv-chat-error"></p>
     </div>` : ''}
@@ -375,8 +375,8 @@ export function openInvite (id) {
       chatMake.disabled = true
       try {
         const r = await api('POST', `/api/sessions/${id}/chat-link`, {})
-        const until = new Date(r.expiresAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-        $('#inv-chat', back).innerHTML = `<p class="hint">Paste this into the chat. It works until ${esc(until)} and shows in the session as <b>${esc(r.name)}</b>. Anyone with it can act as ${esc(r.name)}, so only paste it there.</p>
+        const until = new Date(r.expiresAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+        $('#inv-chat', back).innerHTML = `<p class="hint">Paste this into the chat. It works until ${esc(until)} (extend it from the people menu) and shows in the session as <b>${esc(r.name)}</b>. Anyone with it can act as ${esc(r.name)}, so only paste it there.</p>
           <div class="codebox"><code id="inv-chat-text">${esc(`Open this link and follow it to join our Quilt session: ${r.url}`)}</code><button class="btn icon" data-copy="inv-chat-text" title="Copy" aria-label="Copy chat link">${I.copy}</button></div>`
       } catch (err) {
         chatMake.disabled = false

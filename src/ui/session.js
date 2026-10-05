@@ -375,8 +375,8 @@ function bindTop () {
   })
   menu.addEventListener('change', async (e) => {
     const f = e.target.closest('.pm-member.edit')
-    // Access types are saved with Save (below), not on every change.
-    if (!f || f.classList.contains('pm-access')) return
+    // Access types are saved with Save (below), not on every change; a chat link's time with Extend.
+    if (!f || f.classList.contains('pm-access') || f.classList.contains('pm-chat')) return
     try {
       await api('POST', `/api/sessions/${current}/members/set`, { key: f.dataset.key, role: f.role.value, ...(f.scopes ? { scopes: parseScopes(f.scopes.value) } : {}) })
       toast('Access updated')
@@ -387,6 +387,19 @@ function bindTop () {
     grantLoad = grantsLoading()
     renderPeopleMenu({ force: true })
     loadGrants()
+  })
+  menu.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-extend-chat]')
+    if (!b) return
+    const f = b.closest('.pm-chat')
+    b.disabled = true
+    try {
+      const r = await api('POST', `/api/sessions/${current}/chat-link/extend`, { key: f.dataset.key, minutes: Number(f.minutes.value) })
+      toast(`${r.name}: ${chatTimeLeft(r.expiresAt)}`)
+      // The menu doesn't redraw under a focused row: show the new time now, and let it redraw.
+      f.querySelector('.pm-now').textContent = chatTimeLeft(r.expiresAt)
+      b.blur()
+    } catch (err) { toast(err.message) } finally { b.disabled = false }
   })
   menu.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-remove]')
@@ -643,7 +656,7 @@ function membersHtml (st) {
       ${(st.members || []).map((m) => `<div class="pm-member"><span class="nm">${esc(m.name)}${m.kind === 'agent' ? ' (agent)' : ''}</span><span class="tag">${roleLabel(m.role)}</span>${m.scopes && m.scopes.length ? `<span class="hint">${esc(scopesText(m.scopes))}</span>` : ''}</div>`).join('')}</div>` : ''
   }
   return `<div class="pm-section"><div class="pm-title">Who can get in</div>
-    ${list.length ? list.map((m) => state.accessTypes && ACCOUNT_KEY.test(m.key) ? accessForm(m) : `
+    ${list.length ? list.map((m) => m.chat ? chatMemberRow(m) : state.accessTypes && ACCOUNT_KEY.test(m.key) ? accessForm(m) : `
       <form class="pm-member edit" data-key="${esc(m.key)}">
         <span class="nm" title="${m.online ? 'Online' : 'Offline'}"><span class="dot" style="background:${m.online ? 'var(--ok)' : 'var(--faint)'}"></span>${esc(m.name)}${m.kind === 'agent' ? ' (agent)' : ''}</span>
         <select class="input" name="role" aria-label="Role for ${esc(m.name)}">
@@ -655,6 +668,36 @@ function membersHtml (st) {
       </form>`).join('') : '<div class="pm-empty">Only you so far. People you let in show up here.</div>'}
     </div>
     <div class="pm-foot"><button type="button" class="btn sm ghost danger" data-end-session>End session for everyone</button></div>`
+}
+
+/** How long a chat link still works, e.g. "8 min left (until 14:32)", or "Ran out". */
+export function chatTimeLeft (expiresAt, now = Date.now()) {
+  const ms = (expiresAt || 0) - now
+  if (ms <= 0) return 'Ran out: make a new link to keep going'
+  const min = Math.ceil(ms / 60000)
+  const left = min < 60 ? `${min} min` : min < 2880 ? `${Math.round(min / 60)} h` : `${Math.round(min / 1440)} days`
+  const until = new Date(expiresAt).toLocaleString(undefined, min < 1440 ? { hour: 'numeric', minute: '2-digit' } : { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+  return `${left} left (until ${until})`
+}
+
+/** A chat AI the owner let in with a chat link: how long it still works, a way to extend it, and remove. */
+function chatMemberRow (m) {
+  const name = esc(m.name)
+  const live = (m.expiresAt || 0) > Date.now()
+  return `
+      <form class="pm-member edit pm-chat" data-key="${esc(m.key)}">
+        <span class="nm" title="${m.online ? 'Online' : 'Offline'}"><span class="dot" style="background:${m.online ? 'var(--ok)' : 'var(--faint)'}"></span>${name} (chat link)</span>
+        <span class="hint pm-now">${esc(chatTimeLeft(m.expiresAt))}</span>
+        ${live ? `<select class="input" name="minutes" aria-label="Keep ${name}'s link working for">
+          <option value="10">10 more minutes</option>
+          <option value="60" selected>1 more hour</option>
+          <option value="480">8 more hours</option>
+          <option value="1440">1 more day</option>
+          <option value="10080">1 more week</option>
+        </select>
+        <button type="button" class="btn sm" data-extend-chat>Extend</button>` : ''}
+        <button type="button" class="btn sm ghost icon" data-remove title="Remove ${name}" aria-label="Remove ${name}">${I.x}</button>
+      </form>`
 }
 
 /**

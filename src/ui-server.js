@@ -621,7 +621,8 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     'POST /api/sessions/:id/members/set': async (b, id) => (await get(id).setMember(b.key, { role: b.role, scopes: b.scopes }), { ok: true }),
     'POST /api/sessions/:id/members/remove': (b, id) => removeMember(id, b.key),
     // Owner only: a link a chat-only AI (ChatGPT, claude.ai, Grok…) works through (chat-links.js).
-    'POST /api/sessions/:id/chat-link': (b, id) => get(id).createChatLink({ name: b.name || 'Chat AI', hours: b.hours }),
+    'POST /api/sessions/:id/chat-link': (b, id) => get(id).createChatLink({ name: b.name || 'Chat AI', minutes: b.minutes }),
+    'POST /api/sessions/:id/chat-link/extend': (b, id) => get(id).extendChatLink(String(b.key || ''), b.minutes),
     'POST /api/sessions/:id/rename': (b, id) => rename(id, b.name),
     'POST /api/sessions/:id/end': async (b, id) => { await get(id).endForEveryone(); await stop(id); return { ok: true } },
     'POST /api/sessions/:id/summarize': (b, id) => {

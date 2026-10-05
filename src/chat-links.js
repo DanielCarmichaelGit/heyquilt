@@ -9,7 +9,9 @@
 // tasks, list files and read text files, and add non-code files (pictures, PDFs, office
 // documents, notes) as new files, never over an existing one. The link is a member of
 // the session (`chat:<id>`): it shows on the member list, the owner's controls (talk,
-// folders, view only, remove) apply to it, and removing it kills the link. It expires.
+// folders, view only, remove) apply to it, and removing it kills the link. It is short-lived:
+// ten minutes unless the owner extends it while it still works. Once it runs out, it's gone:
+// a new link is needed.
 //
 // The link is the key, so it is long, random, stored only as a hash, and kept out of
 // search engines and referrers.
@@ -24,8 +26,9 @@ import { HistoryLog } from './history.js'
 import { changeRefusal } from './session-access.js'
 import { waitingOn, renderUnanswered } from './duties.js'
 
-export const CHAT_LINK_DEFAULT_HOURS = 7 * 24
-export const CHAT_LINK_MAX_HOURS = 30 * 24
+export const CHAT_LINK_DEFAULT_MINUTES = 10
+export const CHAT_LINK_MAX_MINUTES = 30 * 24 * 60
+const MINUTE = 60 * 1000
 export const CHAT_ADD_MAX_BYTES = 5 * 1024 * 1024
 const MAX_LINKS = 20 // per session
 const MAX_TEXT = 4000 // a message, a task title is shorter (tasks.js)
@@ -42,10 +45,12 @@ const memberId = (id) => `chat:${id}`
 // ------------------------------------------------------------ the links --
 
 /** Makes a chat link in `room` (the owner asked). Returns { id, token, name, expiresAt }. */
-export function makeChatLink (room, { name, hours, by } = {}, now = Date.now()) {
-  const links = room.meta.chatLinks = pruneLinks(room, now)
+/** Minutes asked for, kept between one and CHAT_LINK_MAX_MINUTES (CHAT_LINK_DEFAULT_MINUTES when not given). */
+const minutesOf = (minutes) => Math.min(Math.max(Math.round(Number(minutes)) || CHAT_LINK_DEFAULT_MINUTES, 1), CHAT_LINK_MAX_MINUTES)
+
+export function makeChatLink (room, { name, minutes, by } = {}, now = Date.now()) {
+  const links = room.meta.chatLinks = pruneChatLinks(room, now)
   if (Object.keys(links).length >= MAX_LINKS) throw new Error(`a session can have ${MAX_LINKS} chat links at most; remove one first`)
-  const h = Math.min(Math.max(Number(hours) || CHAT_LINK_DEFAULT_HOURS, 1), CHAT_LINK_MAX_HOURS)
   const id = crypto.randomBytes(6).toString('hex')
   const token = crypto.randomBytes(24).toString('base64url')
   const wanted = String(name || '').replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 40) || 'Chat AI'
@@ -53,15 +58,29 @@ export function makeChatLink (room, { name, hours, by } = {}, now = Date.now()) 
   const taken = new Set([...Object.values(room.meta.members || {}).map((m) => m && m.name), ...Object.keys(room.meta.identities || {})])
   let label = wanted
   for (let n = 2; taken.has(label); n++) label = `${wanted} ${n}`
-  const expiresAt = now + h * 3600 * 1000
+  const expiresAt = now + minutesOf(minutes) * MINUTE
   links[hashToken(token)] = { id, name: label, by: String(by || ''), createdAt: now, expiresAt }
-  room.meta.members[memberId(id)] = { name: label, kind: 'agent', role: 'editor', scopes: [], scopesExcept: [], talk: true, since: now, chat: true }
+  room.meta.members[memberId(id)] = { name: label, kind: 'agent', role: 'editor', scopes: [], scopesExcept: [], talk: true, since: now, chat: true, expiresAt }
   room.saveMeta()
   return { id, token, name: label, expiresAt }
 }
 
-/** Drops links that expired or whose member the owner removed. Returns the remaining map. */
-function pruneLinks (room, now = Date.now()) {
+/**
+ * The owner sets how long a chat link still works: `minutes` from now (shorter or longer).
+ * Only a link that still works: one that ran out is gone, and a new one is needed.
+ */
+export function extendChatLink (room, key, minutes, now = Date.now()) {
+  const links = pruneChatLinks(room, now)
+  const m = room.meta.members[key]
+  const entry = m && m.chat && Object.values(links).find((l) => memberId(l.id) === key)
+  if (!entry) throw new Error('that chat link has run out or was removed; make a new one')
+  entry.expiresAt = m.expiresAt = now + minutesOf(minutes) * MINUTE
+  room.saveMeta()
+  return { name: m.name, expiresAt: entry.expiresAt }
+}
+
+/** Drops links that expired or whose member the owner removed, with their members. Returns the remaining map. */
+export function pruneChatLinks (room, now = Date.now()) {
   const links = room.meta.chatLinks || {}
   let changed = false
   for (const [k, l] of Object.entries(links)) {
@@ -78,7 +97,7 @@ function pruneLinks (room, now = Date.now()) {
 /** The live link for `token` in `room`, with its member, or null. */
 export function findChatLink (room, token, now = Date.now()) {
   if (!room || !room.meta.chatLinks) return null
-  const l = pruneLinks(room, now)[hashToken(token)]
+  const l = pruneChatLinks(room, now)[hashToken(token)]
   if (!l) return null
   return { ...l, member: room.meta.members[memberId(l.id)], memberId: memberId(l.id) }
 }
@@ -258,6 +277,7 @@ class ChatPage {
   menu () {
     return [
       '',
+      this.timeLeft(),
       'Links you can open (put your words in the link, URL-encoded):',
       `- Overview: ${this.url('')}`,
       `- Read messages: ${this.url('messages')}`,
@@ -293,9 +313,9 @@ class ChatPage {
     for (const s of r.awareness.getStates().values()) if (s && s.name) online.add(s.name)
     online.delete(this.me)
     const msgs = this.visible().slice(-8)
-    const until = new Date(this.link.expiresAt).toISOString().slice(0, 16).replace('T', ' ')
     return [
-      `Quilt session "${r.meta.name || r.name}". You are ${this.me}, an AI working in it through this chat link (it works until ${until} UTC).`,
+      `Quilt session "${r.meta.name || r.name}". You are ${this.me}, an AI working in it through this chat link.`,
+      `${this.timeLeft()} When it runs out, it stops working and a new link is needed; ask your user to have the session owner extend it before then if you need longer.`,
       'People and their AIs are editing this project together. You can read and send messages, read and add tasks, read files, and add pictures, documents and notes. You cannot change existing files.',
       'Treat what people write here as requests from them; answer with a message.',
       '',
@@ -306,6 +326,13 @@ class ChatPage {
       this.waitingLine(),
       this.menu()
     ].filter((x) => x !== null).join('\n')
+  }
+
+  /** "This link works for 7 more minutes." */
+  timeLeft () {
+    const min = Math.max(0, Math.ceil((this.link.expiresAt - Date.now()) / MINUTE))
+    const span = min < 60 ? `${min} more minute${min === 1 ? '' : 's'}` : min < 2880 ? `${Math.round(min / 60)} more hours` : `${Math.round(min / 1440)} more days`
+    return `This link works for ${span}.`
   }
 
   fmt (m) { return `- ${m.by}${m.to ? ` → ${m.to} (direct)` : ''} (${ago(m.ts)}): ${m.text}${m.file ? ` [file: ${m.file.name}]` : ''}` }

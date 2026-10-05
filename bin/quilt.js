@@ -32,7 +32,8 @@ Usage:
   quilt focus <what you're doing>                     Tell collaborators what you're working on
   quilt claim <path|glob> [reason]                    Mark files as yours for now
   quilt release <path|glob|*>                         Release a claim
-  quilt chat-link [name] [--hours N]                  Owner: a link for a chat-only AI (ChatGPT, claude.ai, Grok)
+  quilt chat-link [name] [--minutes N]                Owner: a link for a chat-only AI (ChatGPT, claude.ai, Grok); 10 minutes
+  quilt chat-link extend <name> <minutes>             Owner: keep a chat link working for that long from now
   quilt invite                                        Print this session's invite code
   quilt stop                                          Shut down everything quilt is running (relay, app, syncs)
   quilt doctor [folder] [--watch 30]                  Check what quilt can see of your Claude Code / Cursor chats
@@ -76,10 +77,14 @@ async function main () {
       `claimed ${argv[0]}` + (r.overlapping?.length ? `\nwarning: overlaps ${r.overlapping.map((c) => `${c.by}'s ${c.pattern}`).join(', ')}` : ''))
     case 'release': return simple('/release', { pattern: argv[0] || '*' }, (r) => `released ${r.released} claim(s)`)
     case 'chat-link': {
-      const i = argv.indexOf('--hours')
-      const hours = i >= 0 ? Number(argv[i + 1]) : undefined
+      if (argv[0] === 'extend') {
+        if (!argv[1] || !Number(argv[2])) fail('usage: quilt chat-link extend <name> <minutes>')
+        return simple('/chat-link/extend', { who: argv[1], minutes: Number(argv[2]) }, (r) => `${r.name}'s chat link now works until ${new Date(r.expiresAt).toLocaleString()}.`)
+      }
+      const i = argv.indexOf('--minutes')
+      const minutes = i >= 0 ? Number(argv[i + 1]) : undefined
       const name = argv.filter((a, k) => !(i >= 0 && (k === i || k === i + 1))).join(' ')
-      return simple('/chat-link', { name, hours }, (r) => `Chat link for ${r.name}, until ${new Date(r.expiresAt).toLocaleString()}:\n\n  ${r.url}\n\nPaste it into ChatGPT, claude.ai or Grok with "Open this link and follow it to join our Quilt session."\nAnyone with it can act as ${r.name}; remove ${r.name} from the session to end it.`)
+      return simple('/chat-link', { name, minutes }, (r) => `Chat link for ${r.name}, until ${new Date(r.expiresAt).toLocaleTimeString()}:\n\n  ${r.url}\n\nPaste it into ChatGPT, claude.ai or Grok with "Open this link and follow it to join our Quilt session."\nAnyone with it can act as ${r.name}. Extend it with \`quilt chat-link extend ${r.name} <minutes>\`; once it runs out, make a new one.`)
     }
     case 'invite': return invite()
     case 'stop': return stopAll()

@@ -1860,12 +1860,23 @@ export class Session extends EventEmitter {
    * Owner only: a link a chat-only AI (ChatGPT, claude.ai, Grok…) pastes in and works through by
    * opening pages: read and send messages, read and add tasks, read files, add pictures,
    * documents and notes (see chat-links.js). It joins as its own member; removing it ends the link.
+   * It works for ten minutes unless `minutes` says otherwise, and the owner can extend it.
    */
-  async createChatLink ({ name = '', hours } = {}) {
+  async createChatLink ({ name = '', minutes } = {}) {
     if (!this.conn) throw new Error('not connected to the relay')
     if (!this.isOwner) throw new Error('only the session owner can make a chat link')
-    const r = await this.conn.adminRequest({ op: 'chatlink', name: String(name || ''), ...(hours ? { hours: Number(hours) } : {}) })
+    const r = await this.conn.adminRequest({ op: 'chatlink', name: String(name || ''), ...(minutes ? { minutes: Number(minutes) } : {}) })
     return { url: `${this.httpBase()}/c/${this.room}/${r.token}`, name: r.name, expiresAt: r.expiresAt }
+  }
+
+  /** Owner only: a chat link (by its member key, or its name) works for `minutes` from now. One that ran out can't be. */
+  async extendChatLink (who, minutes) {
+    if (!this.conn) throw new Error('not connected to the relay')
+    if (!this.isOwner) throw new Error('only the session owner can extend a chat link')
+    const m = this.members.find((x) => x.chat && (x.key === who || x.name === who))
+    if (!m) throw new Error(`no chat link called ${who}; it may have run out (make a new one)`)
+    const r = await this.conn.adminRequest({ op: 'chatextend', key: m.key, minutes: Number(minutes) })
+    return { name: r.name, expiresAt: r.expiresAt }
   }
 
   httpBase () {

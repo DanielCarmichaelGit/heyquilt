@@ -56,8 +56,9 @@ within milliseconds. Your agents can also see what the other agents are doing.
   the chat, and the AI works by opening links. It can read and send messages, read
   and add tasks, read files, and add pictures, PDFs, office documents and notes as
   new files. It can't change existing files. It shows in the session as its own
-  member: limit or remove it there, and the link ends when it's removed or expires
-  (a week by default).
+  member and works for 10 minutes: the owner extends it from the people menu (or
+  `quilt chat-link extend <name> <minutes>`) while it still works. Once it runs
+  out, or the owner removes it, a new link is needed.
 
 ## Quick start
 

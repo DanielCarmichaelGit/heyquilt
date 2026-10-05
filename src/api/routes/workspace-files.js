@@ -11,6 +11,7 @@ export const DELETED_KEEP_MS = 30 * 24 * 60 * 60 * 1000
 const KEEP_VERSIONS = 10
 
 export const fileView = (f) => ({ id: f.id, path: f.path, name: nameOf(f.path), folder: parentOf(f.path), kind: f.kind, size: f.size, mime: f.mime, sha256: f.sha256, version: f.version, note: f.note, uploadedBy: f.uploadedBy, uploadedAt: f.uploadedAt, confirmedAt: f.confirmedAt })
+const MIME = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i
 const LOOPBACK = /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i
 
 /** The version people get of a file: its current one once that has landed; while a new
@@ -140,7 +141,9 @@ export function workspaceFileRoutes (ctx) {
       if (!Number.isInteger(size) || size <= 0) throw new HttpError(400, 'Say how many bytes the file is.')
       if (size > maxFileBytes) throw new HttpError(413, 'file too large')
       const note = cleanNote(body.note)
-      const mime = String(body.mime || '') || mimeOf(nameOf(p))
+      // A type/subtype and nothing else (no parameters, spaces or line breaks), or the one the name suggests.
+      const given = String(body.mime || '')
+      const mime = given.length <= 100 && MIME.test(given) ? given : mimeOf(nameOf(p))
       const sha256 = String(body.sha256 || '').slice(0, 64)
       let existing = await store.workspaceFileByPath(r.ws.id, p)
       if (existing && existing.kind === 'folder') throw new HttpError(409, `${p} is a folder`)

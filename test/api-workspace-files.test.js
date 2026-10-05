@@ -290,3 +290,13 @@ test('the disk store never overwrites an object that has landed, as Supabase wou
   assert.deepEqual([again.status, (await again.json()).error], [409, 'already stored'])
   assert.equal(fs.readFileSync(store.file(`${w.id}/${made.body.file.id}/1`), 'utf8'), 'first')
 })
+
+test('a mime type that is not one falls back to the one the name suggests', async () => {
+  const w = (await t.call('POST', '/v1/workspaces', { name: 'Types' }, 'mem')).body.workspace
+  // Four at most: this API allows four files a workspace, and each started upload counts.
+  const mimeFor = async (p, mime) => (await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: p, size: 1, mime }, 'mem')).body.file.mime
+  assert.equal(await mimeFor('a.bin', 'image/png'), 'image/png')
+  assert.equal(await mimeFor('c.txt', 'text/html; charset=utf-8'), 'text/plain')
+  assert.equal(await mimeFor('d.txt', 'text/html\r\nx-evil: 1'), 'text/plain')
+  assert.equal(await mimeFor('f.txt', `text/${'x'.repeat(100)}`), 'text/plain')
+})

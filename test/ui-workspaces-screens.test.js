@@ -80,3 +80,7 @@ test('the add form keeps the add card\'s height, so opening it does not move the
   assert.ok(css.includes('.ws-card.form .actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: auto;'))
 })
 
+test('the space filter shows only when the person is in an org (more than All and Personal)', () => {
+  assert.ok(ui('workspaces.js').includes('spaces().size > 2 ? `<div class="segmented ws-filter"'))
+})
+

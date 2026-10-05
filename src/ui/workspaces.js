@@ -95,7 +95,7 @@ export function workspacesHtml () {
   return `
   <section class="workspaces">
     <div class="sec-head"><h2>Your workspaces</h2><span class="count">${list.length}</span><span class="spacer"></span>
-      <div class="segmented ws-filter" role="tablist">${[...spaces()].map(([k, label]) => `<button type="button" role="tab" data-space-filter="${esc(k)}" class="${filter === k ? 'on' : ''}" aria-selected="${filter === k}">${esc(label)}</button>`).join('')}</div>
+      ${spaces().size > 2 ? `<div class="segmented ws-filter" role="tablist">${[...spaces()].map(([k, label]) => `<button type="button" role="tab" data-space-filter="${esc(k)}" class="${filter === k ? 'on' : ''}" aria-selected="${filter === k}">${esc(label)}</button>`).join('')}</div>` : ''}
     </div>
     <div class="ws-grid">${list.map(cardHtml).join('')}${state.addingWorkspace ? addFormHtml() : addCardHtml()}</div>
   </section>

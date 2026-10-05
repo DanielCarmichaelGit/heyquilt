@@ -210,10 +210,62 @@ test('stopped mid-hold on the same branch: the next start puts the room\'s work 
   await waitFor(() => B.status().git.hold)
   await close(B) // within the settle time: the discard is still held
   assert.equal(read(dirB, 'README.md'), 'hello\n')
+  // Bases an earlier offline merge left behind are none of this hold's: dropped, not read by a later start.
+  const bases = path.join(dirB, '.quilt', 'merging.json')
+  fs.writeFileSync(bases, JSON.stringify({ 'README.md': 'a stale base\n' }))
   const B2 = await open(t, dirB, 'bob', { room })
+  assert.equal(fs.existsSync(bases), false)
   await never(() => read(dirA, 'README.md') !== 'main work\n', 1500)
   await waitFor(() => read(dirB, 'README.md') === 'main work\n' && B2.status().git.hold === null, 10000)
   assert.equal(read(dirA, 'README.md'), 'main work\n')
+})
+
+test('restarted on a branch with no commits yet, with a hold saved: nothing in that tree is captured', async (t) => {
+  const { A, B, dirA, dirB, room } = await pairRepos(t)
+  write(dirA, 'README.md', 'main work\n')
+  await waitFor(() => read(dirB, 'README.md') === 'main work\n')
+  git(dirB, 'checkout', '-q', '--orphan', 'scratch')
+  await waitFor(() => B.status().git.hold?.kind === 'switching')
+  await close(B)
+  write(dirB, 'src/app.js', 'orphan work\n') // HEAD has no commit to read: headKey is null at the next start
+  const B2 = await open(t, dirB, 'bob', { room })
+  assert.equal(B2.status().git.hold?.kind, 'switching')
+  assert.equal(B2.status().git.key, 'main')
+  assert.ok(B2.logs.some((l) => l.includes("You're on scratch; this session syncs main")), B2.logs.join('\n'))
+  await never(() => read(dirA, 'src/app.js') !== 'line1\nline2\nline3\nline4\nline5\n' || read(dirA, 'README.md') !== 'main work\n', 2500)
+  assert.equal(A.mergeList().filter((m) => m.state === 'open').length, 0)
+  git(dirB, 'checkout', '-qf', 'main')
+  await waitFor(() => B2.status().git.hold === null && read(dirB, 'README.md') === 'main work\n', 10000)
+  assert.equal(read(dirA, 'src/app.js'), 'line1\nline2\nline3\nline4\nline5\n')
+})
+
+test('a hold resumed at start settles only once the relay has synced', async (t) => {
+  const dataDir = tmp('relay2')
+  const relay = await startServer({ port: 0, host: '127.0.0.1', dataDir, log: () => {}, maxNewRoomsPerHour: 0 })
+  const url = `ws://127.0.0.1:${relay.port}`
+  let restarted = null
+  t.after(async () => { await (restarted || relay).close().catch(() => {}) })
+  const bare = tmp('bare'); git(bare, 'init', '-q', '--bare', '-b', 'main')
+  const seed = tmp('seed'); git(seed, 'clone', '-q', bare, '.')
+  write(seed, 'README.md', 'hello\n'); git(seed, 'add', '.'); git(seed, 'commit', '-qm', 'one'); git(seed, 'push', '-q', 'origin', 'main')
+  const dirA = tmp('a'); git(dirA, 'clone', '-q', bare, '.')
+  const dirB = tmp('b'); git(dirB, 'clone', '-q', bare, '.')
+  const room = `ga${++rooms}`
+  const A = await open(t, dirA, 'alice', { room, server: url })
+  const B = await open(t, dirB, 'bob', { room, server: url })
+  write(dirA, 'README.md', 'main work\n')
+  await waitFor(() => read(dirB, 'README.md') === 'main work\n')
+  git(dirB, 'stash', '-q')
+  await waitFor(() => B.status().git.hold)
+  await close(B)
+  await close(A)
+  await relay.close()
+  const B2 = await open(t, dirB, 'bob', { room, server: url })
+  assert.ok(B2.status().git.hold)
+  // The relay is down: the doc on disk is the room as of the last stop, so nothing settles against it.
+  await never(() => B2.status().git.hold === null || read(dirB, 'README.md') !== 'hello\n', 3000)
+  restarted = await startServer({ port: relay.port, host: '127.0.0.1', dataDir, log: () => {}, maxNewRoomsPerHour: 0 })
+  await waitFor(() => B2.status().git.hold === null && read(dirB, 'README.md') === 'main work\n', 20000)
 })
 
 test('an edit made while git holds the folder is shared once it settles, never reverted', async (t) => {
@@ -290,7 +342,7 @@ test('git at work on the other branch keeps the pause as it is, said once; the h
   const { B, dirB } = await pairRepos(t)
   git(dirB, 'checkout', '-qb', 'feature')
   await waitFor(() => B.status().git.hold?.kind === 'switching')
-  await waitFor(() => JSON.parse(fs.readFileSync(path.join(dirB, '.quilt', 'state.json'), 'utf8')).gitHeld === true, 3000)
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dirB, '.quilt', 'state.json'), 'utf8')).gitHeld, true, 'written as the hold starts')
   fs.writeFileSync(path.join(dirB, '.git', 'index.lock'), '')
   await never(() => B.status().git.hold?.kind !== 'switching', 2500)
   fs.rmSync(path.join(dirB, '.git', 'index.lock'))

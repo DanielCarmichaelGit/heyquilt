@@ -31,7 +31,7 @@ import { canAdmit } from './admit-policy.js'
 import { merge3, withMarkers, hasMarkers } from './merge3.js'
 import { aiMerge, findMergeCli } from './merge-ai.js'
 import { openMerge, updateMerge, readMerges, pruneMerges, cleanName } from './merges.js'
-import { headKey, headRef, gitRuns, busy as gitBusy, indexStamp, classify, filesAt, changesBetween, changedBetween, treeState, branchTip, watchGit, SETTLE_MS, BURST_PATHS } from './gitstate.js'
+import { gitDir, headKey, headRef, gitRuns, busy as gitBusy, indexStamp, classify, filesAt, changesBetween, changedBetween, treeState, branchTip, watchGit, SETTLE_MS, BURST_PATHS } from './gitstate.js'
 
 export { applyTextDiff }
 
@@ -179,6 +179,7 @@ export class Session extends EventEmitter {
     this.gitFailures = 0 // settles in a row that couldn't ask git
     this.burstByIndex = false // the last isBurst saw the index change
     this.reclassify = false // an index-only burst looked like an edit: classified again on the next flush
+    this.holdAwaitsSync = false // a hold resumed at start settles only once the relay has synced
     if (passes) this.adoptPass(passes.payload)
   }
 
@@ -208,6 +209,9 @@ export class Session extends EventEmitter {
     const hadState = this.loadState()
     this.git = headKey(this.root)
     this.gitSeen = this.git
+    // A repo whose git can't be run (not on the PATH of an app started from the Dock, say), as
+    // against a branch with no commits yet, which git reads fine.
+    const gitUnreadable = !this.git && !!gitDir(this.root) && !(headRef(this.root) && gitRuns(this.root))
     if (hadState) this.loadClaims()
 
     this.conn = new Connection({
@@ -242,15 +246,25 @@ export class Session extends EventEmitter {
       // We've synced this folder before: hold what was edited while we were
       // away, let the relay tell us what the others did, then merge the two.
       // Restarted on another branch, or mid-hold: nothing in this tree is the session's offline work.
-      const offline = this.resumeHold() ? { entries: [], take: [], downloads: [] } : this.captureOffline()
+      const resumed = this.resumeHold()
+      if (gitUnreadable) this.saysGitUnreadable(resumed)
+      const offline = resumed ? { entries: [], take: [], downloads: [] } : this.captureOffline()
       this.goLive()
       if (offline.entries.length) this.log(`${offline.entries.length} file(s) changed while you were away; merging once the relay has synced…`)
-      this.conn.waitForSync().then(() => this.mergeOffline(offline)).catch((err) => {
+      const synced = this.conn.waitForSync()
+      synced.then(() => this.mergeOffline(offline)).catch((err) => {
         // Never synced (the relay refused us): nothing can be merged, so nothing stays held.
         for (const e of offline.entries) this.merging.delete(e.rel)
         this.emit('debug', `offline merge did not run: ${err && err.message}`)
       })
+      if (resumed) {
+        // The doc loaded from disk is the room as it was at the last stop: the hold settles
+        // against the room as it is now. Never synced: the hold stays on and nothing is shared.
+        this.holdAwaitsSync = true
+        synced.then(() => { this.holdAwaitsSync = false; this.settleSoon() }, () => {})
+      }
     } else {
+      if (gitUnreadable) this.saysGitUnreadable(false)
       this.log('waiting for relay…')
       const sync = this.conn.waitForSync()
       // In a session with an owner we may have to wait for them to let us in.
@@ -458,6 +472,11 @@ export class Session extends EventEmitter {
   scheduleStateSave () {
     if (this.stateTimer) return
     this.stateTimer = setTimeout(() => this.saveState(), 1000)
+  }
+
+  /** saveState now, and never throws (a hold must start even if the state can't be written). */
+  saveStateNow () {
+    try { this.saveState() } catch (err) { this.log(`could not save the session's state: ${err.message}`) }
   }
 
   saveState () {
@@ -1028,7 +1047,8 @@ export class Session extends EventEmitter {
     if (!this.hold.prevHead) this.hold.prevHead = this.gitSeen
     this.emit('hold', this.hold)
     this.scheduleStatusWrite()
-    this.scheduleStateSave() // state.json's gitHeld, for a start after a crash
+    // state.json's gitHeld at once: a crash a moment later must restart held, not as an offline rejoin.
+    this.saveStateNow()
   }
 
   releaseHold () {
@@ -1037,12 +1057,14 @@ export class Session extends EventEmitter {
     clearTimeout(this.settleTimer); this.settleTimer = null
     this.emit('hold', null)
     this.scheduleStatusWrite()
+    // Not at once: the settle writes back and merges just after this, and a crash before
+    // those finish must still restart held (and settle again) rather than as an offline rejoin.
     this.scheduleStateSave()
   }
 
   /** (Re)arms the settle timer: the hold ends SETTLE_MS after the last file or git event. */
   settleSoon () {
-    if (!this.hold || this.hold.kind === 'switching' || this.stopped) return
+    if (!this.hold || this.hold.kind === 'switching' || this.stopped || this.holdAwaitsSync) return
     clearTimeout(this.settleTimer)
     this.settleTimer = setTimeout(() => this.onSettled().catch((err) => this.log(`could not settle: ${err.message}`)), SETTLE_MS)
     this.settleTimer.unref()
@@ -1050,7 +1072,7 @@ export class Session extends EventEmitter {
 
   async onSettled () {
     this.settleTimer = null
-    if (!this.hold || this.hold.kind === 'switching' || this.stopped) return
+    if (!this.hold || this.hold.kind === 'switching' || this.stopped || this.holdAwaitsSync) return
     if (gitBusy(this.root)) { this.setHold('busy'); this.settleSoon(); return } // still mid-operation: look again later
     const head = headKey(this.root)
     if (!head) return this.headless()
@@ -1151,21 +1173,37 @@ export class Session extends EventEmitter {
    */
   resumeHold () {
     const saved = this.savedGit
-    if (!saved || !this.git) return false
-    const away = this.git.key !== saved.key
-    if (!away && !saved.held) return false
-    const head = this.git
+    if (!saved) return false
+    const head = this.git // null: git can't say where HEAD is (an unborn branch, or git not running)
+    if (!head && !gitDir(this.root)) return false
+    const at = head ? head.key : headRef(this.root) // null: unreadable, and not on a named branch
+    const away = !!at && at !== saved.key
+    if (head && !away && !saved.held) return false
     this.git = { key: saved.key, branch: saved.key.startsWith('@') ? null : saved.key, sha: saved.sha }
     this.gitSeen = head
+    // An unfinished offline merge's bases are no bases for this hold; left, the next start would read them.
+    fs.rmSync(this.heldBasesFile, { force: true })
     // The base for merging what the folder holds once it's back: the session's version at the last stop.
     for (const rel of this.sharedPaths()) {
       const k = this.sharedKey(rel)
       if (this.syncable(rel) && k !== undefined) this.lastKnown.set(rel, k)
     }
     this.rejoin = true
-    this.hold = { kind: away ? 'switching' : 'settling', since: Date.now(), prevHead: saved.sha ? { ...this.git } : null, ...(away ? { to: head.key } : {}) }
-    if (away) this.logSwitch(head.key)
+    // Back on the branch but git can't be read: held as busy, asked again every SETTLE_MS (see gitUnreadable).
+    const kind = away ? 'switching' : head ? 'settling' : 'busy'
+    this.hold = { kind, since: Date.now(), prevHead: saved.sha ? { ...this.git } : null, ...(away ? { to: at } : {}) }
+    if (away) this.logSwitch(at)
     return true
+  }
+
+  /** Said once at start: the folder is a repo, but git can't be read here. */
+  saysGitUnreadable (held) {
+    if (held) {
+      this.gitFailures = GIT_FAILURES_TO_SAY // said here: gitUnreadable doesn't say it again
+      this.log('⚠️ Quilt can\'t read git here; this folder stays paused')
+    } else {
+      this.log('⚠️ Quilt can\'t read git here, so a git command in this folder is shared like any edit')
+    }
   }
 
   /** While switched away: did HEAD come back to the branch this session syncs? */

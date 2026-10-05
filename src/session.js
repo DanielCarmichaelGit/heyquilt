@@ -31,7 +31,7 @@ import { canAdmit } from './admit-policy.js'
 import { merge3, withMarkers, hasMarkers } from './merge3.js'
 import { aiMerge, findMergeCli } from './merge-ai.js'
 import { openMerge, updateMerge, readMerges, pruneMerges, cleanName } from './merges.js'
-import { gitDir, headKey, headRef, gitRuns, askTwice, lastCallTimedOut, busy as gitBusy, indexStamp, classify, filesAt, changesBetween, treeState, branchTip, watchGit, SETTLE_MS, BURST_PATHS } from './gitstate.js'
+import { gitDir, headKey, headRef, gitRuns, askTwice, lastCallTimedOut, busy as gitBusy, leftoverLock, indexStamp, classify, filesAt, changesBetween, treeState, branchTip, watchGit, SETTLE_MS, BURST_PATHS } from './gitstate.js'
 
 export { applyTextDiff }
 
@@ -182,6 +182,7 @@ export class Session extends EventEmitter {
     this.gitChain = Promise.resolve() // git work in this folder, one piece at a time (see gitTask)
     this.classifying = null // { behind } while a burst is classified: the folder is held meanwhile (see held)
     this.checkingBack = false // a look at HEAD while switched away is queued (checkBackOnBranch)
+    this.leftoverLock = null // the stamp of an index.lock left behind by a crashed git, paid no attention to
     this.holdAwaitsSync = false // a hold resumed at start settles only once the relay has synced
     if (passes) this.adoptPass(passes.payload)
   }
@@ -952,8 +953,11 @@ export class Session extends EventEmitter {
     const indexChanged = stamp !== this.gitIndex
     this.gitIndex = stamp
     this.burstByIndex = indexChanged
-    return indexChanged || Date.now() - this.headChangedAt < 2000 || !!gitBusy(this.root) || paths.length >= BURST_PATHS
+    return indexChanged || Date.now() - this.headChangedAt < 2000 || !!this.gitBusy() || paths.length >= BURST_PATHS
   }
+
+  /** The git operation under way in this folder, or null; a leftover index.lock doesn't count. */
+  gitBusy () { return gitBusy(this.root, undefined, this.leftoverLock) }
 
   /** Whether the folder's sync is held: git is at work on it, or a burst of changes is being classified. */
   held () { return !!(this.hold || this.classifying) }
@@ -1004,7 +1008,7 @@ export class Session extends EventEmitter {
     let r
     for (;;) {
       await this.noteCommits()
-      r = await classify(this.root, { changed: paths, before: this.gitSeen })
+      r = await classify(this.root, { changed: paths, before: this.gitSeen, leftover: this.leftoverLock })
       if (this.stopped) return
       // git wrote the index, yet HEAD hasn't moved and the paths aren't clean: a checkout or a pull
       // can be in the instant between writing the index and moving the branch. Asked once more, a flush later.
@@ -1171,8 +1175,19 @@ export class Session extends EventEmitter {
   async onSettled () {
     this.settleTimer = null
     if (!this.settleable()) return
-    if (gitBusy(this.root)) { this.setHold('busy'); this.settleSoon(); return } // still mid-operation: look again later
     const asked = new Set(this.heldPaths)
+    let busy = this.gitBusy()
+    if (busy === 'index-lock') {
+      // Only the index lock, and it's been there a while: a git that crashed may have left it.
+      const stamp = await leftoverLock(this.root)
+      if (!this.settleable()) return
+      if (stamp) {
+        this.leftoverLock = stamp
+        this.log('⚠️ a leftover .git/index.lock is being ignored; delete it if git complains')
+        busy = this.gitBusy()
+      }
+    }
+    if (busy) { this.setHold('busy'); this.settleSoon(); return } // still mid-operation: look again later
     const head = await headKey(this.root)
     if (!this.settleable()) return
     if (!head) {

@@ -13,6 +13,8 @@ import { looksBinary, sha1, MAX_STORED_BINARY_BYTES } from './fsutil.js'
 export const GIT_TIMEOUT_MS = 5000
 export const SETTLE_MS = 2000
 export const BURST_PATHS = 20
+// An index.lock this old, with no other operation under way, may be one a crashed git left behind.
+export const STALE_LOCK_MS = 60 * 1000
 
 const MARKERS = [
   ['index.lock', 'index-lock'], ['MERGE_HEAD', 'merge'], ['rebase-merge', 'rebase'], ['rebase-apply', 'rebase'],
@@ -147,11 +149,40 @@ export async function headKey (root) {
   return { key: `@${sha.slice(0, 12)}`, branch: null, sha }
 }
 
-/** The git operation in progress in this folder, or null. `dir` lets a caller that already has it skip re-resolving it. */
-export function busy (root, dir = gitDir(root)) {
+/**
+ * The git operation in progress in this folder, or null. `dir` lets a caller
+ * that already has it skip re-resolving it. `leftover`: an index.lock known to
+ * be left behind (its lockStamp, from leftoverLock), not counted.
+ */
+export function busy (root, dir = gitDir(root), leftover = null) {
   if (!dir) return null
-  for (const [file, kind] of MARKERS) if (fs.existsSync(path.join(dir, file))) return kind
+  for (const [file, kind] of MARKERS) {
+    if (!fs.existsSync(path.join(dir, file))) continue
+    if (kind === 'index-lock' && leftover && lockStamp(root, dir) === leftover) continue
+    return kind
+  }
   return null
+}
+
+/** Which index.lock is there (its mtime and inode), or null. A new lock is another stamp. */
+export function lockStamp (root, dir = gitDir(root)) {
+  if (!dir) return null
+  try { const st = fs.statSync(path.join(dir, 'index.lock')); return `${st.mtimeMs}:${st.ino}` } catch { return null }
+}
+
+/**
+ * The index.lock's stamp when it looks left behind by a git that crashed: the
+ * only marker of an operation, older than STALE_LOCK_MS, and `git status`
+ * runs. Null otherwise. The file is never touched: deleting it is yours to do.
+ */
+export async function leftoverLock (root, now = Date.now()) {
+  const dir = gitDir(root)
+  if (busy(root, dir) !== 'index-lock') return null
+  const stamp = lockStamp(root, dir)
+  if (!stamp || busy(root, dir, stamp)) return null // another operation under way too
+  if (now - Number(stamp.split(':')[0]) < STALE_LOCK_MS) return null
+  if (await run(root, ['status', '--porcelain', '--untracked-files=no']) === null) return null
+  return lockStamp(root, dir) === stamp ? stamp : null
 }
 
 /** A cheap signal that git wrote the index (stash, reset, checkout, add...). Editors never do. */
@@ -163,7 +194,8 @@ export function indexStamp (root) {
 
 /**
  * What a burst of changes to `changed` was, given the head seen `before` it.
- * busy: a merge/rebase/... is mid-way. switch: HEAD names another branch (or
+ * busy: a merge/rebase/... is mid-way (`leftover`: an index.lock to pay no
+ * attention to, see leftoverLock). switch: HEAD names another branch (or
  * commit). advance: HEAD moved on the same branch (pull, merge, rebase done,
  * commit). discard: HEAD unchanged and every changed path is clean now (stash,
  * reset, restore). Otherwise edit, with `putBack`: the changed paths git may
@@ -171,10 +203,10 @@ export function indexStamp (root) {
  * shares its burst with an unrelated save (an untracked file, an autosave) can
  * still be told apart from an edit.
  */
-export async function classify (root, { changed = [], before = null } = {}) {
+export async function classify (root, { changed = [], before = null, leftover = null } = {}) {
   const head = await headKey(root)
   if (!head) return { kind: 'edit', head: null, prevHead: before, putBack: [] }
-  if (busy(root)) return { kind: 'busy', head, prevHead: before }
+  if (busy(root, undefined, leftover)) return { kind: 'busy', head, prevHead: before }
   if (before && head.key !== before.key) return { kind: 'switch', head, prevHead: before }
   if (before && head.sha !== before.sha) return { kind: 'advance', head, prevHead: before }
   if (!changed.length) return { kind: 'edit', head, prevHead: before, putBack: [] }

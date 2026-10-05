@@ -67,6 +67,22 @@ async function pairRepos (t, extra = {}) {
 before(async () => { srv = await startServer({ port: 0, host: '127.0.0.1', dataDir: tmp('relay'), log: () => {}, maxNewRoomsPerHour: 0 }); server = `ws://127.0.0.1:${srv.port}` })
 after(async () => { await srv.close() })
 
+test('an index.lock a crashed git left behind holds the folder only until it is a minute old', async (t) => {
+  const { B, dirA, dirB } = await pairRepos(t)
+  const lock = path.join(dirB, '.git', 'index.lock')
+  fs.writeFileSync(lock, '')
+  await waitFor(() => B.status().git.hold?.kind === 'busy')
+  write(dirB, 'src/app.js', 'line1 (bob)\nline2\nline3\nline4\nline5\n')
+  await never(() => read(dirA, 'src/app.js') !== 'line1\nline2\nline3\nline4\nline5\n', 2500)
+  const old = (Date.now() - 2 * 60 * 1000) / 1000
+  fs.utimesSync(lock, old, old) // as if left two minutes ago
+  await waitFor(() => read(dirA, 'src/app.js') === 'line1 (bob)\nline2\nline3\nline4\nline5\n' && B.status().git.hold === null, 10000)
+  write(dirB, 'README.md', 'after\n')
+  await waitFor(() => read(dirA, 'README.md') === 'after\n')
+  assert.equal(B.logs.filter((l) => l.includes('a leftover .git/index.lock is being ignored; delete it if git complains')).length, 1, B.logs.join('\n'))
+  assert.ok(fs.existsSync(lock), 'Quilt never deletes it')
+})
+
 test('a git folder reports its branch; a plain folder reports none', async (t) => {
   const { A } = await pairRepos(t)
   assert.equal(A.status().git.branch, 'main')

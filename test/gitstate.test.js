@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { gitDir, headKey, headRef, gitRuns, askTwice, lastCallTimedOut, GIT_TIMEOUT_MS, busy, indexStamp, classify, fileAt, filesAt, changedBetween, changesBetween, treeState, branchTip, watchGit } from '../src/gitstate.js'
+import { gitDir, headKey, headRef, gitRuns, askTwice, lastCallTimedOut, GIT_TIMEOUT_MS, STALE_LOCK_MS, busy, leftoverLock, lockStamp, indexStamp, classify, fileAt, filesAt, changedBetween, changesBetween, treeState, branchTip, watchGit } from '../src/gitstate.js'
 import { sha1 } from '../src/fsutil.js'
 
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-git-${n}-`))
@@ -53,6 +53,31 @@ test('busy markers', async () => {
   fs.rmSync(path.join(dir, '.git', 'MERGE_HEAD'))
   fs.mkdirSync(path.join(dir, '.git', 'rebase-merge'))
   assert.equal(busy(dir), 'rebase')
+})
+
+test('an index.lock older than a minute, with nothing else under way, is a leftover; the file is left alone', async () => {
+  const dir = repo()
+  const lock = path.join(dir, '.git', 'index.lock')
+  fs.writeFileSync(lock, '')
+  assert.equal(await leftoverLock(dir), null, 'a fresh lock: git may be at work')
+  const old = (Date.now() - STALE_LOCK_MS - 60000) / 1000
+  fs.utimesSync(lock, old, old)
+  const stamp = await leftoverLock(dir)
+  assert.equal(stamp, lockStamp(dir))
+  assert.equal(busy(dir), 'index-lock')
+  assert.equal(busy(dir, undefined, stamp), null, 'not counted once known to be left behind')
+  const before = await headKey(dir)
+  write(dir, 'a.txt', 'edit\n')
+  assert.equal((await classify(dir, { changed: ['a.txt'], before, leftover: stamp })).kind, 'edit')
+  assert.equal((await classify(dir, { changed: ['a.txt'], before })).kind, 'busy')
+  fs.writeFileSync(path.join(dir, '.git', 'MERGE_HEAD'), 'x')
+  assert.equal(await leftoverLock(dir), null, 'a merge under way too: not a leftover')
+  assert.equal(busy(dir, undefined, stamp), 'merge')
+  fs.rmSync(path.join(dir, '.git', 'MERGE_HEAD'))
+  assert.equal(await withGit(path.join(tmp('nogit'), 'git'), () => leftoverLock(dir)), null, 'git can\'t run: not a leftover')
+  fs.utimesSync(lock, new Date(), new Date())
+  assert.equal(busy(dir, undefined, stamp), 'index-lock', 'a new lock is another stamp')
+  assert.ok(fs.existsSync(lock), 'never deleted')
 })
 
 test('classify: edit, discard, advance, switch', async () => {

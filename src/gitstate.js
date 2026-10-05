@@ -19,7 +19,9 @@ const MARKERS = [
 
 function run (root, args) {
   try {
-    return execFileSync('git', args, { cwd: root, encoding: 'utf8', timeout: GIT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } })
+    // QUILT_GIT lets tests point at a git binary that doesn't exist, to exercise
+    // the "git is unreachable" path without touching the real PATH.
+    return execFileSync(process.env.QUILT_GIT || 'git', args, { cwd: root, encoding: 'utf8', timeout: GIT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } })
   } catch { return null }
 }
 
@@ -37,22 +39,25 @@ export function gitDir (root) {
   } catch { return null }
 }
 
-/** Where HEAD points: a branch, or a detached commit. Null when the folder is not a repo. */
+/**
+ * Where HEAD points: a branch, or a detached commit. Null when the folder is not a
+ * repo, when git is unreachable (sha lookup fails), or on an unborn branch (a fresh
+ * `git init` with no commits yet) — in every case there's nothing to compare against.
+ */
 export function headKey (root) {
   const dir = gitDir(root)
   if (!dir) return null
   let head
   try { head = fs.readFileSync(path.join(dir, 'HEAD'), 'utf8').trim() } catch { return null }
   const sha = (run(root, ['rev-parse', '--verify', '-q', 'HEAD']) || '').trim() || null
+  if (!sha) return null
   const ref = /^ref:\s*refs\/heads\/(.+)$/.exec(head)
   if (ref) return { key: ref[1], branch: ref[1], sha }
-  if (!sha) return null
   return { key: `@${sha.slice(0, 12)}`, branch: null, sha }
 }
 
-/** The git operation in progress in this folder, or null. */
-export function busy (root) {
-  const dir = gitDir(root)
+/** The git operation in progress in this folder, or null. `dir` lets a caller that already has it skip re-resolving it. */
+export function busy (root, dir = gitDir(root)) {
   if (!dir) return null
   for (const [file, kind] of MARKERS) if (fs.existsSync(path.join(dir, file))) return kind
   return null
@@ -70,7 +75,8 @@ function allClean (root, paths) {
   if (!paths.length) return false
   const out = run(root, ['status', '--porcelain=v2', '-z', '--', ...paths])
   if (out === null) return false
-  // Any entry at all means a change or an untracked file; clean paths print nothing.
+  // Any entry at all means a change or an untracked file; clean paths print nothing,
+  // and so does a path git has never heard of (outside the repo, or nonexistent).
   return out.replace(/\0/g, '').trim() === ''
 }
 
@@ -107,7 +113,7 @@ export function watchGit (root, onEvent) {
   const dir = gitDir(root)
   if (!dir) return { close: async () => {} }
   const names = new Set(['HEAD', 'index', ...MARKERS.map(([f]) => f)])
-  let wasBusy = !!busy(root)
+  let wasBusy = !!busy(root, dir)
   const watcher = watch(dir, { ignoreInitial: true, depth: 0, followSymlinks: false })
   const onAny = (p) => {
     const name = path.basename(p)
@@ -115,7 +121,7 @@ export function watchGit (root, onEvent) {
     if (name === 'HEAD') onEvent({ type: 'head' })
     else if (name === 'index') onEvent({ type: 'index' })
     else {
-      const now = !!busy(root)
+      const now = !!busy(root, dir)
       if (now !== wasBusy) { wasBusy = now; onEvent({ type: now ? 'busy' : 'idle' }) }
     }
   }

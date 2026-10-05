@@ -101,6 +101,26 @@ test('indexStamp changes when git touches the index, not when a file is edited',
   assert.notEqual(indexStamp(dir), s0)
 })
 
+test('headKey and classify when git itself is unreachable: not advance, just not git', () => {
+  const dir = repo()
+  const before = headKey(dir)
+  const prevGit = process.env.QUILT_GIT
+  process.env.QUILT_GIT = path.join(tmp('no-git'), 'missing-git-binary')
+  try {
+    assert.equal(headKey(dir), null)
+    assert.equal(classify(dir, { changed: ['a.txt'], before }).kind, 'edit')
+  } finally {
+    if (prevGit === undefined) delete process.env.QUILT_GIT
+    else process.env.QUILT_GIT = prevGit
+  }
+})
+
+test('headKey on an unborn branch (fresh init, no commits) is null', () => {
+  const dir = tmp('unborn')
+  git(dir, 'init', '-q', '-b', 'main')
+  assert.equal(headKey(dir), null)
+})
+
 test('watchGit reports head, busy and idle', async () => {
   const dir = repo()
   const seen = []

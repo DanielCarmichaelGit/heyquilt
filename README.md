@@ -50,7 +50,7 @@ within milliseconds. Your agents can also see what the other agents are doing.
   invite. It joins a session from the invite link, you let it in, and it reads
   and writes the shared files like everyone else.
 - **Workspaces (behind a flag while they settle).** They gather your
-  sessions, the people and agents in them, and soon files, in one place.
+  sessions, the people and agents in them, and files, in one place.
 
 ## Quick start
 

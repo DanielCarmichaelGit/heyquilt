@@ -32,7 +32,7 @@ No new gating infrastructure. Iterate from there.
 | Files | Stored in the cloud: bytes in a private bucket in the Quilt Files Supabase project, index rows in Postgres, signed upload and download links from the accounts API. Server-readable (encrypted at rest by the provider, not end to end), so previews and hosted agents work. |
 | Folders | Paths. A folder is a row of kind `folder`; a file's `path` is `cuts/teaser-15s.mp4`. |
 | Versions | Uploading to an existing path makes a new version; the last 10 are kept. |
-| Realtime | **Not the relay.** The relay is for live co-editing inside a session. Workspace changes (files, members, sessions) reach the app and the website through Supabase Realtime on the workspace's rows, with a plain refetch as the fallback. |
+| Realtime | **Not the relay.** The relay is for live co-editing inside a session. Phase 2 ships polling: the app and the website refetch workspace changes (files, members, sessions) every 20 seconds while a workspace page is open, and again after each action; Supabase Realtime on the workspace's rows is a later improvement. |
 | Workspace chat and board | Out of scope for now. Agents and people coordinate in session chat and the session board, and hand files over through the library. |
 | Sessions in a workspace | A session is started with a workspace id. The API records `relay_sessions.workspace_id` and answers the relay's room-access question with workspace membership when the account has no grant of its own. Loose sessions can be moved into a workspace by their owner. |
 | Agents | Three levels, most specific wins. **Account level** (a person's Settings › Agents, or the org's Agents page): the agent's **reach** is all workspaces (global) or chosen ones, and its **sessions default** is "every session" or "when invited". **Workspace level:** an agent added to a workspace is a member there, with its own sessions setting; a workspace may override a global agent's default for itself. **Session level:** as today, invited by hand or kept out of one session by its owner. Agents that join every session are let in as the session starts, show why they are there in the people menu, and in org workspaces show "Added by <org>". |
@@ -247,7 +247,7 @@ colour mark, name, space pill, description, usage, Invite and a settings gear. T
 
 **All files** (`state.view = 'wsfiles:<id>'`): breadcrumb for the folder, Tiles / List switch, New folder and
 Upload, folders first, and a preview panel for the picked file (image, video, audio, PDF, CSV, text and
-Markdown; xlsx shows sheet names and the first rows) with Download, Send to <open session> chat, the version
+Markdown; spreadsheets show name, size and Download in phase 2) with Download, Send to <open session> chat, the version
 list with Download this version, Rename, Move, Delete.
 
 **Settings** (the gear): name, description, colour, usage, Archive, Delete (type the name).
@@ -256,10 +256,9 @@ list with Download this version, Rename, Move, Delete.
 links back) and an "Attach from workspace" button in the chat composer that sends a library file as a chat
 attachment.
 
-**Realtime.** The app holds one Supabase Realtime subscription per workspace it has open (files, members,
-`relay_sessions` rows for that workspace), with a 30-second refetch fallback. The desktop app needs a Supabase
-session for that: the API hands the app a short-lived Supabase access token for the signed-in person
-(`POST /me/realtime-token`), refreshed when it expires.
+**Realtime.** Phase 2 ships polling: the app refetches a workspace's rows (files, members, `relay_sessions`)
+every 20 seconds while its page is open, and again right after each action the person takes. Supabase
+Realtime subscriptions are a later improvement.
 
 ## Website
 

@@ -112,8 +112,8 @@ All settings are environment variables on the relay.
 | `QUILT_MAX_NEW_ROOMS_PER_HOUR` | `30` | New sessions one account (or, with sign-in off, one address) can start per hour (`0` = no limit). Joining existing sessions isn't limited. |
 | `QUILT_ROOM_TTL_DAYS` | `30` | Sessions nobody has opened for this long are deleted, files included. Set it to `0` to keep them forever. |
 | `QUILT_TRUST_PROXY` | off (on in the provided configs) | Use `X-Forwarded-For` to find client addresses. Only turn it on behind a proxy. |
-| `QUILT_STORAGE_URL` | none | A Supabase project URL. With `QUILT_STORAGE_KEY`, large files go to Supabase Storage instead of the relay's disk. |
-| `QUILT_STORAGE_KEY` | none | A Supabase secret key for that project. Set it as a secret, never in `fly.toml`. |
+| `QUILT_STORAGE_URL` | none | On the relay: a Supabase project URL. With `QUILT_STORAGE_KEY`, large files go to Supabase Storage instead of the relay's disk. |
+| `QUILT_STORAGE_KEY` | none | On the relay: a Supabase secret key for that project. Set it as a secret, never in `fly.toml`. |
 | `QUILT_STORAGE_BUCKET` | `session-files` | The private bucket to use (create it with `supabase/files-project/session_files_bucket.sql`, in a Supabase project of its own). |
 | `QUILT_MAX_STORED_FILE_MB` | `100` | The largest file people can share this way. With Supabase Storage, keep it at or under the bucket's file size limit (50 MB in the provided migration). |
 

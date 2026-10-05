@@ -21,13 +21,16 @@ export class DiskStore {
 
   file (key) { return path.join(this.dir, ...checkKey(key).split('/')) }
 
-  sign (key, method, exp, size) {
-    return crypto.createHmac('sha256', this.signing).update(`${method} ${key} ${exp} ${size ?? ''}`).digest('hex')
+  // `name` and `type` are only ever non-empty on a GET link; folding them into the
+  // signature means a link holder can't change the download's filename or content type
+  // (e.g. to have the bytes served back as `text/html` on the API's own origin).
+  sign (key, method, exp, size, name = '', type = '') {
+    return crypto.createHmac('sha256', this.signing).update(`${method} ${key} ${exp} ${size ?? ''} ${name} ${type}`).digest('hex')
   }
 
-  verify (key, method, exp, sig, size) {
+  verify (key, method, exp, sig, size, name = '', type = '') {
     if (!KEY.test(String(key)) || !(Number(exp) > this.now())) return false
-    const want = Buffer.from(this.sign(key, method, exp, size), 'hex')
+    const want = Buffer.from(this.sign(key, method, exp, size, name, type), 'hex')
     const got = Buffer.from(String(sig || ''), 'hex')
     return got.length === want.length && crypto.timingSafeEqual(got, want)
   }
@@ -41,7 +44,8 @@ export class DiskStore {
   async downloadTarget (key, { name = '', type = '' } = {}) {
     checkKey(key)
     const exp = this.now() + LINK_MS
-    const q = new URLSearchParams({ m: 'GET', exp: String(exp), sig: this.sign(key, 'GET', exp), name, type })
+    const sig = this.sign(key, 'GET', exp, undefined, name, type)
+    const q = new URLSearchParams({ m: 'GET', exp: String(exp), sig, name, type })
     return { url: `/v1/file-data/${key}?${q}` }
   }
 

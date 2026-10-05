@@ -23,6 +23,12 @@ test('disk store links are signed, bound to method, key and size, and expire', a
   const down = await store.downloadTarget(KEY, { name: 'a b.txt', type: 'text/plain' })
   assert.match(down.url, /m=GET/)
   assert.ok(Number(new URL(down.url, 'http://x').searchParams.get('exp')) <= Date.now() + LINK_MS)
+  const q2 = new URL(down.url, 'http://x').searchParams
+  // name and type are folded into the signature, so a link holder can't swap in a
+  // different filename or content type (e.g. to have the bytes served as text/html).
+  assert.equal(store.verify(KEY, 'GET', q2.get('exp'), q2.get('sig'), undefined, q2.get('name'), q2.get('type')), true)
+  assert.equal(store.verify(KEY, 'GET', q2.get('exp'), q2.get('sig'), undefined, q2.get('name'), 'text/html'), false)
+  assert.equal(store.verify(KEY, 'GET', q2.get('exp'), q2.get('sig'), undefined, 'other.txt', q2.get('type')), false)
   assert.throws(() => store.file('../etc/passwd'), /key/)
 })
 
@@ -55,9 +61,44 @@ test('the API serves disk-store links: PUT within the signed size, GET with name
     assert.equal(got.status, 200)
     assert.equal(got.headers.get('content-type'), 'text/plain')
     assert.equal(got.headers.get('content-disposition'), 'attachment; filename="a b.txt"')
+    assert.equal(got.headers.get('x-content-type-options'), 'nosniff')
     assert.equal(await got.text(), 'abcd')
+    // The signature covers name and type too, so a link holder can't swap in
+    // text/html (or any other type) and have the bytes served back as that.
+    const retyped = await fetch(t.api.url + down.url.replace('type=text%2Fplain', 'type=text%2Fhtml'))
+    assert.equal(retyped.status, 403)
     assert.equal((await fetch(t.api.url + (await store.downloadTarget(KEY.replace('/1', '/9'), {})).url)).status, 404)
   } finally { t.close() }
+})
+
+test('a disk write failure answers 5xx with JSON and does not take the API down', { skip: process.platform === 'win32' }, async () => {
+  const dir = tmp()
+  const { newPassKeys } = await import('../src/passes.js')
+  const passKey = newPassKeys().privateKey
+  const store = new DiskStore(dir)
+  const nested = path.dirname(store.file(KEY))
+  fs.mkdirSync(nested, { recursive: true })
+  // `mkdirSync` on an already-existing directory doesn't throw, so this reaches
+  // `fs.createWriteStream`; opening the new ".part" file inside then fails with an
+  // async EACCES, emitted as an 'error' event well after `serveFileData`'s own
+  // try/catch has already been entered around it. Without a listener on that
+  // event, Node treats it as uncaught and crashes the whole process, not just
+  // this request.
+  fs.chmodSync(nested, 0o500)
+  const t = await startTestApi({ fileStore: store, passKey })
+  try {
+    const up = await store.uploadTarget(KEY, 4)
+    const res = await fetch(t.api.url + up.url, { method: 'PUT', body: 'abcd' })
+    assert.ok(res.status >= 500 && res.status < 600, `expected a 5xx, got ${res.status}`)
+    assert.equal(res.headers.get('content-type'), 'application/json')
+    assert.ok((await res.json()).error)
+    // The process is still alive and serving other routes.
+    const alive = await fetch(t.api.url + '/v1/passes/key')
+    assert.equal(alive.status, 200)
+  } finally {
+    fs.chmodSync(nested, 0o700)
+    t.close()
+  }
 })
 
 test('Supabase store signs through the client and lists for exists', async () => {

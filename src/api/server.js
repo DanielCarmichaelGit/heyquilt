@@ -412,31 +412,42 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     const method = req.method
     if (!['PUT', 'GET'].includes(method) || q.get('m') !== method) return send(405, { error: 'method not allowed' })
     const size = method === 'PUT' ? Number(q.get('n')) : undefined
-    if (!files.verify(key, method, q.get('exp'), q.get('sig'), size)) return send(403, { error: 'this link is not valid' })
+    const name = q.get('name') || ''
+    const type = q.get('type') || ''
+    if (!files.verify(key, method, q.get('exp'), q.get('sig'), size, name, type)) return send(403, { error: 'this link is not valid' })
     const file = files.file(key)
     if (method === 'PUT') {
-      fs.mkdirSync(path.dirname(file), { recursive: true })
       const tmp = `${file}.part`
-      const out = fs.createWriteStream(tmp)
-      let got = 0
+      let out = null
+      let failed = null
       try {
+        fs.mkdirSync(path.dirname(file), { recursive: true })
+        out = fs.createWriteStream(tmp)
+        // Without this, a write failure (disk full, permission denied) is an
+        // unhandled 'error' event on the stream, which crashes the whole process.
+        out.on('error', (err) => { failed = failed || err })
+        let got = 0
         for await (const chunk of req) {
+          if (failed) throw failed
           got += chunk.length
           if (got > size) throw new HttpError(413, 'more bytes than the link allows')
           if (!out.write(chunk)) await new Promise((r) => out.once('drain', r))
+          if (failed) throw failed
         }
-        await new Promise((resolve, reject) => out.end((err) => (err ? reject(err) : resolve())))
+        if (failed) throw failed
+        await new Promise((resolve, reject) => out.end((err) => (err || failed ? reject(err || failed) : resolve())))
         fs.renameSync(tmp, file)
         return send(200, { ok: true })
       } catch (err) {
-        out.destroy(); fs.rmSync(tmp, { force: true })
+        if (out) out.destroy()
+        fs.rmSync(tmp, { force: true })
         return send(err.status || 500, { error: err.message })
       }
     }
     let stat
     try { stat = fs.statSync(file) } catch { return send(404, { error: 'not found' }) }
-    const headers = { 'content-type': q.get('type') || 'application/octet-stream', 'content-length': stat.size, 'cache-control': 'no-store', ...cors(req) }
-    if (q.get('name')) headers['content-disposition'] = `attachment; filename="${q.get('name').replace(/["\r\n]/g, '')}"`
+    const headers = { 'content-type': type || 'application/octet-stream', 'content-length': stat.size, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...cors(req) }
+    if (name) headers['content-disposition'] = `attachment; filename="${name.replace(/["\r\n]/g, '')}"`
     res.writeHead(200, headers)
     fs.createReadStream(file).pipe(res)
   }

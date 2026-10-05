@@ -30,7 +30,7 @@ test('the lines go after what is there, in its line endings, on a line of their 
 })
 
 test('a .gitignore that already ignores .quilt is left byte for byte', () => {
-  for (const line of ['.quilt/', '.quilt', '/.quilt', '/.quilt/', '  .quilt/  ']) {
+  for (const line of ['.quilt/', '.quilt', '/.quilt', '/.quilt/', '.quilt/  ']) {
     const dir = gitFolder()
     const text = `dist\r\n${line}\r\nbuild`
     fs.writeFileSync(gi(dir), text)
@@ -38,6 +38,7 @@ test('a .gitignore that already ignores .quilt is left byte for byte', () => {
     assert.equal(fs.readFileSync(gi(dir), 'utf8'), text, line)
   }
   assert.equal(ignoresQuilt('.quilt/*\n# .quilt/\nfoo/.quilt\n'), false, 'only a line that ignores the folder itself')
+  assert.equal(ignoresQuilt('  .quilt/\n'), false, 'leading spaces are part of git\'s pattern: "  .quilt/" is another name')
 })
 
 test('a folder without git is untouched', () => {

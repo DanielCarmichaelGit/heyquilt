@@ -10,9 +10,12 @@ import { gitDir } from './gitstate.js'
 const IGNORES_QUILT = new Set(['.quilt', '.quilt/', '/.quilt', '/.quilt/'])
 export const QUILT_IGNORE_COMMENT = "# Quilt keeps this session's local state here"
 
-/** Whether .gitignore's text already has a line ignoring .quilt. */
+/**
+ * Whether .gitignore's text already has a line ignoring .quilt. Trailing
+ * spaces don't count (git drops them); leading ones are part of the pattern.
+ */
 export function ignoresQuilt (text) {
-  return String(text).split(/\r?\n/).some((line) => IGNORES_QUILT.has(line.trim()))
+  return String(text).split(/\r?\n/).some((line) => IGNORES_QUILT.has(line.replace(/\s+$/, '')))
 }
 
 /**

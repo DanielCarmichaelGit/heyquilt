@@ -53,7 +53,7 @@ after(() => { server?.kill(); apiSrv?.close() })
 const get = (path) => fetch(base + path, { redirect: 'manual' })
 
 test('public pages render', async () => {
-  for (const path of ['/', '/pricing', '/join/room-abc']) assert.equal((await get(path)).status, 200, path)
+  for (const path of ['/', '/pricing', '/terms', '/join/room-abc']) assert.equal((await get(path)).status, 200, path)
 
   const missing = await get('/no-such-page')
   assert.equal(missing.status, 404)

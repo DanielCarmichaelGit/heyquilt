@@ -11,11 +11,12 @@ but being able to see it does not give you any right to use it.
 1. Paid use only
 
    You may install and use the Software only (a) as distributed by Quilt
-   through heyquilt.com or an official Quilt release, and (b) while you hold a
-   valid, paid Quilt account or subscription, or a free trial or other written
-   permission that Quilt has granted to you. That use is limited to the plan
-   you have, is non-exclusive and non-transferable, and ends when your account,
-   subscription or permission ends.
+   through heyquilt.com or an official Quilt release, and (b) under a plan
+   Quilt offers and you hold (a paid subscription, or a free plan or trial
+   Quilt provides), or other written permission from Quilt. That use is
+   limited to the plan you have, is personal, non-exclusive and
+   non-transferable, and ends when your plan or permission ends. Features of a
+   paid plan may be used only while it is paid for.
 
 2. What you may not do
 
@@ -32,7 +33,8 @@ but being able to see it does not give you any right to use it.
       the Software available to anyone else, including as a hosted or managed
       service;
    e. run your own relay, API or other server from the Software, or connect
-      the Software to servers other than Quilt's;
+      the Software to servers other than Quilt's, except the local sessions
+      the official app itself starts on your own network;
    f. remove, bypass or interfere with any sign-in, account, licence or
       payment check, or any notice of ownership;
    g. reverse engineer, decompile or disassemble any part of the Software that
@@ -76,8 +78,8 @@ but being able to see it does not give you any right to use it.
 
 8. Other terms
 
-   Your use of Quilt's website and hosted services is also governed by the
-   terms published at heyquilt.com. If any part of this license is found
+   Your use of Quilt is also governed by the Terms of Service at
+   https://heyquilt.com/terms. If any part of this license is found
    unenforceable, the rest stays in effect.
 
-For licensing, partnership or permission requests, visit https://heyquilt.com.
+For licensing, partnership or permission requests: hello@heyquilt.com

@@ -74,3 +74,9 @@ test('the add form asks only for a name and where; colour and about live in sett
   for (const bit of ['name="color"', 'name="description"']) assert.ok(settings.includes(bit), bit)
 })
 
+test('the add form keeps the add card\'s height, so opening it does not move the grid', () => {
+  const css = ui('app.css')
+  assert.ok(css.includes('.ws-card.form { min-height: 230px; }'))
+  assert.ok(css.includes('.ws-card.form .actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: auto;'))
+})
+

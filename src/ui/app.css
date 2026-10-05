@@ -1094,10 +1094,13 @@ body.has-update #app { padding-top: var(--update-bar); } /* padding, not margin:
 .ws-plus { width: 46px; height: 46px; border-radius: 50%; border: 1.5px dashed var(--border-strong); display: grid; place-items: center; color: var(--accent); }
 .ws-plus svg { width: 20px; height: 20px; }
 .ws-card.form { cursor: default; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), var(--shadow); }
-.ws-card.form .ws-card-body { gap: 4px; padding: 14px 16px; }
-.ws-card.form .label { margin-top: 6px; }
+/* The form fits the add card's height exactly, so opening it never moves the grid. */
+.ws-card.form { min-height: 230px; }
+.ws-card.form .ws-card-body { gap: 2px; padding: 10px 16px 12px; }
+.ws-card.form .label { margin-top: 4px; }
 .ws-card.form .input { height: 34px; }
-.ws-card.form .actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 10px; }
+.ws-card.form .error { margin: 4px 0 0; min-height: 0; }
+.ws-card.form .actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: auto; padding-top: 8px; }
 .ws-filter button { height: 30px; padding: 0 12px; font-size: 12.5px; }
 .ws-loose { margin-top: 30px; }
 .ws-loose-h { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }

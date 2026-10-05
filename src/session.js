@@ -928,7 +928,9 @@ export class Session extends EventEmitter {
     if (this.hold) {
       for (const rel of paths) if (rel !== HEAD_CHANGED) this.heldPaths.add(rel)
       if (this.hold.kind === 'switching') this.checkBackOnBranch() // in case the watcher missed the way back
-      else this.settleSoon()
+      // Only a change here puts the settle off: the flush before each update from the room
+      // (beforeRemote) has none, and a partner typing must not hold this folder for good.
+      else if (paths.length) this.settleSoon()
       return
     }
     if (this.git && this.isBurst(paths)) return this.startClassify(paths)
@@ -1175,7 +1177,6 @@ export class Session extends EventEmitter {
   async onSettled () {
     this.settleTimer = null
     if (!this.settleable()) return
-    const asked = new Set(this.heldPaths)
     let busy = this.gitBusy()
     if (busy === 'index-lock') {
       // Only the index lock, and it's been there a while: a git that crashed may have left it.
@@ -1204,7 +1205,7 @@ export class Session extends EventEmitter {
     if (!this.settleable()) return
     // A file or git event while git was asked (it re-armed the settle), or a path the room changed
     // that the plan never saw: the folder hasn't settled. Asked again, the hold on meanwhile.
-    if (this.settleTimer || [...this.heldPaths].some((rel) => !asked.has(rel))) { this.settleSoon(); return }
+    if (this.settleTimer || (plan && [...this.heldPaths].some((rel) => !plan.considered.has(rel)))) { this.settleSoon(); return }
     if (!plan) return this.gitUnreadable()
     // Out of normal sync from here on: a partner's edit arriving
     // during a merge must not land on a pulled file before it is merged.
@@ -1242,6 +1243,8 @@ export class Session extends EventEmitter {
    * - edited: every other held path, changed here or in the room while held.
    *   Merged against the version both sides last had, so an edit made during
    *   a hold (a commit, an agent's `git status`) is shared, never reverted.
+   * - considered: every path the plan looked at. One held while git was being
+   *   asked that isn't among them means the folder hasn't settled (onSettled).
    */
   async planSettle (head) {
     const prev = this.hold.prevHead
@@ -1275,7 +1278,7 @@ export class Session extends EventEmitter {
       const atHead = await filesAt(this.root, head.sha, rest)
       if (!atHead) return null
       this.log(`⚠️ git could not say what it changed here; ${rest.length} held file${rest.length === 1 ? '' : 's'} merged against your last commit`)
-      return { advance, discarded: [], edited: rest.map((rel) => ({ rel, base: atHead.get(rel) ?? undefined })) }
+      return { advance, discarded: [], edited: rest.map((rel) => ({ rel, base: atHead.get(rel) ?? undefined })), considered: new Set([...paths, ...changes.keys()]) }
     }
     const discarded = []; const edited = []
     for (const rel of rest) {
@@ -1283,7 +1286,7 @@ export class Session extends EventEmitter {
       if (!tree.dirty.has(rel) && (tree.tracked.has(rel) || !this.onDisk(rel))) discarded.push(rel)
       else edited.push({ rel, base: this.lastKnown.get(rel) })
     }
-    return { advance, discarded, edited }
+    return { advance, discarded, edited, considered: new Set([...paths, ...changes.keys()]) }
   }
 
   onDisk (rel) {

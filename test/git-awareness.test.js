@@ -530,3 +530,22 @@ test('a change from the room while git is asked about a burst is merged with it,
   } finally { delete process.env.QUILT_GIT }
   assert.equal(A.mergeList().filter((m) => m.state === 'open').length, 0)
 })
+
+test('a resumed hold settles while a partner keeps typing, even with git slow to answer', async (t) => {
+  const { A, B, dirA, dirB, room } = await pairRepos(t)
+  write(dirA, 'README.md', 'main work\n')
+  await waitFor(() => read(dirB, 'README.md') === 'main work\n')
+  git(dirB, 'stash', '-q')
+  await waitFor(() => B.status().git.hold)
+  await close(B)
+  process.env.QUILT_GIT = slowGit(1)
+  let n = 0
+  const typing = setInterval(() => write(dirA, 'src/app.js', `line1 (alice ${++n})\nline2\nline3\nline4\nline5\n`), 150)
+  try {
+    const B2 = await open(t, dirB, 'bob', { room })
+    await waitFor(() => B2.status().git.hold === null && read(dirB, 'README.md') === 'main work\n', 30000)
+  } finally { clearInterval(typing); delete process.env.QUILT_GIT }
+  const last = read(dirA, 'src/app.js')
+  await waitFor(() => read(dirB, 'src/app.js') === last)
+  assert.equal(A.mergeList().filter((m) => m.state === 'open').length, 0)
+})

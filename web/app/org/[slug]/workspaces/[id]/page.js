@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation'
 import Notice from '@/components/Notice.js'
 import ConfirmDelete from '@/components/ConfirmDelete.js'
+import WorkspaceFiles from '@/components/WorkspaceFiles.js'
 import { requireUser } from '@/lib/session.js'
 import { apiCall } from '@/lib/api.js'
 import { orgMe } from '@/lib/org.js'
@@ -34,7 +35,7 @@ export default async function WorkspacePage ({ params, searchParams }) {
   if (!w) return <p className='notice bad'>Could not load this workspace right now.</p>
   // Another org's workspace (or a personal one) is not on this org's pages.
   if (w.orgId !== org.id) notFound()
-  const { access = {}, canDelete = false, owner = {}, members = [], sessions = [] } = r.data
+  const { access = {}, canDelete = false, owner = {}, members = [], sessions = [], files = [], usage } = r.data
   const membersRes = access.admin ? await apiCall(user, 'GET', `/v1/orgs/${slug}/members`) : null
   const toAdd = access.admin ? addable(members, membersRes?.data?.members) : []
   const now = Date.now()
@@ -111,6 +112,7 @@ export default async function WorkspacePage ({ params, searchParams }) {
               </form>))}
           </div>)}
       </section>
+      <WorkspaceFiles files={files} usage={usage} downloadHref={(f) => `/api/workspaces/${encodeURIComponent(w.id)}/files/${encodeURIComponent(f.id)}`} />
       <section className='card stack'>
         <h2>Sessions</h2>
         {!sessions.length && <p className='muted'>No sessions yet.</p>}

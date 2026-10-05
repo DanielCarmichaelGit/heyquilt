@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation'
 import AppHeader from '@/components/AppHeader.js'
 import Notice from '@/components/Notice.js'
 import ConfirmDelete from '@/components/ConfirmDelete.js'
+import WorkspaceFiles from '@/components/WorkspaceFiles.js'
 import { requireUser } from '@/lib/session.js'
 import { apiCall } from '@/lib/api.js'
 import { when } from '@/lib/org-view.js'
@@ -41,7 +42,7 @@ export default async function WorkspacePage ({ params, searchParams }) {
       </>
     )
   }
-  const { access = {}, canDelete = false, owner = {}, members = [], sessions = [] } = r.data
+  const { access = {}, canDelete = false, owner = {}, members = [], sessions = [], files = [], usage } = r.data
   const [collabsRes, agentsRes] = access.admin
     ? await Promise.all([apiCall(user, 'GET', '/v1/me/collaborators'), apiCall(user, 'GET', '/v1/agents')])
     : [null, null]
@@ -118,6 +119,7 @@ export default async function WorkspacePage ({ params, searchParams }) {
                 </form>))}
             </div>)}
         </section>
+        <WorkspaceFiles files={files} usage={usage} downloadHref={(f) => `/api/workspaces/${encodeURIComponent(w.id)}/files/${encodeURIComponent(f.id)}`} />
         <section className='card stack'>
           <h2>Sessions</h2>
           {!sessions.length && <p className='muted'>No sessions yet.</p>}

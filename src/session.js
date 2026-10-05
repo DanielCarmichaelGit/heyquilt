@@ -172,6 +172,8 @@ export class Session extends EventEmitter {
     this.heldPaths = new Set() // paths that changed (here or in the room) while held
     this.headChangedAt = 0
     this.settleTimer = null
+    this.savedGit = null // { key, sha, held } from state.json: the branch synced, and whether a hold was on, at the last stop
+    this.rejoin = false // restarted held: when the hold ends, every path is checked, not only those seen changing
     if (passes) this.adoptPass(passes.payload)
   }
 
@@ -199,6 +201,8 @@ export class Session extends EventEmitter {
     fs.mkdirSync(this.stateDir, { recursive: true })
     this.loadWebhook()
     const hadState = this.loadState()
+    this.git = headKey(this.root)
+    this.gitSeen = this.git
     if (hadState) this.loadClaims()
 
     this.conn = new Connection({
@@ -232,7 +236,8 @@ export class Session extends EventEmitter {
     if (hadState) {
       // We've synced this folder before: hold what was edited while we were
       // away, let the relay tell us what the others did, then merge the two.
-      const offline = this.captureOffline()
+      // Restarted on another branch, or mid-hold: nothing in this tree is the session's offline work.
+      const offline = this.resumeHold() ? { entries: [], take: [], downloads: [] } : this.captureOffline()
       this.goLive()
       if (offline.entries.length) this.log(`${offline.entries.length} file(s) changed while you were away; merging once the relay has synced…`)
       this.conn.waitForSync().then(() => this.mergeOffline(offline)).catch((err) => {
@@ -437,6 +442,8 @@ export class Session extends EventEmitter {
       Y.applyUpdate(this.doc, fs.readFileSync(this.stateFile), LOCAL)
       this.storedOnDisk = new Map(Object.entries(meta.storedOnDisk || {}))
       this.known = meta.known ? new Map(Object.entries(meta.known)) : null
+      // No gitKey (an older state file): taken as the branch the folder is on now.
+      this.savedGit = typeof meta.gitKey === 'string' && meta.gitKey ? { key: meta.gitKey, sha: typeof meta.gitSha === 'string' ? meta.gitSha : null, held: !!meta.gitHeld } : null
       return true
     } catch {
       return false
@@ -458,7 +465,18 @@ export class Session extends EventEmitter {
     // tell a file the room changed behind our back from one edited offline.
     const known = {}
     for (const [rel, key] of this.lastKnown) known[rel] = sha1(key)
-    fs.writeFileSync(path.join(this.stateDir, 'state.json'), JSON.stringify({ room: this.room, server: this.server, storedOnDisk: Object.fromEntries(this.storedOnDisk), known }))
+    fs.writeFileSync(path.join(this.stateDir, 'state.json'), JSON.stringify({ room: this.room, server: this.server, storedOnDisk: Object.fromEntries(this.storedOnDisk), known, ...this.gitState() }))
+  }
+
+  /**
+   * What state.json keeps of git: the branch this session syncs, the commit
+   * it was last seen at there, and whether a hold was on. The next start
+   * reads them in resumeHold.
+   */
+  gitState () {
+    if (!this.git) return this.savedGit ? { gitKey: this.savedGit.key, gitSha: this.savedGit.sha, gitHeld: this.savedGit.held } : {}
+    const seen = this.hold ? this.hold.prevHead : this.gitSeen
+    return { gitKey: this.git.key, gitSha: seen && seen.key === this.git.key ? seen.sha : null, gitHeld: !!this.hold }
   }
 
   // ------------------------------------------------------------ reconcile --
@@ -978,6 +996,11 @@ export class Session extends EventEmitter {
     }
     const paths = [...this.heldPaths]
     this.heldPaths.clear()
+    if (this.rejoin) {
+      // Restarted held: changes made while stopped were never seen, so every path is checked.
+      this.rejoin = false
+      for (const rel of new Set([...this.sharedPaths(), ...walk(this.root, this.ig)])) if (!paths.includes(rel)) paths.push(rel)
+    }
     this.gitSeen = head
     // What git wrote is accounted for here: the next flush is an edit unless git moves again.
     this.gitIndex = indexStamp(this.root)
@@ -985,6 +1008,33 @@ export class Session extends EventEmitter {
     this.releaseHold()
     if (head && prev && head.sha !== prev.sha) await this.advanceFrom(prev.sha, head, paths)
     else await this.restore(paths, head)
+  }
+
+  /**
+   * At start, before captureOffline: the folder is on another branch than the
+   * one this session syncs, or it stopped mid-hold. Its tree is then not the
+   * session's work plus offline edits (it is another branch, or what git left
+   * half-done), so nothing is captured from it: the hold carries on, and when
+   * it ends (back on the branch, settled) every path is restored or merged
+   * against the version the session had when it stopped.
+   */
+  resumeHold () {
+    const saved = this.savedGit
+    if (!saved || !this.git) return false
+    const away = this.git.key !== saved.key
+    if (!away && !saved.held) return false
+    const head = this.git
+    this.git = { key: saved.key, branch: saved.key.startsWith('@') ? null : saved.key, sha: saved.sha }
+    this.gitSeen = head
+    // The base for merging what the folder holds once it's back: the session's version at the last stop.
+    for (const rel of this.sharedPaths()) {
+      const k = this.sharedKey(rel)
+      if (this.syncable(rel) && k !== undefined) this.lastKnown.set(rel, k)
+    }
+    this.rejoin = true
+    this.hold = { kind: away ? 'switching' : 'settling', since: Date.now(), prevHead: saved.sha ? { ...this.git } : null, ...(away ? { to: head.key } : {}) }
+    if (away) this.logSwitch(head.key)
+    return true
   }
 
   /** While switched away: did HEAD come back to the branch this session syncs? */
@@ -1701,8 +1751,6 @@ export class Session extends EventEmitter {
   // --------------------------------------------------------------- watcher --
 
   async startWatcher () {
-    this.git = headKey(this.root)
-    this.gitSeen = this.git
     this.gitIndex = indexStamp(this.root)
     if (this.git) {
       this.gitWatcher = watchGit(this.root, (e) => {
@@ -1710,6 +1758,8 @@ export class Session extends EventEmitter {
         if (e.type === 'head') { this.headChangedAt = Date.now(); this.queue(HEAD_CHANGED) } else if (e.type === 'busy') { this.setHold('busy'); this.settleSoon() } else this.settleSoon() // idle, index
         if (this.hold && this.hold.kind === 'switching') this.checkBackOnBranch()
       })
+      if (this.hold && this.hold.kind === 'switching') this.checkBackOnBranch() // back before the watcher started?
+      else this.settleSoon() // a hold resumed at start ends once the tree has settled
     }
     this.scanDisk({ baseline: true }) // the folder was just reconciled; the first re-scan catches anything since
     this.watcher = watch(this.root, {

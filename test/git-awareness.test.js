@@ -159,6 +159,42 @@ test('checking out another branch pauses that folder; coming back resumes and me
   await waitFor(() => read(dirB, 'README.md') === 'main work\n' && read(dirB, 'src/app.js') === 'line1\nline2\nline3\nline4\nline5\n')
 })
 
+test('stopped while paused on another branch: the next start stays paused, then resumes on the way back', async (t) => {
+  const { A, B, dirA, dirB, room } = await pairRepos(t)
+  write(dirA, 'README.md', 'main work\n')
+  await waitFor(() => read(dirB, 'README.md') === 'main work\n')
+  git(dirB, 'stash', '-q'); git(dirB, 'checkout', '-qb', 'feature') // the room's work is not on feature
+  await waitFor(() => B.status().git.hold?.kind === 'switching')
+  await close(B)
+  write(dirB, 'src/app.js', 'feature work\n'); git(dirB, 'commit', '-qam', 'feature')
+  write(dirA, 'src/app.js', 'line1\nline2 (alice, meanwhile)\nline3\nline4\nline5\n')
+  const B2 = await open(t, dirB, 'bob', { room })
+  assert.equal(B2.status().git.hold?.kind, 'switching')
+  assert.equal(B2.status().git.key, 'main')
+  assert.ok(B2.logs.some((l) => l.includes("You're on feature; this session syncs main")), B2.logs.join('\n'))
+  await never(() => read(dirA, 'src/app.js') !== 'line1\nline2 (alice, meanwhile)\nline3\nline4\nline5\n' || read(dirA, 'README.md') !== 'main work\n', 2000)
+  assert.equal(read(dirB, 'src/app.js'), 'feature work\n', 'nothing of main is written onto feature')
+  git(dirB, 'checkout', '-q', 'main')
+  await waitFor(() => B2.status().git.hold === null, 10000)
+  await waitFor(() => read(dirB, 'README.md') === 'main work\n' && read(dirB, 'src/app.js') === 'line1\nline2 (alice, meanwhile)\nline3\nline4\nline5\n', 10000)
+  assert.equal(read(dirA, 'README.md'), 'main work\n')
+  assert.equal(A.status().git.hold, null)
+})
+
+test('stopped mid-hold on the same branch: the next start puts the room\'s work back instead of sharing the discard', async (t) => {
+  const { B, dirA, dirB, room } = await pairRepos(t)
+  write(dirA, 'README.md', 'main work\n')
+  await waitFor(() => read(dirB, 'README.md') === 'main work\n')
+  git(dirB, 'stash', '-q')
+  await waitFor(() => B.status().git.hold)
+  await close(B) // within the settle time: the discard is still held
+  assert.equal(read(dirB, 'README.md'), 'hello\n')
+  const B2 = await open(t, dirB, 'bob', { room })
+  await never(() => read(dirA, 'README.md') !== 'main work\n', 1500)
+  await waitFor(() => read(dirB, 'README.md') === 'main work\n' && B2.status().git.hold === null, 10000)
+  assert.equal(read(dirA, 'README.md'), 'main work\n')
+})
+
 test('an edit made while git holds the folder is shared once it settles, never reverted', async (t) => {
   const { B, dirA, dirB } = await pairRepos(t)
   // A git command holding the index lock (an agent's `git status`, a commit) while bob keeps typing.

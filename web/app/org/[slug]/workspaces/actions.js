@@ -28,7 +28,7 @@ export async function updateWorkspace (formData) {
   const { base } = baseOf(formData)
   const id = String(formData.get('id'))
   const user = await requireUser(base)
-  const r = await apiCall(user, 'PATCH', `/v1/workspaces/${id}`, workspacePatch(formData))
+  const r = await apiCall(user, 'PATCH', `/v1/workspaces/${enc(id)}`, workspacePatch(formData))
   revalidatePath(`${base}/${id}`)
   back(`${base}/${id}`, r.ok ? { message: 'Saved.' } : { error: r.data?.error || 'Could not save.' })
 }
@@ -37,7 +37,7 @@ export async function deleteWorkspace (formData) {
   const { base } = baseOf(formData)
   const id = String(formData.get('id'))
   const user = await requireUser(base)
-  const r = await apiCall(user, 'DELETE', `/v1/workspaces/${id}`)
+  const r = await apiCall(user, 'DELETE', `/v1/workspaces/${enc(id)}`)
   revalidatePath(base)
   if (!r.ok) return back(`${base}/${id}`, { error: r.data?.error || 'Could not delete.' })
   back(base, { message: 'Deleted. Its sessions are now outside any workspace.' })
@@ -47,7 +47,7 @@ export async function setMember (formData) {
   const { base } = baseOf(formData)
   const id = String(formData.get('id')); const account = String(formData.get('account'))
   const user = await requireUser(base)
-  const r = await apiCall(user, 'PUT', `/v1/workspaces/${id}/members/${enc(account)}`, { access: formData.get('access') })
+  const r = await apiCall(user, 'PUT', `/v1/workspaces/${enc(id)}/members/${enc(account)}`, { access: formData.get('access') })
   revalidatePath(`${base}/${id}`)
   back(`${base}/${id}`, r.ok ? { message: 'Saved.' } : { error: r.data?.error || 'Could not save.' })
 }
@@ -56,7 +56,7 @@ export async function removeMember (formData) {
   const { base } = baseOf(formData)
   const id = String(formData.get('id')); const account = String(formData.get('account'))
   const user = await requireUser(base)
-  const r = await apiCall(user, 'DELETE', `/v1/workspaces/${id}/members/${enc(account)}`)
+  const r = await apiCall(user, 'DELETE', `/v1/workspaces/${enc(id)}/members/${enc(account)}`)
   revalidatePath(`${base}/${id}`)
   back(`${base}/${id}`, r.ok ? { message: 'Removed.' } : { error: r.data?.error || 'Could not remove.' })
 }

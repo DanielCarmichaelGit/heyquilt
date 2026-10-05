@@ -18,7 +18,7 @@ export async function createWorkspace (formData) {
 export async function updateWorkspace (formData) {
   const user = await requireUser('/dashboard/workspaces')
   const id = String(formData.get('id'))
-  const r = await apiCall(user, 'PATCH', `/v1/workspaces/${id}`, workspacePatch(formData))
+  const r = await apiCall(user, 'PATCH', `/v1/workspaces/${encodeURIComponent(id)}`, workspacePatch(formData))
   revalidatePath(`/dashboard/workspaces/${id}`)
   back(`/dashboard/workspaces/${id}`, r.ok ? { message: 'Saved.' } : { error: r.data?.error || 'Could not save.' })
 }
@@ -26,7 +26,7 @@ export async function updateWorkspace (formData) {
 export async function deleteWorkspace (formData) {
   const user = await requireUser('/dashboard/workspaces')
   const id = String(formData.get('id'))
-  const r = await apiCall(user, 'DELETE', `/v1/workspaces/${id}`)
+  const r = await apiCall(user, 'DELETE', `/v1/workspaces/${encodeURIComponent(id)}`)
   revalidatePath('/dashboard/workspaces')
   if (!r.ok) return back(`/dashboard/workspaces/${id}`, { error: r.data?.error || 'Could not delete.' })
   back('/dashboard/workspaces', { message: 'Deleted. Its sessions are still yours.' })
@@ -35,7 +35,7 @@ export async function deleteWorkspace (formData) {
 export async function setMember (formData) {
   const user = await requireUser('/dashboard/workspaces')
   const id = String(formData.get('id')); const account = String(formData.get('account'))
-  const r = await apiCall(user, 'PUT', `/v1/workspaces/${id}/members/${encodeURIComponent(account)}`, { access: formData.get('access') })
+  const r = await apiCall(user, 'PUT', `/v1/workspaces/${encodeURIComponent(id)}/members/${encodeURIComponent(account)}`, { access: formData.get('access') })
   revalidatePath(`/dashboard/workspaces/${id}`)
   back(`/dashboard/workspaces/${id}`, r.ok ? { message: 'Saved.' } : { error: r.data?.error || 'Could not save.' })
 }
@@ -43,7 +43,7 @@ export async function setMember (formData) {
 export async function removeMember (formData) {
   const user = await requireUser('/dashboard/workspaces')
   const id = String(formData.get('id')); const account = String(formData.get('account'))
-  const r = await apiCall(user, 'DELETE', `/v1/workspaces/${id}/members/${encodeURIComponent(account)}`)
+  const r = await apiCall(user, 'DELETE', `/v1/workspaces/${encodeURIComponent(id)}/members/${encodeURIComponent(account)}`)
   revalidatePath(`/dashboard/workspaces/${id}`)
   back(`/dashboard/workspaces/${id}`, r.ok ? { message: 'Removed.' } : { error: r.data?.error || 'Could not remove.' })
 }

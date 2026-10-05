@@ -28,7 +28,7 @@ export default async function WorkspacePage ({ params, searchParams }) {
   const { id } = await params
   const q = await searchParams
   const user = await requireUser(`/dashboard/workspaces/${id}`)
-  const r = await apiCall(user, 'GET', `/v1/workspaces/${id}`)
+  const r = await apiCall(user, 'GET', `/v1/workspaces/${encodeURIComponent(id)}`)
   if (r.status === 404) notFound()
   const w = r.data?.workspace
   if (!w) {

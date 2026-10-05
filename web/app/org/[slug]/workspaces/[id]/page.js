@@ -27,11 +27,13 @@ export default async function WorkspacePage ({ params, searchParams }) {
   const { slug, id } = await params
   const q = await searchParams
   const user = await requireUser(`/org/${slug}/workspaces/${id}`)
-  await orgMe(user.accessToken, slug)
-  const r = await apiCall(user, 'GET', `/v1/workspaces/${id}`)
+  const { org } = await orgMe(user.accessToken, slug)
+  const r = await apiCall(user, 'GET', `/v1/workspaces/${encodeURIComponent(id)}`)
   if (r.status === 404) notFound()
   const w = r.data?.workspace
   if (!w) return <p className='notice bad'>Could not load this workspace right now.</p>
+  // Another org's workspace (or a personal one) is not on this org's pages.
+  if (w.orgId !== org.id) notFound()
   const { access = {}, canDelete = false, owner = {}, members = [], sessions = [] } = r.data
   const membersRes = access.admin ? await apiCall(user, 'GET', `/v1/orgs/${slug}/members`) : null
   const toAdd = access.admin ? addable(members, membersRes?.data?.members) : []

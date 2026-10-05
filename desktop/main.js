@@ -14,6 +14,7 @@ import { decodeInvite } from '../src/runner.js'
 import { quiltHome, adoptLegacyEnv } from '../src/legacy.js'
 import { downloadUrl } from '../src/releases.js'
 import { installUpdate } from './updater.js'
+import { registerOnStart } from '../src/integrations.js'
 
 adoptLegacyEnv()
 
@@ -93,6 +94,8 @@ async function start () {
   registerProcess('app', { port: ui.port, url: ui.url, desktop: true })
   process.on('SIGTERM', () => app.quit()) // `quilt stop`
   if (app.isPackaged) writeCliShim()
+  // Every AI tool on this computer gets Quilt's MCP server before anyone joins anything.
+  registerOnStart((line) => console.log(line))
 
   ipcMain.handle('ready', () => { rendererReady = true; const l = pendingInvite; pendingInvite = null; return l })
   ipcMain.handle('pick-folder', async (e, current) => {

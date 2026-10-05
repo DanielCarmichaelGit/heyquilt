@@ -9,6 +9,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { ResourceUpdatedNotificationSchema } from '@modelcontextprotocol/sdk/types.js'
 import { startServer } from '../src/server.js'
 import { Session } from '../src/session.js'
 import { encodeInvite } from '../src/runner.js'
@@ -53,7 +54,7 @@ after(async () => {
 
 test('exposes the join and workspace tools', async () => {
   const names = (await client.listTools()).tools.map((t) => t.name)
-  for (const n of ['quilt_join_session', 'quilt_start_session', 'quilt_leave_session', 'quilt_session_info', 'quilt_partner_feed', 'quilt_list_files', 'quilt_status', 'quilt_claim', 'quilt_inbox']) {
+  for (const n of ['quilt_join_session', 'quilt_start_session', 'quilt_leave_session', 'quilt_session_info', 'quilt_partner_feed', 'quilt_list_files', 'quilt_status', 'quilt_claim', 'quilt_inbox', 'quilt_before_edit', 'quilt_set_work']) {
     assert.ok(names.includes(n), n)
   }
 })
@@ -209,6 +210,7 @@ test('an agent whose Quilt is behind the newest release is told to update in eve
 })
 
 test('merges are listed and settled through the MCP tools', async () => {
+  await call('quilt_message', { text: 'Thanks dana, got your messages.' }) // answered: work may move on
   // Two tool calls on an empty list, then a record made directly in the shared doc.
   assert.match(text(await call('quilt_merges')), /nothing to merge/i)
   const { openMerge } = await import('../src/merges.js')
@@ -227,6 +229,72 @@ test('merges are listed and settled through the MCP tools', async () => {
   const rec2 = openMerge(human.doc, human.merges, { path: 'src/gone.js', by: 'dana', others: ['helper'], kind: 'conflict', ours: null, oursDeleted: true, base: 'console.log("hi")\n', theirsHash: 'y', binary: false }, null)
   const listed2 = await waitFor(async () => { const t = text(await call('quilt_merges')); return t.includes(rec2.id) ? t : null })
   assert.match(listed2, /deleted it offline/)
+})
+
+test('without hooks, the MCP holds an agent to the rules: claims refuse files, chat is context, and an unanswered message holds up work', async () => {
+  human.say('helper, please do not touch src/app.js, I am mid-refactor', { to: 'helper' })
+  await waitFor(async () => text(await call('quilt_inbox', { all: true })).includes('mid-refactor'))
+  // Before editing: a free file is claimed (chat about it is shown, never blocks it), a held one is refused.
+  const check = text(await call('quilt_before_edit', { paths: ['src/app.js', 'src/auth/login.js', '/etc/passwd'] }))
+  assert.match(check, /- src\/app\.js: ✅ yours to edit \(claimed for you until you finish\)/)
+  assert.match(check, /- src\/auth\/login\.js: ⛔ src\/auth\/login\.js is claimed by dana \(refactoring\), as part of their claim on src\/auth.*Do not retry.*quilt_message \(to: "dana"\)/)
+  assert.match(check, /- \/etc\/passwd: not inside the project folder/)
+  assert.match(check, /What people said in chat about these files:\n- dana \(to you\), just now, about src\/app\.js: "helper, please do not touch src\/app\.js, I am mid-refactor" \(you have not replied\)/)
+  assert.equal((await waitFor(() => human.claimFor('src/app.js'))).by, 'helper')
+  // Every step that moves work on waits for an answer to dana.
+  const held = text(await call('quilt_claim', { pattern: 'docs/**' }))
+  assert.match(held, /Not yet: these people are still waiting for an answer from you:\n/)
+  assert.match(held, /- dana sent you a direct message: "helper, please do not touch src\/app\.js/)
+  assert.match(held, /then call quilt_claim again/)
+  assert.match(text(await call('quilt_set_work', { state: 'done' })), /^Not yet:/)
+  assert.equal(human.claimFor('docs/x.md'), null)
+  // What arrives while the agent works is put in front of its next answer, once.
+  human.say('also @helper, ping me when you are done')
+  const news = await waitFor(async () => { const t = text(await call('quilt_status')); return t.includes('📬') && t })
+  assert.match(news, /^📬 Waiting for you:\n- dana mentioned you in chat: also @helper, ping me when you are done/)
+  assert.doesNotMatch(text(await call('quilt_status')), /📬/)
+  // Answering lets work move on; the chat stays as context, now marked answered; finishing lets go of the file.
+  await call('quilt_message', { to: 'dana', text: 'Understood, leaving src/app.js to you.' })
+  const again = text(await call('quilt_before_edit', { paths: ['src/app.js'] }))
+  assert.match(again, /about src\/app\.js: "helper, please do not touch src\/app\.js, I am mid-refactor"\n/)
+  assert.doesNotMatch(again, /\(you have not replied\)/)
+  assert.match(text(await call('quilt_set_work', { state: 'done' })), /^Marked as done\. Let go of \d+ files? claimed for you while you edited\./)
+  await waitFor(() => !human.claimFor('src/app.js'))
+})
+
+test('nothing is Claude-only: any MCP client is pushed what arrives, and shares its work into the feed, the board and commit timing', async (t) => {
+  // A second agent tool in the same folder, which is not Claude Code: it works through the same session.
+  const codex = new Client({ name: 'codex-mcp-client', version: '1.0.0' })
+  await codex.connect(new StdioClientTransport({ command: process.execPath, args: [BIN, 'mcp'], cwd: agentCwd, env: { ...process.env, HOME: home, QUILT_SERVER: `ws://127.0.0.1:${relay.port}` }, stderr: 'ignore' }))
+  t.after(() => codex.close().catch(() => {}))
+  const say = async (name, args = {}) => text(await codex.callTool({ name, arguments: args }))
+  // Push, in plain MCP: subscribe to the inbox resource, hear when it changes, read it.
+  const updates = []
+  codex.setNotificationHandler(ResourceUpdatedNotificationSchema, (n) => { updates.push(n.params.uri) })
+  await codex.subscribeResource({ uri: 'quilt://inbox' })
+  await new Promise((r) => setTimeout(r, 500))
+  human.say('@helper the build is red, can you look?')
+  await waitFor(() => updates.length)
+  assert.equal(updates[0], 'quilt://inbox')
+  const inbox = (await codex.readResource({ uri: 'quilt://inbox' })).contents[0].text
+  assert.match(inbox, /dana mentioned you in chat: @helper the build is red, can you look\?/)
+  // Sharing the work: it reaches dana's feed as Codex, and the host now waits before committing.
+  assert.equal(await say('quilt_share', { request: 'Fix the red build', summary: 'Looking at the failing test first.' }), 'Shared with the session.')
+  const feed = await waitFor(() => { const f = human.agentFeedFor('helper'); return f.some((e) => e.text === 'Fix the red build') && f })
+  assert.deepEqual(feed.filter((e) => e.conv === 'mcp-Codex').map((e) => [e.kind, e.tool]).slice(0, 2), [['prompt', 'Codex'], ['reply', 'Codex']])
+  await waitFor(() => human.commitStatus().busy.some((b) => b.name === 'helper'))
+  assert.match(await say('quilt_partner_feed'), /dana/)
+  // Finishing with the files it changed opens an In progress task for that request, as a chat Quilt reads would.
+  assert.equal(await say('quilt_share', { summary: 'Fixed the import in src/build.js.', files: ['src/build.js'] }), 'Shared with the session.')
+  const task = await waitFor(() => human.taskList().find((x) => /red build/i.test(x.title)))
+  assert.equal(task.column, 'doing')
+  assert.equal(task.assignee, 'helper')
+  assert.deepEqual(task.files, ['src/build.js'])
+  // Done (after answering dana) ends "working", so the host may commit again.
+  await say('quilt_message', { text: '@dana fixed, it was an import', to: 'dana' })
+  assert.match(await say('quilt_set_work', { state: 'done' }), /^Marked as done/)
+  await waitFor(() => !human.commitStatus().busy.some((b) => b.name === 'helper'))
+  human.deleteTask(task.id)
 })
 
 test('agent edits sync back to people, and leaving removes the agent', async () => {

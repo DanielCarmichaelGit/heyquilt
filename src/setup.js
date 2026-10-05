@@ -4,7 +4,8 @@
 // everyone in the session.
 import fs from 'node:fs'
 import path from 'node:path'
-import { hookSettings, HOOK_COMMAND } from './hooks.js'
+import { hookSettings, isQuiltHook } from './hooks.js'
+import { registerEverywhere } from './integrations.js'
 import { TASK_WORKFLOW_MD, CHECKLIST_SCAFFOLD, extractChecklist } from './agent-task-workflow.js'
 
 const START = '<!-- quilt:start -->'
@@ -26,6 +27,12 @@ ${TASK_WORKFLOW_MD}
 - See what a partner's AI is doing with \`quilt_partner_feed\`, and where people
   are working with \`quilt_list_files\` (recent edits and claims).
 - Announce what you're working on (\`quilt_set_focus\` / \`quilt focus "..."\`).
+- Share your work with \`quilt_share\`: when you start a request (what was asked,
+  your plan) and when you finish (what you did, the files you changed). Partners
+  see it in their feed, it goes on the task board, and the host won't commit under you.
+- Before you change files, call \`quilt_before_edit\` with their paths. It tells you
+  whether each one is yours to edit (claiming free ones for you) and shows what
+  people said about those files in chat. Don't edit a file it refuses.
 - Claims follow edits, whatever tool you are: the moment you change a file nobody
   holds, Quilt claims it for you, and lets go when you finish (your AI goes idle, or
   the file has been quiet for a few minutes). Claim ahead only for a larger change
@@ -36,7 +43,9 @@ ${TASK_WORKFLOW_MD}
   message (\`quilt_message\` with "to" / \`quilt say @name "..."\`) saying what you
   wanted to change and asking for help, then carry on with other work.
 - Answer collaborators' messages (\`quilt_read_messages\`): help with their change,
-  hand the file over, or say when you'll be done.
+  hand the file over, or say when you'll be done. New ones are shown at the top of
+  every quilt answer. When you finish, call \`quilt_set_work\` with "done": it is
+  refused until everyone who wrote to you has an answer.
 - \`quilt_inbox\` lists what is waiting for you: mentions of you (@yourname), direct
   messages and tasks handed to you. Read it when you start and act on each one.
 - Before moving a ticket to Done, run the checks under "Verifying a change" (in
@@ -57,20 +66,6 @@ function upsertBlock (file, block) {
   return next !== text
 }
 
-function upsertMcp (file, key = 'mcpServers') {
-  let json = {}
-  try { json = JSON.parse(fs.readFileSync(file, 'utf8')) } catch {}
-  json[key] = json[key] || {}
-  json[key].quilt = { command: 'quilt', args: ['mcp'] }
-  delete json[key].cowove // the old name (renamed to Quilt)
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-  const text = JSON.stringify(json, null, 2) + '\n'
-  let prev = ''
-  try { prev = fs.readFileSync(file, 'utf8') } catch {}
-  if (prev !== text) fs.writeFileSync(file, text)
-  return prev !== text
-}
-
 /** Where Quilt's Claude Code hooks live: this person's own settings, which never sync or get committed. */
 export const HOOKS_FILE = '.claude/settings.local.json'
 
@@ -86,7 +81,7 @@ export function installHooks (root) {
   try { json = JSON.parse(prev) || {} } catch {}
   if (typeof json !== 'object' || Array.isArray(json)) json = {}
   const hooks = (json.hooks && typeof json.hooks === 'object' && !Array.isArray(json.hooks)) ? json.hooks : {}
-  const ours = (h) => h && typeof h.command === 'string' && h.command.startsWith(HOOK_COMMAND)
+  const ours = isQuiltHook
   for (const [event, entries] of Object.entries(hookSettings())) {
     const kept = (Array.isArray(hooks[event]) ? hooks[event] : [])
       .map((e) => (e && Array.isArray(e.hooks) ? { ...e, hooks: e.hooks.filter((h) => !ours(h)) } : e))
@@ -114,11 +109,15 @@ export function scaffoldChecklist (root) {
   return true
 }
 
-export function setup (root) {
+export function setup (root, { home } = {}) {
   const changed = []
-  if (upsertMcp(path.join(root, '.mcp.json'))) changed.push('.mcp.json (Claude Code MCP server)')
+  // MCP servers go in each AI tool's own settings on this computer (with this install's path),
+  // not in the project, whose files sync to everyone. See integrations.js.
+  for (const r of registerEverywhere(home ? { home } : {})) {
+    if (r.result === 'added' || r.result === 'updated') changed.push(`${r.file} (${r.name} MCP server)`)
+    else if (r.result === 'skipped' || r.result === 'failed') changed.push(`${r.file}: left alone, not plain JSON (${r.name})`)
+  }
   if (installHooks(root)) changed.push(`${HOOKS_FILE} (Claude Code hooks: files are claimed as you edit them)`)
-  if (upsertMcp(path.join(root, '.cursor', 'mcp.json'))) changed.push('.cursor/mcp.json (Cursor MCP server)')
   if (upsertBlock(path.join(root, 'AGENTS.md'), AGENT_GUIDE)) changed.push('AGENTS.md (Cursor, Codex, and other agents)')
   if (upsertBlock(path.join(root, 'CLAUDE.md'), AGENT_GUIDE)) changed.push('CLAUDE.md (Claude Code)')
   if (scaffoldChecklist(root)) changed.push('AGENTS.md ("Verifying a change": fill in what proves a change works here)')

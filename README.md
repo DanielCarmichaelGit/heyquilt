@@ -36,7 +36,8 @@ within milliseconds. Your agents can also see what the other agents are doing.
   **Merges** bar for everyone to settle.
 - **Watch each other's AI, live.** The app shows your partner's AI conversation
   as it happens: their prompts, the AI's replies, and one-line actions like
-  "Edited src/app.ts" or "Ran npm test". This works for Claude Code and Cursor.
+  "Edited src/app.ts" or "Ran npm test". Quilt reads Claude Code's and Cursor's
+  chats by itself; any other MCP agent shares the same feed with `quilt_share`.
   Next to it are a live file tree (who's editing what, what's claimed) and
   read-only file tabs where changed lines light up.
 - **Agents coordinate, and can join by themselves.** An MCP server gives each
@@ -68,8 +69,9 @@ The app isn't signed by Apple yet, so the first time you open it macOS may say
 it can't check it. Open **System Settings → Privacy & Security** and click
 **Open Anyway**.
 
-To let your AI tools use Quilt (its MCP server and the `quilt` command),
-choose **Quilt → Install the Quilt Command…** in the menu bar.
+Your AI tools can use Quilt as soon as the app opens: it connects every one it
+finds (see [Your AI tools are connected already](#the-terminal-way)). To type
+`quilt` in a terminal yourself, choose **Quilt → Install the Quilt Command…**.
 
 ### From source
 
@@ -128,21 +130,32 @@ quilt join <invite-link> --tool cursor
 Keep `quilt join` running in a terminal while you work. It logs who joined,
 what they're touching, claims, and messages.
 
-**4. Connect your AI tools** (once per project, by either of you; it syncs):
+**Your AI tools are connected already.** Whenever the app, `quilt login`,
+`quilt ui` or a session starts, Quilt adds its MCP server to every AI tool it
+finds on the computer: Claude Code, Claude Desktop, Cursor, Windsurf, Codex,
+VS Code (GitHub Copilot, Cline, Roo Code), Gemini CLI, GitHub Copilot CLI, Zed,
+opencode, Kiro, Amp, Junie and Continue. It writes each tool's own settings with
+this install's full path, so nothing depends on your PATH or on files in the
+project, and it keeps them current when the app moves or updates. A tool that
+was already open picks Quilt up when it restarts. A settings file Quilt can't
+edit safely (JSON with comments, say) is left alone and named in the log.
+`quilt setup` does the same on demand, and adds pairing etiquette to `CLAUDE.md`
+and `AGENTS.md`.
 
-```bash
-quilt setup
-```
+**Quilt's rules are enforced, in every tool.** They aren't instructions an agent
+may skip:
 
-This registers the `quilt` MCP server in `.mcp.json` (Claude Code) and
-`.cursor/mcp.json` (Cursor), and adds pairing etiquette to `CLAUDE.md` and
-`AGENTS.md` ("check what your partner is doing before you start; don't edit
-claimed files; re-read files before editing"). Restart or reload your tool to
-pick up the MCP server.
+- An edit to a file someone else holds (claims it) is undone (Quilt watches the
+  disk). Only claims block files; chat never does.
+- Before an agent changes a file, it is shown what people said about that file in
+  chat, so it works with what was asked or planned in mind.
+- While someone who messaged or mentioned the agent is waiting for an answer, every
+  tool that moves work on (claims, tasks, focus, merges, commits, `quilt_set_work`)
+  refuses with who is waiting, until the agent answers with `quilt_message`.
+- Hosted agents write through Quilt's tools, so their writes are refused outright.
 
-Claude Code also gets Quilt's hooks (in your own `.claude/settings.local.json`,
-written whenever a session starts for the folder): every file is claimed for you
-the moment Claude edits it, and those claims are released when Claude finishes.
+Claude Code also gets Quilt's hooks (in your own `.claude/settings.local.json`),
+which refuse such an edit before it happens instead of undoing it after.
 See [Claims](#claims).
 
 ## Commands
@@ -167,7 +180,7 @@ See [Claims](#claims).
 | `quilt messages` / `quilt messages --all` / `--with bob` | Unread messages / history / one conversation |
 | `quilt history [path] [--by name] [--since 2h] [--diff]` | Who changed what, when, and for which task |
 | `quilt get <message-id> [dest]` | Download a shared file again |
-| `quilt setup` | Wire up MCP + agent instructions |
+| `quilt setup` | Connect every AI tool on this computer now, and add agent instructions to the project |
 | `quilt mcp` | The MCP server itself (your AI tool launches this) |
 | `quilt doctor [--watch 30]` | Check what Quilt can see of your Claude Code / Cursor chats (safe to share: no chat text) |
 
@@ -183,6 +196,9 @@ See [Claims](#claims).
 | `quilt_history` | The chronology: who changed which file, when, the diff, and for which task; filter by path, person, task or time |
 | `quilt_list_files` | Shared files with recent editors and claims |
 | `quilt_set_focus` | Announce the current task |
+| `quilt_share` | Share what you're working on (the request, your plan, what you did, files changed): it reaches partners' feeds and the task board, and holds off commits while you work |
+| `quilt_before_edit` | Before changing files: whether each one is yours to edit (free ones are claimed for you; held ones are refused, with who to ask), and what people said about them in chat lately |
+| `quilt_set_work` | Say you're working or done; "done" releases the files claimed for you, and is refused until you've answered everyone who wrote to you |
 | `quilt_claim` / `quilt_release` | Claim or release files by hand (Quilt claims files for you as your AI edits them) |
 | `quilt_message` | Message everyone, or one person with `to` |
 | `quilt_read_messages` | Read unread (or recent) messages, including received files |
@@ -193,6 +209,12 @@ See [Claims](#claims).
 | `quilt_get_file` | Download a shared file (again) |
 
 Any MCP-capable tool works: Claude Code, Cursor, Windsurf, Codex, Zed, and so on.
+Quilt registers the server with each of them by itself (see above).
+
+Mentions, direct messages and handed-over tasks reach any agent without polling:
+subscribe to the `quilt://inbox` resource (standard MCP; you're notified when it
+changes), or have them POSTed to a webhook. Claude Code started with the quilt
+channel gets each one as a turn.
 Point its MCP config at the command `quilt` with args `["mcp"]`.
 
 ## Watching each other's AI
@@ -226,11 +248,22 @@ follow edits, so nobody has to remember:
 - **A partner's edit to your file is undone** and put back the way you have it. Their
   AI hears about it with its next Quilt tool call: who holds the file and why, and to
   send you a direct message saying what it wanted to change rather than retry.
-- **Claude Code gets the nicer version** through hooks in your own
-  `.claude/settings.local.json`: the edit is refused before it happens, the holder's
-  Claude sees the message after its next edit, and if it tries to finish with an
-  unanswered one it is asked to reply first. Hook claims end when Claude finishes
-  its turn; a crashed Claude's leftovers are released by the next session.
+- **Every MCP agent is checked before it edits, too.** `quilt_before_edit` refuses
+  a file someone else holds, claims a free one, and shows what people said about
+  those files in chat lately (marking any it hasn't replied to). Every
+  Quilt answer starts with the direct messages, mentions and tasks that arrived
+  since the last one. `quilt_set_work` "done" and moving a task to Done are refused
+  while someone who wrote to the agent is still waiting for a reply. An agent that
+  never says it's done stops counting as working once its files have been quiet
+  for five minutes, so commits aren't held up.
+- **Claude Code gets the same rules automatically** through hooks in your own
+  `.claude/settings.local.json`: an edit to a file someone else holds is refused
+  before it happens, chat about the file is shown before the edit, the holder's Claude sees new messages
+  after its next edit, and if it tries to finish with an unanswered one it is asked
+  to reply first. Hook claims end when Claude finishes its turn; a crashed Claude's
+  leftovers are released by the next session.
+- **Hosted agents** (on `api.heyquilt.com/mcp`) are told what people said about a
+  file in chat when they write it.
 - **Hosted agents** (on `api.heyquilt.com/mcp`) are claimed for when they write a
   file and let go after ten quiet minutes; a write to someone else's file is refused
   with the same advice.

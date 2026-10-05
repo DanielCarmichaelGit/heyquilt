@@ -1,9 +1,12 @@
-// `quilt hook`: Claude Code hooks that make claims automatic. Before every
-// edit, the file is claimed for this person (or the edit is refused when
-// someone else holds it, with a nudge to ask them for help); claims the hooks
-// made are released when Claude finishes. Direct messages, mentions and tasks
-// handed over by collaborators are shown to Claude so it can answer requests
-// like "can you help with X?" and take work that is given to it.
+// `quilt hook`: Claude Code's delivery of Quilt's rules. The rules themselves are
+// the same for every agent (duties.js, Session.prepareEdit): every MCP agent gets
+// them through quilt_before_edit, its quilt answers and quilt_set_work, and the
+// file watcher undoes edits to files someone else holds whatever made them. The
+// hooks only make them automatic in Claude Code: before every edit, the file is
+// claimed for this person (or the edit is refused when someone else holds it, with
+// a nudge to ask them for help) and what was said about it in chat is shown; claims the hooks
+// made are released when Claude finishes, once it has answered who wrote to it.
+// Direct messages, mentions and tasks handed over are shown as Claude works.
 //
 // Reads the hook event as JSON on stdin and answers on stdout, as Claude Code
 // expects. Without a running session it does nothing, so the hooks are harmless
@@ -13,14 +16,19 @@ import path from 'node:path'
 import { findDaemon } from './control.js'
 import { migrateDir } from './legacy.js'
 import { describeEvent } from './inbox.js'
+import { renderChatAbout, heldRefusal } from './duties.js'
+import { quiltShellCommand } from './integrations.js'
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 const TIMEOUT_MS = 5000
 
-/** Settings for .claude/settings.json: every hook runs `quilt hook`. */
-export const HOOK_COMMAND = 'quilt hook'
-export function hookSettings () {
-  const run = { type: 'command', command: HOOK_COMMAND, timeout: 10 }
+/** Settings for .claude/settings.local.json: every hook runs this Quilt's `hook`, by absolute path (no PATH needed). */
+export const HOOK_COMMAND = 'quilt hook' // what older versions wrote
+export const hookCommand = () => quiltShellCommand(['hook'])
+/** Is this hook entry one of Quilt's (any version)? */
+export const isQuiltHook = (h) => !!h && typeof h.command === 'string' && (h.command.startsWith(HOOK_COMMAND) || /quilt\.js"? hook$/.test(h.command))
+export function hookSettings (command = hookCommand()) {
+  const run = { type: 'command', command, timeout: 10 }
   return {
     SessionStart: [{ hooks: [run] }],
     PreToolUse: [{ matcher: 'Edit|Write|MultiEdit|NotebookEdit', hooks: [run] }],
@@ -90,32 +98,25 @@ async function preEdit (event, d, api, state) {
   const abs = path.resolve(event.cwd || d.dir, String(file))
   const rel = path.relative(d.dir, abs).split(path.sep).join('/')
   if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return { exitCode: 0 } // not in the project
-  const info = await api('POST', '/claim-for', { path: rel })
-  if (!info.shared) return { exitCode: 0 } // Quilt doesn't sync it, so nobody can clash on it
-  if (info.claim && info.mine) return { exitCode: 0 }
-  if (info.claim) return deny(rel, info.claim, 'PreToolUse')
-  // Nobody holds it: claim it for this person while they work.
-  try {
-    await api('POST', '/claim', { pattern: rel, note: info.focus ? `editing: ${info.focus}` : 'editing' })
-  } catch (err) {
-    const again = await api('POST', '/claim-for', { path: rel }).catch(() => null)
-    if (again && again.claim && !again.mine) return deny(rel, again.claim, 'PreToolUse')
-    if (again && again.claim && again.mine) return { exitCode: 0 }
-    return deny(rel, null, 'PreToolUse', err.message)
-  }
-  state.update((s) => { if (!s.claims.includes(rel)) s.claims.push(rel) })
-  return { exitCode: 0 }
+  // The same check quilt_before_edit makes for every other agent.
+  const r = await api('POST', '/before-edit', { paths: [rel] })
+  const f = r.files && r.files[0]
+  if (!f || !f.shared) return { exitCode: 0 } // Quilt doesn't sync it, so nobody can clash on it
+  if (!f.ok) return deny(rel, f.claim, 'PreToolUse', f.error)
+  const seen = new Set(state.read().seen)
+  // What people said about this file in chat, shown once per message per Claude session.
+  const said = (r.chat || []).filter((q) => q.id && !seen.has(`ask:${q.id}`))
+  state.update((s) => {
+    if (f.claimed && !s.claims.includes(rel)) s.claims.push(rel)
+    for (const q of said) s.seen.push(`ask:${q.id}`)
+  })
+  if (!said.length) return { exitCode: 0 }
+  return { exitCode: 0, output: { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: renderChatAbout(said) } } }
 }
 
 /** The refusal Claude sees: who holds the file, and what to do instead of retrying. */
 function deny (rel, claim, hookEventName, error) {
-  const holder = claim ? claim.by : 'someone else'
-  const why = claim ? (claim.note ? ` (${claim.note})` : '') : error ? ` (${error})` : ''
-  const covered = claim && claim.pattern !== rel ? `, as part of their claim on ${claim.pattern}` : ''
-  const reason = `${rel} is claimed by ${holder}${why}${covered}, so Quilt refused this edit and would undo it. ` +
-    `Do not retry or work around it. Instead, send ${holder} a direct message with quilt_message (to: "${holder}") saying ` +
-    `what you wanted to change in ${rel} and why, and ask them to make the change or hand the file over. ` +
-    'Then carry on with other work and check quilt_read_messages for their answer.'
+  const reason = heldRefusal(rel, claim, error) + ' Check quilt_read_messages for their answer.'
   return { exitCode: 0, output: { hookSpecificOutput: { hookEventName, permissionDecision: 'deny', permissionDecisionReason: reason } } }
 }
 
@@ -129,14 +130,25 @@ async function postEdit (api, state) {
 
 async function stop (event, api, state) {
   if (!event.stop_hook_active) {
+    // What Claude hasn't been shown, and anyone it still owes an answer (the rule quilt_set_work applies to every agent).
     const events = await unseenEvents(api, state)
+    // Each unanswered one holds Claude back once, so a message meant for the person doesn't stop every turn.
+    const asked = new Set(state.read().seen)
+    const owed = (await owedAnswers(api).catch(() => [])).filter((e) => !asked.has(`owed:${e.id}`))
+    for (const e of owed) if (!events.some((x) => x.id === e.id)) events.push(e)
     if (events.length) {
-      state.update((s) => { for (const e of events) s.seen.push(e.id) })
+      state.update((s) => { for (const e of events) s.seen.push(e.id); for (const e of owed) s.seen.push(`owed:${e.id}`) })
       return { exitCode: 0, output: { decision: 'block', reason: `${renderAsks(events)}\nReply with quilt_message, and take or decline a task you were handed, before you finish (and release files you no longer need with quilt_release), then finish.` } }
     }
   }
   await releaseAll(api, state)
+  await api('POST', '/finish', {}).catch(() => {})
   return { exitCode: 0 }
+}
+
+/** Who is still waiting for an answer from this person or their AI (the rule every MCP agent is held to). */
+async function owedAnswers (api) {
+  return (await api('GET', '/duties')).waiting || []
 }
 
 async function sessionEnd (api, state) {

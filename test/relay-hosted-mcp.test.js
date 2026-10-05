@@ -166,6 +166,23 @@ test('the agent reads what the owner has, and what it writes lands on the owner\
   assert.match(out(await call('quilt_release', { pattern: 'hello.md' })), /Released hello\.md/)
   await waitFor(() => !carl.claimFor('hello.md'))
 
+  // Chat never blocks a file: the write goes through, and the agent is told what was said about it (once).
+  carl.say('I am rewriting brief.md, hold off for now')
+  const wrote = await waitFor(async () => { const t = out(await call('quilt_write_file', { path: 'brief.md', content: 'brief\n' })); return /What people said/.test(t) && t })
+  assert.match(wrote, /^(Created|Updated) brief\.md/)
+  assert.match(wrote, /- Carl, just now, about brief\.md: "I am rewriting brief\.md, hold off for now" \(you have not replied\)/)
+  assert.doesNotMatch(out(await call('quilt_write_file', { path: 'brief.md', content: 'brief!\n' })), /What people said/, 'once')
+  // An unanswered direct message holds up writes and claims until the agent answers.
+  carl.say('Grok-Bot, are you around?', { to: 'Grok-Bot' })
+  const held = await waitFor(async () => { const t = out(await call('quilt_claim', { pattern: 'docs/**' })); return /^Not yet/.test(t) && t })
+  assert.match(held, /Carl sent you a direct message: "Grok-Bot, are you around\?"/)
+  assert.match(held, /then call quilt_claim again/)
+  assert.ok(!carl.claimFor('docs/x.md'), 'nothing claimed')
+  await call('quilt_message', { to: 'Carl', text: 'Here. Sorry, I will leave brief.md to you.' })
+  assert.match(out(await call('quilt_write_file', { path: 'brief.md', content: 'brief\n' })), /Updated brief\.md/)
+  await call('quilt_release', { pattern: 'brief.md' })
+  await waitFor(() => !carl.claimFor('brief.md'))
+
   fs.writeFileSync(path.join(carlDir, 'notes.txt'), 'owner notes')
   await waitFor(async () => out(await call('quilt_read_file', { path: 'notes.txt' })) === 'owner notes')
   const list = out(await call('quilt_list_files'))
@@ -324,6 +341,7 @@ test('an agent that sends an old image is told to update in every answer; quilt_
 })
 
 test('the owner can limit the agent to folders, make it a viewer, or remove it', async () => {
+  await call('quilt_message', { text: 'Got all your messages, Carl, thanks.' }) // answered, so writes are not held for that
   await carl.setMember(GROK, { scopes: ['docs'] })
   await waitFor(async () => /only change files in docs/.test(out(await call('quilt_write_file', { path: 'src/x.js', content: 'x' }))))
   assert.match(out(await call('quilt_write_file', { path: 'docs/guide.md', content: 'guide' })), /Created docs\/guide.md/)

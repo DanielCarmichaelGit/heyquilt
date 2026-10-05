@@ -23,6 +23,7 @@ import { migrateDir } from './legacy.js'
 import { readTasks, addTask as putTask, updateTask as patchTask, deleteTask as dropTask, planAutoTask } from './tasks.js'
 import { HistoryLog, queryHistory, parseSince, currentTask } from './history.js'
 import { Inbox } from './inbox.js'
+import { chatAbout, waitingOn } from './duties.js'
 import { makeSubscription, deliverEvents } from './webhooks.js'
 import { pickChecklist } from './agent-task-workflow.js'
 import { changeRefusal, TALK_REFUSED } from './session-access.js'
@@ -1553,6 +1554,7 @@ export class Session extends EventEmitter {
   /** An agent says it's working or done (people's AI status comes from their chat reader). */
   setWork (state, note = '') {
     this.work = state === 'working' || state === 'done' ? { state, note: String(note).slice(0, 200), ts: Date.now() } : null
+    this.workFromEdits = false // said on purpose now (prepareEdit sets it again when it is the one saying so)
     if (this.conn) this.conn.awareness.setLocalStateField('work', this.work)
     this.scheduleStatusWrite()
     return this.work
@@ -1927,7 +1929,7 @@ export class Session extends EventEmitter {
 
   /** An agent session, or a person whose AI is working or whose tool Quilt can't read: an edit is probably the AI's. */
   aiMayBeEditing () {
-    return this.kind === 'agent' || this.agentState?.status !== 'idle'
+    return this.kind === 'agent' || this.agentState?.status !== 'idle' || this.work?.state === 'working'
   }
 
   autoClaim (rel) {
@@ -1959,7 +1961,104 @@ export class Session extends EventEmitter {
   releaseQuietAutoClaims () {
     if (!this.ready || this.stopped) return
     const cutoff = Date.now() - this.autoClaimQuietMs
-    this.releaseAutoClaims((rel, ts) => ts <= cutoff).catch(() => {})
+    this.releaseAutoClaims((rel, ts) => ts <= cutoff).then(() => {
+      // "Working" that only an edit check said lapses with its files, so a commit isn't held up by an agent that never said done.
+      if (this.workFromEdits && !this.autoClaims.size && this.work?.state === 'working' && Date.now() - (this.agentReportedAt || 0) >= this.autoClaimQuietMs) this.finishEditing().catch(() => {})
+    }).catch(() => {})
+  }
+
+  /**
+   * The check every agent makes before it changes files, whatever tool it runs in (the local
+   * MCP's quilt_before_edit, or a Claude Code hook): for each path, whether it is ours to edit
+   * (a file nobody holds is claimed for us, and let go like any claim that follows edits), and
+   * what people said about those files in chat, as context. When no chat reader can see
+   * our AI work, it is marked working, so the host doesn't commit under it.
+   */
+  async prepareEdit (paths) {
+    const files = []
+    for (const p of [...new Set((paths || []).map((x) => String(x || '').replace(/\\/g, '/').replace(/^\.\//, '')))]) {
+      if (!p) continue
+      if (!this.syncable(p)) { files.push({ path: p, shared: false }); continue }
+      const held = (c) => ({ by: c.by, pattern: c.pattern, note: c.note || '' })
+      let c = this.claimFor(p)
+      if (c && c.by === this.name) {
+        if (this.autoClaims.has(p)) this.autoClaims.set(p, Date.now())
+        files.push({ path: p, shared: true, ok: true, mine: true })
+        continue
+      }
+      if (c) { files.push({ path: p, shared: true, ok: false, claim: held(c) }); continue }
+      try {
+        if (!this.conn) throw new Error('not connected')
+        await this.conn.claimRequest({ op: 'claim', pattern: p, note: this.focus ? `editing: ${this.focus}` : 'editing' })
+        this.autoClaims.set(p, Date.now())
+        files.push({ path: p, shared: true, ok: true, claimed: true })
+      } catch (err) {
+        c = this.claimFor(p)
+        files.push(c && c.by !== this.name ? { path: p, shared: true, ok: false, claim: held(c) } : { path: p, shared: true, ok: false, error: err.message })
+      }
+    }
+    const chat = this.chatAbout(files.filter((f) => f.shared).map((f) => f.path))
+    if (files.some((f) => f.claimed)) this.reportWorking(this.focus || '')
+    return { me: this.name, files, chat }
+  }
+
+  /**
+   * An agent said (over MCP) that it is at work. Unless a chat reader already sees it working,
+   * it counts as working for commits and for claims that follow edits, until it says done or
+   * goes quiet (nothing reported, no claimed file touched, for the quiet time).
+   */
+  reportWorking (note = '') {
+    this.agentReportedAt = Date.now()
+    if (this.agentState?.status === 'working' || this.work?.state === 'working') return
+    this.setWork('working', note)
+    this.workFromEdits = true
+  }
+
+  /**
+   * What an agent shares about its work over MCP (quilt_share), for any tool: the request it
+   * took, its plan or result, the files it changed. It reaches partners' feeds and opens or
+   * extends an In progress task exactly like a chat Quilt reads itself. A tool whose chat
+   * Quilt already reads is not shared twice.
+   */
+  shareAgentWork ({ tool = this.tool, request = '', summary = '', files = [] } = {}) {
+    const label = String(tool || 'AI')
+    if (this.agentState?.tool === label && this.agentState.status !== 'unavailable') return { shared: 0, automatic: true }
+    const now = Date.now()
+    const base = { tool: label, conv: `mcp-${label}`, ts: now }
+    const nid = () => `mcp-${now}-${crypto.randomBytes(4).toString('hex')}`
+    const entries = []
+    const req = String(request || '').trim()
+    const sum = String(summary || '').trim()
+    if (req) entries.push({ ...base, id: nid(), kind: 'prompt', text: req.slice(0, 2000) })
+    if (sum) entries.push({ ...base, id: nid(), kind: 'reply', text: sum.slice(0, 4000) })
+    for (const f of (files || []).slice(0, 30)) {
+      const p = String(f || '').replace(/\\/g, '/').replace(/^\.\//, '')
+      if (p && !p.startsWith('..') && !path.isAbsolute(p)) entries.push({ ...base, id: nid(), kind: 'action', text: `Edited ${p}` })
+    }
+    if (!entries.length) return { shared: 0 }
+    if (req) this.reportWorking(req.slice(0, 200))
+    else this.agentReportedAt = now
+    this.pushAgentEntries(entries)
+    return { shared: entries.length }
+  }
+
+  /** What people said in chat lately about one of `paths` (duties.js): context for an agent about to edit them. */
+  chatAbout (paths) {
+    if (!paths.length) return []
+    return chatAbout(paths, { messages: this.chat.toArray().filter((m) => this.canSee(m)), me: this.name })
+  }
+
+  /** What this member owes before work moves on: direct messages and mentions not answered yet. */
+  duties () {
+    return { me: this.name, waiting: waitingOn(this.chat.toArray().filter((m) => this.canSee(m)), this.name) }
+  }
+
+  /** Done with a piece of work: lets go of the claims that followed our edits and says we're done. */
+  async finishEditing () {
+    const released = await this.releaseAutoClaims()
+    if (this.work?.state === 'working') this.setWork('done')
+    this.workFromEdits = false
+    return { released }
   }
 
   /** Releases one of our claims, or all of them with '*'. Resolves to the number released. */

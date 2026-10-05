@@ -16,6 +16,7 @@ import { listProcesses } from './procs.js'
 import { JOIN_HOST, INVALID_INVITE, buildInvite, parseInvite } from './ui/invite.js'
 import { installHooks, HOOKS_FILE } from './setup.js'
 import { releaseLeftoverHookClaims } from './hooks.js'
+import { registerOnStart } from './integrations.js'
 
 export { JOIN_HOST }
 
@@ -155,14 +156,11 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   const control = await startControl(session, { invite, viewInvite, joined })
   remember({ dir, room: conn.room, server: conn.server, name: session.name, tool, kind })
 
-  // Claude Code claims files as it edits them (src/hooks.js). The hooks live in the shared
-  // .claude/settings.json so everyone in the session follows the same rule.
-  try { if (installHooks(dir)) session.log('🪝 added Quilt\'s Claude Code hooks to .claude/settings.json: files are claimed as they are edited') } catch {}
-  releaseLeftoverHookClaims(session).then((n) => { if (n) session.log(`🔓 released ${n} claim(s) left by an earlier AI session`) }).catch(() => {})
-
-  // Claude Code claims files as it edits them (src/hooks.js). The hooks go in this person's own
+  // Every AI tool on this computer can reach Quilt (its MCP server, by absolute path), with nothing to set up.
+  registerOnStart((line) => session.log(line))
+  // Claude Code also applies Quilt's rules by itself through hooks (src/hooks.js), in this person's own
   // settings file; everyone's session writes its own, so the rule holds for everyone in the room.
-  try { if (installHooks(dir)) session.log(`🪝 added Quilt's Claude Code hooks to ${HOOKS_FILE}: files are claimed as they are edited`) } catch {}
+  try { if (installHooks(dir)) session.log(`🪝 added Quilt's Claude Code hooks to ${HOOKS_FILE}: files are checked before Claude edits them`) } catch {}
   releaseLeftoverHookClaims(session).then((n) => { if (n) session.log(`🔓 released ${n} claim(s) left by an earlier AI session`) }).catch(() => {})
 
   // Share this person's AI chat (Claude Code, Cursor) with the room.

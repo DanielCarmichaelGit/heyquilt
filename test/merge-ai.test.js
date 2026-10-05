@@ -5,7 +5,10 @@ import { aiMerge, findMergeCli, mergePrompt } from '../src/merge-ai.js'
 const base = 'function add (a, b) {\n  return a + b\n}\n'
 const ours = 'function add (a, b) {\n  // bob: guard\n  return a + b\n}\n'
 const theirs = 'function add (a, b) {\n  return Number(a) + Number(b)\n}\n'
-const opts = { path: 'src/add.js', base, ours, theirs, mine: 'bob', theirsBy: 'alice' }
+// Each test hands aiMerge its own `run`, so the tool is never started: a stand-in keeps the
+// tests from depending on claude, codex or cursor-agent being installed (CI has none).
+const cli = { cmd: 'stand-in-ai', args: [] }
+const opts = { path: 'src/add.js', base, ours, theirs, mine: 'bob', theirsBy: 'alice', cli }
 
 test('the prompt carries all three versions and the rule', () => {
   const p = mergePrompt(opts)
@@ -76,7 +79,7 @@ const mdBase = '# Notes\n\nIntro.\n\n```js\nconst a = 1\n```\n\nEnd.\n'
 const mdOurs = '# Notes\n\nIntro, by bob.\n\n```js\nconst a = 1\n```\n\nEnd.\n'
 const mdTheirs = '# Notes\n\nIntro.\n\n```js\nconst a = 1\n```\n\nEnd.\n\n```sh\nnpm test\n```\n'
 const mdMerged = '# Notes\n\nIntro, by bob.\n\n```js\nconst a = 1\n```\n\nEnd.\n\n```sh\nnpm test\n```\n'
-const md = { path: 'NOTES.md', base: mdBase, ours: mdOurs, theirs: mdTheirs, mine: 'bob', theirsBy: 'alice' }
+const md = { path: 'NOTES.md', base: mdBase, ours: mdOurs, theirs: mdTheirs, mine: 'bob', theirsBy: 'alice', cli }
 
 test('a file with its own code fences comes back whole inside a longer fence', async () => {
   const run = async () => '````markdown\n' + mdMerged + '````\n'

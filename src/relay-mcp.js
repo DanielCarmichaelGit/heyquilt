@@ -23,6 +23,7 @@ import { UpdateCheck } from './update-check.js'
 import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, pickChecklist, MAX_VERIFIED } from './agent-task-workflow.js'
 import { HistoryLog, queryHistory, parseSince, formatHistory, currentTask } from './history.js'
 import { changeRefusal, TALK_REFUSED } from './session-access.js'
+import { chatAbout, renderChatAbout, waitingOn, renderUnanswered } from './duties.js'
 import { describeSubscription, WEBHOOK_EVENTS } from './webhooks.js'
 
 const FEED_CAP = 300
@@ -53,6 +54,8 @@ export const HOSTED_INSTRUCTIONS =
   'tell everyone what you are doing, and quilt_message to talk. The shared task board is quilt_tasks, quilt_add_task, quilt_assign_task and quilt_move_task. ' +
   'quilt_history tells you who changed which file, when, with the diff: read it for the files you are about to touch. ' +
   'Do not edit files someone else has claimed: a refused write tells you who holds the file; message them with quilt_message and carry on with other work. ' +
+  'Read what people said about a file before you change it: quilt_read_messages, and each write tells you what was said about that file. ' +
+  'This rule is enforced: while someone who messaged or mentioned you waits for an answer, writes, claims and task changes are refused until you answer with quilt_message. ' +
   'Everyone sees your changes on their own disk within moments. ' +
   'Mentions of you (@yourname), direct messages and tasks handed to you wait in quilt_inbox. To be woken instead of polling, ' +
   'call quilt_webhook_subscribe with a URL of yours: Quilt POSTs each one there as it happens. ' +
@@ -126,6 +129,16 @@ function sessionTools (server, ctx) {
     return out
   }
   const claimsOf = (room) => room.claimList ? room.claimList() : []
+  // The rules every agent is held to (duties.js), enforced here because hosted agents work through these tools.
+  const seen = (doc) => doc.getArray('chat').toArray().filter(visible)
+  const waitRefusal = (doc, name) => renderUnanswered(waitingOn(seen(doc), me), `call ${name} again`)
+  // Chat about a file this agent was already shown, by message id: kept with its inbox, since each
+  // request to the hosted MCP gets fresh tools.
+  const toldAbout = () => {
+    const box = ctx.inbox ? ctx.inbox() : {}
+    if (!Array.isArray(box.told)) box.told = []
+    return box
+  }
   // Claims follow this agent's writes: a file it changes that nobody holds is claimed for it, and let
   // go when it hasn't written the file for a while (it has no end of turn Quilt can see).
   const autoHeld = new Map() // `${roomId}\0${rel}` -> timer
@@ -233,6 +246,7 @@ function sessionTools (server, ctx) {
       files: z.array(z.string()).max(20).optional().describe('Project files this task is about, relative paths such as src/app.js')
     }
   }, ({ title, assignee, to_ai, files }, { room, doc }) => {
+    { const w = waitRefusal(doc, 'quilt_add_task'); if (w) return fail(w) }
     const err = writable(room)
     if (err) return fail(err)
     try {
@@ -251,6 +265,7 @@ function sessionTools (server, ctx) {
       verified: z.string().max(MAX_VERIFIED).optional().describe('For "done": what you ran and what you saw, concretely (commands, results, what you exercised in the app).')
     }
   }, ({ id, column, verified }, { room, doc, files }) => {
+    { const w = waitRefusal(doc, 'quilt_move_task'); if (w) return fail(w) }
     const err = writable(room)
     if (err) return fail(err)
     try {
@@ -279,6 +294,7 @@ function sessionTools (server, ctx) {
       files: z.array(z.string()).max(20).optional().describe('Replace the file list. Omit to leave the files unchanged.')
     }
   }, ({ id, assignee, to_ai, files }, { room, doc }) => {
+    { const w = waitRefusal(doc, 'quilt_assign_task'); if (w) return fail(w) }
     const err = writable(room)
     if (err) return fail(err)
     try {
@@ -291,6 +307,7 @@ function sessionTools (server, ctx) {
     description: 'Remove a task from the shared board.',
     inputSchema: { id: z.string().describe('Task id from quilt_tasks') }
   }, ({ id }, { room, doc }) => {
+    { const w = waitRefusal(doc, 'quilt_delete_task'); if (w) return fail(w) }
     const err = writable(room)
     if (err) return fail(err)
     try {
@@ -455,6 +472,7 @@ function sessionTools (server, ctx) {
       content: z.string().max(MAX_WRITE_BYTES).describe('The whole new contents of the file')
     }
   }, ({ path: p, content }, { room, doc, files, blobs, activity }) => {
+    { const w = waitRefusal(doc, 'quilt_write_file'); if (w) return fail(w) }
     const err = writable(room)
     if (err) return fail(err)
     const rel = cleanPath(p)
@@ -484,7 +502,15 @@ function sessionTools (server, ctx) {
       if (activity.length > ACTIVITY_CAP) activity.delete(0, activity.length - ACTIVITY_CAP)
       historyOf(room).record({ by: me, path: rel, kind, before, after: content, task: currentTask(readTasks(taskMap(doc)), me) })
     }, AGENT)
-    return text(`${existed ? 'Updated' : 'Created'} ${rel}${detail ? ` (${detail} lines)` : ' (no change)'}. Everyone in the session has it now.${claimedNow ? ` ${rel} is claimed for you while you work on it; quilt_release it when you are done.` : ''}`)
+    // What people said about this file in chat, so the agent works with it in mind (each message once).
+    const box = toldAbout()
+    const said = chatAbout([rel], { messages: seen(doc), me }).filter((m) => m.id && !box.told.includes(m.id))
+    if (said.length) {
+      box.told = [...box.told, ...said.map((m) => m.id)].slice(-200)
+      if (ctx.saveInbox) ctx.saveInbox()
+    }
+    const context = renderChatAbout(said)
+    return text(`${existed ? 'Updated' : 'Created'} ${rel}${detail ? ` (${detail} lines)` : ' (no change)'}. Everyone in the session has it now.${claimedNow ? ` ${rel} is claimed for you while you work on it; quilt_release it when you are done.` : ''}${context ? `\n\n${context}` : ''}`)
   })
 
   tool('quilt_claim', {
@@ -493,7 +519,8 @@ function sessionTools (server, ctx) {
       pattern: z.string().min(1).max(300),
       note: z.string().max(500).optional().describe('What you are doing')
     }
-  }, ({ pattern, note }, { room }) => {
+  }, ({ pattern, note }, { room, doc }) => {
+    { const w = waitRefusal(doc, 'quilt_claim'); if (w) return fail(w) }
     const err = writable(room)
     if (err) return fail(err)
     try {

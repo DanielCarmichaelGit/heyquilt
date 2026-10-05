@@ -16,7 +16,7 @@ import path from 'node:path'
 import { findDaemon } from './control.js'
 import { migrateDir } from './legacy.js'
 import { describeEvent } from './inbox.js'
-import { renderChatAbout, heldRefusal } from './duties.js'
+import { renderQueued, renderChatAbout, heldRefusal } from './duties.js'
 import { quiltShellCommand } from './integrations.js'
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
@@ -68,7 +68,8 @@ async function sessionStart (api, state) {
     `This folder is in a live Quilt session (room ${st.room}) with ${who}. Files can change underneath you at any time; re-read a file right before editing it.`,
     'Quilt claims each file for you the moment you edit it, and releases those claims when you finish. ' +
     'If a file is claimed by someone else, your edit is refused: do not retry or work around it. ' +
-    'Send them a direct message with quilt_message saying what you wanted to change and asking for help, then carry on with other work.',
+    'Ask for it in its file queue with quilt_request_file (a title like "Working on <what> for <task>" and up to 300 characters on your plan), then carry on with other work: you are told when it is handed to you, with their context. ' +
+    'When someone asks for a file you hold, finish your change, then hand it off with quilt_handoff and your context; you cannot finish before you do.',
     'Messages from collaborators, mentions of you and tasks handed to you are shown to you as you work; answer with quilt_message and take a task with quilt_move_task.'
   ]
   const merges = mergesContext(st.merges)
@@ -116,7 +117,7 @@ async function preEdit (event, d, api, state) {
 
 /** The refusal Claude sees: who holds the file, and what to do instead of retrying. */
 function deny (rel, claim, hookEventName, error) {
-  const reason = heldRefusal(rel, claim, error) + ' Check quilt_read_messages for their answer.'
+  const reason = heldRefusal(rel, claim, error)
   return { exitCode: 0, output: { hookSpecificOutput: { hookEventName, permissionDecision: 'deny', permissionDecisionReason: reason } } }
 }
 
@@ -139,6 +140,13 @@ async function stop (event, api, state) {
     if (events.length) {
       state.update((s) => { for (const e of events) s.seen.push(e.id); for (const e of owed) s.seen.push(`owed:${e.id}`) })
       return { exitCode: 0, output: { decision: 'block', reason: `${renderAsks(events)}\nReply with quilt_message, and take or decline a task you were handed, before you finish (and release files you no longer need with quilt_release), then finish.` } }
+    }
+    // Files someone waits for in the file queue: Claude hands them off with its context before it stops (once per request).
+    const queued = ((await api('GET', '/duties').catch(() => ({}))).queued || [])
+    const fresh = queued.flatMap((q) => q.queue).filter((r) => !asked.has(`queue:${r.id}`))
+    if (fresh.length) {
+      state.update((s) => { for (const r of fresh) s.seen.push(`queue:${r.id}`) })
+      return { exitCode: 0, output: { decision: 'block', reason: renderQueued(queued, 'finish') } }
     }
   }
   await releaseAll(api, state)
@@ -171,8 +179,8 @@ async function unseenEvents (api, state) {
 function renderAsks (events) {
   const lines = events.map((e) => `- ${describeEvent(e)}`)
   return `Quilt: collaborators wrote to you, or handed you work, while you were working:\n${lines.join('\n')}\n` +
-    'If a message asks about a file you hold, reply with quilt_message (to: their name): help with the change, hand the file over ' +
-    '(quilt_release the file, then tell them), or say when you will be done. Take a task you were handed with quilt_move_task when you are free, or say in chat why not.'
+    'Someone asking for a file you hold in its file queue gets it from you with quilt_handoff and your context once your change is done; answer other messages with quilt_message (to: their name). ' +
+    'Take a task you were handed with quilt_move_task when you are free, or say in chat why not.'
 }
 
 /** Releases every claim the hooks made for this Claude session. */

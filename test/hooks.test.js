@@ -113,7 +113,7 @@ test('editing a file someone else claimed is refused, with a nudge to ask them',
   assert.equal(o.hookEventName, 'PreToolUse')
   assert.equal(o.permissionDecision, 'deny')
   assert.match(o.permissionDecisionReason, /src\/auth\.js is claimed by sam \(adding sign-in\)/)
-  assert.match(o.permissionDecisionReason, /quilt_message \(to: "sam"\)/)
+  assert.match(o.permissionDecisionReason, /quilt_request_file \(path "src\/auth\.js"/)
   assert.match(o.permissionDecisionReason, /Do not retry/)
   assert.equal(hookState(danaDir, 'claude-1').read().claims.includes('src/auth.js'), false)
 })

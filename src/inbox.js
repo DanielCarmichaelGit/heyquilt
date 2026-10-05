@@ -50,7 +50,10 @@ export function scanInbox ({ messages = [], tasks = [], reader, now = Date.now()
     msgIds.push(m.id)
     if (seed || seenMsgs.has(m.id) || !me || m.by === me) continue
     const text = typeof m.text === 'string' ? m.text : ''
-    if (m.to === me) events.push({ id: m.id, kind: 'dm', by: m.by, text, ts: m.ts })
+    // File queue messages (a request for a file the reader holds, or a file handed to them) wake
+    // them like a direct message, but ask for a handoff rather than a reply (duties.js).
+    const queue = m.kind === 'queue' || m.kind === 'handoff' ? { queue: m.kind, file: typeof m.path === 'string' ? m.path : '' } : {}
+    if (m.to === me) events.push({ id: m.id, kind: 'dm', by: m.by, text, ts: m.ts, ...queue })
     else if (!m.to && mentioned(text, [me]).length) events.push({ id: m.id, kind: 'mention', by: m.by, text, ts: m.ts })
   }
   const mine = []
@@ -75,6 +78,8 @@ export function scanInbox ({ messages = [], tasks = [], reader, now = Date.now()
 /** One event as a line an agent can act on. */
 export function describeEvent (e) {
   const who = e.by || 'someone'
+  if (e.queue === 'queue') return `${who} asked for ${e.file} in its file queue: ${e.text} Finish what you are doing in it, then hand it off with quilt_handoff and your context.`
+  if (e.queue === 'handoff') return `${who} handed you ${e.file}, which you asked for: it is yours to edit now. ${e.text}`
   if (e.kind === 'dm') return `${who} sent you a direct message: ${e.text}`
   if (e.kind === 'mention') return `${who} mentioned you in chat: ${e.text}`
   if (e.kind === 'task') {

@@ -21,12 +21,16 @@ export async function startControl (session, extras = {}) {
     // What this person's AI should hear (an edit of its that Quilt undone); handed over once.
     'POST /notices': () => ({ notices: session.takeNotices() }),
     'POST /release': async (b) => ({ released: await session.release(b.pattern) }),
+    // The file queue: ask for a file someone holds, hand one we hold to someone waiting, take a request back.
+    'POST /request-file': (b) => session.requestFile(b.path, { title: b.title, description: b.description, task: b.task }),
+    'POST /handoff': (b) => session.handoff(b.path, { to: b.to, context: b.context }),
+    'POST /withdraw-request': async (b) => ({ withdrawn: await session.withdrawRequest(b.request) }),
     // Who owns one path (the hooks ask before every edit). `shared` is false for paths Quilt doesn't sync.
     'POST /claim-for': (b) => {
       const rel = String(b.path || '').replace(/\\/g, '/').replace(/^\.\//, '')
       const shared = session.syncable(rel)
       const c = shared ? session.claimFor(rel) : null
-      return { path: rel, shared, claim: c ? { by: c.by, pattern: c.pattern, note: c.note } : null, mine: !!c && c.by === session.name, me: session.name, focus: session.focus || '' }
+      return { path: rel, shared, claim: c ? { by: c.by, pattern: c.pattern, note: c.note, queue: c.queue || [] } : null, mine: !!c && c.by === session.name, me: session.name, focus: session.focus || '' }
     },
     // Before an agent changes files (any tool): is each one ours to edit (free ones are claimed for
     // us), and what did people ask about them? See Session.prepareEdit and duties.js.

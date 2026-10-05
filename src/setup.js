@@ -39,11 +39,16 @@ ${TASK_WORKFLOW_MD}
   across several files (\`quilt_claim\` / \`quilt claim <path>\`) and release it when
   done (\`quilt_release\` / \`quilt release <path>\`).
 - If a file is claimed by someone else, your edit is refused or undone, and the next
-  quilt tool you call tells you so. Don't retry or work around it: send them a direct
-  message (\`quilt_message\` with "to" / \`quilt say @name "..."\`) saying what you
-  wanted to change and asking for help, then carry on with other work.
+  quilt tool you call tells you so. Don't retry or work around it: ask for it in its
+  file queue (\`quilt_request_file\`: a title like "Working on X for task Y" and up to
+  300 characters on your plan), then carry on with other work. You're woken when it's
+  handed to you, with the holder's context.
+- When someone waits in the queue for a file you hold, every quilt answer says so.
+  Finish your change, then hand it off with \`quilt_handoff\` and your context (what
+  you changed, what's left, gotchas). You can't finish or release it before. A claim
+  whose holder does nothing for 20 minutes goes to the next one waiting.
 - Answer collaborators' messages (\`quilt_read_messages\`): help with their change,
-  hand the file over, or say when you'll be done. New ones are shown at the top of
+  or say when you'll be done. New ones are shown at the top of
   every quilt answer. When you finish, call \`quilt_set_work\` with "done": it is
   refused until everyone who wrote to you has an answer.
 - \`quilt_inbox\` lists what is waiting for you: mentions of you (@yourname), direct

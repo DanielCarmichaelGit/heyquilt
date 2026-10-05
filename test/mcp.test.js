@@ -237,7 +237,7 @@ test('without hooks, the MCP holds an agent to the rules: claims refuse files, c
   // Before editing: a free file is claimed (chat about it is shown, never blocks it), a held one is refused.
   const check = text(await call('quilt_before_edit', { paths: ['src/app.js', 'src/auth/login.js', '/etc/passwd'] }))
   assert.match(check, /- src\/app\.js: ✅ yours to edit \(claimed for you until you finish\)/)
-  assert.match(check, /- src\/auth\/login\.js: ⛔ src\/auth\/login\.js is claimed by dana \(refactoring\), as part of their claim on src\/auth.*Do not retry.*quilt_message \(to: "dana"\)/)
+  assert.match(check, /- src\/auth\/login\.js: ⛔ src\/auth\/login\.js is claimed by dana \(refactoring\), as part of their claim on src\/auth.*Do not retry.*quilt_request_file \(path "src\/auth\/login\.js"/)
   assert.match(check, /- \/etc\/passwd: not inside the project folder/)
   assert.match(check, /What people said in chat about these files:\n- dana \(to you\), just now, about src\/app\.js: "helper, please do not touch src\/app\.js, I am mid-refactor" \(you have not replied\)/)
   assert.equal((await waitFor(() => human.claimFor('src/app.js'))).by, 'helper')

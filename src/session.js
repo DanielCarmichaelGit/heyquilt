@@ -23,7 +23,7 @@ import { migrateDir } from './legacy.js'
 import { readTasks, addTask as putTask, updateTask as patchTask, deleteTask as dropTask, planAutoTask } from './tasks.js'
 import { HistoryLog, queryHistory, parseSince, currentTask } from './history.js'
 import { Inbox } from './inbox.js'
-import { chatAbout, waitingOn } from './duties.js'
+import { chatAbout, waitingOn, queuedFor, renderQueueNotice, askForIt } from './duties.js'
 import { makeSubscription, deliverEvents } from './webhooks.js'
 import { pickChecklist } from './agent-task-workflow.js'
 import { changeRefusal, TALK_REFUSED } from './session-access.js'
@@ -117,6 +117,7 @@ export class Session extends EventEmitter {
     // Claims follow edits (see autoClaim): path -> when this person last changed it. Released when
     // their AI goes idle, when the file has been quiet for autoClaimQuietMs, and at stop.
     this.autoClaims = new Map()
+    this.queueNoticed = new Map() // claim pattern -> when our AI was last told someone waits for it
     this.autoClaimQuietMs = autoClaimQuietMs
     this.autoClaimTimer = setInterval(() => this.releaseQuietAutoClaims(), Math.max(50, Math.min(60_000, Math.floor(autoClaimQuietMs / 3))))
     if (this.autoClaimTimer.unref) this.autoClaimTimer.unref()
@@ -948,6 +949,7 @@ export class Session extends EventEmitter {
     this.lastKnown.set(rel, disk.key)
     this.setOnDisk(rel, null)
     this.noteMyEdit(rel)
+    this.noteQueuedEdit(rel)
     return true
   }
 
@@ -955,9 +957,7 @@ export class Session extends EventEmitter {
   rejectClaimed (rel, disk, claim) {
     const why = `it is claimed by ${claim.by}${claim.note ? ` (${claim.note})` : ''}`
     this.rejectLocal(rel, disk, why, claim.by)
-    this.notice(`Your change to ${rel} was undone: ${why}. Do not retry or work around it. ` +
-      `Send ${claim.by} a direct message with quilt_message (to: "${claim.by}") saying what you wanted to change in ${rel} and why, ` +
-      'and ask them to make the change or hand the file over; then carry on with other work.')
+    this.notice(`Your change to ${rel} was undone: ${why}. ${askForIt(rel, claim)}`)
   }
 
   /** Queues a line for this person's AI; the local MCP server hands pending notices over with its next answer. */
@@ -1960,13 +1960,17 @@ export class Session extends EventEmitter {
     })
   }
 
-  /** Releases the claims Quilt made for us. `only(rel, lastEdit)` picks which; all of them by default. */
+  /**
+   * Releases the claims Quilt made for us. `only(rel, lastEdit)` picks which; all of them by default.
+   * One someone is waiting for in its file queue is kept: our AI hands it off, with its context.
+   */
   async releaseAutoClaims (only = () => true) {
     const done = []
     for (const [rel, ts] of this.autoClaims) {
       if (!only(rel, ts)) continue
-      this.autoClaims.delete(rel)
       const c = this.claims.get(rel)
+      if (c && c.by === this.name && c.queue && c.queue.length) continue
+      this.autoClaims.delete(rel)
       if (!c || c.by !== this.name || !this.conn) continue
       done.push(this.conn.claimRequest({ op: 'release', pattern: rel }).catch(() => {}))
     }
@@ -1995,7 +1999,7 @@ export class Session extends EventEmitter {
     for (const p of [...new Set((paths || []).map((x) => String(x || '').replace(/\\/g, '/').replace(/^\.\//, '')))]) {
       if (!p) continue
       if (!this.syncable(p)) { files.push({ path: p, shared: false }); continue }
-      const held = (c) => ({ by: c.by, pattern: c.pattern, note: c.note || '' })
+      const held = (c) => ({ by: c.by, pattern: c.pattern, note: c.note || '', queue: c.queue || [] })
       let c = this.claimFor(p)
       if (c && c.by === this.name) {
         if (this.autoClaims.has(p)) this.autoClaims.set(p, Date.now())
@@ -2064,9 +2068,53 @@ export class Session extends EventEmitter {
     return chatAbout(paths, { messages: this.chat.toArray().filter((m) => this.canSee(m)), me: this.name })
   }
 
-  /** What this member owes before work moves on: direct messages and mentions not answered yet. */
+  /**
+   * What this member owes before work moves on: direct messages and mentions not answered yet,
+   * and files they hold that someone is waiting for in the file queue (`queued`, see duties.js).
+   */
   duties () {
-    return { me: this.name, waiting: waitingOn(this.chat.toArray().filter((m) => this.canSee(m)), this.name) }
+    return { me: this.name, waiting: waitingOn(this.chat.toArray().filter((m) => this.canSee(m)), this.name), queued: this.queued() }
+  }
+
+  // ------------------------------------------------------------ file queue --
+  // A file someone else holds is asked for in its claim's queue, not taken; its holder hands it
+  // on with their context when done (the relay keeps the queue, see server.js).
+
+  /** Files we hold that someone is waiting for: [{ pattern, queue }]. */
+  queued () { return queuedFor([...this.claims.values()], this.name) }
+
+  /** Asks for a file someone else holds. Resolves to { request, position, holder, pattern }. */
+  async requestFile (file, { title = '', description = '', task = '' } = {}) {
+    const rel = String(file || '').replace(/\\/g, '/').replace(/^\.\//, '')
+    if (!rel) throw new Error('path required')
+    return this.conn.claimRequest({ op: 'request', path: rel, title: String(title), description: String(description), ...(task ? { task: String(task) } : {}) })
+  }
+
+  /** Hands a file we hold to someone waiting for it (the first, or `to`: a name or request id), with our context. */
+  async handoff (file, { to = '', context = '' } = {}) {
+    const rel = String(file || '').replace(/\\/g, '/').replace(/^\.\//, '')
+    const r = await this.conn.claimRequest({ op: 'handoff', pattern: rel, to: String(to || ''), context: String(context) })
+    this.autoClaims.delete(r.pattern)
+    return r
+  }
+
+  /** Takes back one of our requests. */
+  async withdrawRequest (request) {
+    const r = await this.conn.claimRequest({ op: 'withdraw', request: String(request || '') })
+    return r.withdrawn || 0
+  }
+
+  /**
+   * We just changed a file someone is waiting for: our AI hears it with its next answer (once a
+   * minute per file at most), so it hands the file on when done instead of forgetting them.
+   */
+  noteQueuedEdit (rel) {
+    const c = this.claimFor(rel)
+    if (!c || c.by !== this.name || !c.queue || !c.queue.length) return
+    const last = this.queueNoticed.get(c.pattern) || 0
+    if (Date.now() - last < 60 * 1000) return
+    this.queueNoticed.set(c.pattern, Date.now())
+    this.notice(renderQueueNotice([{ pattern: c.pattern, queue: c.queue }]))
   }
 
   /** Done with a piece of work: lets go of the claims that followed our edits and says we're done. */
@@ -2462,7 +2510,7 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
       for (const [p, ts] of Object.entries(editing)) note(p, st.name, ts)
     }
     // `active` is false when whoever holds it isn't in the session (older relays don't say: active).
-    const shown = (c) => ({ by: c.by, ...(typeof c.byId === 'string' ? { byId: c.byId } : {}), pattern: c.pattern, note: c.note, ts: c.ts, active: c.active !== false })
+    const shown = (c) => ({ by: c.by, ...(typeof c.byId === 'string' ? { byId: c.byId } : {}), pattern: c.pattern, note: c.note, ts: c.ts, active: c.active !== false, ...(typeof c.activeAt === 'number' ? { activeAt: c.activeAt } : {}), queue: Array.isArray(c.queue) ? c.queue.map((r) => ({ id: r.id, path: r.path, by: r.by, title: r.title, description: r.description || '', task: r.task || '', ts: r.ts })) : [] })
     const claimFor = (p) => {
       const c = this.claimFor(p)
       return c ? shown(c) : null

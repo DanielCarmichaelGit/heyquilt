@@ -29,12 +29,20 @@ test('createWorkspace inserts snake_case columns and maps the row back', async (
   assert.deepEqual([out.id, out.ownerUserId, out.createdAt, out.archivedAt], ['w1', 'u1', Date.parse(row.created_at), null])
 })
 
-test('setSessionWorkspace upserts the session row without touching the owner of an existing one', async () => {
-  const client = fakeClient({ set_session_workspace: { data: { room: 'r', name: '', owner_account: 'person:u1', created_at: '2026-10-04T00:00:00.000Z', last_active_at: '2026-10-04T00:00:00.000Z', renamed_at: null, workspace_id: 'w1' }, error: null } })
+test('setSessionWorkspace upserts the session row with who linked it, never its owner', async () => {
+  const client = fakeClient({ set_session_workspace: { data: { room: 'r', name: '', owner_account: null, created_at: '2026-10-04T00:00:00.000Z', last_active_at: '2026-10-04T00:00:00.000Z', renamed_at: null, workspace_id: 'w1', workspace_linked_by: 'person:u1' }, error: null } })
   const store = createSupabaseStore({ client })
-  const out = await store.setSessionWorkspace('r', 'w1', { ownerAccount: 'person:u1', at: Date.parse('2026-10-04T00:00:00.000Z') })
-  assert.equal(out.workspaceId, 'w1')
-  assert.deepEqual(client.calls[0], { rpc: 'set_session_workspace', args: { p_room: 'r', p_workspace: 'w1', p_owner: 'person:u1', p_at: '2026-10-04T00:00:00.000Z' } })
+  const out = await store.setSessionWorkspace('r', 'w1', { linkedBy: 'person:u1', at: Date.parse('2026-10-04T00:00:00.000Z') })
+  assert.deepEqual([out.workspaceId, out.workspaceLinkedBy, out.ownerAccount], ['w1', 'person:u1', null])
+  assert.deepEqual(client.calls[0], { rpc: 'set_session_workspace', args: { p_room: 'r', p_workspace: 'w1', p_linked_by: 'person:u1', p_at: '2026-10-04T00:00:00.000Z' } })
+  await store.setSessionWorkspace('r', null, { linkedBy: null, at: Date.parse('2026-10-04T00:00:00.000Z') })
+  assert.deepEqual(client.calls[1].args, { p_room: 'r', p_workspace: null, p_linked_by: null, p_at: '2026-10-04T00:00:00.000Z' })
+})
+
+test('session reads carry who linked the room', async () => {
+  const client = fakeClient()
+  await createSupabaseStore({ client }).sessionByRoom('r')
+  assert.ok(client.calls[0].ops.find(([op]) => op === 'select')[1][0].split(', ').includes('workspace_linked_by'))
 })
 
 test('deleteWorkspace calls the service-role function', async () => {

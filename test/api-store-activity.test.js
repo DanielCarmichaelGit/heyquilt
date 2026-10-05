@@ -18,7 +18,7 @@ test('starts open visits and ends close them; the first owner start sets the own
   const c = start('r1', 'person:fay', 1600, { owner: true })
   assert.equal(await s.ingestPresence([a, b, c, end(a, 3000)], 5000), 4)
   const session = await s.sessionByRoom('r1')
-  assert.deepEqual({ ...session }, { room: 'r1', name: '', ownerAccount: 'person:eli', createdAt: 1000, lastActiveAt: 3000, renamedAt: null, workspaceId: null })
+  assert.deepEqual({ ...session }, { room: 'r1', name: '', ownerAccount: 'person:eli', createdAt: 1000, lastActiveAt: 3000, renamedAt: null, workspaceId: null, workspaceLinkedBy: null })
   const visits = await s.visitsInRooms(['r1'])
   assert.deepEqual(visits.map((v) => [v.account, v.accountName, v.kind, v.startedAt, v.endedAt]), [
     ['person:dana', 'DANA', 'person', 1000, 3000],

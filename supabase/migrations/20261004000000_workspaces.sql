@@ -35,6 +35,9 @@ create index workspace_members_account on public.workspace_members (account);
 -- A session may belong to one workspace. Deleting the workspace leaves the session loose.
 alter table public.relay_sessions add column workspace_id uuid references public.workspaces (id) on delete set null;
 create index relay_sessions_workspace_id on public.relay_sessions (workspace_id);
+-- Who linked it. Members get in through the workspace only while that is the session's
+-- owner (as the relay reports it): linking a room is never a way to claim it.
+alter table public.relay_sessions add column workspace_linked_by text check (workspace_linked_by ~ '^(person|agent):[A-Za-z0-9_-]{1,64}$');
 
 alter table public.workspaces enable row level security;
 alter table public.workspace_members enable row level security;
@@ -69,11 +72,12 @@ $$;
 revoke execute on function public.delete_workspace (uuid) from public, anon, authenticated;
 grant execute on function public.delete_workspace (uuid) to service_role;
 
--- Links a room to a workspace (or none). The app calls this as soon as the relay has made
--- the room, which may be before the relay's first presence report: then the row is made
--- here and the report later keeps it (ingest_presence's on conflict never changes
--- workspace_id). On an existing row only the column changes.
-create function public.set_session_workspace (p_room text, p_workspace uuid, p_owner text, p_at timestamptz)
+-- Links a room to a workspace (or none), recording who linked it. The app calls this as
+-- soon as the relay has made the room, which may be before the relay's first presence
+-- report: then the row is made here with no owner, and the report later sets the owner
+-- (ingest_presence's on conflict never changes workspace_id). On an existing row only the
+-- two workspace columns change.
+create function public.set_session_workspace (p_room text, p_workspace uuid, p_linked_by text, p_at timestamptz)
 returns public.relay_sessions
 language plpgsql
 set search_path = ''
@@ -81,9 +85,9 @@ as $$
 declare
   s public.relay_sessions;
 begin
-  insert into public.relay_sessions as r (room, owner_account, created_at, last_active_at, workspace_id)
-    values (p_room, p_owner, p_at, p_at, p_workspace)
-    on conflict (room) do update set workspace_id = excluded.workspace_id
+  insert into public.relay_sessions as r (room, created_at, last_active_at, workspace_id, workspace_linked_by)
+    values (p_room, p_at, p_at, p_workspace, p_linked_by)
+    on conflict (room) do update set workspace_id = excluded.workspace_id, workspace_linked_by = excluded.workspace_linked_by
     returning * into s;
   return s;
 end;

@@ -38,19 +38,23 @@ test('members: put upserts and keeps addedAt, list sorts, remove answers whether
 test('sessions: link a room before or after the relay reports it; delete makes sessions loose', async () => {
   const store = createMemoryStore({ now: () => 1000 })
   const ws = await store.createWorkspace({ ownerUserId: 'u1', name: 'W', createdBy: 'person:u1' })
-  // Before the relay reports the room: the API makes the row.
-  const s1 = await store.setSessionWorkspace('room-a', ws.id, { ownerAccount: 'person:u1', at: 1000 })
-  assert.deepEqual(s1, { room: 'room-a', name: '', ownerAccount: 'person:u1', createdAt: 1000, lastActiveAt: 1000, renamedAt: null, workspaceId: ws.id })
-  // The relay's start event then keeps the row (ingestPresence mirrors on conflict).
+  // Before the relay reports the room: the API makes the row, with no owner (only the relay sets that).
+  const s1 = await store.setSessionWorkspace('room-a', ws.id, { linkedBy: 'person:u1', at: 1000 })
+  assert.deepEqual(s1, { room: 'room-a', name: '', ownerAccount: null, createdAt: 1000, lastActiveAt: 1000, renamedAt: null, workspaceId: ws.id, workspaceLinkedBy: 'person:u1' })
+  // The relay's start event then sets the owner and keeps the link (ingestPresence mirrors on conflict).
   await store.ingestPresence([{ id: 'e1', type: 'start', room: 'room-a', account: 'person:u1', owner: true, name: 'Mo', at: 1500 }], 1500)
-  assert.equal((await store.sessionByRoom('room-a')).workspaceId, ws.id)
-  // After: an existing row only gets the column.
+  assert.deepEqual(await store.sessionByRoom('room-a'), { room: 'room-a', name: '', ownerAccount: 'person:u1', createdAt: 1000, lastActiveAt: 1500, renamedAt: null, workspaceId: ws.id, workspaceLinkedBy: 'person:u1' })
+  // After: an existing row only gets the two workspace columns.
   await store.ingestPresence([{ id: 'e2', type: 'start', room: 'room-b', account: 'person:u1', owner: true, name: 'Mo', at: 1600 }], 1600)
-  const s2 = await store.setSessionWorkspace('room-b', ws.id, { ownerAccount: 'person:u9', at: 1700 })
-  assert.deepEqual([s2.ownerAccount, s2.workspaceId, s2.createdAt], ['person:u1', ws.id, 1600])
+  assert.equal((await store.sessionByRoom('room-b')).workspaceLinkedBy, null)
+  const s2 = await store.setSessionWorkspace('room-b', ws.id, { linkedBy: 'person:u9', at: 1700 })
+  assert.deepEqual([s2.ownerAccount, s2.workspaceId, s2.workspaceLinkedBy, s2.createdAt], ['person:u1', ws.id, 'person:u9', 1600])
   assert.deepEqual((await store.listWorkspaceSessions(ws.id)).map((s) => s.room), ['room-b', 'room-a'])
-  await store.setSessionWorkspace('room-b', null, { ownerAccount: 'person:u1', at: 1800 })
-  assert.equal((await store.sessionByRoom('room-b')).workspaceId, null)
+  await store.setSessionWorkspace('room-b', null, { linkedBy: null, at: 1800 })
+  assert.deepEqual([(await store.sessionByRoom('room-b')).workspaceId, (await store.sessionByRoom('room-b')).workspaceLinkedBy], [null, null])
+  // A name event for an unknown room makes a row with no link either.
+  await store.ingestPresence([{ id: 'e3', type: 'name', room: 'room-c', name: 'C', at: 1900 }], 1900)
+  assert.equal((await store.sessionByRoom('room-c')).workspaceLinkedBy, null)
   await store.deleteWorkspace(ws.id)
   assert.equal(await store.workspaceById(ws.id), null)
   assert.equal((await store.sessionByRoom('room-a')).workspaceId, null)

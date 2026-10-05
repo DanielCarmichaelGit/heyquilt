@@ -20,7 +20,7 @@ const INVITE = 'id, org_id, email, role_id, token_hash, invited_by, expires_at, 
 const REQUEST = 'id, org_id, user_id, email, status, decided_by, decided_at, created_at'
 const AGENT_INVITE = 'id, token_hash, owner_user_id, org_id, created_by, role_id, teams, expires_at, used_at, used_by_agent_id, cancelled_at, created_at'
 const AGENT_KEY = 'id, agent_id, family_id, access_hash, refresh_hash, access_expires_at, refresh_expires_at, refreshed_at, revoked_at, created_at'
-const RELAY_SESSION = 'room, name, owner_account, created_at, last_active_at, renamed_at, workspace_id'
+const RELAY_SESSION = 'room, name, owner_account, created_at, last_active_at, renamed_at, workspace_id, workspace_linked_by'
 const ACCESS_TYPE = 'id, owner_account, name, files, folders, talk, created_at, updated_at'
 const GRANT = 'room, account, type_id, tighten, granted_by, created_at, updated_at'
 const SESSION_INVITE = 'id, room, email, account, account_name, type_id, invited_by, created_at, expires_at, used_at, used_by, cancelled_at'
@@ -212,8 +212,8 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
       const rows = await one(db.from('workspace_members').delete().eq('workspace_id', workspaceId).eq('account', account).select('account'))
       return rows.length > 0
     },
-    async setSessionWorkspace (room, workspaceId, { ownerAccount, at }) {
-      return rowFrom(await one(db.rpc('set_session_workspace', { p_room: room, p_workspace: workspaceId || null, p_owner: ownerAccount, p_at: ts(at) })))
+    async setSessionWorkspace (room, workspaceId, { linkedBy = null, at }) {
+      return rowFrom(await one(db.rpc('set_session_workspace', { p_room: room, p_workspace: workspaceId || null, p_linked_by: linkedBy || null, p_at: ts(at) })))
     },
     async listWorkspaceSessions (workspaceId) { return (await one(db.from('relay_sessions').select(RELAY_SESSION).eq('workspace_id', workspaceId).order('last_active_at', { ascending: false }))).map(rowFrom) },
     async pruneActivity ({ before, seenBefore }) {

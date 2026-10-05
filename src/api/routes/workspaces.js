@@ -136,7 +136,8 @@ export function workspaceRoutes ({ store, person, now, agentAuth, bearer }) {
     }],
 
     // Puts a session in the workspace. The app calls this as soon as it has made the room,
-    // usually before the relay's first presence report; then the API records the caller as owner.
+    // usually before the relay's first presence report. The API records who linked it, never
+    // an owner: only the relay names that, and members get in only once the two agree (access.js).
     ['POST', /^\/v1\/workspaces\/([^/]+)\/sessions$/, async (req, body, [id]) => {
       const r = await reach(req, id)
       if (r.access.access !== 'edit') throw new HttpError(403, 'you can only view this workspace')
@@ -144,7 +145,7 @@ export function workspaceRoutes ({ store, person, now, agentAuth, bearer }) {
       if (!ROOM.test(room)) throw new HttpError(400, 'room must be a session name')
       const existing = await store.sessionByRoom(room)
       if (existing && existing.ownerAccount && existing.ownerAccount !== r.me.account) throw new HttpError(403, 'only the session owner can move it')
-      return { session: await store.setSessionWorkspace(room, r.ws.id, { ownerAccount: existing?.ownerAccount || r.me.account, at: now() }) }
+      return { session: await store.setSessionWorkspace(room, r.ws.id, { linkedBy: r.me.account, at: now() }) }
     }],
 
     ['DELETE', /^\/v1\/workspaces\/([^/]+)\/sessions\/([^/]+)$/, async (req, body, [id, room]) => {
@@ -152,7 +153,7 @@ export function workspaceRoutes ({ store, person, now, agentAuth, bearer }) {
       const s = await store.sessionByRoom(room)
       if (!s || s.workspaceId !== r.ws.id) throw new HttpError(404, 'that session is not in this workspace')
       if (s.ownerAccount !== r.me.account && !r.access.admin) throw new HttpError(403, 'only the session owner or a workspace admin can do that')
-      await store.setSessionWorkspace(room, null, { ownerAccount: s.ownerAccount, at: now() })
+      await store.setSessionWorkspace(room, null, { linkedBy: null, at: now() })
       return { ok: true }
     }]
   ]

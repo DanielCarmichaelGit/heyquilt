@@ -222,7 +222,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
         applied++
         const s = relaySessions.get(e.room)
         if (e.type === 'start') {
-          if (!s) relaySessions.set(e.room, { room: e.room, name: '', ownerAccount: e.owner ? e.account : null, createdAt: e.at, lastActiveAt: e.at, renamedAt: null, workspaceId: null })
+          if (!s) relaySessions.set(e.room, { room: e.room, name: '', ownerAccount: e.owner ? e.account : null, createdAt: e.at, lastActiveAt: e.at, renamedAt: null, workspaceId: null, workspaceLinkedBy: null })
           else {
             if (!s.ownerAccount && e.owner) s.ownerAccount = e.account
             s.lastActiveAt = Math.max(s.lastActiveAt, e.at)
@@ -235,7 +235,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
           for (const v of visits.values()) if (v.eventStartId === e.start && v.endedAt == null) v.endedAt = Math.max(v.startedAt, e.at)
           if (s) s.lastActiveAt = Math.max(s.lastActiveAt, e.at)
         } else if (e.type === 'name') {
-          if (!s) relaySessions.set(e.room, { room: e.room, name: e.name, ownerAccount: null, createdAt: e.at, lastActiveAt: e.at, renamedAt: null, workspaceId: null })
+          if (!s) relaySessions.set(e.room, { room: e.room, name: e.name, ownerAccount: null, createdAt: e.at, lastActiveAt: e.at, renamedAt: null, workspaceId: null, workspaceLinkedBy: null })
           else if (s.renamedAt == null) s.name = e.name
         }
       }
@@ -647,12 +647,14 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       workspaceMembers.set(k, row); return copy(row)
     },
     async removeWorkspaceMember (workspaceId, account) { return workspaceMembers.delete(wmKey(workspaceId, account)) },
-    // Links a room to a workspace (or none). The relay may not have reported the room yet: then the API makes the row.
-    async setSessionWorkspace (room, workspaceId, { ownerAccount, at }) {
+    // Links a room to a workspace (or none), recording who linked it. The relay may not have
+    // reported the room yet: then the API makes the row, with no owner (only the relay sets that).
+    async setSessionWorkspace (room, workspaceId, { linkedBy = null, at }) {
       if (workspaceId && !workspaces.has(workspaceId)) throw fkViolation('workspace', 'does not exist')
       let s = relaySessions.get(room)
-      if (!s) { s = { room, name: '', ownerAccount, createdAt: at, lastActiveAt: at, renamedAt: null, workspaceId: null }; relaySessions.set(room, s) }
+      if (!s) { s = { room, name: '', ownerAccount: null, createdAt: at, lastActiveAt: at, renamedAt: null, workspaceId: null, workspaceLinkedBy: null }; relaySessions.set(room, s) }
       s.workspaceId = workspaceId || null
+      s.workspaceLinkedBy = linkedBy || null
       return copy(s)
     },
     async listWorkspaceSessions (workspaceId) { return all(relaySessions, (s) => s.workspaceId === workspaceId).sort((a, b) => b.lastActiveAt - a.lastActiveAt).map(copy) },

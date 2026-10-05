@@ -14,13 +14,14 @@ test('workspaces and members, with the columns the spec names', () => {
   for (const col of ['workspace_id uuid not null references public.workspaces (id) on delete cascade', "account text not null check (account ~ '^(person|agent):[A-Za-z0-9_-]{1,64}$')", "access text not null check (access in ('edit', 'view'))", 'added_by text not null', 'added_at timestamptz not null default now()', 'primary key (workspace_id, account)']) assert.ok(m.includes(col), col)
   assert.match(s, /alter table public\.relay_sessions add column workspace_id uuid references public\.workspaces \(id\) on delete set null;/)
   assert.match(s, /create index relay_sessions_workspace_id on public\.relay_sessions \(workspace_id\);/)
+  assert.match(s, /alter table public\.relay_sessions add column workspace_linked_by text check \(workspace_linked_by ~ '\^\(person\|agent\):\[A-Za-z0-9_-\]\{1,64\}\$'\);/)
   assert.match(s, /create index workspace_members_account on public\.workspace_members \(account\);/)
 })
 
 test('additive only: no drop, no alter of existing columns', () => {
   const s = sql()
   assert.doesNotMatch(s, /\bdrop\b/i)
-  assert.doesNotMatch(s, /alter table public\.(?!relay_sessions add column workspace_id)(?!workspaces)(?!workspace_members)/)
+  assert.doesNotMatch(s, /alter table public\.(?!relay_sessions add column workspace_(id|linked_by))(?!workspaces)(?!workspace_members)/)
 })
 
 test('clients never touch them: RLS on, no policies, no grants, functions for the service role only', () => {
@@ -40,4 +41,13 @@ test('deleting a workspace makes its sessions loose and drops its members', () =
   const s = sql()
   assert.match(s, /update public\.relay_sessions set workspace_id = null where workspace_id = p_id/)
   assert.match(s, /delete from public\.workspaces where id = p_id/)
+})
+
+test('linking a room never sets its owner: the relay alone does, and the linker is kept', () => {
+  const s = sql()
+  const fn = (s.match(/create function public\.set_session_workspace[\s\S]*?\n\$\$;/) || [''])[0]
+  assert.match(fn, /\(p_room text, p_workspace uuid, p_linked_by text, p_at timestamptz\)/)
+  assert.match(fn, /insert into public\.relay_sessions as r \(room, created_at, last_active_at, workspace_id, workspace_linked_by\)/)
+  assert.doesNotMatch(fn, /owner_account/)
+  assert.match(fn, /on conflict \(room\) do update set workspace_id = excluded\.workspace_id, workspace_linked_by = excluded\.workspace_linked_by/)
 })

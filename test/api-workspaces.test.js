@@ -1,5 +1,6 @@
 // test/api-workspaces.test.js
 import { test, before, after } from 'node:test'
+import crypto from 'node:crypto'
 import assert from 'node:assert/strict'
 import { startTestApi, makeOrg, makeAgent } from './api-helpers.js'
 
@@ -82,16 +83,38 @@ test('sessions: link a room (before the relay reports it), list it, make it loos
   await t.call('PUT', `/v1/workspaces/${w.id}/members/person:lim`, { access: 'view' }, 'mem')
   const linked = await t.call('POST', `/v1/workspaces/${w.id}/sessions`, { room: 'room-new1' }, 'mem')
   assert.equal(linked.status, 200, JSON.stringify(linked.body))
-  assert.deepEqual([linked.body.session.room, linked.body.session.workspaceId, linked.body.session.ownerAccount], ['room-new1', w.id, 'person:mem'])
-  assert.equal((await t.call('POST', `/v1/workspaces/${w.id}/sessions`, { room: 'room-new1' }, 'lim')).status, 403, 'not the owner, and only view')
+  assert.deepEqual([linked.body.session.room, linked.body.session.workspaceId, linked.body.session.ownerAccount, linked.body.session.workspaceLinkedBy], ['room-new1', w.id, null, 'person:mem'], 'the link never sets the owner')
+  assert.equal((await t.call('POST', `/v1/workspaces/${w.id}/sessions`, { room: 'room-new1' }, 'lim')).status, 403, 'only view')
   assert.equal((await t.call('POST', `/v1/workspaces/${w.id}/sessions`, { room: 'bad room!' }, 'mem')).status, 400)
   const got = await t.call('GET', `/v1/workspaces/${w.id}`, null, 'lim')
   assert.deepEqual(got.body.sessions.map((s) => s.room), ['room-new1'])
   assert.equal((await t.call('GET', '/v1/me/workspaces', null, 'mem')).body.workspaces.find((x) => x.id === w.id).counts.sessions, 1)
-  // The room's pass now lets the viewer in.
+  // Once the relay reports mem as the owner, the room's pass lets the viewer in.
   const { roomAccess } = await import('../src/api/access.js')
+  assert.equal(await roomAccess(t.store, 'room-new1', 'person:lim'), null, 'no owner reported yet')
+  await t.store.ingestPresence([{ id: crypto.randomUUID(), type: 'start', room: 'room-new1', account: 'person:mem', owner: true, name: 'Mo', at: Date.now() }], Date.now())
   assert.equal((await roomAccess(t.store, 'room-new1', 'person:lim')).files, 'view')
   assert.equal((await t.call('DELETE', `/v1/workspaces/${w.id}/sessions/room-new1`, null, 'lim')).status, 403)
   assert.equal((await t.call('DELETE', `/v1/workspaces/${w.id}/sessions/room-new1`, null, 'mem')).status, 200)
   assert.deepEqual((await t.call('GET', `/v1/workspaces/${w.id}`, null, 'mem')).body.sessions, [])
+})
+
+test('linking a room the API has not seen does not claim it; its owner can still link it', async () => {
+  const { roomAccess, OWNER_ACCESS } = await import('../src/api/access.js')
+  const w = (await t.call('POST', '/v1/workspaces', { name: 'Outs' }, 'out')).body.workspace
+  await t.call('PUT', `/v1/workspaces/${w.id}/members/person:lim`, { access: 'view' }, 'out')
+  const linked = await t.call('POST', `/v1/workspaces/${w.id}/sessions`, { room: 'room-claim1' }, 'out')
+  assert.equal(linked.status, 200, JSON.stringify(linked.body))
+  assert.equal(linked.body.session.ownerAccount, null)
+  await t.store.ingestPresence([{ id: crypto.randomUUID(), type: 'start', room: 'room-claim1', account: 'person:mem', owner: true, name: 'Mo', at: Date.now() }], Date.now())
+  assert.equal(await roomAccess(t.store, 'room-claim1', 'person:out'), null)
+  assert.deepEqual(await roomAccess(t.store, 'room-claim1', 'person:mem'), OWNER_ACCESS)
+  assert.equal(await roomAccess(t.store, 'room-claim1', 'person:lim'), null)
+  assert.equal((await t.call('POST', `/v1/workspaces/${w.id}/sessions`, { room: 'room-claim1' }, 'out')).status, 403, 'now the relay has named its owner')
+  await t.call('PUT', `/v1/workspaces/${w.id}/members/person:mem`, { access: 'edit' }, 'out')
+  assert.equal((await t.call('POST', `/v1/workspaces/${w.id}/sessions`, { room: 'room-claim1' }, 'mem')).status, 200)
+  assert.equal((await roomAccess(t.store, 'room-claim1', 'person:lim')).files, 'view')
+  assert.equal((await t.call('DELETE', `/v1/workspaces/${w.id}/sessions/room-claim1`, null, 'mem')).status, 200)
+  const loose = await t.store.sessionByRoom('room-claim1')
+  assert.deepEqual([loose.workspaceId, loose.workspaceLinkedBy, loose.ownerAccount], [null, null, 'person:mem'])
 })

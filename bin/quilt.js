@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import '../src/quiet-warnings.js'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { adoptLegacyEnv } from '../src/legacy.js'
@@ -115,6 +116,7 @@ async function serve () {
 async function apiCmd () {
   const { values } = parseArgs({ args: argv, options: { port: { type: 'string' }, host: { type: 'string' }, memory: { type: 'boolean' } } })
   const { startApi } = await import('../src/api/server.js')
+  const { makeFileStore } = await import('../src/api/file-store.js')
   const env = process.env
   let store, verifyUser, mailer
   if (values.memory) {
@@ -152,7 +154,11 @@ async function apiCmd () {
     apiUrl: env.QUILT_API_PUBLIC_URL || (values.memory ? `http://${host}:${port}` : 'https://api.heyquilt.com'),
     siteUrl: env.QUILT_SITE_URL || 'http://localhost:3000',
     trustProxy: /^(1|true|yes)$/i.test(env.QUILT_TRUST_PROXY || ''), log: console.log,
-    workspaces: env.QUILT_WORKSPACES === '1' || env.QUILT_WORKSPACES === 'true'
+    workspaces: env.QUILT_WORKSPACES === '1' || env.QUILT_WORKSPACES === 'true',
+    fileStore: makeFileStore(
+      { storageUrl: env.QUILT_STORAGE_URL, storageKey: env.QUILT_STORAGE_KEY, storageBucket: env.QUILT_STORAGE_WS_BUCKET },
+      values.memory ? fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-api-files-')) : path.resolve(env.QUILT_API_DATA || './quilt-api-data')
+    )
   })
   console.log(`quilt accounts API listening on ${api.url}`)
   if (!env.RELAY_API_SECRET) console.log('RELAY_API_SECRET is not set: the relay cannot report sessions for the dashboard')

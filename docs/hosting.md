@@ -100,6 +100,9 @@ All settings are environment variables on the relay.
 | `QUILT_API_URL` | *(none)* | The accounts API, e.g. `https://api.heyquilt.com`. With `RELAY_API_SECRET`, the relay reports who is in which session (account, display name and times only) for people's dashboards. Unsent reports wait in `presence-queue.jsonl` in the data folder. |
 | `RELAY_API_SECRET` | *(none)* | Shared with the accounts API; `node scripts/relay-api-secret.mjs` sets it on both. Set it as a secret. Without both settings, the relay reports nothing. |
 | `QUILT_WORKSPACES` | off | On the accounts API: `QUILT_WORKSPACES=1` turns on the workspaces routes (off by default). |
+| `QUILT_STORAGE_URL` / `QUILT_STORAGE_KEY` | *(none)* | On the accounts API: the Quilt Files project's URL and service key; workspace files are stored there in the `workspace-files` bucket. Both unset: files are kept on the API's disk under `QUILT_API_DATA`. |
+| `QUILT_STORAGE_WS_BUCKET` | `workspace-files` | On the accounts API: the Supabase Storage bucket workspace files are kept in, when `QUILT_STORAGE_URL`/`QUILT_STORAGE_KEY` are set. |
+| `QUILT_API_DATA` | `./quilt-api-data` | On the accounts API: where workspace files are kept on disk, when no Supabase storage is configured. |
 | `QUILT_RELAY_KEY` | *(none)* | Required to **start** sessions when sign-in is off. Ignored when `QUILT_PASS_PUBLIC_KEY` is set. |
 | `PORT` | `4321` | Port to listen on (Render and Fly set this for you). |
 | `QUILT_DATA` | `/data` in Docker | Where sessions and shared files are stored. |

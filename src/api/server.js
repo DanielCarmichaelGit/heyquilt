@@ -3,12 +3,14 @@
 // signing in to a TV app) and manages agents. Plain node:http, like the relay.
 import http from 'node:http'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { newToken, hashToken, newUserCode, normalizeUserCode } from './tokens.js'
 import { parsePublicKey, verifyDeviceLink } from '../identity.js'
 import { signPass, passPublicKey, PASS_VERSION, PASS_TTL_MS } from '../passes.js'
 import { HttpError, Raw } from './http.js'
+import { DiskStore } from './file-store.js'
 import { orgRoutes } from './routes/orgs.js'
 import { memberRoutes } from './routes/members.js'
 import { teamRoutes } from './routes/teams.js'
@@ -44,12 +46,15 @@ const MCP_TIMEOUT_MS = 30 * 1000
 // a change to its grant reaches it as soon as it reaches a connected app.
 const PASS_REUSE_MARGIN_MS = 5 * 60 * 1000
 
-export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, apiUrl = 'https://api.heyquilt.com', mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, tokenLimit = 30, joinLimit = 20, trustProxy = false, maxStartKeys = 10_000, passKey = '', passLimit = 60, relayUrl = HOSTED_RELAY, mcpLimit = 600, reportKey = '', reportLimit = 10, slowMs = 2000, pruneEveryMs = 60 * 60 * 1000, keepEventsMs = 30 * 24 * 60 * 60 * 1000, keepIssuesMs = 90 * 24 * 60 * 60 * 1000, pruneStartMs = 10_000, relaySecret = '', workspaces = false }) {
+export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, apiUrl = 'https://api.heyquilt.com', mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, tokenLimit = 30, joinLimit = 20, trustProxy = false, maxStartKeys = 10_000, passKey = '', passLimit = 60, relayUrl = HOSTED_RELAY, mcpLimit = 600, reportKey = '', reportLimit = 10, slowMs = 2000, pruneEveryMs = 60 * 60 * 1000, keepEventsMs = 30 * 24 * 60 * 60 * 1000, keepIssuesMs = 90 * 24 * 60 * 60 * 1000, pruneStartMs = 10_000, relaySecret = '', workspaces = false, fileStore = null, maxFileBytes = 500 * 1024 * 1024, workspaceQuotaBytes = 5 * 1024 * 1024 * 1024, maxWorkspaceFiles = 2000 }) {
   // PASS_SIGNING_KEY. A bad one should stop the API at start, not fail every pass later.
   if (passKey) passPublicKey(passKey)
   const site = String(siteUrl || '').replace(/\/+$/, '')
   // Where agents reach this API: invite links and the join instructions point here.
   const api = String(apiUrl).replace(/\/+$/, '')
+  // Workspace files' bytes: the API's own disk (signed links it serves itself) unless a
+  // store (Supabase) was given. Defaulted so tests and a plain local run need nothing.
+  const files = fileStore || new DiskStore(fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-api-files-')))
   // The relay that hosts the agents' MCP (/mcp here hands requests on to it).
   const relay = String(relayUrl).replace(/\/+$/, '').replace(/^ws(s?):\/\//, 'http$1://')
 
@@ -259,7 +264,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   ]
 
   // Org routes live in their own modules and share the caller check and the limiter.
-  const ctx = { store, user, person, device, bearer, now, site, apiUrl: api, mailer, log, limit: limitInvites, limitSend: limitInviteSend, limitTokens, limitJoin, agentAuth, reportKey, limitReports, relaySecret }
+  const ctx = { store, user, person, device, bearer, now, site, apiUrl: api, mailer, log, limit: limitInvites, limitSend: limitInviteSend, limitTokens, limitJoin, agentAuth, reportKey, limitReports, relaySecret, files, maxFileBytes, workspaceQuotaBytes, maxWorkspaceFiles }
   routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx), ...agentRoutes(ctx), ...agentInviteRoutes(ctx), ...joinRoutes(ctx), ...relayRoutes(ctx), ...sessionRoutes(ctx), ...accessTypeRoutes(ctx), ...grantRoutes(ctx), ...sessionInviteRoutes(ctx), ...issueRoutes(ctx))
   // Always routed: with the flag off each answers a plain 404 of its own, so the app's
   // check at every launch isn't filed as a missing route.
@@ -318,6 +323,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
       return res.end()
     }
     try {
+      if (pathname.startsWith('/v1/file-data/') && files instanceof DiskStore) return await serveFileData(req, res, send, pathname.slice('/v1/file-data/'.length))
       if (pathname === '/mcp') return await proxyMcp(req, res, send)
       const url = new URL(req.url, 'http://x')
       const route = routes.find(([m, re]) => m === req.method && re.test(url.pathname))
@@ -398,6 +404,41 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     const out = Buffer.from(await upstream.arrayBuffer())
     res.writeHead(upstream.status, { 'content-type': type, 'cache-control': 'no-store' })
     res.end(out)
+  }
+
+  // The disk store's links: PUT streams an upload to the API's disk within the signed size; GET streams it back.
+  async function serveFileData (req, res, send, key) {
+    const q = new URL(req.url, 'http://x').searchParams
+    const method = req.method
+    if (!['PUT', 'GET'].includes(method) || q.get('m') !== method) return send(405, { error: 'method not allowed' })
+    const size = method === 'PUT' ? Number(q.get('n')) : undefined
+    if (!files.verify(key, method, q.get('exp'), q.get('sig'), size)) return send(403, { error: 'this link is not valid' })
+    const file = files.file(key)
+    if (method === 'PUT') {
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      const tmp = `${file}.part`
+      const out = fs.createWriteStream(tmp)
+      let got = 0
+      try {
+        for await (const chunk of req) {
+          got += chunk.length
+          if (got > size) throw new HttpError(413, 'more bytes than the link allows')
+          if (!out.write(chunk)) await new Promise((r) => out.once('drain', r))
+        }
+        await new Promise((resolve, reject) => out.end((err) => (err ? reject(err) : resolve())))
+        fs.renameSync(tmp, file)
+        return send(200, { ok: true })
+      } catch (err) {
+        out.destroy(); fs.rmSync(tmp, { force: true })
+        return send(err.status || 500, { error: err.message })
+      }
+    }
+    let stat
+    try { stat = fs.statSync(file) } catch { return send(404, { error: 'not found' }) }
+    const headers = { 'content-type': q.get('type') || 'application/octet-stream', 'content-length': stat.size, 'cache-control': 'no-store', ...cors(req) }
+    if (q.get('name')) headers['content-disposition'] = `attachment; filename="${q.get('name').replace(/["\r\n]/g, '')}"`
+    res.writeHead(200, headers)
+    fs.createReadStream(file).pipe(res)
   }
 
   // Only the website may call the API from a browser.

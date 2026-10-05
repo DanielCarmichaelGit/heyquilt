@@ -2,6 +2,7 @@
 // The Quilt accounts API: links desktop apps to accounts (a device-code flow, like
 // signing in to a TV app) and manages agents. Plain node:http, like the relay.
 import http from 'node:http'
+import { pipeline } from 'node:stream/promises'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -453,7 +454,8 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     const headers = { 'content-type': type || 'application/octet-stream', 'content-length': stat.size, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...cors(req) }
     if (name) headers['content-disposition'] = contentDisposition('attachment', name)
     res.writeHead(200, headers)
-    fs.createReadStream(file).pipe(res)
+    // A read that fails once the headers are out can only cut the response short.
+    await pipeline(fs.createReadStream(file), res).catch(() => res.destroy())
   }
 
   // Only the website may call the API from a browser.

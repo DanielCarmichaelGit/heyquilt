@@ -8,6 +8,8 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { runSession, decodeInvite, newConn, readConfig, recentSessions, forgetRecent, rememberWorkspace, forgetWorkspace } from './runner.js'
 import { MAX_SHARED_FILE_BYTES } from './protocol.js'
 import { getSettings, saveSettings, unsupportedRelay, relayUrl } from './settings.js'
@@ -624,8 +626,8 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
         const file = path.join(dir, path.basename(info.name) || 'file')
         const r = await fetch(info.url)
         if (!r.ok) throw httpError(502, `The file could not be fetched (${r.status}).`)
-        const { Readable } = await import('node:stream')
-        await new Promise((resolve, reject) => Readable.fromWeb(r.body).pipe(fs.createWriteStream(file)).on('finish', resolve).on('error', reject))
+        // pipeline, not .pipe: a download that breaks off rejects here instead of crashing the app.
+        await pipeline(Readable.fromWeb(r.body), fs.createWriteStream(file)).catch((err) => { throw httpError(502, `The file could not be fetched (${err.message}).`) })
         return await s.sendFile(file, { to: b.to || null, text: String(b.text || '') })
       } finally { fs.rmSync(dir, { recursive: true, force: true }) }
     },
@@ -786,19 +788,40 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     req.on('close', () => { clearInterval(ping); clients.delete(res) })
   }
 
+  /** A write stream to a temp file whose failures (disk full, permissions) reject the
+   * write or end that meets them, rather than going unhandled and crashing the app. */
+  function tempWriter (file) {
+    const out = fs.createWriteStream(file)
+    let failed = null
+    out.on('error', (err) => { failed = failed || err })
+    const check = () => { if (failed) throw failed }
+    return {
+      async write (chunk) {
+        check()
+        if (!out.write(chunk)) await new Promise((resolve) => { out.once('drain', resolve); out.once('close', resolve) })
+        check()
+      },
+      async end () {
+        check()
+        await new Promise((resolve, reject) => out.end((err) => (err || failed ? reject(err || failed) : resolve())))
+      },
+      destroy () { out.destroy() }
+    }
+  }
+
   async function receiveUpload (req, session) {
     const name = path.basename(decodeURIComponent(req.headers['x-filename'] || 'file')) || 'file'
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-up-'))
     const file = path.join(dir, name)
     try {
       let size = 0
-      const out = fs.createWriteStream(file)
+      const out = tempWriter(file)
       for await (const chunk of req) {
         size += chunk.length
         if (size > MAX_SHARED_FILE_BYTES) { out.destroy(); throw httpError(413, 'File is too large.') }
-        if (!out.write(chunk)) await new Promise((r) => out.once('drain', r))
+        await out.write(chunk)
       }
-      await new Promise((resolve, reject) => out.end((err) => (err ? reject(err) : resolve())))
+      await out.end()
       const to = req.headers['x-to'] ? decodeURIComponent(req.headers['x-to']) : null
       const text = req.headers['x-text'] ? decodeURIComponent(req.headers['x-text']) : ''
       return await session.sendFile(file, { to, text })
@@ -831,14 +854,14 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     try {
       const hash = crypto.createHash('sha256')
       let size = 0
-      const out = fs.createWriteStream(tmp)
+      const out = tempWriter(tmp)
       for await (const chunk of req) {
         size += chunk.length
         if (size > MAX_WS_FILE_BYTES) { out.destroy(); throw httpError(413, 'File is too large (500 MB at most).') }
         hash.update(chunk)
-        if (!out.write(chunk)) await new Promise((r) => out.once('drain', r))
+        await out.write(chunk)
       }
-      await new Promise((resolve, reject) => out.end((err) => (err ? reject(err) : resolve())))
+      await out.end()
       if (!size) throw httpError(400, 'The file is empty.')
       const mime = String(req.headers['content-type'] || '').split(';')[0] || ''
       return await asAccount(async (token) => {
@@ -863,8 +886,9 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     // render sandboxed. <img>, <video> and <audio> ignore the header.
     const guard = { 'x-content-type-options': 'nosniff', ...(type.split(';')[0].trim().toLowerCase() === 'application/pdf' ? {} : { 'content-security-policy': 'sandbox' }) }
     res.writeHead(200, { ...guard, 'content-type': type, ...(info.size ? { 'content-length': String(info.size) } : {}), 'content-disposition': contentDisposition(disposition, info.name), 'cache-control': 'private, max-age=60' })
-    const { Readable } = await import('node:stream')
-    Readable.fromWeb(r.body).pipe(res)
+    // The headers are out, so a download that breaks off can only cut the response short
+    // (the page sees a failed load); pipeline makes sure that is all it does.
+    await pipeline(Readable.fromWeb(r.body), res).catch(() => res.destroy())
   }
 
   const listen = (p) => new Promise((resolve, reject) => {

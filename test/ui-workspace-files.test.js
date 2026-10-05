@@ -13,11 +13,28 @@ const { startTestApi, linkDevice } = await import('./api-helpers.js')
 const { newPassKeys } = await import('../src/passes.js')
 const { loadIdentity } = await import('../src/identity.js')
 const { saveAccount } = await import('../src/account.js')
+const { DiskStore } = await import('../src/api/file-store.js')
+const http = await import('node:http')
+
+// Download links normally point at the API's own disk; `flaky.url` points them at a
+// storage server that fails instead.
+const flaky = { url: '' }
+class FlakyStore extends DiskStore {
+  async downloadTarget (key, o) { return flaky.url ? { url: flaky.url } : super.downloadTarget(key, o) }
+}
+// /500 answers an error; /cut starts a 200 and drops the connection halfway through.
+const storage = http.createServer((req, res) => {
+  if (req.url === '/500') { res.writeHead(500); return res.end('no') }
+  res.writeHead(200, { 'content-type': 'text/plain', 'content-length': '100000' })
+  res.write('the first few bytes')
+  setTimeout(() => res.socket.destroy(), 20)
+})
 
 let ui, accounts, relay
 before(async () => {
   const keys = newPassKeys()
-  accounts = await startTestApi({ passKey: keys.privateKey, workspaces: true })
+  await new Promise((resolve) => storage.listen(0, '127.0.0.1', resolve))
+  accounts = await startTestApi({ passKey: keys.privateKey, workspaces: true, fileStore: new FlakyStore(fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-ui-wsfiles-store-'))) })
   relay = await startServer({ port: 0, host: '127.0.0.1', log: () => {}, passPublicKey: keys.publicKey })
   process.env.QUILT_API_URL = accounts.api.url
   process.env.QUILT_SERVER = `ws://127.0.0.1:${relay.port}`
@@ -25,7 +42,7 @@ before(async () => {
   saveAccount({ token, account: { id: 'mem', name: 'Mo', email: 'mo@acme.com' }, signedInAt: Date.now() })
   ui = await startUi({ port: 0 })
 })
-after(async () => { await ui.close(); await relay.close(); await accounts.close() })
+after(async () => { await ui.close(); await relay.close(); await accounts.close(); storage.close() })
 
 const base = () => `http://127.0.0.1:${ui.port}`
 const api = (method, p, body) => fetch(base() + p, { method, headers: { 'x-quilt-token': ui.token, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }).then(async (r) => ({ status: r.status, body: await r.json() }))
@@ -115,5 +132,26 @@ test('attach from workspace sends the file into the session chat', async () => {
   const m = msgs.find((x) => x.file && x.file.name === 'brief.txt')
   assert.ok(m, 'the attachment is in the chat')
   assert.equal(m.text, 'from the library')
+  await api('POST', `/api/sessions/${s.body.id}/stop`)
+})
+
+test('a storage error or a dropped download is answered, and the app keeps running', { timeout: 15000 }, async () => {
+  const id = (await api('POST', '/api/workspaces', { name: 'Flaky' })).body.workspace.id
+  const up = await fetch(`${base()}/api/workspaces/${id}/upload`, { method: 'PUT', headers: { 'x-quilt-token': ui.token, 'x-path': encodeURIComponent('f.txt'), 'content-type': 'text/plain' }, body: 'fine'.repeat(1000) })
+  const { file } = await up.json()
+  const s = await api('POST', '/api/sessions', { mode: 'create', dir: path.join(home, 'flakyproj'), workspace: id })
+  const at = `http://127.0.0.1:${storage.address().port}`
+  try {
+    flaky.url = `${at}/500`
+    const bad = await fetch(`${base()}/api/workspaces/${id}/files/${file.id}/data?t=${ui.token}`)
+    assert.equal(bad.status, 502)
+    assert.match((await bad.json()).error, /could not be fetched \(500\)/)
+    flaky.url = `${at}/cut`
+    const cut = await fetch(`${base()}/api/workspaces/${id}/files/${file.id}/data?t=${ui.token}`, { signal: AbortSignal.timeout(5000) }).then((r) => r.text()).then(() => 'whole', () => 'broken')
+    assert.equal(cut, 'broken', 'the cut is passed on, not dressed up as a whole file')
+    const attach = await api('POST', `/api/sessions/${s.body.id}/attach-from-workspace`, { fileId: file.id })
+    assert.notEqual(attach.status, 200)
+  } finally { flaky.url = '' }
+  assert.equal((await api('GET', '/api/state')).status, 200, 'the local server still answers')
   await api('POST', `/api/sessions/${s.body.id}/stop`)
 })

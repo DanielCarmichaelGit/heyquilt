@@ -4,7 +4,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { gitDir, headKey, busy, indexStamp, classify, fileAt, changedBetween, branchTip, watchGit } from '../src/gitstate.js'
+import { gitDir, headKey, busy, indexStamp, classify, fileAt, filesAt, changedBetween, changesBetween, treeState, branchTip, watchGit } from '../src/gitstate.js'
+import { sha1 } from '../src/fsutil.js'
 
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-git-${n}-`))
 const git = (dir, ...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } }).trim()
@@ -90,6 +91,32 @@ test('fileAt and changedBetween', () => {
   assert.equal(fileAt(dir, one, 'a.txt'), 'a1\na2\na3\n')
   assert.equal(fileAt(dir, one, 'nope.txt'), null)
   assert.deepEqual(changedBetween(dir, one, two), ['a.txt'])
+})
+
+test('fileAt keys a binary as Quilt does, reads files over 1 MB, and filesAt reads many in one go', () => {
+  const dir = repo()
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3, 0xff])
+  const big = 'x'.repeat(1500 * 1024) + '\n'
+  fs.writeFileSync(path.join(dir, 'img.png'), png); write(dir, 'big.txt', big); write(dir, 'sp ace.txt', 'with a space\n')
+  git(dir, 'add', '.'); git(dir, 'commit', '-qm', 'more')
+  const sha = headKey(dir).sha
+  assert.equal(fileAt(dir, sha, 'img.png'), `bin:${sha1(png)}`)
+  assert.equal(fileAt(dir, sha, 'big.txt'), big)
+  const many = filesAt(dir, sha, ['a.txt', 'img.png', 'nope.txt', 'sp ace.txt', 'big.txt'])
+  assert.deepEqual([...many.entries()].sort(), [['a.txt', 'a1\na2\na3\n'], ['big.txt', big], ['img.png', `bin:${sha1(png)}`], ['nope.txt', null], ['sp ace.txt', 'with a space\n']])
+})
+
+test('changesBetween gives each path\'s status; treeState says what is dirty and what is tracked', () => {
+  const dir = repo()
+  const one = headKey(dir).sha
+  write(dir, 'c.txt', 'c\n'); write(dir, 'a.txt', 'changed\n'); git(dir, 'rm', '-q', 'b.txt'); git(dir, 'add', '.'); git(dir, 'commit', '-qm', 'two')
+  assert.deepEqual([...changesBetween(dir, one, headKey(dir).sha)].sort(), [['a.txt', 'M'], ['b.txt', 'D'], ['c.txt', 'A']])
+  write(dir, 'a.txt', 'dirty\n'); write(dir, 'new.txt', 'untracked\n'); write(dir, '*.txt', 'a glob-looking name\n')
+  const st = treeState(dir, ['a.txt', 'c.txt', 'new.txt', 'gone.txt', '*.txt'])
+  assert.deepEqual([...st.dirty].sort(), ['*.txt', 'a.txt', 'new.txt'])
+  assert.deepEqual([...st.tracked].sort(), ['a.txt', 'c.txt'])
+  const all = treeState(dir, Array.from({ length: 300 }, (_, i) => `f${i}`)) // past the pathspec limit: the whole tree
+  assert.ok(all.dirty.has('a.txt') && all.tracked.has('c.txt'))
 })
 
 test('branchTip: where a branch points, even while HEAD is elsewhere', () => {

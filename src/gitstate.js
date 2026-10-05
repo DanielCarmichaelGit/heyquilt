@@ -7,6 +7,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { watch } from 'chokidar'
+import { looksBinary, sha1, MAX_STORED_BINARY_BYTES } from './fsutil.js'
 
 export const GIT_TIMEOUT_MS = 5000
 export const SETTLE_MS = 2000
@@ -17,12 +18,31 @@ const MARKERS = [
   ['CHERRY_PICK_HEAD', 'cherry-pick'], ['REVERT_HEAD', 'revert'], ['BISECT_LOG', 'bisect']
 ]
 
-function run (root, args) {
+// Output read in one go: a listing of a big repository, or a batch of files (see filesAt).
+const MAX_OUTPUT = 256 * 1024 * 1024
+// More paths than this are not passed on the command line: the whole tree is asked, and filtered.
+const MAX_PATHSPECS = 200
+
+/** Runs git: its output (a string, or a Buffer with `buffer`), or null when it fails. */
+function run (root, args, { buffer = false, input } = {}) {
   try {
     // QUILT_GIT lets tests point at a git binary that doesn't exist, to exercise
     // the "git is unreachable" path without touching the real PATH.
-    return execFileSync(process.env.QUILT_GIT || 'git', args, { cwd: root, encoding: 'utf8', timeout: GIT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } })
+    return execFileSync(process.env.QUILT_GIT || 'git', args, {
+      cwd: root,
+      encoding: buffer ? undefined : 'utf8', // undefined: a Buffer
+      timeout: GIT_TIMEOUT_MS,
+      maxBuffer: MAX_OUTPUT,
+      input,
+      stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'ignore'],
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }
+    })
   } catch { return null }
+}
+
+/** A file's bytes as Quilt keys them (lastKnown, sharedKey): its text, or "bin:<sha1>". */
+function keyOf (buf) {
+  return looksBinary(buf) ? `bin:${sha1(buf)}` : buf.toString('utf8')
 }
 
 /** The folder's .git directory (a worktree's .git file points at it), or null. */
@@ -97,9 +117,65 @@ export function classify (root, { changed = [], before = null } = {}) {
   return { kind: 'edit', head, prevHead: before }
 }
 
-/** The file's text at a commit, or null when it did not exist there. */
+/**
+ * The file at a commit as Quilt keys it (its text, or "bin:<sha1>" for a
+ * binary), as checkout would write it (--filters), or null when it did not
+ * exist there (or git failed).
+ */
 export function fileAt (root, sha, rel) {
-  return run(root, ['show', `${sha}:${rel}`])
+  const out = filesAt(root, sha, [rel])
+  return out ? out.get(rel) ?? null : null
+}
+
+/**
+ * Several files at one commit, in a few git calls whatever their number:
+ * rel -> key (as fileAt), null (not there), or undefined (bigger than Quilt
+ * shares). Null when git fails.
+ */
+export function filesAt (root, sha, rels) {
+  const out = new Map()
+  if (!rels.length) return out
+  // Sizes first, so a huge file can't overflow the read of the contents.
+  const check = run(root, ['cat-file', '--batch-check=%(objectname) %(objecttype) %(objectsize)'], { input: rels.map((r) => `${sha}:${r}\n`).join('') })
+  if (check === null) return null
+  const lines = check.split('\n').slice(0, rels.length)
+  if (lines.length !== rels.length) return null
+  const fetch = [] // [rel, blob id, size]
+  rels.forEach((rel, i) => {
+    const [id, type, size] = lines[i].split(' ')
+    if (type !== 'blob' || !/^\d+$/.test(size)) out.set(rel, null) // "<name> missing", or a folder there
+    else if (Number(size) > MAX_STORED_BINARY_BYTES) out.set(rel, undefined)
+    else fetch.push([rel, id, Number(size)])
+  })
+  // In chunks well under MAX_OUTPUT. --filters can change a size (line endings),
+  // so each file's own size is read from the batch's headers.
+  // With --filters each line is "<blob> <path>": the path picks the filters, as checkout would.
+  const read = (chunk) => {
+    const buf = run(root, ['cat-file', '--batch', '--filters'], { buffer: true, input: chunk.map(([rel, id]) => `${id} ${rel}\n`).join('') })
+    if (buf === null) return false
+    let at = 0
+    for (const [rel] of chunk) {
+      const nl = buf.indexOf(10, at)
+      if (nl < 0) return false
+      const header = buf.subarray(at, nl).toString('utf8')
+      if (/ missing$/.test(header)) { out.set(rel, null); at = nl + 1; continue }
+      const size = Number(header.split(' ')[2])
+      if (!Number.isInteger(size)) return false
+      out.set(rel, keyOf(buf.subarray(nl + 1, nl + 1 + size)))
+      at = nl + 1 + size + 1
+    }
+    return true
+  }
+  let chunk = []; let bytes = 0
+  for (const f of fetch) {
+    if (chunk.length && bytes + f[2] > MAX_OUTPUT / 4) {
+      if (!read(chunk)) return null
+      chunk = []; bytes = 0
+    }
+    chunk.push(f); bytes += f[2]
+  }
+  if (chunk.length && !read(chunk)) return null
+  return out
 }
 
 /** The commit a branch points at (wherever HEAD is), or null. */
@@ -108,10 +184,42 @@ export function branchTip (root, branch) {
   return (run(root, ['rev-parse', '--verify', '-q', `refs/heads/${branch}^{commit}`]) || '').trim() || null
 }
 
+/** Paths that differ between two commits, each with git's status letter (A added, M modified, D deleted...); null when git fails. */
+export function changesBetween (root, shaA, shaB) {
+  const out = run(root, ['diff', '--no-renames', '--no-ext-diff', '--name-status', '-z', shaA, shaB])
+  if (out === null) return null
+  const f = out.split('\0')
+  const changes = new Map()
+  for (let i = 0; i + 1 < f.length; i += 2) if (f[i + 1]) changes.set(f[i + 1], f[i][0])
+  return changes
+}
+
 /** Paths that differ between two commits. */
 export function changedBetween (root, shaA, shaB) {
-  const out = run(root, ['diff', '--name-only', '-z', shaA, shaB])
-  return out ? out.split('\0').filter(Boolean) : []
+  const changes = changesBetween(root, shaA, shaB)
+  return changes ? [...changes.keys()] : []
+}
+
+/**
+ * What git says about `paths` now, in two git calls whatever their number:
+ * `dirty` (changed, staged, untracked or conflicted) and `tracked` (in the
+ * index). Null when git fails.
+ */
+export function treeState (root, paths) {
+  const spec = paths.length <= MAX_PATHSPECS ? ['--', ...paths] : []
+  const status = run(root, ['--literal-pathspecs', 'status', '--porcelain=v2', '-z', '--untracked-files=all', ...spec])
+  const listed = run(root, ['--literal-pathspecs', 'ls-files', '-z', ...spec])
+  if (status === null || listed === null) return null
+  const dirty = new Set()
+  const f = status.split('\0')
+  for (let i = 0; i < f.length; i++) {
+    const e = f[i]
+    if (e[0] === '1') dirty.add(e.split(' ').slice(8).join(' '))
+    else if (e[0] === '2') dirty.add(e.split(' ').slice(9).join(' ')).add(f[++i]) // renamed: both paths
+    else if (e[0] === 'u') dirty.add(e.split(' ').slice(10).join(' '))
+    else if (e[0] === '?' || e[0] === '!') dirty.add(e.slice(2))
+  }
+  return { dirty, tracked: new Set(listed.split('\0').filter(Boolean)) }
 }
 
 /** Watches HEAD, the index and the in-progress markers; events: head, index, busy, idle. */

@@ -43,11 +43,17 @@ process.env.QUILT_MERGE_CMD = `${process.execPath} ${path.join(tmp('cli'), 'no.m
 fs.writeFileSync(process.env.QUILT_MERGE_CMD.split(' ')[1], "process.stdout.write('CONFLICT: no\\n')")
 
 let rooms = 0
-/** A bare remote, two clones (alice, bob) with one commit, both in a fresh room. */
-async function pairRepos (t) {
+const LOGO = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 1, 0xfe])
+const LOGO2 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 2, 0xfe, 0xff])
+const readBuf = (dir, rel) => { try { return fs.readFileSync(path.join(dir, rel)) } catch { return null } }
+
+/** A bare remote, two clones (alice, bob) with one commit, both in a fresh room. `extra`: more files for the commit. */
+async function pairRepos (t, extra = {}) {
   const bare = tmp('bare'); git(bare, 'init', '-q', '--bare', '-b', 'main')
   const seed = tmp('seed'); git(seed, 'clone', '-q', bare, '.')
   write(seed, 'src/app.js', 'line1\nline2\nline3\nline4\nline5\n'); write(seed, 'README.md', 'hello\n')
+  fs.writeFileSync(path.join(seed, 'assets-logo.png'), LOGO)
+  for (const [rel, text] of Object.entries(extra)) write(seed, rel, text)
   git(seed, 'add', '.'); git(seed, 'commit', '-qm', 'one'); git(seed, 'push', '-q', 'origin', 'main')
   const dirA = tmp('a'); git(dirA, 'clone', '-q', bare, '.')
   const dirB = tmp('b'); git(dirB, 'clone', '-q', bare, '.')
@@ -207,6 +213,74 @@ test('an edit made while git holds the folder is shared once it settles, never r
   await waitFor(() => read(dirA, 'src/app.js') === 'line1\nline2 (bob, during)\nline3\nline4\nline5\n' && read(dirA, 'notes.txt') === 'new while held\n', 10000)
   assert.equal(read(dirB, 'src/app.js'), 'line1\nline2 (bob, during)\nline3\nline4\nline5\n', 'bob\'s edit is still on his disk')
   assert.equal(B.status().git.hold, null)
+})
+
+test('a pulled commit changing a binary nobody edited lands on both disks, no record', async (t) => {
+  const { A, dirA, dirB } = await pairRepos(t)
+  const c = tmp('c'); git(c, 'clone', '-q', git(dirA, 'remote', 'get-url', 'origin'), '.')
+  fs.writeFileSync(path.join(c, 'assets-logo.png'), LOGO2); git(c, 'commit', '-qam', 'new logo'); git(c, 'push', '-q', 'origin', 'main')
+  git(dirB, 'pull', '-q', '--ff-only')
+  await waitFor(() => LOGO2.equals(readBuf(dirA, 'assets-logo.png')) && LOGO2.equals(readBuf(dirB, 'assets-logo.png')), 10000)
+  await never(() => A.mergeList().some((m) => m.state === 'open') || !LOGO2.equals(readBuf(dirB, 'assets-logo.png')), 2500)
+})
+
+test('a pulled commit with a binary and a text file merges the text file and takes the binary', async (t) => {
+  const { A, dirA, dirB } = await pairRepos(t)
+  write(dirA, 'src/app.js', 'line1\nline2\nline3\nline4\nline5 (alice)\n')
+  await waitFor(() => read(dirB, 'src/app.js') === 'line1\nline2\nline3\nline4\nline5 (alice)\n')
+  const c = tmp('c'); git(c, 'clone', '-q', git(dirA, 'remote', 'get-url', 'origin'), '.')
+  fs.writeFileSync(path.join(c, 'assets-logo.png'), LOGO2); write(c, 'src/app.js', 'line1 (remote)\nline2\nline3\nline4\nline5\n')
+  git(c, 'commit', '-qam', 'both'); git(c, 'push', '-q', 'origin', 'main')
+  git(dirB, 'stash', '-q'); git(dirB, 'pull', '-q', '--ff-only'); git(dirB, 'stash', 'pop', '-q')
+  const want = 'line1 (remote)\nline2\nline3\nline4\nline5 (alice)\n'
+  await waitFor(() => read(dirA, 'src/app.js') === want && read(dirB, 'src/app.js') === want && LOGO2.equals(readBuf(dirA, 'assets-logo.png')), 10000)
+  assert.ok(LOGO2.equals(readBuf(dirB, 'assets-logo.png')))
+  assert.equal(A.mergeList().filter((m) => m.state === 'open').length, 0)
+})
+
+test('git unreachable when a hold settles: the folder stays held, nothing is shared, and it settles once git is back', async (t) => {
+  const { B, dirA, dirB } = await pairRepos(t)
+  write(dirA, 'README.md', 'main work\n')
+  await waitFor(() => read(dirB, 'README.md') === 'main work\n')
+  git(dirB, 'stash', '-q')
+  await waitFor(() => B.status().git.hold)
+  process.env.QUILT_GIT = path.join(tmp('nogit'), 'git')
+  try {
+    await never(() => read(dirA, 'README.md') !== 'main work\n' || B.status().git.hold === null, 4500)
+    assert.equal(B.status().git.hold.kind, 'busy')
+  } finally { delete process.env.QUILT_GIT }
+  await waitFor(() => read(dirB, 'README.md') === 'main work\n' && B.status().git.hold === null, 10000)
+  assert.equal(read(dirA, 'README.md'), 'main work\n')
+})
+
+test('a hold resumed over 500 files settles without stalling the app', async (t) => {
+  const many = Object.fromEntries(Array.from({ length: 500 }, (_, i) => [`many/f${i}.txt`, `file ${i}\n`]))
+  const { B, dirA, dirB, room } = await pairRepos(t, many)
+  write(dirA, 'README.md', 'main work\n')
+  await waitFor(() => read(dirB, 'README.md') === 'main work\n')
+  git(dirB, 'stash', '-q')
+  await waitFor(() => B.status().git.hold)
+  await close(B)
+  const B2 = await open(t, dirB, 'bob', { room })
+  let last = Date.now(); let worst = 0
+  const tick = setInterval(() => { const now = Date.now(); worst = Math.max(worst, now - last); last = now }, 5)
+  try {
+    await waitFor(() => read(dirB, 'README.md') === 'main work\n' && B2.status().git.hold === null, 15000)
+  } finally { clearInterval(tick) }
+  assert.ok(worst < 1000, `the event loop stalled for ${worst} ms`)
+  assert.equal(read(dirA, 'README.md'), 'main work\n')
+})
+
+test('git at work on the other branch keeps the pause as it is, said once; the hold is in state.json at once', async (t) => {
+  const { B, dirB } = await pairRepos(t)
+  git(dirB, 'checkout', '-qb', 'feature')
+  await waitFor(() => B.status().git.hold?.kind === 'switching')
+  await waitFor(() => JSON.parse(fs.readFileSync(path.join(dirB, '.quilt', 'state.json'), 'utf8')).gitHeld === true, 3000)
+  fs.writeFileSync(path.join(dirB, '.git', 'index.lock'), '')
+  await never(() => B.status().git.hold?.kind !== 'switching', 2500)
+  fs.rmSync(path.join(dirB, '.git', 'index.lock'))
+  await never(() => B.status().git.hold?.kind !== 'switching', 2500)
+  assert.equal(B.logs.filter((l) => l.includes("You're on feature")).length, 1, B.logs.join('\n'))
 })
 
 test('a folder without git is untouched by all of this', async (t) => {

@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { PERSONAL_NAV, isOn } from '../lib/nav.js'
+import { PERSONAL_NAV, isOn, withoutWorkspaces } from '../lib/nav.js'
+import { orgTabs } from '../lib/org-view.js'
 
 const active = (pathname) => PERSONAL_NAV.filter((item) => isOn(item, pathname)).map((item) => item.label)
 
@@ -18,4 +19,12 @@ test('isOn: in-page links are never on, and a non-exact item covers pages under 
   assert.equal(isOn({ href: '/#how' }, '/'), false)
   assert.equal(isOn({ href: '/org/acme/teams' }, '/org/acme/teams/web'), true)
   assert.equal(isOn({ href: '/org/acme', exact: true }, '/org/acme/teams'), false)
+})
+
+test('withoutWorkspaces drops only the Workspaces tab, for the personal and org bars', () => {
+  assert.deepEqual(withoutWorkspaces(PERSONAL_NAV).map((i) => i.label), ['Dashboard', 'Computers', 'Agents', 'Access types'])
+  const org = orgTabs('acme', { isOwner: true, grants: {} })
+  assert.ok(org.some((i) => i.label === 'Workspaces'))
+  assert.deepEqual(withoutWorkspaces(org).map((i) => i.label), org.filter((i) => i.label !== 'Workspaces').map((i) => i.label))
+  assert.equal(PERSONAL_NAV.length, 5, 'the list itself is unchanged')
 })

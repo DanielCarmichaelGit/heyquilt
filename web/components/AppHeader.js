@@ -9,7 +9,8 @@ import { myOrgs, orgMe } from '@/lib/org.js'
 import { orgTabs } from '@/lib/org-view.js'
 import { SPACE_COOKIE, PERSONAL, spaceHome } from '@/lib/space.js'
 import { createClient } from '@/lib/supabase/server.js'
-import { PERSONAL_NAV } from '@/lib/nav.js'
+import { PERSONAL_NAV, withoutWorkspaces } from '@/lib/nav.js'
+import { workspacesOn } from '@/lib/workspaces.js'
 
 /** Initials for the avatar: from the profile name, else the email. */
 export function initials (name, email) {
@@ -29,13 +30,16 @@ export default async function AppHeader ({ user, space }) {
   }
   const org = space !== PERSONAL ? orgs.find((o) => o.slug === space) : null
   const supabase = await createClient()
-  const [{ data: profile }, me] = await Promise.all([
+  const [{ data: profile }, me, wsOn] = await Promise.all([
     supabase.from('profiles').select('name').eq('id', user.id).maybeSingle(),
-    org ? orgMe(user.accessToken, org.slug) : null
+    org ? orgMe(user.accessToken, org.slug) : null,
+    workspacesOn(user.accessToken)
   ])
-  const items = org
+  const tabs = org
     ? orgTabs(org.slug, me).map((t) => t.href === `/org/${org.slug}` ? { ...t, exact: true } : t)
     : PERSONAL_NAV
+  // Workspaces are behind a flag on the API: no tab until it's on.
+  const items = wsOn ? tabs : withoutWorkspaces(tabs)
   return (
     <StickyHeader>
       <header className='qh'>

@@ -16,3 +16,8 @@ export function isOn (item, pathname) {
   if (!path || item.href.includes('#')) return false
   return pathname === path || (!item.exact && pathname.startsWith(path + '/'))
 }
+
+/** A bar without its Workspaces tab, for while the API has workspaces turned off. */
+export function withoutWorkspaces (items) {
+  return items.filter((item) => item.label !== 'Workspaces')
+}

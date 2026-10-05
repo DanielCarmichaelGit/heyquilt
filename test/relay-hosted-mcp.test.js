@@ -191,6 +191,11 @@ test('the agent reads what the owner has, and what it writes lands on the owner\
   assert.match(status, /Grok-Bot created hello.md|Grok-Bot edited hello.md/)
   // The owner sees the agent as a member who is online.
   await waitFor(() => carl.members.find((m) => m.key === GROK)?.online === true)
+  // With no presence of its own, it's still among the people in the session (the app's people pill).
+  assert.equal(carl.members.find((m) => m.key === GROK).hosted, true)
+  const peer = carl.status().peers.find((p) => p.name === 'Grok-Bot')
+  assert.deepEqual([peer?.kind, peer?.hosted], ['agent', true])
+  assert.ok(carl.peerNames().includes('Grok-Bot'))
 })
 
 test('the chronology records hosted and local changes with diffs, and is queryable', async () => {

@@ -447,6 +447,21 @@ class Room {
     for (const [k, p] of this.pending) if (k.hosted && p.id === id) this.pending.delete(k)
     // Newly online (or back after a while): everyone's member list shows it.
     if (Date.now() - was >= HOSTED_ONLINE_MS) this.broadcastMembers()
+    this.scheduleHostedExpiry()
+  }
+
+  /** When the quietest hosted agent drops off the online list, everyone's member list says so. */
+  scheduleHostedExpiry () {
+    clearTimeout(this.hostedExpiry)
+    if (!this.hostedSeen.size) return
+    const next = Math.min(...this.hostedSeen.values()) + HOSTED_ONLINE_MS
+    this.hostedExpiry = setTimeout(() => {
+      const before = this.hostedSeen.size
+      this.hostedOnline() // drops the ones gone quiet
+      if (this.hostedSeen.size !== before) this.broadcastMembers()
+      this.scheduleHostedExpiry()
+    }, Math.max(0, next - Date.now()) + 50)
+    this.hostedExpiry.unref?.()
   }
 
   /** Hosted agents active in the last few minutes, for status and presence. */
@@ -613,13 +628,14 @@ class Room {
   memberList () {
     const online = new Map()
     for (const a of this.access.values()) online.set(a.owner ? this.ownerId : a.id, true)
-    for (const h of this.hostedOnline()) online.set(h.id, true)
+    // A hosted agent has no connection, so no presence: say so, and the app shows it from here.
+    for (const h of this.hostedOnline()) if (!online.has(h.id)) online.set(h.id, 'hosted')
     const list = []
     if (this.meta.owner) {
       const ownerName = this.meta.ownerName || Object.entries(this.meta.identities).find(([, k]) => k === this.meta.owner)?.[0] || 'owner'
       list.push({ key: this.ownerId, name: ownerName, kind: 'human', role: 'owner', scopes: [], online: online.has(this.ownerId) })
     }
-    for (const [key, m] of Object.entries(this.meta.members)) list.push({ key, name: m.name, kind: m.kind, ...memberAccess(m), online: online.has(key) })
+    for (const [key, m] of Object.entries(this.meta.members)) list.push({ key, name: m.name, kind: m.kind, ...memberAccess(m), online: online.has(key), ...(online.get(key) === 'hosted' ? { hosted: true } : {}) })
     return list
   }
 
@@ -1123,6 +1139,7 @@ class Room {
 
   destroy () {
     clearTimeout(this.unloadTimer)
+    clearTimeout(this.hostedExpiry)
     this.save()
     this.guard.destroy()
     this.awareness.destroy()

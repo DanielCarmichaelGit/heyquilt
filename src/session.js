@@ -282,7 +282,12 @@ export class Session extends EventEmitter {
   }
 
   setMembers ({ members, pending, sessionName, admitBy }) {
+    // Hosted agents have no presence of their own: the member list is where they come and go.
+    const wasHosted = new Set(this.members.filter((m) => m.hosted).map((m) => m.name))
     this.members = members || []
+    const isHosted = new Set(this.members.filter((m) => m.hosted).map((m) => m.name))
+    for (const n of isHosted) if (!wasHosted.has(n) && n !== this.name) this.log(`👋 ${n} joined (hosted)`)
+    for (const n of wasHosted) if (!isHosted.has(n) && n !== this.name) this.log(`${n} left`)
     if (typeof sessionName === 'string') this.sessionName = sessionName
     if (admitBy !== undefined) this.admitBy = admitBy
     if (pending !== undefined) {
@@ -1673,7 +1678,7 @@ export class Session extends EventEmitter {
     if (name === this.name || (creating && !name)) fields.tool = this.tool
     else if (name) {
       const peer = this.status().peers.find((p) => p.name === name)
-      if (peer?.tool && peer.tool !== 'unknown') fields.tool = peer.tool
+      if (peer?.tool && !peer.hosted && peer.tool !== 'unknown') fields.tool = peer.tool
     }
   }
 
@@ -2511,6 +2516,11 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
           .sort((a, b) => b[1] - a[1])
           .map(([p, ts]) => ({ path: p, secondsAgo: Math.round((now - ts) / 1000) }))
       })
+    }
+    // Hosted agents (relay-mcp.js) only call the relay over HTTP, so they're never in awareness.
+    for (const m of this.members) {
+      if (!m.hosted || !m.name || m.name === this.name || peers.some((p) => p.name === m.name)) continue
+      peers.push({ name: m.name, tool: 'hosted', color: null, kind: m.kind || 'agent', hosted: true, agent: null, agents: [], work: null, focus: '', editing: [] })
     }
     return {
       room: this.room,

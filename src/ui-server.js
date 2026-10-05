@@ -8,7 +8,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
-import { runSession, decodeInvite, newConn, readConfig, recentSessions, forgetRecent, rememberWorkspace } from './runner.js'
+import { runSession, decodeInvite, newConn, readConfig, recentSessions, forgetRecent, rememberWorkspace, forgetWorkspace } from './runner.js'
 import { MAX_SHARED_FILE_BYTES } from './protocol.js'
 import { getSettings, saveSettings, unsupportedRelay, relayUrl } from './settings.js'
 import * as gitops from './git.js'
@@ -350,9 +350,13 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     // Presence changes (e.g. focus, recently edited files) also refresh the view.
     s.conn.awareness.on('change', () => pushStatus(id))
     if (workspace && mode === 'create') {
-      // Put the new room in its workspace before anyone else connects. A failure is logged, never fatal.
+      // Put the new room in its workspace before anyone else connects. A failure is logged, never
+      // fatal, and the session is outside any workspace here too, as it is on the API.
       // mode was reassigned to 'create' for github clones above, so this covers both.
-      await asAccount((token) => setSessionWorkspace({ token, id: workspace, room: conn.room })).catch((err) => log(`could not add this session to its workspace: ${err.message}`))
+      await asAccount((token) => setSessionWorkspace({ token, id: workspace, room: conn.room })).catch((err) => {
+        log(`could not add this session to its workspace: ${err.message}`)
+        forgetWorkspace(entry.run.dir)
+      })
     }
     return summary(id)
   }

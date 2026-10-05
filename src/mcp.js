@@ -11,7 +11,7 @@ import path from 'node:path'
 import { findDaemon, call } from './control.js'
 import { renderMessage, renderStatus } from './status.js'
 import { formatTasks, columnName, assigneeLabel } from './tasks.js'
-import { runSession, decodeInvite, newConn, readConfig, runningElsewhere, personsFolder, agentCopyFolder } from './runner.js'
+import { runSession, decodeInvite, newConn, readConfig, runningElsewhere, personsFolder, agentCopyFolder, forgetWorkspace } from './runner.js'
 import { INVALID_INVITE } from './ui/invite.js'
 import { toolLabel } from './agents/common.js'
 import { sessionPasses } from './pass-source.js'
@@ -412,17 +412,20 @@ export async function runMcp () {
     })
     joined = { run, dir, invite: run.invite }
     // Puts the new room in its workspace with the agent's own key. A failure (offline, the
-    // workspace was removed, the API doesn't have workspaces on) is logged, never fatal: the
-    // session has already started and works without it.
+    // workspace was removed, the API doesn't have workspaces on) is logged and reported, never
+    // fatal: the session has already started and works without it, outside any workspace.
+    let workspaceError = ''
     if (workspace) {
       try {
         const saved = await agentAccess({ name: agentKey })
         await setSessionWorkspace({ token: saved.accessKey, id: workspace, room: conn.room, api: saved.api })
       } catch (err) {
+        workspaceError = `Could not add it to workspace ${workspace}: ${err.message}`
         run.session.log(`could not add this session to workspace ${workspace}: ${err.message}`)
+        forgetWorkspace(dir)
       }
     }
-    return { dir, invite: run.invite, aside, workspace }
+    return { dir, invite: run.invite, aside, workspace: workspaceError ? '' : workspace, workspaceError }
   }
 
   const leave = async () => {
@@ -482,7 +485,8 @@ export async function runMcp () {
   }, async ({ folder, agent, workspace }) => {
     try {
       const r = await startAs({ conn: newConn(), folder: folder || '.', agent, starting: true, workspace: workspace || '' })
-      return { content: [{ type: 'text', text: await describeSession(r.dir, `Started a session for ${r.dir}. Share the invite link below with collaborators.`) }] }
+      const started = `Started a session for ${r.dir}. Share the invite link below with collaborators.`
+      return { content: [{ type: 'text', text: await describeSession(r.dir, r.workspaceError ? `${started}\n${r.workspaceError}. It is outside any workspace.` : started) }] }
     } catch (err) {
       return { content: [{ type: 'text', text: `Could not start: ${err.message}` }], isError: true }
     }

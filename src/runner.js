@@ -121,10 +121,12 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   // Sharing your AI chat follows your setting; a pause or resume is remembered for this folder.
   const shareAgent = previous && previous.room === conn.room && typeof previous.shareAgent === 'boolean' ? previous.shareAgent : shareByDefault !== false
   const summarize = previous && previous.room === conn.room && typeof previous.summarize === 'boolean' ? previous.summarize : !!summarizeByDefault
+  // The workspace carries over only for the same room: a new room in this folder starts outside any.
+  const savedWorkspace = workspace || (previous && previous.room === conn.room ? previous.workspace : '') || ''
   fs.mkdirSync(path.join(dir, '.quilt'), { recursive: true })
   const configFile = path.join(dir, '.quilt', 'config.json')
   // It holds the room secret: written privately and atomically (see private-file.js).
-  writePrivateJson(configFile, { ...conn, name, tool, kind, inviteServer: inviteServer || undefined, shareAgent, summarize, workspace: workspace || previous?.workspace || undefined })
+  writePrivateJson(configFile, { ...conn, name, tool, kind, inviteServer: inviteServer || undefined, shareAgent, summarize, workspace: savedWorkspace || undefined })
   // Keeps the saved name in step with the pass's (the rest of the file may have changed since).
   const saveName = (name) => {
     try { writePrivateJson(configFile, { ...JSON.parse(fs.readFileSync(configFile, 'utf8')), name }) } catch {}
@@ -155,7 +157,7 @@ export async function runSession ({ dir, conn, name, tool, color = null, shareBy
   if (session.name !== name) saveName(session.name)
   session.on('identity', ({ name }) => saveName(name))
   const control = await startControl(session, { invite, viewInvite, joined })
-  remember({ dir, room: conn.room, server: conn.server, name: session.name, tool, kind, workspace: workspace || previous?.workspace || '' })
+  remember({ dir, room: conn.room, server: conn.server, name: session.name, tool, kind, workspace: savedWorkspace })
 
   // Claude Code claims files as it edits them (src/hooks.js). The hooks live in the shared
   // .claude/settings.json so everyone in the session follows the same rule.
@@ -262,6 +264,16 @@ export function forgetRecent (dir) {
     const list = JSON.parse(fs.readFileSync(recentFile(), 'utf8')).filter((r) => r.dir !== dir)
     fs.writeFileSync(recentFile(), JSON.stringify(list, null, 2))
   } catch {}
+}
+
+/** Takes a folder's session out of its workspace on this computer: its config and the recent list. */
+export function forgetWorkspace (dir) {
+  const saved = readConfig(dir)
+  if (saved && saved.workspace) {
+    const { workspace, ...rest } = saved
+    try { writePrivateJson(path.join(dir, '.quilt', 'config.json'), rest) } catch {}
+  }
+  rememberWorkspace(dir, '')
 }
 
 /** Records which workspace a remembered folder's session is in. */

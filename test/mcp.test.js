@@ -238,17 +238,20 @@ test('agent edits sync back to people, and leaving removes the agent', async () 
   await waitFor(() => !human.status().peers.some((p) => p.kind === 'agent'))
 })
 
-test('quilt_start_session saves the workspace locally and reports it, even when linking it on the API fails', async (t) => {
+test('quilt_start_session in a workspace the API will not link starts outside any workspace, and says so', async (t) => {
   const dir = tmp('ws-start')
   const c3 = new Client({ name: 'claude-code', version: '1.0.0' })
   await c3.connect(new StdioClientTransport({ command: process.execPath, args: [BIN, 'mcp'], cwd: dir, env: { ...process.env, HOME: home, QUILT_SERVER: `ws://127.0.0.1:${relay.port}` }, stderr: 'ignore' }))
   t.after(() => c3.close().catch(() => {}))
   const call3 = (name, args = {}) => c3.callTool({ name, arguments: args })
-  const r = await call3('quilt_start_session', { workspace: 'ws-1' })
+  // This test API has workspaces off, so linking fails.
+  const ws = '6f1d2c3b-4a5e-4f60-8a9b-0c1d2e3f4a5b'
+  const r = await call3('quilt_start_session', { workspace: ws })
   assert.ok(!r.isError, text(r))
-  assert.match(text(r), /Workspace: ws-1/)
-  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, '.quilt', 'config.json'), 'utf8')).workspace, 'ws-1')
-  assert.match(text(await call3('quilt_session_info')), /Workspace: ws-1/)
+  assert.match(text(r), new RegExp(`Could not add it to workspace ${ws}`))
+  assert.doesNotMatch(text(r), /Workspace: /)
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, '.quilt', 'config.json'), 'utf8')).workspace, undefined)
+  assert.doesNotMatch(text(await call3('quilt_session_info')), /Workspace: /)
 })
 
 const rx = (s) => new RegExp(s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))

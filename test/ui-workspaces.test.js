@@ -5,6 +5,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import crypto from 'node:crypto'
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-ui-ws-'))
 process.env.HOME = process.env.USERPROFILE = home
@@ -61,6 +62,19 @@ test('a session started inside a workspace is linked on the API and shows under 
   assert.deepEqual(got.body.sessions.map((x) => x.room), [room])
   await api('POST', `/api/sessions/${s.body.id}/stop`)
   assert.deepEqual((await api('GET', `/api/workspaces/${id}`)).body.recent.map((r) => r.dir), [path.join(home, 'site')])
+})
+
+test('a session the API will not put in its workspace starts outside any workspace', async () => {
+  const dir = path.join(home, 'nowhere')
+  const s = await api('POST', '/api/sessions', { mode: 'create', dir, workspace: crypto.randomUUID() })
+  assert.equal(s.status, 200, JSON.stringify(s.body))
+  assert.equal(s.body.workspace, '')
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, '.quilt', 'config.json'), 'utf8')).workspace, undefined)
+  assert.ok(s.body.logs.some((l) => /could not add this session to its workspace/.test(l.line)), JSON.stringify(s.body.logs))
+  assert.equal((await accounts.store.sessionByRoom(s.body.status.room))?.workspaceId ?? null, null)
+  await api('POST', `/api/sessions/${s.body.id}/stop`)
+  const { recentSessions } = await import('../src/runner.js')
+  assert.equal(recentSessions().find((r) => r.dir === dir)?.workspace, '')
 })
 
 // Before the flag-off case: that one leaves account.json pointing at its own API.

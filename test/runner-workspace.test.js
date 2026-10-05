@@ -23,3 +23,21 @@ test('the workspace id is saved with the session and on the recent list', async 
     assert.equal(recentSessions().find((r) => r.dir === dir)?.workspace, 'ws-123')
   } finally { await run.stop() }
 })
+
+test('a rejoin of the same room keeps the saved workspace; a new room in that folder does not inherit it', async () => {
+  const dir = path.join(home, 'proj-old')
+  const server = `ws://127.0.0.1:${relay.port}`
+  const conn = { ...newConn(), server }
+  const first = await runSession({ dir, conn, name: 'Mo', tool: 'Other', workspace: 'ws-OLD', onLog: () => {} })
+  await first.stop()
+  const again = await runSession({ dir, conn, name: 'Mo', tool: 'Other', onLog: () => {} })
+  try {
+    assert.equal(readConfig(dir).workspace, 'ws-OLD', 'same room')
+    assert.equal(recentSessions().find((r) => r.dir === dir)?.workspace, 'ws-OLD')
+  } finally { await again.stop() }
+  const fresh = await runSession({ dir, conn: { ...newConn(), server }, name: 'Mo', tool: 'Other', onLog: () => {} })
+  try {
+    assert.equal(readConfig(dir).workspace, undefined, 'a new room starts outside any workspace')
+    assert.equal(recentSessions().find((r) => r.dir === dir)?.workspace, '')
+  } finally { await fresh.stop() }
+})

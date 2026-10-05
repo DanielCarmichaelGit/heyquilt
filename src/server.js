@@ -1678,7 +1678,10 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
           // Every open visit ends now (even ones no `leave` got to yet), and the queue
           // gets one last, bounded try at the accounts API.
           if (presence) await presence.close()
-          await new Promise((resolve) => httpServer.close(() => resolve()))
+          // An upload or download still in flight would otherwise hold close() open forever.
+          const closed = new Promise((resolve) => httpServer.close(() => resolve()))
+          httpServer.closeAllConnections()
+          await closed
         }
       })
     })

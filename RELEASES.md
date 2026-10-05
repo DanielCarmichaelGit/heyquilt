@@ -9,14 +9,19 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.8 — 2026-10-05
+
+Quilt works the same in every AI tool: it connects itself to the ones on your computer, and its rules hold whichever one you use.
+
+- **Every AI tool on your computer is connected, by itself.** Quilt adds its MCP server to Claude Code, Claude Desktop, Cursor, Windsurf, Codex, VS Code (GitHub Copilot, Cline, Roo Code), Gemini CLI, GitHub Copilot CLI, Zed, opencode, Kiro, Amp, Junie and Continue whenever the app or a session starts, by full path, so there is nothing to install or configure and nothing depends on your PATH. Claude Code's hooks use the full path too.
+- **Quilt's rules work in every AI tool, not just Claude Code.** Any MCP agent (Cursor, Codex, Windsurf, Zed…) calls `quilt_before_edit` before changing files: a file someone else holds is refused with who to ask, a free one is claimed for it, and what people said about those files in chat is shown first. Every Quilt answer starts with the messages, mentions and tasks that arrived since the last one, and `quilt_set_work` "done" (or moving a task to Done) is refused while someone is still waiting for a reply. The work stops counting as in progress once its files go quiet, so the host's commit isn't held up. Claude Code's hooks now apply the same rules and show chat about a file before Claude edits it; hosted agents see it when they write the file.
+- **Every AI tool shows up in the feed and on the board.** `quilt_share` lets any MCP agent post what it was asked, its plan and the files it changed: partners see it live, an In progress task opens for it like it does for Claude Code and Cursor chats, and the host waits before committing. Any MCP client can subscribe to the `quilt://inbox` resource to be told the moment a mention, direct message or task arrives, not only Claude Code.
+- **Nobody's message gets ignored.** While someone who messaged or mentioned an agent waits for an answer, the tools that move work on (claims, tasks, merges, commits, done) refuse until the agent replies, in every tool; hosted agents' writes too. Chat never blocks a file: only a claim does.
+
 ## 0.3.7 — 2026-10-04
 
 A fix for the merge view, and webhooks that carry your receiver's key.
 
-- **Quilt's rules work in every AI tool, not just Claude Code.** Any MCP agent (Cursor, Codex, Windsurf, Zed…) calls `quilt_before_edit` before changing files: a file someone else holds is refused with who to ask, a free one is claimed for it, and what people said about those files in chat is shown first. Every Quilt answer starts with the messages, mentions and tasks that arrived since the last one, and `quilt_set_work` "done" (or moving a task to Done) is refused while someone is still waiting for a reply. The work stops counting as in progress once its files go quiet, so the host's commit isn't held up. Claude Code's hooks now apply the same rules and show chat about a file before Claude edits it; hosted agents see it when they write the file.
-- **Every AI tool on your computer is connected, by itself.** Quilt adds its MCP server to Claude Code, Claude Desktop, Cursor, Windsurf, Codex, VS Code (GitHub Copilot, Cline, Roo Code), Gemini CLI, GitHub Copilot CLI, Zed, opencode, Kiro, Amp, Junie and Continue whenever the app or a session starts, by full path, so there is nothing to install or configure and nothing depends on your PATH. Claude Code's hooks use the full path too.
-- **Every AI tool shows up in the feed and on the board.** `quilt_share` lets any MCP agent post what it was asked, its plan and the files it changed: partners see it live, an In progress task opens for it like it does for Claude Code and Cursor chats, and the host waits before committing. Any MCP client can subscribe to the `quilt://inbox` resource to be told the moment a mention, direct message or task arrives, not only Claude Code.
-- **Nobody's message gets ignored.** While someone who messaged or mentioned an agent waits for an answer, the tools that move work on (claims, tasks, merges, commits, done) refuse until the agent replies, in every tool; hosted agents' writes too. Chat never blocks a file: only a claim does.
 - **The merge view follows the newest conflict.** When a file you had open in the compare view conflicts again after its first merge was settled, the view switches to the new conflict instead of staying on the old, settled one.
 - **Webhooks carry your receiver's key.** `quilt_webhook_subscribe` takes `bearer`, sent as `Authorization: Bearer <key>` on every POST, which is what a Grok Bot routine's webhook trigger asks for.
 

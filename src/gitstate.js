@@ -122,34 +122,36 @@ export function indexStamp (root) {
   try { const st = fs.statSync(path.join(dir, 'index')); return `${st.mtimeMs}:${st.size}` } catch { return null }
 }
 
-/** True when every one of `paths` is clean (matches HEAD) according to git; null when git could not say. */
-function allClean (root, paths) {
-  if (!paths.length) return false
-  const out = run(root, ['--literal-pathspecs', 'status', '--porcelain=v2', '-z', '--', ...paths])
-  if (out === null) return null
-  // Any entry at all means a change or an untracked file; clean paths print nothing,
-  // and so does a path git has never heard of (outside the repo, or nonexistent).
-  return out.replace(/\0/g, '').trim() === ''
-}
-
 /**
  * What a burst of changes to `changed` was, given the head seen `before` it.
  * busy: a merge/rebase/... is mid-way. switch: HEAD names another branch (or
  * commit). advance: HEAD moved on the same branch (pull, merge, rebase done,
  * commit). discard: HEAD unchanged and every changed path is clean now (stash,
- * reset --hard, restore). Otherwise edit.
+ * reset, restore). Otherwise edit, with `putBack`: the changed paths git may
+ * have put back all the same (clean, and tracked or gone), so a discard that
+ * shares its burst with an unrelated save (an untracked file, an autosave) can
+ * still be told apart from an edit.
  */
 export function classify (root, { changed = [], before = null } = {}) {
   const head = headKey(root)
-  if (!head) return { kind: 'edit', head: null, prevHead: before }
+  if (!head) return { kind: 'edit', head: null, prevHead: before, putBack: [] }
   if (busy(root)) return { kind: 'busy', head, prevHead: before }
   if (before && head.key !== before.key) return { kind: 'switch', head, prevHead: before }
   if (before && head.sha !== before.sha) return { kind: 'advance', head, prevHead: before }
-  const clean = changed.length ? allClean(root, changed) : false
+  if (!changed.length) return { kind: 'edit', head, prevHead: before, putBack: [] }
+  const tree = treeState(root, changed)
   // git could not say (a timeout in a big repo): held as busy, and asked again when it settles.
-  if (clean === null) return { kind: 'busy', head, prevHead: before }
-  if (clean) return { kind: 'discard', head, prevHead: before }
-  return { kind: 'edit', head, prevHead: before }
+  if (!tree) return { kind: 'busy', head, prevHead: before }
+  // Clean paths print nothing, and so does a path git has never heard of (outside the repo, or nonexistent).
+  const clean = changed.filter((rel) => !tree.dirty.has(rel))
+  if (clean.length === changed.length) return { kind: 'discard', head, prevHead: before }
+  // As the settle tells them (planSettle): an untracked file git calls clean is still an edit.
+  const putBack = clean.filter((rel) => tree.tracked.has(rel) || !exists(root, rel))
+  return { kind: 'edit', head, prevHead: before, putBack }
+}
+
+function exists (root, rel) {
+  try { fs.lstatSync(path.join(root, ...rel.split('/'))); return true } catch { return false }
 }
 
 /**

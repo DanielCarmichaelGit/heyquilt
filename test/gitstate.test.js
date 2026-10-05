@@ -80,7 +80,14 @@ test('classify: busy wins, and a mix of clean and dirty paths is an edit', () =>
   fs.writeFileSync(path.join(dir, '.git', 'MERGE_HEAD'), 'x')
   assert.equal(classify(dir, { changed: ['a.txt'], before }).kind, 'busy')
   fs.rmSync(path.join(dir, '.git', 'MERGE_HEAD'))
-  assert.equal(classify(dir, { changed: ['a.txt', 'b.txt'], before }).kind, 'edit')
+  const mixed = classify(dir, { changed: ['a.txt', 'b.txt'], before })
+  assert.equal(mixed.kind, 'edit')
+  assert.deepEqual(mixed.putBack, ['b.txt'], 'b.txt matches the commit: git may have put it back')
+  // An untracked file in the same burst as a stash: an edit, with the stashed file put back.
+  git(dir, 'stash', '-q'); write(dir, 'new.txt', 'scratch\n')
+  const stash = classify(dir, { changed: ['a.txt', 'new.txt'], before })
+  assert.equal(stash.kind, 'edit')
+  assert.deepEqual(stash.putBack, ['a.txt'])
 })
 
 test('fileAt and changedBetween', () => {

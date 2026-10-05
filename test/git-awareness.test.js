@@ -86,6 +86,21 @@ test('a stash on one machine does not erase the room\'s work; it comes back afte
   assert.equal(git(dirB, 'stash', 'list').split('\n').filter(Boolean).length, 1, 'the stash is untouched')
 })
 
+test('a stash landing in the same flush as an unrelated save is still not shared: the room keeps its work', async (t) => {
+  const { B, dirA, dirB } = await pairRepos(t)
+  const alice = 'line1 (alice)\nline2\nline3\nline4\nline5\n'
+  write(dirA, 'src/app.js', alice)
+  await waitFor(() => read(dirB, 'src/app.js') === alice)
+  // An untracked scratch file saved in the same instant as the stash (an editor's autosave, a dev
+  // server's output): queued here so both land in one flush, as they do on a busy machine.
+  write(dirB, 'scratch.txt', 'notes\n'); git(dirB, 'stash', '-q')
+  B.queue('scratch.txt'); B.queue('src/app.js')
+  await never(() => read(dirA, 'src/app.js') !== alice, 2500)
+  await waitFor(() => read(dirB, 'src/app.js') === alice && read(dirA, 'scratch.txt') === 'notes\n', 8000)
+  assert.equal(read(dirA, 'src/app.js'), alice, 'the partner\'s file is untouched')
+  assert.equal(git(dirB, 'stash', 'list').split('\n').filter(Boolean).length, 1, 'the stash is untouched')
+})
+
 test('reset --hard by an agent is the same', async (t) => {
   const { dirA, dirB } = await pairRepos(t)
   write(dirA, 'README.md', 'hello from alice\n')

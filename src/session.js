@@ -936,12 +936,22 @@ export class Session extends EventEmitter {
     this.gitFailures = 0
     this.gitSeen = r.head
     if (r.kind === 'edit') {
-      // git wrote the index, yet HEAD hasn't moved and the paths aren't clean: a checkout or a pull
-      // can be in the instant between writing the index and moving the branch. Asked once more, a flush later.
-      if (paths.length && this.burstByIndex && !again) {
-        this.reclassify = true
-        for (const rel of paths) this.queue(rel)
-        return
+      if (paths.length && (this.burstByIndex || again)) {
+        // git wrote the index and put some of these paths back (a stash in the same flush as an
+        // untracked file's save): held, so the settle restores those and shares only the rest.
+        if (r.putBack.length) {
+          for (const rel of paths) this.heldPaths.add(rel)
+          this.setHold('settling', { prevHead: r.prevHead })
+          this.settleSoon()
+          return
+        }
+        // git wrote the index, yet HEAD hasn't moved and the paths aren't clean: a checkout or a pull
+        // can be in the instant between writing the index and moving the branch. Asked once more, a flush later.
+        if (!again) {
+          this.reclassify = true
+          for (const rel of paths) this.queue(rel)
+          return
+        }
       }
       return this.ingestAll(paths)
     }

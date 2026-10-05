@@ -102,6 +102,12 @@ export function fileAt (root, sha, rel) {
   return run(root, ['show', `${sha}:${rel}`])
 }
 
+/** The commit a branch points at (wherever HEAD is), or null. */
+export function branchTip (root, branch) {
+  if (!branch || !gitDir(root)) return null
+  return (run(root, ['rev-parse', '--verify', '-q', `refs/heads/${branch}^{commit}`]) || '').trim() || null
+}
+
 /** Paths that differ between two commits. */
 export function changedBetween (root, shaA, shaB) {
   const out = run(root, ['diff', '--name-only', '-z', shaA, shaB])

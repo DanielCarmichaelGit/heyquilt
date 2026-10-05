@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { gitDir, headKey, busy, indexStamp, classify, fileAt, changedBetween, watchGit } from '../src/gitstate.js'
+import { gitDir, headKey, busy, indexStamp, classify, fileAt, changedBetween, branchTip, watchGit } from '../src/gitstate.js'
 
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-git-${n}-`))
 const git = (dir, ...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } }).trim()
@@ -90,6 +90,17 @@ test('fileAt and changedBetween', () => {
   assert.equal(fileAt(dir, one, 'a.txt'), 'a1\na2\na3\n')
   assert.equal(fileAt(dir, one, 'nope.txt'), null)
   assert.deepEqual(changedBetween(dir, one, two), ['a.txt'])
+})
+
+test('branchTip: where a branch points, even while HEAD is elsewhere', () => {
+  const dir = repo()
+  const one = headKey(dir).sha
+  assert.equal(branchTip(dir, 'main'), one)
+  git(dir, 'checkout', '-q', '--detach')
+  write(dir, 'a.txt', 'x\n'); git(dir, 'commit', '-qam', 'detached')
+  assert.equal(branchTip(dir, 'main'), one, 'the branch did not move')
+  assert.equal(branchTip(dir, 'nope'), null)
+  assert.equal(branchTip(tmp('plain'), 'main'), null)
 })
 
 test('indexStamp changes when git touches the index, not when a file is edited', () => {

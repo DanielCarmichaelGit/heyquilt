@@ -29,6 +29,7 @@ test('workspace_files and workspace_file_versions, with the columns the spec nam
 test('additive only, RLS on, service role only', () => {
   const s = sql()
   assert.doesNotMatch(s, /\bdrop\b/i)
+  assert.doesNotMatch(s, /\blike\b/i, 'folder matching uses prefix equality, not like')
   for (const t of ['workspace_files', 'workspace_file_versions']) assert.match(s, new RegExp(`alter table public\\.${t} enable row level security`), t)
   assert.doesNotMatch(s, /create policy/)
   assert.match(s, /revoke all on public\.workspace_files, public\.workspace_file_versions from anon, authenticated;/)
@@ -37,6 +38,9 @@ test('additive only, RLS on, service role only', () => {
     assert.ok(s.includes(`revoke execute on function public.${f} from public, anon, authenticated;`), f)
     assert.ok(s.includes(`grant execute on function public.${f} to service_role;`), f)
   }
+  const sweep = (s.match(/create function public\.sweep_deleted_workspace_files[\s\S]*?\n\$\$;/) || [''])[0]
+  assert.ok(sweep.includes('array_agg(object_key)'), 'sweep collects keys into an array first')
+  assert.ok(sweep.indexOf('array_agg(object_key)') < sweep.indexOf('delete from public.workspace_files'), 'sweep collects keys before deleting')
   for (const m of s.matchAll(/create function public\.\w+[\s\S]*?\nas \$\$/g)) assert.match(m[0], /set search_path = ''/)
 })
 

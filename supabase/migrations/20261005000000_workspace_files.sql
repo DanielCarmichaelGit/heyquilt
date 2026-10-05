@@ -49,23 +49,23 @@ revoke all on public.workspace_files, public.workspace_file_versions from anon, 
 grant all on public.workspace_files, public.workspace_file_versions to service_role;
 
 -- Files deleted before p_before, and their versions: returns the object keys to remove from
--- storage and deletes the rows. The API removes the objects, then calls this.
+-- storage and deletes the rows. The API removes the objects, then calls this. The keys are
+-- collected into an array before the delete runs, so the FK cascade on workspace_files never
+-- races the read of workspace_file_versions.
 create function public.sweep_deleted_workspace_files (p_before timestamptz)
 returns setof text
 language plpgsql
 set search_path = ''
 as $$
+declare keys text[];
 begin
-  return query
-    with gone as (
-      delete from public.workspace_files f where f.deleted_at is not null and f.deleted_at < p_before
-      returning f.id, f.object_key
-    ), vers as (
-      select v.object_key from public.workspace_file_versions v where v.file_id in (select id from gone)
-    )
-    select object_key from gone where object_key <> ''
+  select coalesce(array_agg(object_key), '{}') into keys from (
+    select f.object_key from public.workspace_files f where f.deleted_at is not null and f.deleted_at < p_before and f.object_key <> ''
     union all
-    select object_key from vers;
+    select v.object_key from public.workspace_file_versions v join public.workspace_files f on f.id = v.file_id where f.deleted_at is not null and f.deleted_at < p_before and v.object_key <> ''
+  ) k;
+  delete from public.workspace_files where deleted_at is not null and deleted_at < p_before;
+  return query select unnest(keys);
 end;
 $$;
 revoke execute on function public.sweep_deleted_workspace_files (timestamptz) from public, anon, authenticated;
@@ -109,7 +109,7 @@ as $$
 declare n integer;
 begin
   update public.workspace_files set path = p_to || substr(path, char_length(p_from) + 1)
-    where workspace_id = p_workspace and deleted_at is null and (path = p_from or path like p_from || '/%');
+    where workspace_id = p_workspace and deleted_at is null and (path = p_from or left(path, char_length(p_from) + 1) = p_from || '/');
   get diagnostics n = row_count;
   return n;
 end;
@@ -125,10 +125,10 @@ set search_path = ''
 as $$
 declare f public.workspace_files;
 begin
-  select * into f from public.workspace_files where id = p_id;
+  select * into f from public.workspace_files where id = p_id for update;
   if not found then return null; end if;
   if f.kind = 'folder' then
-    update public.workspace_files set deleted_at = p_at where workspace_id = f.workspace_id and deleted_at is null and (id = p_id or path like f.path || '/%');
+    update public.workspace_files set deleted_at = p_at where workspace_id = f.workspace_id and deleted_at is null and (id = p_id or left(path, char_length(f.path) + 1) = f.path || '/');
   else
     update public.workspace_files set deleted_at = p_at where id = p_id;
   end if;

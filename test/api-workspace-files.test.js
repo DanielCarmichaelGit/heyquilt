@@ -184,3 +184,16 @@ test('done re-checks the file size and the quota against what actually landed', 
   assert.equal(await store.exists(`${w.id}/${over.file.id}/1`), null)
   assert.equal((await t.call('GET', `/v1/workspaces/${w.id}`, null, 'mem')).body.usage.usedBytes, 240)
 })
+
+test('moving a folder never asks the store for an empty update (Supabase refuses one)', async () => {
+  const w = (await t.call('POST', '/v1/workspaces', { name: 'Moves' }, 'mem')).body.workspace
+  const folder = (await t.call('POST', `/v1/workspaces/${w.id}/folders`, { path: 'old' }, 'mem')).body.file
+  const real = t.store.updateWorkspaceFile
+  const patches = []
+  t.store.updateWorkspaceFile = async (id, patch) => { patches.push(patch); return real.call(t.store, id, patch) }
+  try {
+    const moved = await t.call('PATCH', `/v1/workspaces/${w.id}/files/${folder.id}`, { path: 'new' }, 'mem')
+    assert.deepEqual([moved.status, moved.body.file.path, moved.body.file.kind], [200, 'new', 'folder'])
+  } finally { t.store.updateWorkspaceFile = real }
+  assert.equal(patches.some((p) => !Object.keys(p).length), false, JSON.stringify(patches))
+})

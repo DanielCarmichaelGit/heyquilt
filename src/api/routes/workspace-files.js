@@ -223,7 +223,9 @@ export function workspaceFileRoutes (ctx) {
           else patch.path = p
         }
       }
-      const file = await store.updateWorkspaceFile(f.id, patch)
+      // A folder move has already happened, with nothing left to patch: an empty update is
+      // an error on Supabase, so read the row back instead.
+      const file = Object.keys(patch).length ? await store.updateWorkspaceFile(f.id, patch) : await store.workspaceFileById(f.id)
       return { file: (await viewOf(store, file)) || fileView(file) }
     })],
 

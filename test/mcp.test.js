@@ -12,7 +12,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ResourceUpdatedNotificationSchema } from '@modelcontextprotocol/sdk/types.js'
 import { startServer } from '../src/server.js'
 import { Session } from '../src/session.js'
-import { encodeInvite } from '../src/runner.js'
+import { encodeInvite, runSession } from '../src/runner.js'
 import { startTestApi, API_URL } from './api-helpers.js'
 import { newPassKeys } from '../src/passes.js'
 import { agentJoin } from '../src/agent-join.js'
@@ -328,7 +328,7 @@ test("an agent started in a person's folder works in its own copy and leaves the
   const copy = path.join(home, 'quilt', 'quilt-pair-helper')
   assert.match(text(r), rx(`Files are synced into ${copy}`))
   // The aside names the folder as the MCP server's cwd resolves it (/private/var on macOS).
-  assert.match(text(r), rx(`(${fs.realpathSync(personDir)} is a person's own copy of this session on this computer and stays theirs`))
+  assert.match(text(r), rx(`(${fs.realpathSync(personDir)} is someone else's copy of this session on this computer and stays theirs`))
   await waitFor(() => fs.existsSync(path.join(copy, 'src', 'app.js')))
   assert.equal(JSON.parse(fs.readFileSync(path.join(copy, '.quilt', 'config.json'), 'utf8')).kind, 'agent')
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(personDir, '.quilt', 'config.json'), 'utf8')), saved, "Dana's saved session is untouched")
@@ -349,4 +349,27 @@ test("an agent started in a person's folder works in its own copy and leaves the
     if (folder === copy) assert.doesNotMatch(text(again), /stays theirs/)
     assert.match(text(await call2('quilt_leave_session')), /Left the session/)
   }
+})
+
+test('an agent started where another agent is syncing joins as itself, in its own copy', async (t) => {
+  // Duncan, another agent on this computer, is syncing the room in a folder of its own.
+  const conn = { server: `ws://127.0.0.1:${relay.port}`, room: 'pair', secret: 's3cret' }
+  const duncanDir = tmp('duncan')
+  const duncan = await runSession({ dir: duncanDir, conn, name: 'duncan', tool: 'Claude Code', kind: 'agent', joined: true, agentFeed: false })
+  t.after(() => duncan.stop())
+  await waitFor(() => human.status().peers.some((p) => p.name === 'duncan'))
+  // The second agent's tool runs in Duncan's folder.
+  const c3 = new Client({ name: 'grok', version: '1.0.0' })
+  await c3.connect(new StdioClientTransport({ command: process.execPath, args: [BIN, 'mcp'], cwd: duncanDir, env: { ...process.env, HOME: home, QUILT_SERVER: `ws://127.0.0.1:${relay.port}` }, stderr: 'ignore' }))
+  t.after(() => c3.close().catch(() => {}))
+  const call3 = (name, args = {}) => c3.callTool({ name, arguments: args })
+
+  // Before: it "worked through" Duncan's session, acting as Duncan, and never showed up itself.
+  const r = await call3('quilt_join_session', { invite: encodeInvite(conn) })
+  assert.ok(!r.isError, text(r))
+  assert.match(text(r), rx(`Files are synced into ${path.join(home, 'quilt', 'quilt-pair-helper')}`))
+  assert.doesNotMatch(text(r), /working through/)
+  await waitFor(() => human.status().peers.some((p) => p.name === 'helper' && p.kind === 'agent'))
+  assert.ok(human.status().peers.some((p) => p.name === 'duncan'), 'Duncan is still there')
+  assert.match(text(await call3('quilt_leave_session')), /Left the session/)
 })

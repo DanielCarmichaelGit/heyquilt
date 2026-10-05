@@ -6,6 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { startTestApi, API_URL } from './api-helpers.js'
 import { DiskStore } from '../src/api/file-store.js'
+import { removeObjects } from '../src/api/routes/workspace-files.js'
 
 let t, store
 before(async () => {
@@ -208,4 +209,27 @@ test('a file named outside Latin-1 downloads, with its UTF-8 name in the header'
   assert.equal(res.status, 200)
   assert.match(res.headers.get('content-disposition'), /^attachment; filename="Shot 9\.41_PM _\.txt"; filename\*=UTF-8''Shot%209\.41%E2%80%AFPM%20%F0%9F%8E%AC\.txt$/)
   assert.equal(await res.text(), 'hi')
+})
+
+test('deleting a workspace removes its stored bytes, every version and deleted file included', async () => {
+  const w = (await t.call('POST', '/v1/workspaces', { name: 'Doomed' }, 'mem')).body.workspace
+  const a = await upload('mem', w.id, 'a.txt', 'one')
+  assert.equal((await upload('mem', w.id, 'a.txt', 'two')).status, 200)
+  const b = await upload('mem', w.id, 'b.txt', 'bee')
+  assert.equal((await t.call('DELETE', `/v1/workspaces/${w.id}/files/${b.body.file.id}`, null, 'mem')).status, 200)
+  const keys = [`${w.id}/${a.body.file.id}/1`, `${w.id}/${a.body.file.id}/2`, `${w.id}/${b.body.file.id}/1`]
+  for (const k of keys) assert.ok(await store.exists(k), k)
+  assert.equal((await t.call('DELETE', `/v1/workspaces/${w.id}`, null, 'mem')).status, 200)
+  for (const k of keys) assert.equal(await store.exists(k), null, k)
+})
+
+test('removeObjects asks storage in batches of 100 and carries on past a failed batch', async () => {
+  const calls = []
+  const logged = []
+  const fake = { remove: async (keys) => { calls.push(keys.length); if (calls.length === 2) throw new Error('storage: nope') } }
+  await removeObjects(fake, Array.from({ length: 250 }, (_, i) => `k${i}`), (m) => logged.push(m))
+  assert.deepEqual(calls, [100, 100, 50])
+  assert.deepEqual(logged, ['file store: storage: nope'])
+  await removeObjects(fake, [], () => {})
+  assert.equal(calls.length, 3, 'nothing to remove, no call')
 })

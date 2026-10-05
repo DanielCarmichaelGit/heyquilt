@@ -4,14 +4,14 @@ import { HttpError, cleanName } from '../http.js'
 import { orgAccess } from '../org-access.js'
 import { workspaceAccess, cleanColor, cleanDescription, cleanAccess, autoColor } from '../workspace-access.js'
 import { workspaceReach } from '../workspace-reach.js'
-import { listedFiles, usageView } from './workspace-files.js'
+import { listedFiles, usageView, removeObjects } from './workspace-files.js'
 
 const ROOM = /^[A-Za-z0-9_-]{1,64}$/
 const ACCOUNT = /^(person|agent):[A-Za-z0-9_-]{1,64}$/
 const OPEN_MS = 10 * 60 * 1000
 
 export function workspaceRoutes (ctx) {
-  const { store, now, workspaces = false } = ctx
+  const { store, now, files: fileStore, workspaces = false, log = () => {} } = ctx
   const { caller, grantsIn, reach } = workspaceReach(ctx)
   /** A handler that answers 404 while the flag is off (a route's own 404, not a missing route). */
   const gated = (fn) => (...args) => {
@@ -107,6 +107,15 @@ export function workspaceRoutes (ctx) {
         const a = await orgAccess(store, r.me.userId, (await store.orgById(r.ws.orgId)).slug)
         a.need('workspaces', 'd')
       } else if (r.access.via !== 'owner') throw new HttpError(403, 'only the owner can delete a workspace')
+      // Its files' bytes go first (every version, and files deleted but not yet swept): once
+      // the rows are gone nothing would ever name these objects again.
+      const keys = []
+      for (const f of await store.listWorkspaceFiles(r.ws.id, { includeDeleted: true })) {
+        if (f.kind !== 'file') continue
+        if (f.objectKey) keys.push(f.objectKey)
+        for (const v of await store.listWorkspaceFileVersions(f.id)) if (v.objectKey) keys.push(v.objectKey)
+      }
+      if (fileStore) await removeObjects(fileStore, keys, log)
       await store.deleteWorkspace(r.ws.id)
       return { ok: true }
     }],

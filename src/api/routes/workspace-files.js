@@ -46,6 +46,14 @@ export async function usageView (store, ws, { workspaceQuotaBytes, maxWorkspaceF
   return { usedBytes, quotaBytes: quotaOf(ws, workspaceQuotaBytes), fileCount, maxFiles: maxWorkspaceFiles }
 }
 
+/** Removes objects from the file store, 100 keys a call (Supabase's limit per remove).
+ * A failed batch is logged and the rest still go: a leftover object costs storage, not data. */
+export async function removeObjects (fileStore, keys, log = () => {}) {
+  for (let i = 0; i < keys.length; i += 100) {
+    try { await fileStore.remove(keys.slice(i, i + 100)) } catch (err) { log(`file store: ${err.message}`) }
+  }
+}
+
 export function workspaceFileRoutes (ctx) {
   const { store, now, files: fileStore, apiUrl, maxFileBytes, workspaceQuotaBytes, maxWorkspaceFiles, workspaces = false, log = () => {} } = ctx
   const { reach } = workspaceReach(ctx)
@@ -86,10 +94,7 @@ export function workspaceFileRoutes (ctx) {
     }
   }
 
-  async function removeKeys (keys) {
-    if (!keys.length) return
-    try { await fileStore.remove(keys) } catch (err) { log(`file store: ${err.message}`) }
-  }
+  const removeKeys = (keys) => removeObjects(fileStore, keys, log)
 
   /** Undoes an upload that never landed: a re-upload goes back to the version before it;
    * a new file is forgotten. Either way the failed upload's object is removed. */

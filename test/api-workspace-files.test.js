@@ -145,3 +145,42 @@ test('a file whose new version is still uploading stays listed and downloadable 
   assert.equal(await (await fetch(dl.body.url)).text(), 'one')
   assert.equal((await t.call('GET', `/v1/workspaces/${w.id}/files/${v1.body.file.id}/download?version=2`, null, 'mem')).status, 409)
 })
+
+/** Puts bytes straight into the disk store, as storage that doesn't hold an upload to its declared size would. */
+function land (key, bytes) {
+  fs.mkdirSync(path.dirname(store.file(key)), { recursive: true })
+  fs.writeFileSync(store.file(key), bytes)
+}
+
+test('done refuses an upload whose bytes do not match the declared size, and forgets it', async () => {
+  const w = (await t.call('POST', '/v1/workspaces', { name: 'Sizes' }, 'mem')).body.workspace
+  const short = (await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: 'short.txt', size: 5 }, 'mem')).body
+  assert.equal((await fetch(short.upload.url, { method: 'PUT', body: 'abc' })).status, 200)
+  const r1 = await t.call('POST', `/v1/workspaces/${w.id}/files/${short.file.id}/done`, {}, 'mem')
+  assert.deepEqual([r1.status, r1.body.error], [409, 'the upload did not match its declared size'])
+  assert.equal(await t.store.workspaceFileById(short.file.id), null, 'the row is gone')
+  assert.equal(await store.exists(`${w.id}/${short.file.id}/1`), null, 'the bytes are gone')
+  const long = (await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: 'long.txt', size: 1 }, 'mem')).body
+  land(`${w.id}/${long.file.id}/1`, 'more than one byte')
+  const r2 = await t.call('POST', `/v1/workspaces/${w.id}/files/${long.file.id}/done`, {}, 'mem')
+  assert.deepEqual([r2.status, r2.body.error], [409, 'the upload did not match its declared size'])
+  assert.equal(await t.store.workspaceFileById(long.file.id), null)
+  assert.equal((await t.call('GET', `/v1/workspaces/${w.id}`, null, 'mem')).body.usage.usedBytes, 0)
+})
+
+test('done re-checks the file size and the quota against what actually landed', async () => {
+  const w = (await t.call('POST', '/v1/workspaces', { name: 'Recheck' }, 'mem')).body.workspace
+  const big = (await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: 'big.bin', size: 1 }, 'mem')).body
+  land(`${w.id}/${big.file.id}/1`, 'x'.repeat(101))
+  const r1 = await t.call('POST', `/v1/workspaces/${w.id}/files/${big.file.id}/done`, {}, 'mem')
+  assert.deepEqual([r1.status, r1.body.error], [413, 'file too large'])
+  assert.equal(await t.store.workspaceFileById(big.file.id), null)
+  for (const n of [1, 2, 3]) assert.equal((await upload('mem', w.id, `f${n}.txt`, 'x'.repeat(80))).status, 200)
+  const over = (await t.call('POST', `/v1/workspaces/${w.id}/files`, { path: 'over.txt', size: 1 }, 'mem')).body
+  land(`${w.id}/${over.file.id}/1`, 'y'.repeat(20))
+  const r2 = await t.call('POST', `/v1/workspaces/${w.id}/files/${over.file.id}/done`, {}, 'mem')
+  assert.deepEqual([r2.status, r2.body.error], [413, 'this workspace has used its storage'])
+  assert.equal(await t.store.workspaceFileById(over.file.id), null)
+  assert.equal(await store.exists(`${w.id}/${over.file.id}/1`), null)
+  assert.equal((await t.call('GET', `/v1/workspaces/${w.id}`, null, 'mem')).body.usage.usedBytes, 240)
+})

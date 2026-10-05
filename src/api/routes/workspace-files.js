@@ -161,6 +161,19 @@ export function workspaceFileRoutes (ctx) {
       if (f.kind !== 'file') throw new HttpError(404, 'no such file')
       const there = await fileStore.exists(f.objectKey)
       if (!there) throw new HttpError(409, 'the upload did not land')
+      // The declared size was checked when the upload started, but storage may hold more
+      // (or fewer) bytes than that: check what actually landed, against the same limits.
+      // Usage counts confirmed bytes only, so this row's pending upload is not in it yet.
+      const usage = await store.workspaceUsage(r.ws.id)
+      const refusal = there.size > maxFileBytes ? new HttpError(413, 'file too large')
+        : usage.usedBytes + there.size > quotaOf(r.ws, workspaceQuotaBytes) ? new HttpError(413, 'this workspace has used its storage')
+          : there.size !== f.size ? new HttpError(409, 'the upload did not match its declared size')
+            : null
+      if (refusal) {
+        await abandon(f)
+        await refreshUsage(r.ws.id)
+        throw refusal
+      }
       const file = await store.confirmWorkspaceFile(f.id, { size: there.size, at: now() })
       await refreshUsage(r.ws.id)
       return { file: fileView(file) }

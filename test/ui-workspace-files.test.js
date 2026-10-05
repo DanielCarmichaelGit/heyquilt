@@ -88,3 +88,18 @@ test('an upload the API refuses is reported with its message', async () => {
   assert.equal(bad.status, 400)
   assert.match((await bad.json()).error, /path/i)
 })
+
+test('attach from workspace sends the file into the session chat', async () => {
+  const id = (await api('POST', '/api/workspaces', { name: 'Chat' })).body.workspace.id
+  const up = await fetch(`${base()}/api/workspaces/${id}/upload`, { method: 'PUT', headers: { 'x-quilt-token': ui.token, 'x-path': encodeURIComponent('brief.txt'), 'content-type': 'text/plain' }, body: 'the brief' })
+  const { file } = await up.json()
+  const s = await api('POST', '/api/sessions', { mode: 'create', dir: path.join(home, 'chatproj'), workspace: id })
+  assert.equal(s.status, 200)
+  const sent = await api('POST', `/api/sessions/${s.body.id}/attach-from-workspace`, { fileId: file.id, text: 'from the library' })
+  assert.equal(sent.status, 200, JSON.stringify(sent.body))
+  const msgs = (await api('GET', `/api/sessions/${s.body.id}/messages`)).body.messages
+  const m = msgs.find((x) => x.file && x.file.name === 'brief.txt')
+  assert.ok(m, 'the attachment is in the chat')
+  assert.equal(m.text, 'from the library')
+  await api('POST', `/api/sessions/${s.body.id}/stop`)
+})

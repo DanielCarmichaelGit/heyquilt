@@ -13,6 +13,7 @@ import { fileCardHref, renderable, textHtml, mentionAt, mentionCandidates, compl
 import { renderBoard } from './board.js'
 import { accessFormValues, accessSaveBody, grantsLoading, grantsLoaded, grantsFailed } from './access-form.js'
 import { renderMergeBar, bindMerges, renderMergeView } from './merges.js'
+import { workspaceFilePicker } from './files.js'
 
 let current = null // session id being shown
 let timers = []
@@ -116,6 +117,7 @@ export function mountSession (id) {
           <div class="mention-menu" id="mention-menu" role="listbox" aria-label="Mention someone" hidden></div>
           <div class="box">
             <button type="button" class="btn ghost icon" id="attach-btn" title="Send a file" aria-label="Send a file">${I.clip}</button>
+            ${sum()?.workspace ? `<button type="button" class="btn ghost icon" data-attach-workspace title="Attach from workspace" aria-label="Attach from workspace">${I.folder}</button>` : ''}
             <input type="file" id="file-input" multiple hidden>
             <textarea id="msg-input" rows="1" placeholder="Message everyone…"></textarea>
             <button type="submit" class="btn primary icon" id="send-btn" title="Send" aria-label="Send">${I.send}</button>
@@ -1325,6 +1327,21 @@ function bindChat () {
   $('#to-select').onchange = (e) => { state.to = e.target.value; updatePlaceholder() }
   $('#attach-btn').onclick = () => $('#file-input').click()
   $('#file-input').onchange = (e) => { addFiles(e.target.files); e.target.value = '' }
+  $('[data-attach-workspace]')?.addEventListener('click', async () => {
+    if (mayNotPost()) return toast(NO_POSTING)
+    const workspace = sum()?.workspace
+    const pick = await workspaceFilePicker(workspace)
+    if (!pick) return
+    try {
+      await api('POST', `/api/sessions/${id}/attach-from-workspace`, { fileId: pick.id, to: state.to || null, text: input.value.trim() })
+      input.value = ''
+      grow()
+    } catch (err) {
+      toast(err.message)
+    } finally {
+      input.focus()
+    }
+  })
   $('#attachments').onclick = (e) => {
     const b = e.target.closest('[data-unqueue]')
     if (b) { state.pending.splice(Number(b.dataset.unqueue), 1); renderAttachments() }
@@ -1403,6 +1420,8 @@ function renderComposer () {
   const muted = mayNotPost()
   input.disabled = muted
   $('#attach-btn').disabled = muted
+  const wsBtn = $('[data-attach-workspace]')
+  if (wsBtn) wsBtn.disabled = muted
   $('#send-btn').disabled = muted
   $('#composer').classList.toggle('muted', muted)
   updatePlaceholder()

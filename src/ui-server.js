@@ -612,6 +612,22 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     'POST /api/sessions/:id/focus': (b, id) => { get(id).setFocus(b.text); return { ok: true } },
     'POST /api/sessions/:id/claim': (b, id) => get(id).claim(b.pattern, b.note),
     'POST /api/sessions/:id/release': async (b, id) => ({ released: await get(id).release(b.pattern) }),
+    'POST /api/sessions/:id/attach-from-workspace': async (b, id) => {
+      const s = get(id)
+      const workspace = (readConfig(s.root) || {}).workspace
+      if (!workspace) throw httpError(400, 'This session is not in a workspace.')
+      const info = await asAccount((token) => workspaceFileDownload({ token, id: workspace, fileId: String(b.fileId || '') }))
+      if (info.size > MAX_SHARED_FILE_BYTES) throw httpError(413, 'That file is too big to send in chat (100 MB at most).')
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-wsattach-'))
+      try {
+        const file = path.join(dir, path.basename(info.name) || 'file')
+        const r = await fetch(info.url)
+        if (!r.ok) throw httpError(502, `The file could not be fetched (${r.status}).`)
+        const { Readable } = await import('node:stream')
+        await new Promise((resolve, reject) => Readable.fromWeb(r.body).pipe(fs.createWriteStream(file)).on('finish', resolve).on('error', reject))
+        return await s.sendFile(file, { to: b.to || null, text: String(b.text || '') })
+      } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+    },
     'POST /api/sessions/:id/read': (b, id) => { get(id).messages({ limit: 500 }); pushStatus(id); return { ok: true } },
     'GET /api/sessions/:id/messages': (b, id) => ({ messages: get(id).messages({ limit: 200, markRead: false }) }),
     'GET /api/sessions/:id/tasks': (b, id) => ({ tasks: get(id).taskList() }),

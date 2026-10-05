@@ -51,7 +51,7 @@ export async function startControl (session, extras = {}) {
     'POST /inbox': (b) => session.inbox({ after: b.after }),
     // The agent's webhook: inbox events POSTed to a URL of its own (see webhooks.js).
     'GET /webhook': () => ({ webhook: session.webhookInfo() }),
-    'POST /webhook': (b) => ({ webhook: session.setWebhook({ url: b.url, secret: b.secret, events: b.events }) }),
+    'POST /webhook': (b) => ({ webhook: session.setWebhook({ url: b.url, secret: b.secret, events: b.events, bearer: b.bearer }) }),
     'POST /webhook/clear': () => ({ had: session.clearWebhook() }),
     'POST /tasks': (b) => ({ task: session.addTask(b), tasks: session.taskList() }),
     'POST /tasks/update': (b) => ({ task: session.updateTask(b), tasks: session.taskList() }),

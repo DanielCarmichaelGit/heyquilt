@@ -1,6 +1,6 @@
 {
   "name": "heyquilt",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "description": "Real-time, tool-agnostic pair vibe coding: sync a project folder live between collaborators using any AI coding tool.",
   "author": {
     "name": "Daniel Carmichael",

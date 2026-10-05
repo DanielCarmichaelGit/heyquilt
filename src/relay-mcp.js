@@ -391,11 +391,12 @@ function sessionTools (server, ctx) {
       inputSchema: {
         url: z.string().min(1).max(2000).describe('The https URL to POST to (a webhook trigger of your routine, for example)'),
         secret: z.string().max(200).optional().describe('16 to 200 characters for signing; omit to have Quilt make one'),
-        events: z.array(z.enum(WEBHOOK_EVENTS)).max(WEBHOOK_EVENTS.length).optional().describe(`Which events to send (default: all): ${WEBHOOK_EVENTS.join(', ')}`)
+        events: z.array(z.enum(WEBHOOK_EVENTS)).max(WEBHOOK_EVENTS.length).optional().describe(`Which events to send (default: all): ${WEBHOOK_EVENTS.join(', ')}`),
+        bearer: z.string().max(500).optional().describe('A key your receiver wants on every POST, sent as "Authorization: Bearer <key>" (a Grok Bot routine\'s sender key, for example)')
       }
-    }, ({ url, secret, events }, { room }) => {
+    }, ({ url, secret, events, bearer }, { room }) => {
       try {
-        const sub = ctx.webhook.subscribe(room, { url, secret, events })
+        const sub = ctx.webhook.subscribe(room, { url, secret, events, bearer })
         return text(describeSubscription(sub, { showSecret: sub.made }))
       } catch (e) { return fail(e.message) }
     })

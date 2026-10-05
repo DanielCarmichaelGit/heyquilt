@@ -299,7 +299,9 @@ test('a hosted agent subscribes a webhook and is POSTed mentions, direct message
   assert.equal(new Set(posts.slice(3).map((p) => p.init.headers['x-quilt-delivery'])).size, 1, 'the same delivery id on every try')
 
   // Only the events asked for; a secret of its own; joining again keeps the subscription.
-  assert.doesNotMatch(out(await call('quilt_webhook_subscribe', { url: 'https://hooks.example.com/grok2', secret: 'my-own-secret-of-16+', events: ['chat.dm'] })), /shown once/)
+  const keyed = out(await call('quilt_webhook_subscribe', { url: 'https://hooks.example.com/grok2', secret: 'my-own-secret-of-16+', events: ['chat.dm'], bearer: 'crsr_sender_key' }))
+  assert.doesNotMatch(keyed, /shown once/)
+  assert.match(keyed, /with your bearer key in the Authorization header/)
   assert.match(out(await call('quilt_join_session', { invite: 'https://join.heyquilt.com/hm-1#s' })), /Joined room hm-1/)
   carl.say('@Grok-Bot not sent')
   carl.say('sent', { to: 'Grok-Bot' })
@@ -308,6 +310,8 @@ test('a hosted agent subscribes a webhook and is POSTed mentions, direct message
   assert.equal(posts.length, 7)
   assert.equal(bodies()[6].event, 'chat.dm')
   assert.equal(verifyWebhook('my-own-secret-of-16+', posts[6].init.headers['x-quilt-timestamp'], posts[6].init.body, posts[6].init.headers['x-quilt-signature']), true)
+  assert.equal(posts[6].init.headers.authorization, 'Bearer crsr_sender_key', 'the receiver key rides along')
+  assert.equal('authorization' in posts[0].init.headers, false)
 
   assert.match(out(await call('quilt_webhook_unsubscribe')), /Webhook removed/)
   assert.match(out(await call('quilt_webhook_unsubscribe')), /had no webhook/)

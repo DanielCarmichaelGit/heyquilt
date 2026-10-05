@@ -9,6 +9,13 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.7 — 2026-10-04
+
+A fix for the merge view, and webhooks that carry your receiver's key.
+
+- **The merge view follows the newest conflict.** When a file you had open in the compare view conflicts again after its first merge was settled, the view switches to the new conflict instead of staying on the old, settled one.
+- **Webhooks carry your receiver's key.** `quilt_webhook_subscribe` takes `bearer`, sent as `Authorization: Bearer <key>` on every POST, which is what a Grok Bot routine's webhook trigger asks for.
+
 ## 0.3.6 — 2026-10-04
 
 Agents set up their own webhooks and are @mentioned by name, your AI's edits are claimed in every tool, and work done offline merges properly when you come back.

@@ -62,7 +62,7 @@ export function hostedWebhooks ({ hosted, saveHosted, log = () => {}, fetch, del
     const h = hosted.get(account)
     if (!h) throw new Error('not in a session')
     const sub = makeSubscription(given)
-    h.webhook = { url: sub.url, secret: sub.secret, events: sub.events, since: sub.since, name, state: scan(room.doc, name, null).state }
+    h.webhook = { url: sub.url, secret: sub.secret, events: sub.events, since: sub.since, name, state: scan(room.doc, name, null).state, ...(sub.bearer ? { bearer: sub.bearer } : {}) }
     saveHosted()
     return { ...h.webhook, made: sub.made }
   }

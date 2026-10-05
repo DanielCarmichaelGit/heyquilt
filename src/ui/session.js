@@ -606,9 +606,18 @@ function fullMerge (m) {
 function renderMerges () {
   const bar = $('#merges')
   if (!bar) return
-  renderMergeBar(bar, { merges: sum().status.merges || [], me: me(), editors: editorsByPreference(), viewer: isViewer() })
+  const merges = sum().status.merges || []
+  renderMergeBar(bar, { merges, me: me(), editors: editorsByPreference(), viewer: isViewer() })
   const w = ws(current)
-  if (w.mode === 'merge' && w.mergeSel) renderMain()
+  if (w.mode !== 'merge' || !w.mergeSel) return
+  // The same file can conflict again after its record was settled: the compare
+  // tab then follows the new open record instead of showing the old one.
+  const shown = merges.find((m) => m.id === w.mergeSel)
+  if (shown && shown.state === 'done') {
+    const next = merges.find((m) => m.path === shown.path && m.state !== 'done')
+    if (next) { w.mergeSel = next.id; saveWs(current); renderMainBar() }
+  }
+  renderMain()
 }
 
 function openMerge (id) {

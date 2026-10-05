@@ -144,7 +144,8 @@ function createWindow () {
     title: 'quilt',
     show: false,
     backgroundColor: '#f4efe6',
-    webPreferences: { preload: path.join(HERE, 'preload.cjs'), contextIsolation: true, sandbox: true }
+    // plugins: Chromium's PDF viewer, which the workspace file preview uses to show PDFs in an iframe.
+    webPreferences: { preload: path.join(HERE, 'preload.cjs'), contextIsolation: true, sandbox: true, plugins: true }
   })
   rendererReady = false
   win.loadURL(ui.url)

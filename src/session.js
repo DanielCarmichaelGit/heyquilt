@@ -1046,7 +1046,8 @@ export class Session extends EventEmitter {
     // A switch ends only on the way back (checkBackOnBranch): git at work on the other branch doesn't change it.
     if (this.hold && (this.hold.kind === kind || this.hold.kind === 'switching')) return
     if (!this.hold) this.noteCommits() // the git watcher can start a hold before any burst is classified
-    this.hold = { kind, since: Date.now(), ...(this.hold ? { prevHead: this.hold.prevHead } : {}), ...extra }
+    // since: when the folder was first held (the app's "git is busy" note waits on it), kept across kinds.
+    this.hold = { kind, since: this.hold ? this.hold.since : Date.now(), ...(this.hold ? { prevHead: this.hold.prevHead } : {}), ...extra }
     if (!this.hold.prevHead) this.hold.prevHead = this.gitSeen
     this.emit('hold', this.hold)
     this.scheduleStatusWrite()

@@ -15,6 +15,8 @@ import { renderMergeBar, bindMerges, renderMergeView } from './merges.js'
 
 let current = null // session id being shown
 let timers = []
+let holdNoteTimer = null // shows the "git is busy" note once a hold has lasted HOLD_NOTE_MS
+const HOLD_NOTE_MS = 1000 // a `git add` holds for a moment: no note flashing by for it
 let grantLoad = grantsLoading() // this session's grants (the owner's view, from the API), for the Access sections
 let mounted = null // AbortController for document-level listeners of this mount
 
@@ -157,6 +159,7 @@ export function mountSession (id) {
 export function sessionUnmount () {
   for (const t of timers) clearInterval(t)
   timers = []
+  clearTimeout(holdNoteTimer)
   if (mounted) mounted.abort()
   mounted = null
   closeTreeMenu()
@@ -467,7 +470,13 @@ function renderTop () {
   if (label) {
     label.hidden = !g
     if (g) {
-      label.innerHTML = `${I.branch}<span>${esc(g.key)}</span>${g.hold ? `<span class="tag">${g.hold.kind === 'switching' ? `paused · you're on ${esc(g.hold.to || '?')}` : 'syncing paused: git is busy'}</span>` : ''}`
+      // Paused on another branch: said at once. Git busy: only once it has lasted a moment.
+      const held = g.hold ? Date.now() - g.hold.since : 0
+      const note = g.hold && (g.hold.kind === 'switching' || held >= HOLD_NOTE_MS)
+      clearTimeout(holdNoteTimer)
+      if (g.hold && !note) holdNoteTimer = setTimeout(renderTop, HOLD_NOTE_MS - held + 20)
+      const tag = note ? (g.hold.kind === 'switching' ? `paused · you're on ${esc(g.hold.to || '?')}` : 'syncing paused: git is busy') : ''
+      label.innerHTML = `${I.branch}<span class="branch-name" title="${esc(g.key)}">${esc(g.key)}</span>${tag ? `<span class="tag" title="${tag}">${tag}</span>` : ''}`
       label.title = g.hold ? (g.hold.kind === 'switching' ? `This session syncs ${g.key}. Sync resumes when you're back on it.` : 'Quilt waits for git to finish, then catches up.') : `This folder is on ${g.key}`
     }
   }

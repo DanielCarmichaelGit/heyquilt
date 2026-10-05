@@ -106,6 +106,13 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     async setDeviceToken (id, tokenHash) { devices.get(id).tokenHash = tokenHash },
     async deviceByToken (h) { const d = [...devices.values()].find((x) => x.tokenHash === h && !x.revokedAt); return d ? { ...d } : null },
     async touchDevice (id) { devices.get(id).lastSeenAt = now() },
+    // The linked (not unlinked) computer holding this key: the most recently seen, if more than one account linked it.
+    async deviceByPublicKey (publicKey) {
+      const d = [...devices.values()].filter((x) => x.publicKey === publicKey && !x.revokedAt).sort((a, b) => b.lastSeenAt - a.lastSeenAt)[0]
+      return d ? { ...d } : null
+    },
+    // Whether this account has linked this key before (unlinked since or not).
+    async userHasDevice (userId, publicKey) { return [...devices.values()].some((x) => x.userId === userId && x.publicKey === publicKey) },
     async revokeDevice (id) { Object.assign(devices.get(id), { revokedAt: now(), tokenHash: null }) },
     async profile (userId) { const p = profiles.get(userId); return p ? { ...p } : null },
     // 'personal' or 'org': set once at sign-up, and the only thing POST /v1/orgs checks.

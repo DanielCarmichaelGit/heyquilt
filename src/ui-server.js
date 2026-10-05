@@ -14,7 +14,7 @@ import { getSettings, saveSettings, unsupportedRelay, relayUrl } from './setting
 import * as gitops from './git.js'
 import { installedEditors, openIn } from './editors.js'
 import { migrateDir } from './legacy.js'
-import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession, createAgentInvite, listAgents, listAccessTypes, listCollaborators, listGrants, putGrant, deleteGrant, inviteToSession, listSessionInvites, cancelSessionInvite } from './account.js'
+import { readAccount, saveAccount, clearAccount, clearAccountIf, resumeAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession, createAgentInvite, listAgents, listAccessTypes, listCollaborators, listGrants, putGrant, deleteGrant, inviteToSession, listSessionInvites, cancelSessionInvite } from './account.js'
 import { effectiveAccess, builtinType } from './session-access.js'
 import { cleanSessionName, BAD_SESSION_NAME, SESSION_NAME_MAX } from './session-name.js'
 import { personPasses } from './pass-source.js'
@@ -155,6 +155,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
   let link = null // signing in: what startLink returned, plus { state, error }
   let signedOutReason = null // 'revoked' once the API turned this computer's token away
   let checkedToken = false // asked the API about the saved token since the app started
+  let resumeTried = false // tried signing back in with this computer's key since the app started
 
   const accountPasses = () => {
     if (passes) return passes
@@ -164,27 +165,55 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     return passes
   }
 
-  /** Forgets this computer's sign-in and stops its sessions. 'revoked': the API turned the token away. */
-  async function signedOut (reason) {
+  /**
+   * Forgets this computer's sign-in and stops its sessions. 'revoked': this computer isn't
+   * linked any more. `token`: the one turned away; a newer sign-in saved since is kept.
+   */
+  async function signedOut (reason, token) {
     // Forget the sign-in first, so a start can't pick it up again while sessions stop.
     passes = null
-    clearAccount()
+    if (token) clearAccountIf(token)
+    else clearAccount()
     for (const id of [...runs.keys()]) await stop(id)
     signedOutReason = reason
     broadcast('signed-out', { reason })
   }
 
+  /**
+   * This computer's token was turned away (or it has none): sign back in with its key. The
+   * new sign-in, or null once the API says this computer isn't linked. Offline, the saved
+   * sign-in stands (`fallback`).
+   */
+  async function resume (fallback = null) {
+    try {
+      const back = await resumeAccount()
+      if (back) { passes = null; signedOutReason = null }
+      return back
+    } catch {
+      return fallback
+    }
+  }
+
   async function accountState () {
     let account = readAccount()
+    // No sign-in saved (lost, or another app's sign-out): a linked computer just carries on.
+    if (!account && !resumeTried) {
+      resumeTried = true
+      account = await resume()
+      if (account) checkedToken = true
+    }
     if (account && !checkedToken) {
       checkedToken = true
       try {
-        // Picks up a name changed on heyquilt.com, and notices a computer signed out from there.
+        // Picks up a name changed on heyquilt.com, and notices a computer unlinked there.
         const fresh = { ...account, account: accountFromProfile(await fetchMe({ token: account.token })) }
         saveAccount(fresh)
         account = fresh
       } catch (err) {
-        if (err.status === 401) { await signedOut('revoked'); account = null }
+        if (err.status === 401) {
+          const back = await resume(account)
+          if (!back) { await signedOut('revoked', account.token); account = null } else account = back
+        }
         // Anything else (offline): keep the saved sign-in.
       }
     }
@@ -199,6 +228,17 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
   /** Starts linking this computer; the website approves it, and we collect the token in the background. */
   async function beginLink () {
     if (readAccount()) throw httpError(409, 'Already signed in.')
+    // A computer linked before signs straight back in: no browser, no approving it again.
+    try {
+      if (await resumeAccount({ asked: true })) {
+        link = null
+        passes = null
+        signedOutReason = null
+        checkedToken = true
+        broadcast('signed-in', {})
+        return accountState()
+      }
+    } catch {}
     const identity = loadIdentity()
     const mine = { ...await startLink({ identity }), state: 'waiting', error: null }
     link = mine
@@ -413,7 +453,11 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       let revoked = false
       try { await fetchMe({ token: account.token }) } catch (e) { revoked = e.status === 401 }
       if (!revoked) throw httpError(502, `Quilt's accounts service turned this down: ${err.message}`)
-      await signedOut('revoked')
+      // The token is gone, maybe not the link: sign back in with this computer's key and go again.
+      let back
+      try { back = await resumeAccount() } catch (e) { throw httpError(502, `Couldn't sign this computer back in: ${e.message}`) }
+      if (back) { passes = null; signedOutReason = null; return fn(back.token) }
+      await signedOut('revoked', account.token)
       throw Object.assign(httpError(401, SIGNED_OUT_MESSAGE), { signedOut: true })
     }
   }

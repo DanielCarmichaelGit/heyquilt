@@ -3,7 +3,7 @@
 // connected they fetch a fresh one every 5 minutes (see connection.js). A session
 // asks for passes for its own room: those carry what you may do there.
 import { readPass } from './passes.js'
-import { apiUrl, readAccount, NOT_SIGNED_IN, SIGNED_OUT } from './account.js'
+import { apiUrl, accountFile, readAccount, resumeAccount, NOT_SIGNED_IN, SIGNED_OUT } from './account.js'
 import { agentAccess, readAgent } from './agent-join.js'
 
 export const PASS_EARLY_MS = 2 * 60 * 1000
@@ -91,9 +91,38 @@ async function requestPass (fetchImpl, api, bearer, signedOutMessage, room = '')
   return body
 }
 
-/** Passes for this computer's account, from its qd_ token. */
-export function personPasses ({ token, api = apiUrl(), fetch: fetchImpl = globalThis.fetch, now } = {}) {
-  return new PassSource({ now, fetchPass: (room) => requestPass(fetchImpl, api, token, SIGNED_OUT, room) })
+/**
+ * Passes for this computer's account, from its qd_ token. A token turned away isn't the
+ * end: another app on this computer may have signed in again since (its token is in
+ * account.json), or the computer signs back in with its key. Only a computer that's no
+ * longer linked gets SignedOutError.
+ */
+export function personPasses ({ token, api = apiUrl(), fetch: fetchImpl = globalThis.fetch, now, file = accountFile(), resume = resumeAccount } = {}) {
+  let current = token
+  // Whose sign-in this is: a sign-in for someone else since (a different account) doesn't carry on these passes.
+  const first = readAccount(file)
+  const who = first && first.token === token ? first.account.id : null
+  const same = (a) => a && (!who || a.account.id === who)
+  return new PassSource({
+    now,
+    fetchPass: async (room) => {
+      try {
+        return await requestPass(fetchImpl, api, current, SIGNED_OUT, room)
+      } catch (err) {
+        if (!err.signedOut) throw err
+        const saved = readAccount(file)
+        if (saved && saved.token !== current) {
+          if (!same(saved)) throw err
+          current = saved.token
+        } else {
+          const back = await resume({ api, fetch: fetchImpl, file })
+          if (!same(back)) throw err
+          current = back.token
+        }
+        return requestPass(fetchImpl, api, current, SIGNED_OUT, room)
+      }
+    }
+  })
 }
 
 /** Passes for a saved agent, from its access key (refreshed with its refresh key when it runs out). */

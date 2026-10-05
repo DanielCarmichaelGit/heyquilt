@@ -72,6 +72,12 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     },
     async setDeviceToken (id, tokenHash) { await one(db.from('devices').update({ token_hash: tokenHash }).eq('id', id)) },
     async deviceByToken (h) { return rowFrom(await one(db.from('devices').select().eq('token_hash', h).is('revoked_at', null).maybeSingle())) },
+    async deviceByPublicKey (publicKey) {
+      return rowFrom((await one(db.from('devices').select().eq('public_key', publicKey).is('revoked_at', null).order('last_seen_at', { ascending: false }).limit(1)))[0] || null)
+    },
+    async userHasDevice (userId, publicKey) {
+      return (await one(db.from('devices').select('id').eq('user_id', userId).eq('public_key', publicKey).limit(1))).length > 0
+    },
     async touchDevice (id) { await one(db.from('devices').update({ last_seen_at: new Date().toISOString() }).eq('id', id)) },
     async revokeDevice (id) { await one(db.from('devices').update({ revoked_at: new Date().toISOString(), token_hash: null }).eq('id', id)) },
     async profile (userId) { return rowFrom(await one(db.from('profiles').select('id, name, color, tool').eq('id', userId).maybeSingle())) },

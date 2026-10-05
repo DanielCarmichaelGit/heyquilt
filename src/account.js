@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { quiltHome } from './legacy.js'
-import { signDeviceLink } from './identity.js'
+import { loadIdentity, signDeviceLink, signDeviceResume } from './identity.js'
 import { isSymlink, writePrivateJson } from './private-file.js'
 
 export const API_URL = 'https://api.heyquilt.com'
@@ -29,11 +29,28 @@ export function readAccount (file = accountFile()) {
 export function saveAccount (data, file = accountFile()) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   writePrivateJson(file, data)
+  fs.rmSync(signedOutFile(file), { force: true })
   return data
 }
 
+// Left by Sign out, so this computer doesn't sign itself back in with its key (when the
+// server couldn't be told, say) until someone chooses Sign in. Next to account.json.
+const signedOutFile = (file) => path.join(path.dirname(file), 'signed-out')
+export const signedOutOnPurpose = (file = accountFile()) => fs.existsSync(signedOutFile(file))
+
 export function clearAccount (file = accountFile()) {
   fs.rmSync(file, { force: true })
+}
+
+/**
+ * Forgets the sign-in only if it still holds `token`: another app on this computer may
+ * have signed back in since that token was turned away, and its new one must stay.
+ */
+export function clearAccountIf (token, file = accountFile()) {
+  const a = readAccount(file)
+  if (a && a.token !== token) return false
+  clearAccount(file)
+  return true
 }
 
 const BAD_REPLY = 'The sign-in service sent an unexpected reply. Try again.'
@@ -104,6 +121,29 @@ export async function waitForLink ({ identity, link, api, fetch, stopped = () =>
   throw Object.assign(new Error('The code expired.'), { expired: true })
 }
 
+/**
+ * Signs this computer back in with its key (~/.quilt/identity.json), no browser: the
+ * account is linked to the computer, not to one token. Saves and returns the new sign-in,
+ * or null when this computer isn't linked to an account (never was, or was unlinked).
+ * Throws when Quilt can't say (offline, or a server error): keep what's saved then.
+ * After Sign out it does nothing (null) unless `asked`: someone chose Sign in.
+ */
+export async function resumeAccount ({ identity, api = apiUrl(), fetch: fetchImpl = globalThis.fetch, file = accountFile(), now = Date.now, asked = false } = {}) {
+  if (!asked && signedOutOnPurpose(file)) return null
+  const me = identity || loadIdentity()
+  const at = now()
+  let r
+  try {
+    r = await call(fetchImpl, api, 'POST', '/v1/device/resume', { publicKey: me.publicKey, at, signature: signDeviceResume(me, at) })
+  } catch (err) {
+    // 404: not linked. 400/401: a bad clock or key, which only the website can sort out.
+    if (err.status === 404 || err.status === 400 || err.status === 401) return null
+    throw err
+  }
+  if (typeof r.token !== 'string' || !r.token.startsWith('qd_')) throw new Error(BAD_REPLY)
+  return saveAccount({ token: r.token, account: accountFromProfile(r.profile), signedInAt: now() }, file)
+}
+
 /** Your profile ({ id, name, email, … }) from this computer's token. Throws with .status 401 once it's revoked. */
 export async function fetchMe ({ token, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
   return (await call(fetchImpl, api, 'GET', '/v1/me', null, token)).profile
@@ -124,6 +164,7 @@ export async function renameSession ({ token, room, name, api = apiUrl(), fetch:
  */
 export async function signOut ({ token, api = apiUrl(), fetch: fetchImpl = globalThis.fetch, file = accountFile(), revokeTimeoutMs = 5000 } = {}) {
   clearAccount(file)
+  try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(signedOutFile(file), '') } catch {}
   await revokeToken({ token, api, fetch: fetchImpl, timeoutMs: revokeTimeoutMs })
 }
 

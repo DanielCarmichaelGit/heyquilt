@@ -13,6 +13,7 @@ nothing else is.
 
 A fix for the merge view, and webhooks that carry your receiver's key.
 
+- **Stay signed in.** Quilt no longer asks you to sign in again every few days. Your computer is linked to your account by its own key, so when its sign-in is lost or turned away it signs itself back in, without a browser. It only asks again after you sign out or unlink the computer on heyquilt.com, and then the website recognises a computer you linked before instead of asking you to approve it again.
 - **No more tasks made from your AI chats.** Quilt no longer adds a board task each time your AI starts editing files for a new request; it added too many tickets nobody needed. It is paused until it can tell real work apart.
 - **The merge view follows the newest conflict.** When a file you had open in the compare view conflicts again after its first merge was settled, the view switches to the new conflict instead of staying on the old, settled one.
 - **Webhooks carry your receiver's key.** `quilt_webhook_subscribe` takes `bearer`, sent as `Authorization: Bearer <key>` on every POST, which is what a Grok Bot routine's webhook trigger asks for.

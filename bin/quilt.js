@@ -188,8 +188,10 @@ async function join () {
   })
   const { runSession, decodeInvite, newConn, readConfig, personsFolder, agentCopyFolder } = await import('../src/runner.js')
   const { sessionPasses } = await import('../src/pass-source.js')
-  const { clearAccount } = await import('../src/account.js')
-  // Every session signs in: as this computer's account, or as a saved agent.
+  const { clearAccount, readAccount, resumeAccount } = await import('../src/account.js')
+  // Every session signs in: as this computer's account, or as a saved agent. A computer
+  // linked before signs itself back in when its sign-in was lost.
+  if (!values.agent && !readAccount()) await resumeAccount().catch(() => null)
   let auth
   try { auth = sessionPasses({ agent: values.agent || null }) } catch (err) { fail(err.message) }
   const whyStopped = (err) => {
@@ -287,11 +289,14 @@ async function ui () {
 
 async function login () {
   const { values } = parseArgs({ args: argv, options: { 'no-browser': { type: 'boolean' } } })
-  const { readAccount, saveAccount, startLink, waitForLink, accountFromProfile } = await import('../src/account.js')
+  const { readAccount, saveAccount, startLink, waitForLink, accountFromProfile, resumeAccount } = await import('../src/account.js')
   const { loadIdentity } = await import('../src/identity.js')
   const current = readAccount()
   if (current) return console.log(`Already signed in as ${current.account.name} (${current.account.email}). Run quilt logout first to switch accounts.`)
   const identity = loadIdentity()
+  // Linked before: signs straight back in, no browser.
+  const back = await resumeAccount({ identity, asked: true }).catch(() => null)
+  if (back) return console.log(`Signed in as ${back.account.name} (${back.account.email}).`)
   let link
   try { link = await startLink({ identity }) } catch (err) { fail(err.message) }
   console.log(`To sign in, open this page and approve this computer:\n\n  ${link.verificationUrl}\n\nCheck it shows the code ${link.userCode}. Waiting…`)

@@ -6,7 +6,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { newToken, hashToken, newUserCode, normalizeUserCode } from './tokens.js'
-import { parsePublicKey, verifyDeviceLink } from '../identity.js'
+import { parsePublicKey, verifyDeviceLink, verifyDeviceResume } from '../identity.js'
 import { signPass, passPublicKey, PASS_VERSION, PASS_TTL_MS } from '../passes.js'
 import { HttpError, Raw } from './http.js'
 import { orgRoutes } from './routes/orgs.js'
@@ -34,6 +34,8 @@ const LINK_TTL_MS = 10 * 60 * 1000
 const ROOM = /^[A-Za-z0-9_-]{1,64}$/
 // An approved link the app never collects stops working this long after its code expires.
 const COLLECT_GRACE_MS = 5 * 60 * 1000
+// A linked computer signing back in with its key: how far its clock may be from ours.
+const RESUME_WINDOW_MS = 10 * 60 * 1000
 const POLL_INTERVAL_S = 3
 const MAX_BODY = 16 * 1024
 // A hosted agent's MCP request (a whole file, at most) and how long it may take on the relay.
@@ -117,6 +119,14 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     return { sub: d.userId, kind: 'person', name: ((p && p.name) || 'Quilt user').slice(0, 64), key: d.publicKey }
   }
 
+  // Resume signatures seen in the last window, so a copied one can't be used again.
+  const usedResumes = new Map() // signature -> at
+  function spendResume (signature, at) {
+    for (const [sig, t] of usedResumes) if (Math.abs(now() - t) > RESUME_WINDOW_MS) usedResumes.delete(sig)
+    if (usedResumes.has(signature)) throw new HttpError(401, 'that sign-in was already used')
+    usedResumes.set(signature, at)
+  }
+
   const needPassKey = () => { if (!passKey) throw new HttpError(503, 'passes are not set up on this server') }
 
   /**
@@ -190,10 +200,31 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
       return { status: 'approved', token, profile: await profileWithEmail(link.userId) }
     }],
 
+    // A computer that was linked (and not unlinked since) gets a new token by signing for its
+    // key: it lost its token (or another app on it replaced it), not its link. No browser needed.
+    // 404 means it isn't linked to anyone, and has to be approved on the website.
+    ['POST', /^\/v1\/device\/resume$/, async (req, body) => {
+      limitStarts(req)
+      const key = parsePublicKey(body.publicKey)
+      if (!key) throw new HttpError(400, 'publicKey must be an Ed25519 key (spki, base64url)')
+      const at = Number(body.at)
+      if (!Number.isFinite(at) || Math.abs(now() - at) > RESUME_WINDOW_MS) throw new HttpError(400, "this computer's clock is off; check its date and time")
+      if (!verifyDeviceResume(key, at, body.signature)) throw new HttpError(401, "this computer's signature doesn't match")
+      spendResume(String(body.signature), at)
+      const d = await store.deviceByPublicKey(String(body.publicKey))
+      if (!d) throw new HttpError(404, 'this computer is not linked to an account')
+      const token = newToken('qd_')
+      await store.setDeviceToken(d.id, hashToken(token))
+      await store.touchDevice(d.id)
+      return { status: 'approved', token, profile: await profileWithEmail(d.userId) }
+    }],
+
+    // `known`: this account linked this computer's key before, so the website approves it
+    // without asking (only the computer holding the key can collect the token).
     ['GET', /^\/v1\/device\/link\/([^/]+)$/, async (req, body, [code]) => {
-      await user(req)
+      const u = await user(req)
       const link = await openLink(code)
-      return { userCode: link.userCode, deviceName: link.deviceName, platform: link.platform, expiresAt: link.expiresAt }
+      return { userCode: link.userCode, deviceName: link.deviceName, platform: link.platform, expiresAt: link.expiresAt, known: await store.userHasDevice(u.userId, link.publicKey) }
     }],
 
     ['POST', /^\/v1\/device\/approve$/, async (req, body) => {

@@ -77,6 +77,10 @@ test('org workspaces: Workspaces: Create makes, Update manages, Read sees; the o
   assert.deepEqual((await t.call('GET', `/v1/workspaces/${w.id}`, null, 'mem')).body.access, { access: 'edit', admin: false, via: 'member' })
   assert.equal((await t.call('DELETE', `/v1/workspaces/${w.id}`, null, 'mem')).status, 403)
   const { agent, accessKey } = await makeAgent(t, { orgId: o.org.id })
+  const notJoined = await t.call('PUT', `/v1/workspaces/${w.id}/members/agent:${agent.id}`, { access: 'edit' }, 'admin')
+  assert.deepEqual([notJoined.status, notJoined.body.error], [404, 'that agent is not in the org'])
+  const { agent: someonesAgent } = await makeAgent(t, { name: 'Pat', ownerUserId: 'out' })
+  assert.equal((await t.call('PUT', `/v1/workspaces/${w.id}/members/agent:${someonesAgent.id}`, { access: 'edit' }, 'admin')).status, 404, "a person's own agent is not in the org")
   await t.store.addAgentMember({ orgId: o.org.id, agentId: agent.id })
   assert.equal((await t.call('PUT', `/v1/workspaces/${w.id}/members/agent:${agent.id}`, { access: 'edit' }, 'admin')).status, 200)
   assert.equal((await t.call('DELETE', `/v1/workspaces/${w.id}`, null, null, { authorization: `Bearer ${accessKey}` })).status, 403, 'agents do not delete org workspaces')
@@ -139,4 +143,28 @@ test('removed from the org: the workspace is gone for them, person or agent', as
   assert.equal((await t.call('GET', `/v1/workspaces/${w.id}`, null, 'mem')).status, 404)
   assert.equal((await t.call('GET', `/v1/workspaces/${w.id}`, null, null, asAgent)).status, 404)
   assert.equal((await t.call('GET', '/v1/me/workspaces', null, 'mem')).body.workspaces.some((x) => x.id === w.id), false)
+})
+
+test('an edit member cannot link someone else\'s session; a personal workspace takes any agent', async () => {
+  const w = (await t.call('POST', '/v1/workspaces', { name: 'Edits' }, 'mem')).body.workspace
+  await t.call('PUT', `/v1/workspaces/${w.id}/members/person:lim`, { access: 'edit' }, 'mem')
+  await t.store.ingestPresence([{ id: crypto.randomUUID(), type: 'start', room: 'room-mo1', account: 'person:mem', owner: true, name: 'Mo', at: Date.now() }], Date.now())
+  const r = await t.call('POST', `/v1/workspaces/${w.id}/sessions`, { room: 'room-mo1' }, 'lim')
+  assert.deepEqual([r.status, r.body.error], [403, 'only the session owner can move it'])
+  assert.equal((await t.store.sessionByRoom('room-mo1')).workspaceId, null)
+  const { agent } = await makeAgent(t, { name: 'Ola', ownerUserId: 'out' })
+  assert.equal((await t.call('PUT', `/v1/workspaces/${w.id}/members/agent:${agent.id}`, { access: 'view' }, 'mem')).status, 200)
+})
+
+test('agents: list the workspaces they are members of, never make one', async () => {
+  const w = (await t.call('POST', '/v1/workspaces', { name: 'For Larry' }, 'mem')).body.workspace
+  const { agent, accessKey } = await makeAgent(t, { name: 'Larry', ownerUserId: 'mem' })
+  const asAgent = { authorization: `Bearer ${accessKey}` }
+  assert.deepEqual((await t.call('GET', '/v1/me/workspaces', null, null, asAgent)).body, { workspaces: [] })
+  await t.call('PUT', `/v1/workspaces/${w.id}/members/agent:${agent.id}`, { access: 'view' }, 'mem')
+  const list = await t.call('GET', '/v1/me/workspaces', null, null, asAgent)
+  assert.equal(list.status, 200)
+  assert.deepEqual(list.body.workspaces.map((x) => [x.id, x.access, x.via]), [[w.id, 'view', 'member']])
+  const made = await t.call('POST', '/v1/workspaces', { name: 'Mine' }, null, asAgent)
+  assert.deepEqual([made.status, made.body.error], [403, 'agents do not make workspaces'])
 })

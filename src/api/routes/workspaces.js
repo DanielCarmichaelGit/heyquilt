@@ -131,6 +131,7 @@ export function workspaceRoutes ({ store, person, now, agentAuth, bearer, worksp
       const [kind, who] = account.split(':')
       if (kind === 'agent' ? !(await store.agentById(who)) : !(await store.profile(who))) throw new HttpError(404, 'no such account')
       if (r.ws.orgId && kind === 'person' && !(await store.memberOf(r.ws.orgId, who))) throw new HttpError(404, 'that person is not in the org')
+      if (r.ws.orgId && kind === 'agent' && !(await store.memberByAgent(r.ws.orgId, who))) throw new HttpError(404, 'that agent is not in the org')
       return { member: await store.putWorkspaceMember({ workspaceId: r.ws.id, account, access, addedBy: r.me.account }) }
     }],
 

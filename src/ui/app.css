@@ -517,7 +517,6 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 .side-sessions .ct { font-size: 11.5px; font-weight: 700; color: var(--muted); background: var(--panel-2); border-radius: 999px; padding: 0 7px; line-height: 18px; }
 /* Settings and Shut down sit at the bottom, under a rule, apart from the places you go. */
 .side-foot { margin-top: auto; display: flex; flex-direction: column; gap: 2px; padding-top: 10px; border-top: 1px solid var(--border); }
-.side-off { justify-content: flex-start; color: var(--muted); }
 
 .page { overflow-y: auto; padding: 44px 48px 64px; }
 .page > * { max-width: 920px; margin-left: auto; margin-right: auto; }

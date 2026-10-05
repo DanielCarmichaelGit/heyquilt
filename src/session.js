@@ -216,9 +216,9 @@ export class Session extends EventEmitter {
    * edit of .gitignore, and partners' git ignores it too.
    */
   ignoreQuiltState ({ share = false } = {}) {
-    // A viewer's edit would only be refused (and kept aside) at every start.
-    const role = this.access && this.access.state === 'approved' ? this.access.role : this.savedRole
-    if (role === 'viewer') return
+    // An edit we may not make (a viewer, or an editor kept to other folders)
+    // would only be refused (and kept aside) at every start.
+    if (this.access && this.access.state === 'approved' ? this.writeRefusal('.gitignore') : this.savedRole === 'viewer') return
     const r = ensureQuiltIgnored(this.root)
     if (r.added) {
       this.ig = loadIgnore(this.root)

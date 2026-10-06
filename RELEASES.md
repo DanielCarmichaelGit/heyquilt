@@ -9,6 +9,14 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.13 — 2026-10-07
+
+A git pull shows as a pull, not as hundreds of your edits.
+
+- **A pull is one event.** When you pull commits into a synced folder, everyone sees one line, like "Daniel pulled 45 commits from main · 269 files", instead of an edit for every file. Partners' AIs read it in their Quilt status.
+- **Pulling never claims files.** Before, a pull while your AI was working claimed every file it changed in your name, which blocked your partners. Now only your own edits are claimed.
+- **Changes keeps pulls apart.** In the Changes panel, what a pull brought sits in its own folded "Pulled from git" group under the person who pulled, and by file it is marked "pulled". It no longer adds to that person's own counts. `quilt_history` says which changes came from a pull.
+
 ## 0.3.12 — 2026-10-07
 
 See what has changed in a session, and who changed it.

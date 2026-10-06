@@ -69,3 +69,16 @@ test('status says when nothing has changed yet', () => {
   const md = renderStatus({ ...base, changes: [] })
   assert.match(md, /## Changes\n_No changes yet\._/)
 })
+
+test('status shows a pull as one line and its files as their own group', () => {
+  const now = Date.now()
+  const md = renderStatus({
+    ...base,
+    activity: [{ by: 'bob', path: '', kind: 'pulled', detail: '45 commits from main · 269 files', ts: now }],
+    changes: [{ name: 'bob', added: 0, removed: 0, edits: 0, fileCount: 0, ts: now, files: [], pulled: { added: 120, removed: 30, fileCount: 2, ts: now, files: [{ path: 'src/a.js', added: 100, removed: 30, kind: 'edited', ts: now }, { path: 'b.md', added: 20, removed: 0, kind: 'created', ts: now }] } }]
+  })
+  assert.match(md, /: bob pulled 45 commits from main · 269 files/)
+  assert.doesNotMatch(md, /pulled ``/)
+  assert.match(md, /\*\*bob\*\* pulled from git: 2 files, \+120 -30 \([^)]*\): `src\/a\.js` \(\+100 -30\), `b\.md` \(new, \+20\)/)
+  assert.doesNotMatch(md, /\*\*bob\*\*: 0 files/, 'no empty line for own edits')
+})

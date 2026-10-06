@@ -8,6 +8,7 @@ let data = null // last /changes result: { people, files }
 let view = 'people' // 'people' | 'files'
 let refreshTimer = null
 let openFile = () => {}
+const openPulls = new Set() // people whose "Pulled from git" group is open, kept across repaints
 
 export const changesMarkup = () => `
   <div class="chg-wrap" id="chg-wrap">
@@ -45,6 +46,10 @@ export function bindChanges (id, signal, { onOpen } = {}) {
     view = b.dataset.view
     paint()
   })
+  $('#chg-list').addEventListener('toggle', (e) => {
+    const d = e.target.closest('details.chg-pulled')
+    if (d) d.open ? openPulls.add(d.dataset.name) : openPulls.delete(d.dataset.name)
+  }, true)
   $('#chg-list').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-path]')
     if (!b) return
@@ -128,15 +133,23 @@ function paint () {
     ? `<li><span class="chg-file gone"><code title="${esc(f.path)}">${esc(f.path)}</code></span>${kindTag(f.kind)}${extra}</li>`
     : `<li><button type="button" class="chg-file" data-path="${esc(f.path)}" title="Open ${esc(f.path)}"><code>${esc(f.path)}</code></button>${kindTag(f.kind)}${extra}</li>`
 
+  const rows = (files) => `<ul>${files.map((f) => fileRow(f, `<span class="hint">${esc(ago(f.ts))}</span>${delta(f)}`)).join('')}</ul>`
   if (view === 'people') {
-    list.innerHTML = data.people.map((p) => `
+    list.innerHTML = data.people.map((p) => {
+      const own = p.fileCount || 0
+      // What a git pull brought is other people's commits: shown apart, folded, never added to their own count.
+      const pulled = p.pulled && p.pulled.fileCount
+        ? `<details class="chg-pulled"${openPulls.has(p.name) ? ' open' : ''} data-name="${esc(p.name)}"><summary>${I.down}<span>Pulled from git</span><span class="hint">${plural(p.pulled.fileCount, 'file')} · ${esc(ago(p.pulled.ts))}</span><span class="spacer"></span>${delta(p.pulled)}</summary>${rows(p.pulled.files)}</details>`
+        : ''
+      return `
       <section class="chg-person">
         <div class="chg-row">${avatar(p.name, colorFor(p.name, colors.get(p.name)))}<b>${esc(who(p.name))}</b>
-          <span class="hint">${plural(p.fileCount, 'file')} · ${esc(ago(p.ts))}</span><span class="spacer"></span>${delta(p)}</div>
-        <ul>${p.files.map((f) => fileRow(f, `<span class="hint">${esc(ago(f.ts))}</span>${delta(f)}`)).join('')}</ul>
-      </section>`).join('')
+          <span class="hint">${own ? `${plural(own, 'file')} · ${esc(ago(p.files[0].ts))}` : 'only pulled from git'}</span><span class="spacer"></span>${own ? delta(p) : ''}</div>
+        ${own ? rows(p.files) : ''}${pulled}
+      </section>`
+    }).join('')
   } else {
     list.innerHTML = `<ul class="chg-files">${data.files.map((f) => fileRow(f, `<span class="hint">${esc(ago(f.ts))}</span>${delta(f)}
-      <div class="chg-by">${f.by.map((b) => `<span class="chg-chip" style="--c:${esc(colorFor(b.name, colors.get(b.name)))}">${esc(who(b.name))} <span class="add">+${b.added}</span> <span class="del">−${b.removed}</span></span>`).join('')}</div>`)).join('')}</ul>`
+      <div class="chg-by">${f.by.map((b) => `<span class="chg-chip${b.pulled ? ' pulled' : ''}" style="--c:${esc(colorFor(b.name, colors.get(b.name)))}"${b.pulled ? ` title="${esc(who(b.name))} brought this in with a git pull"` : ''}>${esc(who(b.name))}${b.pulled ? ' <i>pulled</i>' : ''} <span class="add">+${b.added}</span> <span class="del">−${b.removed}</span></span>`).join('')}</div>`)).join('')}</ul>`
   }
 }

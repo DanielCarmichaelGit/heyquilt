@@ -32,7 +32,7 @@ import { merge3, withMarkers, hasMarkers } from './merge3.js'
 import { aiMerge, findMergeCli } from './merge-ai.js'
 import { openMerge, updateMerge, readMerges, pruneMerges, cleanName } from './merges.js'
 import { ensureQuiltIgnored } from './gitignore.js'
-import { gitDir, headKey, headRef, gitRuns, askTwice, lastCallTimedOut, busy as gitBusy, leftoverLock, STALE_LOCK_MS, indexStamp, classify, filesAt, changesBetween, treeState, branchTip, watchGit, unmergedPaths, stashStamp, upstreamAdds, pullState, SETTLE_MS, BURST_PATHS } from './gitstate.js'
+import { gitDir, headKey, headRef, gitRuns, askTwice, lastCallTimedOut, busy as gitBusy, leftoverLock, STALE_LOCK_MS, indexStamp, classify, filesAt, changesBetween, commitsBetween, treeState, branchTip, watchGit, unmergedPaths, stashStamp, upstreamAdds, pullState, SETTLE_MS, BURST_PATHS } from './gitstate.js'
 
 export { applyTextDiff }
 
@@ -734,7 +734,8 @@ export class Session extends EventEmitter {
     // Claimed by someone else meanwhile: a record, even if they haven't changed it yet (ingest would reject it).
     const claim = this.claimFor(rel)
     const claimedByOther = claim && claim.by !== this.name
-    if (theirs === base && !claimedByOther) { release(); return this.ingest(rel) ? 'pushed' : null } // nobody else touched it
+    const pulled = via === 'pull'
+    if (theirs === base && !claimedByOther) { release(); return this.ingest(rel, { pulled }) ? 'pushed' : null } // nobody else touched it
     if (ours === theirs || (ours === null && theirs === undefined)) {
       release()
       if (ours === null) this.lastKnown.delete(rel); else this.lastKnown.set(rel, ours)
@@ -753,7 +754,7 @@ export class Session extends EventEmitter {
     if (binary || ours === null || theirs === undefined) return this.openConflict({ rel, base, ours, theirs, theirsBy, disk, kind: 'conflict', binary, via })
     const { text, conflicts } = merge3(base || '', ours, theirs)
     if (!conflicts.length) {
-      this.applyMerged(rel, text, `with ${theirsBy || 'the session'}'s changes`)
+      this.applyMerged(rel, text, `with ${theirsBy || 'the session'}'s changes`, { pulled })
       release()
       return 'merged'
     }
@@ -783,7 +784,7 @@ export class Session extends EventEmitter {
       } catch (err) {
         this.log(`could not keep the versions of ${rel} under .quilt/merges: ${err.message}`)
       }
-      this.applyMerged(rel, ai.text, `by AI with ${theirsBy || 'the session'}'s changes`)
+      this.applyMerged(rel, ai.text, `by AI with ${theirsBy || 'the session'}'s changes`, { pulled })
       release()
       return 'ai'
     }
@@ -791,8 +792,8 @@ export class Session extends EventEmitter {
     return this.openConflict({ rel, base, ours, theirs: now, theirsBy: this.lastEditorOf(rel), disk, kind: 'conflict', reason, binary: false, via })
   }
 
-  /** Writes a merged text to the shared doc and the disk as one edit of ours. */
-  applyMerged (rel, text, detail) {
+  /** Writes a merged text to the shared doc and the disk as one edit of ours (`pulled`: one a git pull brought). */
+  applyMerged (rel, text, detail, { pulled = false } = {}) {
     const abs = resolveInside(this.root, rel)
     this.doc.transact(() => {
       this.blobs.delete(rel)
@@ -800,7 +801,7 @@ export class Session extends EventEmitter {
       if (!ytext) { ytext = new Y.Text(); this.files.set(rel, ytext) }
       const before = ytext.toString()
       applyTextDiff(ytext, text)
-      this.recordActivity(rel, 'merged', detail, { before, after: text }) // the chronology keeps the merge's diff
+      this.recordActivity(rel, 'merged', detail, { before, after: text }, { pulled }) // the chronology keeps the merge's diff
     }, LOCAL)
     if (this.held()) {
       // git is at work on the folder: the merge reaches the disk when the hold ends (lastKnown, the base then, stays).
@@ -811,7 +812,7 @@ export class Session extends EventEmitter {
       this.lastKnown.set(rel, text)
     }
     this.setOnDisk(rel, null)
-    this.noteMyEdit(rel)
+    this.noteMyEdit(rel, { pulled })
     this.log(`🧵 merged ${rel} ${detail}`)
   }
 
@@ -1289,6 +1290,7 @@ export class Session extends EventEmitter {
     // changed that the plan never saw: the folder hasn't settled. Asked again, the hold on meanwhile.
     if (gen !== this.settleGen || (plan && [...this.heldPaths].some((rel) => !plan.considered.has(rel)))) { this.settleSoon(); return }
     if (!plan) return this.gitUnreadable()
+    const from = this.hold.prevHead // where HEAD was before git moved it: the pull's commits are from..head
     // Out of normal sync from here on: a partner's edit arriving
     // during a merge must not land on a pulled file before it is merged.
     for (const e of plan.advance) this.merging.add(e.rel)
@@ -1313,14 +1315,35 @@ export class Session extends EventEmitter {
     if (plan.advance.length) this.pullWaitOver.clear() // new commits: what was waited for is a different question now
     this.refreshPull()
     // Not awaited: merging (an AI merge can take a while) never holds up the next git work.
-    this.mergeSettled(plan).catch((err) => this.log(`could not merge: ${err.message}`))
+    this.mergeSettled(plan, { from, to: head }).catch((err) => this.log(`could not merge: ${err.message}`))
   }
 
-  async mergeSettled (plan) {
+  async mergeSettled (plan, { from = null, to = null } = {}) {
     await this.mergeHeld(plan.edited)
-    const conflicts = await this.mergeHeld(plan.advance)
+    const { conflicts, changed } = await this.mergeHeld(plan.advance)
     const n = plan.advance.length
     if (n) this.log(`🔀 Merged the commits you pulled into the session's work (${n} file${n === 1 ? '' : 's'}${conflicts ? `, ${conflicts} need${conflicts === 1 ? 's' : ''} merging` : ''})`)
+    // Commits that only moved HEAD over work the room already has (your own commit) change nothing: no event.
+    if (changed) await this.notePull({ from, to, files: changed })
+  }
+
+  /**
+   * One line for the whole pull in the activity log ("pulled 45 commits from main · 269 files"),
+   * in place of an entry per file: the pull brought other people's work, not edits of ours.
+   */
+  async notePull ({ from, to, files }) {
+    let commits = null
+    if (from && from.sha && to && to.sha && from.sha !== to.sha) commits = await commitsBetween(this.root, from.sha, to.sha)
+    const branch = (to && to.branch) || null
+    const what = [commits ? `${commits} commit${commits === 1 ? '' : 's'}` : 'commits', branch ? `from ${branch}` : ''].filter(Boolean).join(' ')
+    const detail = `${what} · ${files} file${files === 1 ? '' : 's'}`
+    this.log(`⬇️ shared as one pull: ${detail}`)
+    // Someone who may not post can't add lines of their own to the log (the relay would undo it).
+    if (this.stopped || !this.mayTalk()) return
+    this.doc.transact(() => {
+      this.activity.push([{ by: this.name, path: '', kind: 'pulled', detail, ts: Date.now() }])
+      if (this.activity.length > 300) this.activity.delete(0, this.activity.length - 300)
+    }, LOCAL)
   }
 
   /**
@@ -1578,22 +1601,29 @@ export class Session extends EventEmitter {
   }
 
   /** Runs mergeOne over held entries ({ rel, base }), keeping each out of normal sync while it runs. Returns the conflicts. */
+  /** Merges each entry into the room: how many need a person (conflicts), and how many changed the room (changed). */
   async mergeHeld (entries) {
     for (const e of entries) this.merging.add(e.rel)
     let conflicts = 0
+    let changed = 0
     for (const e of entries) {
       if (this.stopped) break
       try {
-        if (await this.mergeOne(e) === 'conflict') conflicts++
+        const r = await this.mergeOne(e)
+        if (r === 'conflict') conflicts++
+        else if (r) changed++
       } catch (err) { this.log(`could not merge ${e.rel}: ${err.message}`) }
       this.merging.delete(e.rel)
     }
     for (const e of entries) this.merging.delete(e.rel)
-    return conflicts
+    return { conflicts, changed }
   }
 
-  /** Pushes the on-disk state of a path into the shared doc. Returns true if anything changed. */
-  ingest (rel) {
+  /**
+   * Pushes the on-disk state of a path into the shared doc. Returns true if anything changed.
+   * `pulled`: git brought this version (a pull), so it is not an edit of ours: never claimed, and counted as the pull's.
+   */
+  ingest (rel, { pulled = false } = {}) {
     if (!this.syncable(rel)) return false
     if (this.merging.has(rel)) return false // its offline merge hasn't run yet; see mergeOffline
     if (this.held()) { this.heldPaths.add(rel); return false } // git is at work in this folder; see onSettled
@@ -1632,7 +1662,7 @@ export class Session extends EventEmitter {
     }
     // A change of ours to a file nobody holds claims it for us while our AI works on it. A person
     // typing by hand while their AI sits idle keeps editing live with everyone, as before.
-    if (disk && this.ready && !this.seeding && disk.key !== this.sharedKey(rel) && (!claim || this.autoClaims.has(rel)) && this.aiMayBeEditing()) this.autoClaim(rel)
+    if (disk && !pulled && this.ready && !this.seeding && disk.key !== this.sharedKey(rel) && (!claim || this.autoClaims.has(rel)) && this.aiMayBeEditing()) this.autoClaim(rel)
 
     if (!disk) {
       if (!this.files.has(rel) && !this.blobs.has(rel)) { this.lastKnown.delete(rel); return false }
@@ -1642,11 +1672,11 @@ export class Session extends EventEmitter {
         const before = was ? was.toString() : undefined
         this.files.delete(rel)
         this.blobs.delete(rel)
-        this.recordActivity(rel, 'deleted', '', { before, after: before === undefined ? undefined : '' })
+        this.recordActivity(rel, 'deleted', '', { before, after: before === undefined ? undefined : '' }, { pulled })
       }, LOCAL)
       this.lastKnown.delete(rel)
       this.setOnDisk(rel, null)
-      this.noteMyEdit(rel)
+      this.noteMyEdit(rel, { pulled })
       return true
     }
 
@@ -1657,7 +1687,7 @@ export class Session extends EventEmitter {
     }
     if (disk.binary && disk.buf.length >= LARGE_FILE_BYTES && !this.largeFilesOff) {
       const refused = this.uploadRefused.get(rel)
-      if (!refused || refused.hash !== disk.hash) { this.uploadLarge(rel, disk); return false }
+      if (!refused || refused.hash !== disk.hash) { this.uploadLarge(rel, disk, { pulled }); return false }
       if (!refused.inline || disk.buf.length > MAX_BINARY_BYTES) return false
       // Storage refused it, but it's small enough to share inside the document.
     }
@@ -1681,12 +1711,12 @@ export class Session extends EventEmitter {
         texts = { before: ytext.toString(), after: disk.text }
         detail = applyTextDiff(ytext, disk.text)
       }
-      this.recordActivity(rel, existed ? 'edited' : 'created', detail, texts)
+      this.recordActivity(rel, existed ? 'edited' : 'created', detail, texts, { pulled })
     }, LOCAL)
     this.lastKnown.set(rel, disk.key)
     this.setOnDisk(rel, null)
-    this.noteMyEdit(rel)
-    this.noteQueuedEdit(rel)
+    this.noteMyEdit(rel, { pulled })
+    if (!pulled) this.noteQueuedEdit(rel)
     return true
   }
 
@@ -1736,11 +1766,15 @@ export class Session extends EventEmitter {
     this.emit('file-changed', { path: rel, by: by || this.lastEditorOf(rel) || 'partner' })
   }
 
-  /** `texts` is { before, after } for text files, so the chronology keeps the diff. */
-  recordActivity (rel, kind, detail, texts) {
+  /**
+   * `texts` is { before, after } for text files, so the chronology keeps the diff. `pulled`: a git pull
+   * brought it: counted as the pull's, and left out of the activity log (notePull writes one line for it all).
+   */
+  recordActivity (rel, kind, detail, texts, { pulled = false } = {}) {
     const now = Date.now()
-    this.tally(rel, kind, detail, now, texts)
-    this.history.record({ by: this.name, path: rel, kind, detail, before: texts?.before, after: texts?.after, task: this.currentTask(), ts: now })
+    this.tally(rel, kind, detail, now, texts, pulled)
+    this.history.record({ by: this.name, path: rel, kind, detail, before: texts?.before, after: texts?.after, task: pulled ? null : this.currentTask(), pulled, ts: now })
+    if (pulled) return
     const last = this.lastActivityPush.get(rel)
     // Collapse bursts of edits to the same file into one entry.
     if (kind === 'edited' && last && now - last < 20000) return
@@ -1749,10 +1783,13 @@ export class Session extends EventEmitter {
     if (this.activity.length > 300) this.activity.delete(0, this.activity.length - 300)
   }
 
-  /** Add one change of mine to the running count for rel (`detail` is "+a -r" for text). */
-  tally (rel, kind, detail, now, texts) {
+  /**
+   * Add one change of mine to the running count for rel (`detail` is "+a -r" for text). What a pull
+   * brought is counted apart from my own edits (its own key), so Changes can show it as the pull's.
+   */
+  tally (rel, kind, detail, now, texts, pulled = false) {
     if (this.seeding) return
-    const key = `${this.name}\0${rel}`
+    const key = pulled ? `${this.name}\0pull\0${rel}` : `${this.name}\0${rel}`
     const cur = this.tallies.get(key) || { added: 0, removed: 0, edits: 0, kind: 'edited' }
     const m = /^\+(\d+) -(\d+)$/.exec(detail || '')
     // Deleting a text file removes all of its lines.
@@ -1765,39 +1802,49 @@ export class Session extends EventEmitter {
       removed: cur.removed + (m ? +m[2] : 0) + gone,
       edits: cur.edits + 1,
       kind: state,
+      ...(pulled ? { pulled: true } : {}),
       ts: now
     })
   }
 
   /**
    * What has changed in this room and by whom: per person (most recent first,
-   * with their files) and per file (with each person's share). Read from the
-   * shared doc, so everyone sees the same breakdown.
+   * with their own files, and apart from them what their git pulls brought) and
+   * per file (with each person's share). Read from the shared doc, so everyone
+   * sees the same breakdown.
    */
   changes () {
     const people = new Map()
     const files = new Map()
+    const group = () => ({ added: 0, removed: 0, edits: 0, ts: 0, files: [] })
     for (const t of this.tallies.values()) {
       if (!t || !t.by || !isSafeRelPath(t.path)) continue
-      const p = people.get(t.by) || { name: t.by, added: 0, removed: 0, edits: 0, ts: 0, files: [] }
-      p.added += t.added; p.removed += t.removed; p.edits += t.edits; p.ts = Math.max(p.ts, t.ts)
-      p.files.push({ path: t.path, added: t.added, removed: t.removed, edits: t.edits, kind: t.kind, ts: t.ts })
+      const p = people.get(t.by) || { name: t.by, ...group(), pulled: null }
+      const g = t.pulled ? (p.pulled = p.pulled || group()) : p
+      g.added += t.added; g.removed += t.removed; g.edits += t.edits; g.ts = Math.max(g.ts, t.ts)
+      g.files.push({ path: t.path, added: t.added, removed: t.removed, edits: t.edits, kind: t.kind, ts: t.ts })
+      p.ts = Math.max(p.ts, t.ts)
       people.set(t.by, p)
-      const f = files.get(t.path) || { path: t.path, added: 0, removed: 0, edits: 0, ts: 0, by: [] }
+      const f = files.get(t.path) || { path: t.path, ...group(), by: [] }
       f.added += t.added; f.removed += t.removed; f.edits += t.edits; f.ts = Math.max(f.ts, t.ts)
-      f.by.push({ name: t.by, added: t.added, removed: t.removed, edits: t.edits, kind: t.kind, ts: t.ts })
+      f.by.push({ name: t.by, added: t.added, removed: t.removed, edits: t.edits, kind: t.kind, ts: t.ts, ...(t.pulled ? { pulled: true } : {}) })
       files.set(t.path, f)
     }
     const newest = (a, b) => b.ts - a.ts
     const out = { people: [...people.values()].sort(newest), files: [...files.values()].sort(newest) }
-    for (const p of out.people) { p.files.sort(newest); p.fileCount = p.files.length }
-    for (const f of out.files) { f.by.sort(newest); f.kind = f.by[0].kind } // the latest change says whether it's new, edited or gone
+    for (const p of out.people) {
+      p.files.sort(newest); p.fileCount = p.files.length
+      if (p.pulled) { p.pulled.files.sort(newest); p.pulled.fileCount = p.pulled.files.length }
+    }
+    for (const f of out.files) { delete f.files; f.by.sort(newest); f.kind = f.by[0].kind } // the latest change says whether it's new, edited or gone
     return out
   }
 
-  noteMyEdit (rel) {
+  /** `pulled`: git brought it, so partners see the file change but not us "editing" it. */
+  noteMyEdit (rel, { pulled = false } = {}) {
     const now = Date.now()
     this.emit('file-changed', { path: rel, by: this.name })
+    if (pulled) return
     this.myEdits.set(rel, now)
     this.updatePresence()
   }
@@ -2095,7 +2142,7 @@ export class Session extends EventEmitter {
   }
 
   /** Encrypts and uploads a large file, then points the shared document at it. */
-  async uploadLarge (rel, disk) {
+  async uploadLarge (rel, disk, { pulled = false } = {}) {
     const { hash, key: diskKey } = disk
     disk = null // read again once it's our turn, so waiting uploads don't hold files in memory
     if (this.uploading.get(rel) === hash) return
@@ -2128,13 +2175,13 @@ export class Session extends EventEmitter {
       this.doc.transact(() => {
         this.files.delete(rel)
         this.blobs.set(rel, { hash, size, stored: { id, key: keyId } })
-        this.recordActivity(rel, existed ? 'edited' : 'created', `${size} bytes`)
+        this.recordActivity(rel, existed ? 'edited' : 'created', `${size} bytes`, undefined, { pulled })
       }, LOCAL)
       this.lastKnown.set(rel, diskKey)
       this.setOnDisk(rel, hash)
       this.retry.delete(rel)
       this.uploadRefused.delete(rel)
-      this.noteMyEdit(rel)
+      this.noteMyEdit(rel, { pulled })
     } catch (err) {
       this.uploadFailed(rel, hash, err)
     } finally {
@@ -3379,7 +3426,7 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
       // change. The full records are at GET /merges and the app's merges route.
       merges: this.mergeList().map(({ ours, base, ...m }) => m),
       activity: this.activity.toArray().slice(-30),
-      changes: this.changes().people.map((p) => ({ ...p, files: p.files.slice(0, 10) })),
+      changes: this.changes().people.map((p) => ({ ...p, files: p.files.slice(0, 10), pulled: p.pulled && { ...p.pulled, files: p.pulled.files.slice(0, 10) } })),
       chat: this.messages({ limit: 20, markRead: false }),
       unread: this.unreadCount(),
       fileCount: this.files.size + this.blobs.size,

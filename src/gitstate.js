@@ -321,6 +321,13 @@ export async function branchTip (root, branch) {
 }
 
 /** Paths that differ between two commits, each with git's status letter (A added, M modified, D deleted...); null when git fails. */
+/** How many commits `to` has that `from` hasn't (what a pull brought in), or null when git can't say. */
+export async function commitsBetween (root, from, to) {
+  const out = await run(root, ['rev-list', '--count', `${from}..${to}`])
+  const n = out === null ? NaN : Number(String(out).trim())
+  return Number.isFinite(n) ? n : null
+}
+
 export async function changesBetween (root, shaA, shaB) {
   const out = await run(root, ['diff', '--no-renames', '--no-ext-diff', '--name-status', '-z', shaA, shaB])
   if (out === null) return null

@@ -14,10 +14,12 @@ import { renderBoard } from './board.js'
 import { accessFormValues, accessSaveBody, grantsLoading, grantsLoaded, grantsFailed } from './access-form.js'
 import { renderMergeBar, bindMerges, renderMergeView } from './merges.js'
 import { workspaceFilePicker } from './files.js'
+import { keptOutHtml } from './agent-place.js'
 
 let current = null // session id being shown
 let timers = []
 let grantLoad = grantsLoading() // this session's grants (the owner's view, from the API), for the Access sections
+let keptOut = { id: null, agents: [] } // agents the owner keeps out of this session (workspaces on), with Let back in
 let mounted = null // AbortController for document-level listeners of this mount
 
 // ------------------------------------------------------------ layout state --
@@ -322,7 +324,7 @@ function bindTop () {
     clearTimeout(hoverTimer)
     if (!menu.hidden) return
     menu.hidden = false; openedAt = Date.now(); btn.setAttribute('aria-expanded', 'true'); renderPeopleMenu()
-    if (sum().status.access?.owner) loadGrants()
+    if (sum().status.access?.owner) { loadGrants(); if (state.workspacesOn) loadKeptOut() }
   }
   const close = () => { clearTimeout(hoverTimer); menu.hidden = true; btn.setAttribute('aria-expanded', 'false') }
   // A click also focuses (and may hover) the button, which already opened the menu; don't toggle it shut.
@@ -396,6 +398,15 @@ function bindTop () {
     const f = b.closest('.pm-member')
     if (!await ask({ title: `Remove ${f.querySelector('.nm').textContent.trim()}?`, message: 'They\'ll need a new invite and your approval to come back.', ok: 'Remove', danger: true })) return
     try { const r = await api('POST', `/api/sessions/${current}/members/remove`, { key: f.dataset.key }); toast(r.warning || 'Removed') } catch (err) { toast(err.message) }
+    // In a workspace, a removed agent is kept out of this session in the background: list it once that's done.
+    if (state.workspacesOn && f.dataset.key.startsWith('agent:')) setTimeout(loadKeptOut, 1000)
+  })
+  menu.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-let-in]')
+    if (!b) return
+    b.disabled = true
+    try { await api('POST', `/api/sessions/${current}/agents/include`, { agentId: b.dataset.letIn }); toast('Let back in') } catch (err) { toast(err.message); b.disabled = false }
+    loadKeptOut()
   })
   menu.addEventListener('click', async (e) => {
     if (e.target.closest('[data-end-session]')) {
@@ -647,7 +658,19 @@ function membersHtml (st) {
         <button type="button" class="btn sm ghost icon" data-remove title="Remove ${esc(m.name)}" aria-label="Remove ${esc(m.name)}">${I.x}</button>
       </form>`).join('') : '<div class="pm-empty">Only you so far. People you let in show up here.</div>'}
     </div>
-    <div class="pm-foot"><button type="button" class="btn sm ghost danger" data-end-session>End session for everyone</button></div>`
+    ${keptOut.id === current ? keptOutHtml(keptOut.agents) : ''}<div class="pm-foot"><button type="button" class="btn sm ghost danger" data-end-session>End session for everyone</button></div>`
+}
+
+/** With workspaces on, the agents the owner keeps out of this session (in a workspace), for Let back in. */
+async function loadKeptOut () {
+  const id = current
+  let agents = []
+  if (state.workspacesOn && sum()?.workspace && sum().status.access?.owner) {
+    try { agents = (await api('GET', `/api/sessions/${id}/agents/excluded`)).agents } catch { agents = [] }
+  }
+  if (id !== current) return
+  keptOut = { id, agents }
+  if (!$('#people-menu').hidden) renderPeopleMenu({ force: true })
 }
 
 /**

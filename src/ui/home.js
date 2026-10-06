@@ -326,36 +326,45 @@ export function newSessionDialog (workspace = '') {
  */
 function workspaceInviteDialog (id) {
   const d = state.workspace
-  const org = d?.workspace?.orgId ? (state.workspaces || []).find((w) => w.id === id)?.space : null
+  // An org's workspace offers the org's agents only (never your own: they can't join it).
+  const isOrg = !!d?.workspace?.orgId
+  const org = isOrg ? (state.workspaces || []).find((w) => w.id === id)?.space : null
+  const orgName = org?.name || d?.owner?.name || 'the org'
   const { back, form, close } = dialog(`
     <h3>Add to ${esc(d?.workspace?.name || 'this workspace')}</h3>
     <p class="lead">They get into every session in this workspace once they sign in.</p>
     <div class="field"><label for="wi-access">Access</label>
       <select class="input" id="wi-access"><option value="edit">Can edit</option><option value="view">View only</option></select></div>
     ${toggle('wiEvery', false, 'Also join every session in this workspace as it starts', 'For agents. Off: the agent is in the workspace, sees its files, and joins a session only when invited there.')}
-    <div class="label inv-sub">People you've worked with, and ${org ? `${esc(org.name)}'s agents` : 'your agents'}</div>
+    <div class="label inv-sub">People you've worked with, and ${isOrg ? `${esc(orgName)}'s agents` : 'your agents'}</div>
     <div class="inv-list" id="wi-people"><p class="hint">Loading…</p></div>
     <div class="inv-agent wi-new-agent" id="wi-new-agent"><button class="btn sm" type="button" data-wi-invite-agent>${I.bot}<span>Invite a new agent</span></button><span class="hint">You'll get a link to paste into your AI.</span></div>
     <p class="error" id="wi-error"></p>
     <div class="actions"><button type="button" class="btn primary" data-cancel>Done</button></div>`)
+  // Anchored at the top: it grows downward as the list and an agent invite come in, never jumps.
+  back.classList.add('top')
   form.onsubmit = (e) => e.preventDefault()
   const joins = () => (form.querySelector('[name=wiEvery]').checked ? 'all' : 'invited')
   const already = new Set([d?.owner?.account, ...(d?.members || []).map((m) => m.account), ...(d?.agents || []).filter((a) => !a.excluded).map((a) => a.account)].filter(Boolean))
   const list = $('#wi-people', back)
-  const agents = org
-    ? api('GET', `/api/orgs/${encodeURIComponent(org.slug)}/agents`).then((r) => r.agents)
-    : api('GET', '/api/agents').then((r) => r.agents)
+  // { list, note }: a note says why no agents could be listed (an org's need Agents: Read).
+  const agents = !isOrg
+    ? api('GET', '/api/agents').then((r) => ({ list: r.agents }), () => ({ list: [] }))
+    : !org
+        ? Promise.resolve({ list: [], note: `${orgName}'s agents can't be listed here.` })
+        : api('GET', `/api/orgs/${encodeURIComponent(org.slug)}/agents`).then((r) => ({ list: r.agents }), (err) => ({ list: [], note: `${orgName}'s agents can't be listed: ${err.message}` }))
   Promise.all([
     api('GET', '/api/collaborators').then((r) => r.collaborators).catch(() => []),
-    agents.then((list) => list.map((a) => ({ account: `agent:${a.id}`, name: a.name, kind: 'agent' }))).catch(() => [])
-  ]).then(([people, agents]) => {
+    agents
+  ]).then(([people, { list: mine, note }]) => {
     const seen = new Set()
-    const rows = [...people.filter((c) => c.kind !== 'agent' || !org), ...agents].filter((c) => c.account && !seen.has(c.account) && seen.add(c.account))
+    const rows = [...people.filter((c) => c.kind !== 'agent' || !isOrg), ...mine.map((a) => ({ account: `agent:${a.id}`, name: a.name, kind: 'agent' }))].filter((c) => c.account && !seen.has(c.account) && seen.add(c.account))
+    const why = note ? `<p class="hint wi-note">${esc(note)}</p>` : ''
     list.innerHTML = rows.length
       ? rows.map((c) => `<div class="inv-row">${avatar(c.name, null)}<span class="grow">${esc(c.name)}${c.kind === 'agent' ? `<span class="tag bot">${I.bot}agent</span>` : ''}</span>${already.has(c.account)
         ? '<span class="hint">Already in</span>'
-        : `<button class="btn sm" type="button" data-add-account="${esc(c.account)}" data-name="${esc(c.name)}">Add</button>`}</div>`).join('')
-      : "<p class=\"hint\">Nobody yet. People and agents you've been in a session with show up here.</p>"
+        : `<button class="btn sm" type="button" data-add-account="${esc(c.account)}" data-name="${esc(c.name)}">Add</button>`}</div>`).join('') + why
+      : why || "<p class=\"hint\">Nobody yet. People and agents you've been in a session with show up here.</p>"
   })
   list.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-add-account]')

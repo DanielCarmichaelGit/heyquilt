@@ -31,7 +31,7 @@ test('the grid: a card per workspace with cover, name, space pill, counts, avata
 
 test('the workspace page: back link, header, session cards with New session, people cards with access and Add, settings', () => {
   const w = ui('workspaces.js')
-  for (const bit of ['All workspaces', 'data-ws-back', 'class="ws-head"', 'class="sc-grid"', 'data-rejoin=', 'data-go=', 'data-new-session-in=', 'New session', 'People &amp; agents', 'class="pc"', 'data-member-access=', 'data-member-remove=', 'Add a person or an agent', 'data-ws-settings', 'Delete workspace', "'/update'", "'/delete'", "'/members/remove'"]) assert.ok(w.includes(bit), bit)
+  for (const bit of ['All workspaces', 'data-ws-back', 'class="ws-head"', 'class="sc-grid"', 'data-rejoin=', 'data-go=', 'data-new-session-in=', 'New session', 'People &amp; agents', '<div class="pc$' + '{admin && !isOwner ? \' has-x\' : \'\'}">', 'data-member-access=', 'data-member-remove=', 'Add a person or an agent', 'data-ws-settings', 'Delete workspace', "'/update'", "'/delete'", "'/members/remove'"]) assert.ok(w.includes(bit), bit)
 })
 
 test('settings: Save sends archived only when it changed, and Delete shows only to who may delete', () => {
@@ -156,7 +156,11 @@ test('Settings › Agents with workspaces on: Available in, the chosen workspace
   assert.ok(html.includes('&lt;agent&gt;') && !html.includes('<agent>'), 'names are escaped')
   // Not chosen: the picker keeps its place, hidden; Joins means nothing for an agent only added by hand.
   const manual = place.agentRow(AGENTS[1], { reach: 'manual', workspaceIds: [], sessions: 'invited', access: 'edit', scopes: [] }, MINE)
-  assert.ok(manual.includes('<details class="ap-pick" data-off>'))
+  // Not chosen: the picker gives its fixed slot to a line saying what the reach means.
+  assert.ok(manual.includes('<details class="ap-pick" hidden>'))
+  assert.ok(manual.includes('<span class="ap-why">Add it from a workspace&#39;s page</span>'))
+  assert.ok(html.includes('<span class="ap-why" hidden>') && html.includes('<details class="ap-pick">'))
+  for (const bit of ['class="input sm ap-reach"', 'class="input sm ap-joins"', 'class="ap-slot"']) assert.ok(html.includes(bit), bit)
   assert.ok(manual.includes('data-placement-sessions aria-label="When Editor joins sessions" disabled>'))
   assert.ok(place.agentRow(AGENTS[1], { reach: 'all', workspaceIds: [], sessions: 'invited' }, []).includes('No workspaces yet'))
   // Only your own personal workspaces can be chosen.
@@ -209,4 +213,71 @@ test('the Add dialog: agents of the workspace\'s owner, the every-session switch
 
 test('agent-place.js is served, and has no em dashes', () => {
   assert.ok(!ui('agent-place.js').includes(EM_DASH))
+})
+
+// A select the app has turned into a dropdown button (common.js): the button shows the chosen option.
+function fakeSelect (opts, value) {
+  const label = { textContent: opts.find(([v]) => v === value)[1] }
+  const btn = { classList: { contains: (c) => c === 'dd-btn' }, querySelector: () => label, disabled: false, label }
+  return {
+    value,
+    disabled: false,
+    dataset: { dd: '1' },
+    nextElementSibling: btn,
+    get options () { return opts.map(([v, t]) => ({ value: v, textContent: t })) },
+    get selectedIndex () { return opts.findIndex(([v]) => v === this.value) }
+  }
+}
+
+test('a placement that fails to save puts the controls back, dropdown buttons included', async () => {
+  const toastEl = { textContent: '', classList: { add () {}, remove () {} } }
+  globalThis.document = { querySelector: (sel) => (sel === '#toast' ? toastEl : null), querySelectorAll: () => [], addEventListener () {} }
+  const was = globalThis.fetch
+  globalThis.fetch = async () => ({ ok: false, status: 400, json: async () => ({ error: 'Quilt said no.' }) })
+  try {
+    const reach = fakeSelect(place.REACH_OPTIONS, 'manual')
+    const sessions = fakeSelect(place.JOINS_OPTIONS, 'invited')
+    const pick = { hidden: true, open: false }
+    const why = { hidden: false, textContent: '' }
+    const picked = { textContent: '' }
+    const parts = { '[data-placement-reach]': reach, '[data-placement-sessions]': sessions, '.ap-pick': pick, '.ap-why': why, '[data-placement-picked]': picked }
+    const el = { querySelector: (sel) => parts[sel], querySelectorAll: () => [] }
+    place.bindPlacement(el, AGENTS[0], { reach: 'manual', workspaceIds: [], sessions: 'invited', access: 'edit', scopes: [] }, MINE)
+    // The person picks Chosen workspaces: the dropdown already shows it, then the save fails.
+    reach.value = 'workspaces'
+    reach.nextElementSibling.label.textContent = 'Chosen workspaces'
+    await reach.onchange()
+    assert.equal(toastEl.textContent, 'Quilt said no.')
+    assert.equal(reach.value, 'manual')
+    assert.equal(reach.nextElementSibling.label.textContent, 'Only where I add it', 'the button is redrawn, not left saying Chosen workspaces')
+    assert.equal(sessions.nextElementSibling.label.textContent, 'When invited')
+    assert.deepEqual([pick.hidden, why.hidden, why.textContent, sessions.disabled], [true, false, place.REACH_HINTS.manual, true])
+  } finally { globalThis.fetch = was; delete globalThis.document }
+})
+
+test('a session\'s people menu: agents kept out of it, each with Let back in, only with workspaces on', () => {
+  assert.equal(place.keptOutHtml([]), '')
+  const html = place.keptOutHtml([{ agentId: 'k1', name: 'Kip <bot>' }])
+  for (const bit of ['Kept out of this session', 'Kip &lt;bot&gt; (agent)', 'data-let-in="k1"', 'Let back in', 'class="pm-member"']) assert.ok(html.includes(bit), bit)
+  const s = ui('session.js')
+  assert.ok(s.includes('if (sum().status.access?.owner) { loadGrants(); if (state.workspacesOn) loadKeptOut() }'))
+  assert.ok(s.includes("if (state.workspacesOn && f.dataset.key.startsWith('agent:')) setTimeout(loadKeptOut, 1000)"))
+  assert.ok(s.includes('if (state.workspacesOn && sum()?.workspace && sum().status.access?.owner)'))
+  // With nothing kept out (always, with workspaces off) the owner's section ends exactly as before.
+  assert.ok(s.includes('    $' + "{keptOut.id === current ? keptOutHtml(keptOut.agents) : ''}<div class=\"pm-foot\">"))
+  assert.ok(s.includes('/agents/include') && s.includes('/agents/excluded'))
+})
+
+test('the Add dialog: anchored at the top, a gap before the agent tag, and a hint when an org\'s agents can\'t be listed', () => {
+  const h = ui('home.js')
+  const dlg = h.slice(h.indexOf('function workspaceInviteDialog'), h.indexOf('/** The GitHub side'))
+  assert.ok(dlg.includes("back.classList.add('top')"))
+  assert.ok(dlg.includes("const agents = !isOrg\n    ? api('GET', '/api/agents')"), 'your own agents only in a personal workspace')
+  assert.ok(dlg.includes("agents can't be listed here."))
+  assert.ok(dlg.includes("agents can't be listed: $" + '{err.message}'))
+  assert.ok(dlg.includes("people.filter((c) => c.kind !== 'agent' || !isOrg)"))
+  const css = ui('app.css')
+  for (const bit of ['.modal-back.top { align-items: start; }', '#wi-people .tag.bot { margin-left: 6px; }', '.pc .btn.pc-x { position: absolute;', '.pc.has-x { position: relative; }', '.ap-slot {']) assert.ok(css.includes(bit), bit)
+  assert.ok(!css.includes('.modal-back {') || css.includes('.modal-back { position: fixed; inset: 0; background: rgba(43, 42, 56, .4); backdrop-filter: blur(2px); display: grid; place-items: center;'), 'other dialogs stay centred')
+  assert.ok(ui('workspaces.js').includes('class="btn sm ghost icon pc-x" data-member-remove='))
 })

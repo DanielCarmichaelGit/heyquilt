@@ -1,9 +1,11 @@
 // Where agents work, in the app: an agent's row in Settings › Agents (with Available in and
 // Joins once workspaces are on) and an agent's card on a workspace's page. The markup is plain
 // functions, so tests can draw it; home.js and workspaces.js put it on the page.
-import { I, esc, ago, avatar, colorFor, api, toast } from './common.js'
+import { I, esc, ago, avatar, colorFor, api, toast, syncSelect } from './common.js'
 
 export const REACH_OPTIONS = [['manual', 'Only where I add it'], ['all', 'All my workspaces'], ['workspaces', 'Chosen workspaces']]
+/** What Available in means, in the picker's place when no workspaces are picked by hand. */
+export const REACH_HINTS = { manual: 'Add it from a workspace\'s page', all: 'Every workspace you own, and new ones' }
 export const JOINS_OPTIONS = [['invited', 'When invited'], ['all', 'Every session']]
 const options = (list, value) => list.map(([v, label]) => `<option value="${v}"${v === value ? ' selected' : ''}>${label}</option>`).join('')
 
@@ -25,22 +27,27 @@ export function pickedLabel (ids, workspaces) {
 }
 
 /**
- * Available in, the chosen workspaces (a drop-down of checkboxes) and Joins, on two lines. The
- * picker keeps its place beside Available in while hidden and opens over the page, so choosing
- * never moves the rows.
+ * Available in, the chosen workspaces (a drop-down of checkboxes) and Joins, under the agent's
+ * name. Each select is as wide as its longest choice and the row wraps on a narrow window. The
+ * picker shares a fixed-size slot with a line saying what the reach means, so choosing never
+ * moves the rows; it opens over the page.
  */
 export function placementHtml (a, place, workspaces) {
   const ids = place.workspaceIds || []
+  const chosen = place.reach === 'workspaces'
   return `
     <div class="agent-place" data-agent-place="${esc(a.id)}">
-      <span class="ap-l">Available in</span><select class="input sm" data-placement-reach aria-label="Where ${esc(a.name)} is available">${options(REACH_OPTIONS, place.reach)}</select>
-      <details class="ap-pick"${place.reach === 'workspaces' ? '' : ' data-off'}>
-        <summary class="input sm" data-placement-picked title="Which workspaces">${esc(pickedLabel(ids, workspaces))}</summary>
-        <div class="ap-menu">${workspaces.length
-          ? workspaces.map((w) => `<label><input type="checkbox" data-placement-ws value="${esc(w.id)}"${ids.includes(w.id) ? ' checked' : ''}><span>${esc(w.name)}</span></label>`).join('')
-          : '<p class="hint">Make a workspace first.</p>'}</div>
-      </details>
-      <span class="ap-l">Joins</span><select class="input sm" data-placement-sessions aria-label="When ${esc(a.name)} joins sessions"${place.reach === 'manual' ? ' disabled' : ''}>${options(JOINS_OPTIONS, place.sessions)}</select>
+      <div class="ap-g"><span class="ap-l">Available in</span><select class="input sm ap-reach" data-placement-reach aria-label="Where ${esc(a.name)} is available">${options(REACH_OPTIONS, place.reach)}</select></div>
+      <div class="ap-slot">
+        <details class="ap-pick"${chosen ? '' : ' hidden'}>
+          <summary class="input sm" data-placement-picked title="Which workspaces">${esc(pickedLabel(ids, workspaces))}</summary>
+          <div class="ap-menu">${workspaces.length
+            ? workspaces.map((w) => `<label><input type="checkbox" data-placement-ws value="${esc(w.id)}"${ids.includes(w.id) ? ' checked' : ''}><span>${esc(w.name)}</span></label>`).join('')
+            : '<p class="hint">Make a workspace first.</p>'}</div>
+        </details>
+        <span class="ap-why"${chosen ? ' hidden' : ''}>${esc(REACH_HINTS[place.reach] || '')}</span>
+      </div>
+      <div class="ap-g"><span class="ap-l">Joins</span><select class="input sm ap-joins" data-placement-sessions aria-label="When ${esc(a.name)} joins sessions"${place.reach === 'manual' ? ' disabled' : ''}>${options(JOINS_OPTIONS, place.sessions)}</select></div>
     </div>`
 }
 
@@ -64,16 +71,21 @@ export function bindPlacements (root, agents, places, workspaces) {
   }
 }
 
-function bindPlacement (el, a, place, workspaces) {
+/** One row: its saves, and putting the controls back when a save fails. */
+export function bindPlacement (el, a, place, workspaces) {
   let saved = place
   let chosen = [...(place.workspaceIds || [])]
   const reach = el.querySelector('[data-placement-reach]')
   const sessions = el.querySelector('[data-placement-sessions]')
   const pick = el.querySelector('.ap-pick')
   const boxes = () => [...el.querySelectorAll('[data-placement-ws]')]
+  const why = el.querySelector('.ap-why')
   const paint = () => {
-    pick.toggleAttribute('data-off', reach.value !== 'workspaces')
-    if (reach.value !== 'workspaces') pick.open = false
+    const picking = reach.value === 'workspaces'
+    pick.hidden = !picking
+    why.hidden = picking
+    why.textContent = REACH_HINTS[reach.value] || ''
+    if (!picking) pick.open = false
     sessions.disabled = reach.value === 'manual'
     el.querySelector('[data-placement-picked]').textContent = pickedLabel(chosen, workspaces)
   }
@@ -83,8 +95,11 @@ function bindPlacement (el, a, place, workspaces) {
       toast('Saved')
     } catch (err) {
       toast(err.message)
+      // Back to what was saved; set from code, so the dropdown buttons are redrawn by hand.
       reach.value = saved.reach
       sessions.value = saved.sessions
+      syncSelect(reach)
+      syncSelect(sessions)
       if (saved.reach === 'workspaces') chosen = [...saved.workspaceIds]
       boxes().forEach((b) => { b.checked = chosen.includes(b.value) })
     }
@@ -93,7 +108,7 @@ function bindPlacement (el, a, place, workspaces) {
   reach.onchange = () => {
     paint()
     if (reach.value === 'workspaces' && !chosen.length) pick.open = true
-    save()
+    return save()
   }
   sessions.onchange = save
   boxes().forEach((b) => { b.onchange = () => { chosen = boxes().filter((x) => x.checked).map((x) => x.value); paint(); save() } })
@@ -139,4 +154,11 @@ export function workspaceAgentCardHtml (a, { admin = false, orgName = '' } = {})
     ${side}${corner}
     <div class="ws-scope">${pill}${joins}</div>
   </div>`
+}
+
+/** A session's people menu (owner, workspaces on): agents kept out of this session, each with Let back in. */
+export function keptOutHtml (agents) {
+  if (!agents?.length) return ''
+  return `<div class="pm-section pm-kept-out"><div class="pm-title">Kept out of this session</div>
+    ${agents.map((a) => `<div class="pm-member"><span class="nm">${esc(a.name || 'Agent')} (agent)</span><button type="button" class="btn sm" data-let-in="${esc(a.agentId)}">Let back in</button></div>`).join('')}</div>`
 }

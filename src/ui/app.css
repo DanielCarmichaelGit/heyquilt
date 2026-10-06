@@ -236,15 +236,22 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 .inv-agent .error:empty { display: none; }
 .agent-row { grid-template-columns: 24px minmax(0, 1fr); align-items: center; }
 .agent-row svg { width: 16px; height: 16px; }
-/* Where an agent works (Settings › Agents, workspaces on). Fixed widths and a picker that opens
-   over the page, so changing a value never moves the rows. */
-.agent-place { grid-column: 2; display: grid; grid-template-columns: auto minmax(0, 172px) minmax(0, 160px); justify-content: start; align-items: center; gap: 6px 8px; margin-top: 6px; }
+/* Where an agent works (Settings › Agents, workspaces on): under the agent, across the whole
+   row. Each select is as wide as its longest choice (fixed, so a change never resizes it), the
+   groups wrap on a narrow window, and the picker opens over the page. */
+.agent-place { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 6px; }
+.ap-g { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; max-width: 100%; }
 .ap-l { font-size: 12px; color: var(--muted); white-space: nowrap; }
-.agent-place .input.sm { height: 28px; padding: 0 8px; font-size: 12.5px; }
+.agent-place .input.sm { height: 28px; padding: 0 8px; font-size: 12.5px; max-width: 100%; }
+.agent-place .ap-reach { width: 170px; }
+.agent-place .ap-joins { width: 128px; }
 .agent-place select:disabled { opacity: .55; cursor: default; }
-.ap-pick { position: relative; }
-.ap-pick[data-off] { visibility: hidden; }
-.ap-pick summary { display: block; line-height: 26px; list-style: none; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The picker, or what the reach means: one fixed-size slot either way. */
+.ap-slot { display: flex; align-items: center; width: 250px; max-width: 100%; height: 28px; }
+.ap-why { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ap-pick { position: relative; max-width: 100%; }
+.ap-pick[hidden], .ap-why[hidden] { display: none; }
+.ap-pick summary { display: block; width: 170px; max-width: 100%; line-height: 26px; list-style: none; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ap-pick summary::-webkit-details-marker { display: none; }
 .ap-menu { position: absolute; z-index: 6; top: calc(100% + 4px); left: 0; min-width: 200px; max-height: 240px; overflow-y: auto; padding: 6px; background: var(--panel); border: 1px solid var(--border-strong); border-radius: 6px; box-shadow: var(--shadow-pop); }
 .ap-menu label { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 4px; font-size: 13px; cursor: pointer; }
@@ -252,6 +259,11 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 .ap-menu input { accent-color: var(--accent); }
 .ap-menu .hint { margin: 4px 6px; }
 .ap-note { margin: 8px 0 0; }
+/* The workspace Add dialog grows downward from a fixed top instead of re-centring. */
+.modal-back.top { align-items: start; }
+.modal-back.top .modal { margin-top: min(8vh, 64px); max-height: calc(100vh - 32px - min(8vh, 64px)); }
+#wi-people .tag.bot { margin-left: 6px; }
+.wi-note { margin: 6px 0 0; }
 .wi-new-agent { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
 .wi-new-agent .hint { margin: 0; }
 .wi-new-agent > p, .wi-new-agent .codebox { width: 100%; margin-bottom: 0; }
@@ -1170,12 +1182,14 @@ body.has-update #app { padding-top: var(--update-bar); } /* padding, not margin:
 .pc .t span { display: block; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pc .input.sm { height: 28px; width: auto; padding: 0 8px; font-size: 12.5px; }
 /* An agent's card: why it is here (a pill) and whether it joins every session. */
-.pc.agent { position: relative; row-gap: 10px; }
-.pc.agent .t { flex-basis: 80px; }
-.pc.agent .t b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Room for the corner button beside access only; the second line runs the full width. */
-.pc.agent.has-x > .pill, .pc.agent.has-x > .dd-btn, .pc.agent.has-x > select:not(.dd-native) { margin-right: 22px; }
-.pc.agent .pc-x { position: absolute; top: 6px; right: 6px; width: 26px; height: 26px; }
+.pc.agent { row-gap: 10px; }
+/* Remove (or Not in this workspace) sits in the card's corner, so the card never wraps around it. */
+.pc.has-x { position: relative; }
+.pc.agent .t, .pc.has-x .t { flex-basis: 80px; }
+.pc.agent .t b, .pc.has-x .t b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Room for the corner button beside access only; a second line runs the full width. */
+.pc.has-x > .pill, .pc.has-x > .dd-btn, .pc.has-x > select:not(.dd-native) { margin-right: 22px; }
+.pc .btn.pc-x { position: absolute; top: 6px; right: 6px; width: 26px; height: 26px; }
 .pc .ws-scope { flex: 1 0 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .pc .ws-scope > span { display: inline-flex; align-items: center; overflow: visible; font-size: 12px; color: var(--muted); }
 .pc .ws-scope > .pill { height: 20px; max-width: 100%; padding: 0 7px; font-size: 11px; color: var(--muted); }

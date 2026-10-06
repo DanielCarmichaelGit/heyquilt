@@ -328,6 +328,17 @@ export async function excludeSessionAgent ({ token, room, agentId, api = apiUrl(
   await call(fetchImpl, api, 'PUT', `${room$(room)}/agents/${encodeURIComponent(agentId)}/exclude`, {}, token)
 }
 
+/** The agents the owner keeps out of one session: [{ agentId, name }]. */
+export async function listExcludedSessionAgents ({ token, room, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'GET', `${room$(room)}/agents/excluded`, null, token)
+  if (!Array.isArray(r.agents)) throw new Error(BAD_REPLY)
+  return r.agents
+}
+/** Lets an agent the owner kept out of one session back in (its workspace may let it join again). */
+export async function includeSessionAgent ({ token, room, agentId, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  await call(fetchImpl, api, 'DELETE', `${room$(room)}/agents/${encodeURIComponent(agentId)}/exclude`, null, token)
+}
+
 // Workspace files (phase 2). Each throws with .status when the API says no.
 const file$ = (id, fileId) => `${ws$(id)}/files/${encodeURIComponent(fileId)}`
 export async function listWorkspaceFiles ({ token, id, folder, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {

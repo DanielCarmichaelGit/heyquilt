@@ -23,7 +23,18 @@ export async function sessionOwner (store, person, req, room, forbidden = 'Only 
   return { me, userId, session }
 }
 
-export function grantRoutes ({ store, person, now = Date.now }) {
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * The owner letting an agent into a session again (a grant) also ends keeping it out of that
+ * session, which removing it from a session in a workspace starts. Only with workspaces on.
+ */
+export async function letAgentBackIn (store, room, account, workspaces) {
+  if (!workspaces || !String(account).startsWith('agent:') || !UUID.test(account.slice(6))) return
+  await store.removeSessionAgentExclusion(room, account.slice(6))
+}
+
+export function grantRoutes ({ store, person, now = Date.now, workspaces = false }) {
   return [
     ['GET', /^\/v1\/sessions\/([^/]+)\/grants$/, async (req, body, [room]) => {
       await sessionOwner(store, person, req, room)
@@ -39,6 +50,7 @@ export function grantRoutes ({ store, person, now = Date.now }) {
       let tighten
       try { tighten = cleanTighten(body.tighten) } catch (err) { throw new HttpError(400, err.message) }
       const grant = await store.putGrant({ room, account, typeId: type.id, tighten, grantedBy: me })
+      await letAgentBackIn(store, room, account, workspaces)
       return { grant: await grantView(store, grant) }
     }],
 

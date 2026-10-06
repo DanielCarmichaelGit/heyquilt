@@ -36,6 +36,8 @@ before(async () => {
   memToken = (await linkDevice(accounts, 'mem', loadIdentity())).token
   signInAs('mem', memToken)
   ui = await startUi({ port: 0 })
+  // The app asks once at launch whether the API has workspaces on, as here.
+  assert.equal((await api('GET', '/api/workspaces')).body.on, true)
 })
 after(async () => { await ui.close(); await relay.close(); await accounts.close() })
 
@@ -166,6 +168,13 @@ test('removing an agent from a session in a workspace also keeps it out of that 
   // A person removed from the same session: no exclusion is asked for.
   assert.equal((await api('POST', `/api/sessions/${s.body.id}/members/remove`, { key: 'person:lim' })).status, 200)
   assert.deepEqual((await accounts.store.listSessionAgentExclusions(room)).map((e) => e.agentId), [agent.id])
+  // The people menu lists it as kept out, and Let back in ends that.
+  const kept = await api('GET', `/api/sessions/${s.body.id}/agents/excluded`)
+  assert.deepEqual([kept.status, kept.body], [200, { agents: [{ agentId: agent.id, name: 'Kip' }] }])
+  assert.equal((await api('POST', `/api/sessions/${s.body.id}/agents/include`, { agentId: 'nope' })).status, 400)
+  assert.deepEqual((await api('POST', `/api/sessions/${s.body.id}/agents/include`, { agentId: agent.id })).body, { ok: true })
+  assert.equal(await accounts.store.sessionAgentExcluded(room, agent.id), false)
+  assert.deepEqual((await api('GET', `/api/sessions/${s.body.id}/agents/excluded`)).body, { agents: [] })
   await api('POST', `/api/sessions/${s.body.id}/stop`)
 
   // A session outside any workspace: the agent is removed, nothing else.
@@ -191,4 +200,23 @@ test('the removal answers at once even when the API turns the exclusion down, an
   while (!(await logged()) && Date.now() < until) await sleep(50)
   assert.ok(await logged())
   await api('POST', `/api/sessions/${s.body.id}/stop`)
+})
+
+test('an app that has not seen workspaces on (the flag off at launch) only removes, even in a session it once put in a workspace', async () => {
+  const id = await newWorkspace('Was on')
+  const { agent } = await makeAgent(accounts, { name: 'Wes', ownerUserId: 'mem' })
+  // Another app on this computer: it never asked the API about workspaces, so it holds them off.
+  const ui2 = await startUi({ port: 0 })
+  try {
+    const call = (method, p, body) => fetch(`http://127.0.0.1:${ui2.port}${p}`, { method, headers: { 'x-quilt-token': ui2.token, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }).then(async (r) => ({ status: r.status, body: await r.json() }))
+    const s = await call('POST', '/api/sessions', { mode: 'create', dir: path.join(home, 'was-on'), workspace: id })
+    assert.equal(s.body.workspace, id, 'the folder remembers its workspace')
+    await memberOfRoom(s.body.status.room, `agent:${agent.id}`, 'Wes')
+    assert.deepEqual((await call('POST', `/api/sessions/${s.body.id}/members/remove`, { key: `agent:${agent.id}` })).body, { ok: true })
+    await sleep(500)
+    assert.equal(await accounts.store.sessionAgentExcluded(s.body.status.room, agent.id), false)
+    const logs = (await call('GET', '/api/state')).body.sessions.find((x) => x.id === s.body.id).logs
+    assert.ok(!logs.some((l) => /keep that agent out/.test(l.line)), JSON.stringify(logs))
+    await call('POST', `/api/sessions/${s.body.id}/stop`)
+  } finally { await ui2.close() }
 })

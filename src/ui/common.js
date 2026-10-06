@@ -259,6 +259,12 @@ function closeMenu (refocus) {
   if (refocus) btn.focus()
 }
 
+/** Redraws an enhanced select's button after its value was set from code (which fires no change). */
+export function syncSelect (sel) {
+  const btn = sel.nextElementSibling
+  if (sel.dataset.dd && btn?.classList.contains('dd-btn')) syncDropdown(sel, btn)
+}
+
 function syncDropdown (sel, btn) {
   const o = sel.options[sel.selectedIndex]
   btn.querySelector('.dd-label').textContent = o ? o.textContent : ''

@@ -17,7 +17,7 @@ import * as gitops from './git.js'
 import { installedEditors, openIn } from './editors.js'
 import { migrateDir } from './legacy.js'
 import { writePrivateJson } from './private-file.js'
-import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession, createAgentInvite, listAgents, listAccessTypes, listCollaborators, listGrants, putGrant, deleteGrant, inviteToSession, listSessionInvites, cancelSessionInvite, listWorkspaces, listOrgs, createWorkspace, getWorkspace, updateWorkspace, deleteWorkspace, putWorkspaceMember, removeWorkspaceMember, getAgentPlacement, putAgentPlacement, listOrgAgents, putWorkspaceAgent, deleteWorkspaceAgent, createWorkspaceAgentInvite, excludeSessionAgent, setSessionWorkspace, announceSessionStarted, announceWhenReported, listWorkspaceFiles, createWorkspaceFile, confirmWorkspaceFile, workspaceFileDownload, updateWorkspaceFile, deleteWorkspaceFile, createWorkspaceFolder, listWorkspaceFileVersions } from './account.js'
+import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession, createAgentInvite, listAgents, listAccessTypes, listCollaborators, listGrants, putGrant, deleteGrant, inviteToSession, listSessionInvites, cancelSessionInvite, listWorkspaces, listOrgs, createWorkspace, getWorkspace, updateWorkspace, deleteWorkspace, putWorkspaceMember, removeWorkspaceMember, getAgentPlacement, putAgentPlacement, listOrgAgents, putWorkspaceAgent, deleteWorkspaceAgent, createWorkspaceAgentInvite, excludeSessionAgent, listExcludedSessionAgents, includeSessionAgent, setSessionWorkspace, announceSessionStarted, announceWhenReported, listWorkspaceFiles, createWorkspaceFile, confirmWorkspaceFile, workspaceFileDownload, updateWorkspaceFile, deleteWorkspaceFile, createWorkspaceFolder, listWorkspaceFileVersions } from './account.js'
 import { effectiveAccess, builtinType } from './session-access.js'
 import { cleanSessionName, BAD_SESSION_NAME, SESSION_NAME_MAX } from './session-name.js'
 import { personPasses } from './pass-source.js'
@@ -533,12 +533,12 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       }
     }
     await s.removeMember(key)
-    // An agent removed from a session in a workspace is also kept out of this session, so its
-    // workspace (or its placement) doesn't let it straight back in. In the background, after
-    // the removal: it never delays or fails it, and a failure is only logged.
+    // With workspaces on, an agent removed from a session in a workspace is also kept out of
+    // this session, so its workspace (or its placement) doesn't let it straight back in. In the
+    // background, after the removal: it never delays or fails it, and a failure is only logged.
     const agent = /^agent:([0-9a-f-]{36})$/i.exec(String(key))
     const r = runs.get(id)
-    if (agent && r && readConfig(r.run.dir)?.workspace) {
+    if (workspacesOn && agent && r && readConfig(r.run.dir)?.workspace) {
       asAccount((token) => excludeSessionAgent({ token, room: s.room, agentId: agent[1] }))
         .catch((err) => r.log?.(`could not keep that agent out of this session: ${err.message}`))
     }
@@ -682,6 +682,9 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     'POST /api/sessions/:id/members/deny': async (b, id) => (await get(id).deny(b.key), { ok: true }),
     'POST /api/sessions/:id/members/set': async (b, id) => (await get(id).setMember(b.key, { role: b.role, scopes: b.scopes }), { ok: true }),
     'POST /api/sessions/:id/members/remove': (b, id) => removeMember(id, b.key),
+    // Agents kept out of this session (removing one in a workspace does it), and letting one back in.
+    'GET /api/sessions/:id/agents/excluded': (b, id) => { const s = owned(id); return asAccount(async (token) => ({ agents: await listExcludedSessionAgents({ token, room: s.room }) })) },
+    'POST /api/sessions/:id/agents/include': (b, id) => { const s = owned(id); return asAccount(async (token) => { await includeSessionAgent({ token, room: s.room, agentId: needAgentId(b.agentId) }); return { ok: true } }) },
     'POST /api/sessions/:id/rename': (b, id) => rename(id, b.name),
     'POST /api/sessions/:id/end': async (b, id) => { await get(id).endForEveryone(); await stop(id); return { ok: true } },
     'POST /api/sessions/:id/summarize': (b, id) => {

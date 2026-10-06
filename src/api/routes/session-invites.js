@@ -7,7 +7,7 @@ import { emailDomain } from '../domains.js'
 import { sessionInviteEmail } from '../invite-email.js'
 import { parseInvite } from '../../ui/invite.js'
 import { ownType, typeOfGrant } from '../access.js'
-import { sessionOwner, ACCOUNT } from './grants.js'
+import { sessionOwner, ACCOUNT, letAgentBackIn } from './grants.js'
 import { collaboratorsOf } from './sessions.js'
 
 export const SESSION_INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000
@@ -15,7 +15,7 @@ const FORBIDDEN = 'Only the session owner can invite people.'
 // One address, nothing a mail header could split (the same rule as org invites).
 const STRICT_EMAIL = /^[^\s@,;<>"()\\]+@[^\s@,;<>"()\\]+$/
 
-export function sessionInviteRoutes ({ store, person, now, site, mailer, log, limitSend }) {
+export function sessionInviteRoutes ({ store, person, now, site, mailer, log, limitSend, workspaces = false }) {
   const statusOf = (i) => (i.usedAt ? 'used' : i.cancelledAt ? 'cancelled' : i.expiresAt <= now() ? 'expired' : 'waiting')
   // The invite comes first, then its grant: one that loses a race to another open invite for
   // the same address or account (the database's unique index) changes nothing.
@@ -29,6 +29,7 @@ export function sessionInviteRoutes ({ store, person, now, site, mailer, log, li
     }
     // No grant, no invite: an open one would block inviting them again.
     try { await store.putGrant(grant) } catch (err) { await store.cancelSessionInvite(invite.id).catch(() => {}); throw err }
+    await letAgentBackIn(store, grant.room, grant.account, workspaces)
     return invite
   }
   // An account invite shows the name the owner saw, never the person's email.

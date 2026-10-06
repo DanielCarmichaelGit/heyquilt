@@ -114,13 +114,19 @@ export function workspaceAgentRoutes (ctx) {
     return agent
   }
 
-  /** The room's session when the caller owns it (as the relay reports it), and the agent to keep out. */
-  async function ownSession (req, room, agentId) {
+  /** The room's session when the caller owns it (as the relay reports it). */
+  async function ownRoom (req, room) {
     const me = await caller(req)
     if (!ROOM.test(room)) throw new HttpError(404, 'no such session')
     const session = await store.sessionByRoom(room)
     if (!session) throw new HttpError(404, 'no such session')
     if (!session.ownerAccount || session.ownerAccount !== me.account) throw new HttpError(403, 'Only the session owner can do that.')
+    return { me, session }
+  }
+
+  /** The room's session when the caller owns it, and the agent to keep out. */
+  async function ownSession (req, room, agentId) {
+    const { me, session } = await ownRoom(req, room)
     const agent = await store.agentById(needId(agentId, 'agent'))
     if (!agent) throw new HttpError(404, 'no such agent')
     return { me, session, agent }
@@ -231,6 +237,14 @@ export function workspaceAgentRoutes (ctx) {
         invite: { id: invite.id, kind: invite.orgId ? 'org' : 'personal', status: inviteStatus(invite, now()), workspaceId: invite.workspaceId, workspaceAccess: invite.workspaceAccess, workspaceSessions: invite.workspaceSessions, createdAt: invite.createdAt, expiresAt: invite.expiresAt },
         link: `${apiUrl}/v1/join/${token}`
       }
+    }],
+
+    // The agents its owner keeps out of this session, so the app can offer to let them back in.
+    ['GET', /^\/v1\/sessions\/([^/]+)\/agents\/excluded$/, async (req, body, [room]) => {
+      await ownRoom(req, room)
+      const agents = []
+      for (const e of await store.listSessionAgentExclusions(room)) agents.push({ agentId: e.agentId, name: (await store.agentById(e.agentId))?.name || '' })
+      return { agents }
     }],
 
     ['PUT', /^\/v1\/sessions\/([^/]+)\/agents\/([^/]+)\/exclude$/, async (req, body, [room, agentId]) => {

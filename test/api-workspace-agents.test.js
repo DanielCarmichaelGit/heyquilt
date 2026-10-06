@@ -41,6 +41,7 @@ test('flag off: every new route answers a plain 404', async () => {
       ['POST', `/v1/workspaces/${id}/agent-invites`, { access: 'edit', sessions: 'all' }, 'mem'],
       ['PUT', `/v1/sessions/r1/agents/${id}/exclude`, null, 'mem'],
       ['DELETE', `/v1/sessions/r1/agents/${id}/exclude`, null, 'mem'],
+      ['GET', '/v1/sessions/r1/agents/excluded', null, 'mem'],
       ['POST', `/v1/workspaces/${id}/sessions/r1/started`, { link: 'https://join.heyquilt.com/r1#s' }, 'mem']
     ]
     for (const [method, path, body, who] of cases) {
@@ -230,6 +231,44 @@ test('per-session keep-out: only the session owner adds or removes it', async ()
   assert.equal((await t.call('DELETE', path, null, 'lim')).status, 403)
   assert.deepEqual((await t.call('DELETE', path, null, 'mem')).body, { ok: true })
   assert.equal(await t.store.sessionAgentExcluded('keepout-1', agent.id), false)
+})
+
+test('kept-out agents: the session owner lists them by name, and letting one in again by a grant or an invite ends it', async () => {
+  const { agent } = await makeAgent(t, { name: 'Kit', ownerUserId: 'mem' })
+  const { agent: other } = await makeAgent(t, { name: 'Ola', ownerUserId: 'mem' })
+  await ownedRoom('keepout-2', 'person:mem')
+  for (const a of [agent, other]) await t.call('PUT', `/v1/sessions/keepout-2/agents/${a.id}/exclude`, null, 'mem')
+  const list = await t.call('GET', '/v1/sessions/keepout-2/agents/excluded', null, 'mem')
+  assert.equal(list.status, 200, JSON.stringify(list.body))
+  assert.deepEqual(list.body.agents.map((a) => [a.agentId, a.name]).sort((x, y) => x[1].localeCompare(y[1])), [[agent.id, 'Kit'], [other.id, 'Ola']])
+  assert.equal((await t.call('GET', '/v1/sessions/keepout-2/agents/excluded', null, 'lim')).status, 403)
+  assert.equal((await t.call('GET', '/v1/sessions/nope-room/agents/excluded', null, 'mem')).status, 404)
+  // The owner gives the agent access again: it is no longer kept out. The other one still is.
+  const g = await t.call('PUT', `/v1/sessions/keepout-2/grants/agent:${agent.id}`, { typeId: 'builtin:edit' }, 'mem')
+  assert.equal(g.status, 200, JSON.stringify(g.body))
+  assert.equal(await t.store.sessionAgentExcluded('keepout-2', agent.id), false)
+  assert.deepEqual((await t.call('GET', '/v1/sessions/keepout-2/agents/excluded', null, 'mem')).body.agents.map((a) => a.agentId), [other.id])
+  // Inviting it to the session by account (it was in the session before) does the same.
+  const at = Date.now() - 60000
+  await t.store.ingestPresence([
+    { id: `wa${++eventId}`, type: 'start', room: 'keepout-old', account: 'person:mem', name: 'Mo', owner: true, at },
+    { id: `wa${++eventId}`, type: 'start', room: 'keepout-old', account: `agent:${other.id}`, name: 'Ola', at }
+  ], Date.now())
+  const sent = await t.call('POST', '/v1/sessions/keepout-2/invites', { typeId: 'builtin:edit', to: { account: `agent:${other.id}` }, link: 'https://join.heyquilt.com/keepout-2#s' }, 'mem')
+  assert.equal(sent.status, 200, JSON.stringify(sent.body))
+  assert.equal(await t.store.sessionAgentExcluded('keepout-2', other.id), false)
+  assert.deepEqual((await t.call('GET', '/v1/sessions/keepout-2/agents/excluded', null, 'mem')).body.agents, [])
+})
+
+test('with workspaces off, a grant leaves an exclusion row alone', async () => {
+  const off = await startTestApi()
+  try {
+    const { agent } = await makeAgent(off, { ownerUserId: 'mem' })
+    await off.store.ingestPresence([{ id: 'off-1', type: 'start', room: 'keepout-off', account: 'person:mem', owner: true, name: '', at: Date.now() }], Date.now())
+    await off.store.addSessionAgentExclusion({ room: 'keepout-off', agentId: agent.id, excludedBy: 'person:mem' })
+    assert.equal((await off.call('PUT', `/v1/sessions/keepout-off/grants/agent:${agent.id}`, { typeId: 'builtin:edit' }, 'mem')).status, 200)
+    assert.equal(await off.store.sessionAgentExcluded('keepout-off', agent.id), true)
+  } finally { off.close() }
 })
 
 test('agent webhook: an agent sets an https URL and gets a new secret each time; people cannot; it can be removed', async () => {

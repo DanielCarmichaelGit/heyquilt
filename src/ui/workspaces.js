@@ -185,11 +185,11 @@ function sessionCardHtml (s, { live, dir, id, peers, lastUsed, mine }) {
 function peopleCardHtml (m, { admin, isOwner }) {
   const bot = m.kind === 'agent'
   return `
-  <div class="pc">${avatar(m.name || m.account, colorFor(m.name || m.account), false)}
+  <div class="pc${admin && !isOwner ? ' has-x' : ''}">${avatar(m.name || m.account, colorFor(m.name || m.account), false)}
     <div class="t"><b>${esc(m.name || m.account)}</b><span>${bot ? 'agent' : 'person'}${isOwner ? ' · owner' : ''}</span></div>
     ${isOwner ? '<span class="pill">Owner</span>' : admin
       ? `<select class="input sm" data-member-access="${esc(m.account)}" aria-label="Access for ${esc(m.name || m.account)}"><option value="edit" ${m.access === 'edit' ? 'selected' : ''}>Can edit</option><option value="view" ${m.access === 'view' ? 'selected' : ''}>View only</option></select>
-         <button class="btn sm ghost icon" data-member-remove="${esc(m.account)}" title="Remove" aria-label="Remove ${esc(m.name || m.account)}">${I.x}</button>`
+         <button class="btn sm ghost icon pc-x" data-member-remove="${esc(m.account)}" title="Remove" aria-label="Remove ${esc(m.name || m.account)}">${I.x}</button>`
       : `<span class="pill">${m.access === 'edit' ? 'Can edit' : 'View only'}</span>`}
   </div>`
 }

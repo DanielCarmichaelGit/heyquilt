@@ -712,7 +712,7 @@ export async function addWorkspaceTools (server, { fetch: fetchImpl = globalThis
   const fetchBytes = bytesFetcher(fetchImpl, { timeoutMs: TRANSFER_TIMEOUT_MS })
   const put = async (url, bytes, headers) => (await fetchImpl(url, { method: 'PUT', headers, body: bytes, signal: AbortSignal.timeout(TRANSFER_TIMEOUT_MS) })).status
   try {
-    registerWorkspaceTools(server, { call, fetchBytes, put, saveDir: path.join(quiltHome(), 'workspaces'), readLocal: (p) => readLocalFile(p, projectDirs()) })
+    registerWorkspaceTools(server, { call, fetchBytes, put, saveDir: path.join(quiltHome(), 'workspaces'), readLocal: (p) => readLocalFile(p, projectDirs()), guide: true })
   } catch { return false }
   return true
 }

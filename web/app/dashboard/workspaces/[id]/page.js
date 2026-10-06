@@ -3,11 +3,13 @@ import AppHeader from '@/components/AppHeader.js'
 import Notice from '@/components/Notice.js'
 import ConfirmDelete from '@/components/ConfirmDelete.js'
 import WorkspaceFiles from '@/components/WorkspaceFiles.js'
+import WorkspaceAgents from '@/components/WorkspaceAgents.js'
 import { requireUser } from '@/lib/session.js'
 import { apiCall } from '@/lib/api.js'
 import { when } from '@/lib/org-view.js'
 import { timeAgo } from '@/lib/activity-view.js'
-import { updateWorkspace, deleteWorkspace, setMember, removeMember } from '../actions.js'
+import { peopleOnly } from '@/lib/agent-placement.js'
+import { updateWorkspace, deleteWorkspace, setMember, removeMember, setAgentJoins, keepAgentOut, letAgentBackIn } from '../actions.js'
 
 export const metadata = { title: 'Workspace' }
 
@@ -42,11 +44,14 @@ export default async function WorkspacePage ({ params, searchParams }) {
       </>
     )
   }
-  const { access = {}, canDelete = false, owner = {}, members = [], sessions = [], files = [], usage } = r.data
+  const { access = {}, canDelete = false, owner = {}, members: all = [], agents = [], sessions = [], files = [], usage } = r.data
+  // Agents get their own rows, with why they are here; a member agent missing from `agents`
+  // (revoked, or gone from the org) stays under Members so it can be removed.
+  const members = peopleOnly(all, agents)
   const [collabsRes, agentsRes] = access.admin
     ? await Promise.all([apiCall(user, 'GET', '/v1/me/collaborators'), apiCall(user, 'GET', '/v1/agents')])
     : [null, null]
-  const toAdd = access.admin ? addable(members, collabsRes?.data?.collaborators, agentsRes?.data?.agents) : []
+  const toAdd = access.admin ? addable([...all, ...agents], collabsRes?.data?.collaborators, agentsRes?.data?.agents) : []
   const now = Date.now()
   return (
     <>
@@ -119,6 +124,7 @@ export default async function WorkspacePage ({ params, searchParams }) {
                 </form>))}
             </div>)}
         </section>
+        <WorkspaceAgents agents={agents} admin={!!access.admin} id={w.id} actions={{ setMember, removeMember, setAgentJoins, keepAgentOut, letAgentBackIn }} />
         <WorkspaceFiles files={files} usage={usage} downloadHref={(f) => `/api/workspaces/${encodeURIComponent(w.id)}/files/${encodeURIComponent(f.id)}`} />
         <section className='card stack'>
           <h2>Sessions</h2>

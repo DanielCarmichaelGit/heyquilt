@@ -94,9 +94,10 @@ const file$ = (wsId, fileId) => `${ws$(wsId)}/files/${encodeURIComponent(fileId)
  * Registers the library tools on an MCP server. `saveDir` (local only) is where binary or
  * large reads are saved; `readLocal(path) -> Buffer` (local only) lets writes take a file
  * from this computer (fromPath). `maxInline` caps text read back in an answer and text or
- * base64 sent in a call.
+ * base64 sent in a call. `guide` (local MCP) puts WORKSPACE_GUIDE in quilt_workspaces' description
+ * and answer, since the local MCP adds these tools after its instructions are sent.
  */
-export function registerWorkspaceTools (server, { call, fetchBytes, put, saveDir = null, maxInline = 2 * 1024 * 1024, readLocal = null }) {
+export function registerWorkspaceTools (server, { call, fetchBytes, put, saveDir = null, maxInline = 2 * 1024 * 1024, readLocal = null, guide = false }) {
   const answer = (text) => ({ content: [{ type: 'text', text }] })
   const tool = (fn) => async (args = {}) => {
     try {
@@ -150,10 +151,15 @@ export function registerWorkspaceTools (server, { call, fetchBytes, put, saveDir
     return file
   }
 
+  // With `guide`, the guide comes with quilt_workspaces (its description and the top of its
+  // answer), for a host whose instructions went out before these tools were added.
+  const lead = guide ? `${WORKSPACE_GUIDE}\n\n` : ''
   server.registerTool('quilt_workspaces', {
-    description: 'List the Quilt workspaces you can reach: name, id, your access (edit or view), open sessions, files and storage used. Workspace tools take a workspace by name or id.',
+    description: 'List the Quilt workspaces you can reach: name, id, your access (edit or view), open sessions, files and storage used. Workspace tools take a workspace by name or id.' + (guide ? ` ${WORKSPACE_GUIDE}` : ''),
     inputSchema: {}
-  }, tool(async () => {
+  }, tool(async () => lead + await listWorkspaces()))
+
+  async function listWorkspaces () {
     const { workspaces } = await call('GET', '/v1/me/workspaces')
     if (!workspaces.length) return 'You are not in any workspace yet. A person adds you to one in the Quilt app or on heyquilt.com.'
     const usage = await Promise.all(workspaces.map((w) => call('GET', ws$(w.id)).then((d) => d.usage || null, () => null)))
@@ -165,7 +171,7 @@ export function registerWorkspaceTools (server, { call, fetchBytes, put, saveDir
       if (w.archivedAt) parts.push('archived')
       return `- ${w.name} (id ${w.id}): ${parts.join(', ')}`
     }).join('\n')
-  }))
+  }
 
   server.registerTool('quilt_workspace_files', {
     description: 'List the files in a workspace library: path, kind, size, version, who uploaded it and when, and its note. Narrow with folder (just that folder) or glob (like "**/*.png"; * stays in a folder, ** crosses folders).',

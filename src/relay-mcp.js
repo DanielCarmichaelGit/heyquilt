@@ -24,7 +24,7 @@ import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, 
 import { HistoryLog, queryHistory, parseSince, formatHistory, currentTask } from './history.js'
 import { changeRefusal, TALK_REFUSED } from './session-access.js'
 import { describeSubscription, WEBHOOK_EVENTS } from './webhooks.js'
-import { registerWorkspaceTools, bytesFetcher } from './workspace-tools.js'
+import { registerWorkspaceTools, bytesFetcher, WORKSPACE_GUIDE } from './workspace-tools.js'
 
 const FEED_CAP = 300
 const ACTIVITY_CAP = 300
@@ -645,7 +645,8 @@ async function serve (mcp, req, res) {
  */
 export async function handleHostedMcp ({ req, res, pass, relay, workspaces = null }) {
   const image = String(req.headers['x-quilt-image'] || '').trim()
-  const mcp = new McpServer({ name: 'quilt', version: '0.2.0' }, { instructions: HOSTED_INSTRUCTIONS })
+  // The library's guide is part of the instructions only when its tools are offered.
+  const mcp = new McpServer({ name: 'quilt', version: '0.2.0' }, { instructions: workspaces ? `${HOSTED_INSTRUCTIONS}\n\n${WORKSPACE_GUIDE}` : HOSTED_INSTRUCTIONS })
   const me = pass.name
   const account = `${pass.kind}:${pass.sub}`
   const touched = new Set()

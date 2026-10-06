@@ -2,12 +2,14 @@ import { notFound } from 'next/navigation'
 import Notice from '@/components/Notice.js'
 import ConfirmDelete from '@/components/ConfirmDelete.js'
 import WorkspaceFiles from '@/components/WorkspaceFiles.js'
+import WorkspaceAgents from '@/components/WorkspaceAgents.js'
 import { requireUser } from '@/lib/session.js'
 import { apiCall } from '@/lib/api.js'
 import { orgMe } from '@/lib/org.js'
 import { when } from '@/lib/org-view.js'
 import { timeAgo } from '@/lib/activity-view.js'
-import { updateWorkspace, deleteWorkspace, setMember, removeMember } from '../actions.js'
+import { peopleOnly } from '@/lib/agent-placement.js'
+import { updateWorkspace, deleteWorkspace, setMember, removeMember, setAgentJoins, keepAgentOut, letAgentBackIn } from '../actions.js'
 
 export const metadata = { title: 'Workspace' }
 
@@ -35,9 +37,12 @@ export default async function WorkspacePage ({ params, searchParams }) {
   if (!w) return <p className='notice bad'>Could not load this workspace right now.</p>
   // Another org's workspace (or a personal one) is not on this org's pages.
   if (w.orgId !== org.id) notFound()
-  const { access = {}, canDelete = false, owner = {}, members = [], sessions = [], files = [], usage } = r.data
+  const { access = {}, canDelete = false, owner = {}, members: all = [], agents = [], sessions = [], files = [], usage } = r.data
+  // Agents get their own rows, with why they are here; a member agent missing from `agents`
+  // (revoked, or gone from the org) stays under Members so it can be removed.
+  const members = peopleOnly(all, agents)
   const membersRes = access.admin ? await apiCall(user, 'GET', `/v1/orgs/${slug}/members`) : null
-  const toAdd = access.admin ? addable(members, membersRes?.data?.members) : []
+  const toAdd = access.admin ? addable([...all, ...agents], membersRes?.data?.members) : []
   const now = Date.now()
   return (
     <div className='stack'>
@@ -112,6 +117,7 @@ export default async function WorkspacePage ({ params, searchParams }) {
               </form>))}
           </div>)}
       </section>
+      <WorkspaceAgents agents={agents} admin={!!access.admin} orgName={owner.name} id={w.id} slug={slug} actions={{ setMember, removeMember, setAgentJoins, keepAgentOut, letAgentBackIn }} />
       <WorkspaceFiles files={files} usage={usage} downloadHref={(f) => `/api/workspaces/${encodeURIComponent(w.id)}/files/${encodeURIComponent(f.id)}`} />
       <section className='card stack'>
         <h2>Sessions</h2>

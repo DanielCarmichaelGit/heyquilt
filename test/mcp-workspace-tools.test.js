@@ -13,6 +13,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js'
 import { startTestApi, API_URL } from './api-helpers.js'
 import { agentJoin } from '../src/agent-join.js'
+import { WORKSPACE_GUIDE } from '../src/workspace-tools.js'
 
 const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'quilt.js')
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-mcpws-${n}-`))
@@ -64,7 +65,7 @@ after(async () => {
   await off.close()
 })
 
-let baseline
+let baseline, instructions
 test('flag off: the tool list is the one without workspaces', async () => {
   const { home } = await homeWithAgent(off)
   const { client } = await startMcp({ home, apiUrl: off.api.url })
@@ -72,6 +73,10 @@ test('flag off: the tool list is the one without workspaces', async () => {
   baseline = await names(client)
   assert.ok(baseline.includes('quilt_status'))
   for (const n of WS_TOOLS) assert.equal(baseline.includes(n), false, n)
+  // No library guide anywhere: not in the instructions, not in any tool.
+  instructions = client.getInstructions()
+  assert.ok(!instructions.includes(WORKSPACE_GUIDE))
+  for (const t of (await client.listTools()).tools) assert.ok(!String(t.description).includes(WORKSPACE_GUIDE), t.name)
 })
 
 test('flag on with an agent: the eight tools appear, and work over MCP', async () => {
@@ -88,6 +93,12 @@ test('flag on with an agent: the eight tools appear, and work over MCP', async (
   const list = await client.callTool({ name: 'quilt_workspaces', arguments: {} })
   assert.equal(list.isError, undefined, text(list))
   assert.match(text(list), /Launch/)
+  // The tools arrive after the instructions were sent, so the guide comes with quilt_workspaces:
+  // in its description and at the top of its answer. The instructions are as before.
+  assert.equal(client.getInstructions(), instructions)
+  const desc = (await client.listTools()).tools.find((t) => t.name === 'quilt_workspaces').description
+  assert.ok(desc.includes(WORKSPACE_GUIDE), desc)
+  assert.ok(text(list).startsWith(WORKSPACE_GUIDE), text(list))
   const wrote = await client.callTool({ name: 'quilt_workspace_write_file', arguments: { workspace: 'Launch', path: 'brief.md', text: 'hello from the agent', note: 'brief' } })
   assert.equal(wrote.isError, undefined, text(wrote))
   const read = await client.callTool({ name: 'quilt_workspace_read_file', arguments: { workspace: ws.id, path: 'brief.md' } })

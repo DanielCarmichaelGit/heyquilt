@@ -302,7 +302,44 @@ Where agents work, in the app and on the website:
 When a session starts in a workspace the API's room-access answer includes every agent for which
 `agentJoinsSession` is yes, so the relay lets them in at once and the existing webhook path wakes them (a new
 "session started" event; mentions, DMs and tasks are unchanged). Hosted agents keep their one-room-at-a-time
-model: the library tools go through the API, not a room.
+model: the library tools go through the API, not a room. (Phase 3 built this differently: see below.)
+
+### Phase 3 as built
+
+What phase 3 changed from the design above, and why:
+
+- **Session links are forwarded, never stored.** The relay's admission is unchanged: a placed agent is not let
+  in by the room-access answer, because the relay needs the room secret and the API never holds it. Instead the
+  session's owner, right after starting a session in a workspace, hands its join link to the API
+  (`POST /v1/workspaces/:id/sessions/:room/started`), which sends a `session.started` event, carrying the link,
+  to every agent that joins every session there and has a webhook, in the same request, and keeps nothing.
+  Agents without a webhook still need an invite.
+- **The hand-off waits for the relay.** It answers 409 until the relay has reported who owns the session; the
+  app and the local MCP try again in the background for about 90 seconds (bounded, no duplicates).
+- **Only Quilt's links.** The hand-off accepts a link only for Quilt's hosted relay or the API's own
+  `relayUrl`, and sends it as Quilt writes it.
+- **An API-level agent webhook.** `session.started` goes to a webhook the agent sets on its account
+  (`PUT`/`DELETE /v1/agents/me/webhook`, the `quilt_workspace_webhook` and `quilt_workspace_webhook_off`
+  tools), not to the session webhooks of `quilt_webhook_subscribe`, since no session exists yet. Deliveries are
+  signed the same way. A receiver whose host resolves to a private address at send time is skipped.
+- **A limit per session:** a few announces per room (5 in 10 minutes).
+- **Hosted writes are capped at 2 MB** of text or base64 per call; hosted agents don't get an upload link back.
+  Local agents can also send a project file (`fromPath`) of up to 500 MB.
+- **Hosted agents reach the API with their pass.** The relay's hosted MCP calls the API with the agent's own
+  pass (`authorization: QuiltPass …`), accepted only on the workspace, workspace-file and workspace-agent
+  routes. The relay needs `QUILT_API_URL` and offers the library tools only while `GET /v1/features` says
+  workspaces are on; so does the local MCP. With the flag off, every tool list is as before.
+- **Guide text.** The hosted MCP adds the library guide to its instructions only when the tools are offered.
+  The local MCP adds its tools after connecting (its instructions are already sent), so the guide comes with
+  `quilt_workspaces`: in its description and at the top of its answer.
+- **Placement scopes limit session folders only;** the library follows the placement's access (edit or view).
+  Neither the app nor the website edits a placement's access or folder limits yet: a save keeps them.
+- **Keep-out can be undone.** A session owner who keeps an agent out of one session can let it back in from the
+  session's people list, and inviting the agent again clears the keep-out.
+- **Where the website shows it.** Available in and Joins are on the Agents page (personal) and on each agent row
+  of the org's People page (for members with Agents: Update), only while workspaces are on. A workspace's page
+  lists its agents with why each is there (This workspace, Placed, Global, Added by <org>) and, for admins, Joins.
+- **Deferred to phase 4:** the session people menu's "why here" for each agent.
 
 ### Example: marketing agent and editor agent
 

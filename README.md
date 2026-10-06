@@ -50,7 +50,9 @@ within milliseconds. Your agents can also see what the other agents are doing.
   invite. It joins a session from the invite link, you let it in, and it reads
   and writes the shared files like everyone else.
 - **Workspaces (behind a flag while they settle).** They gather your
-  sessions, the people and agents in them, and files, in one place.
+  sessions, the people and agents in them, and files, in one place. Agents
+  can work in them too: add one to a workspace, or say once where each of
+  your agents is available and whether it joins every new session there.
 
 ## Quick start
 
@@ -193,6 +195,11 @@ See [Claims](#claims).
 | `quilt_check_update` | Whether the Quilt you run (your image) is current; an old one is told to update the app |
 | `quilt_send_file` | Send a project file through chat (secrets and paths outside the project are refused) |
 | `quilt_get_file` | Download a shared file (again) |
+| `quilt_workspaces` | The workspaces you can reach, with your access, open sessions, files and storage used (only when the server has workspaces on, as are the tools below) |
+| `quilt_workspace_files` | A workspace library's files, by folder or glob |
+| `quilt_workspace_read_file` / `quilt_workspace_write_file` | Read a file from the library (text comes back inline; anything else as a link, saved to `~/.quilt/workspaces/` on a computer); put a file there with a short note |
+| `quilt_workspace_move_file` / `quilt_workspace_delete_file` | Move or rename a library file; delete one |
+| `quilt_workspace_webhook` / `quilt_workspace_webhook_off` | Be told when a session starts in one of your workspaces, with its link; or stop that |
 
 Any MCP-capable tool works: Claude Code, Cursor, Windsurf, Codex, Zed, and so on.
 Point its MCP config at the command `quilt` with args `["mcp"]`.
@@ -321,6 +328,36 @@ itself is asleep, and the subscription carries over when it joins another
 session. For an agent joined from a computer, its Quilt delivers and keeps the
 subscription in that folder's `.quilt/webhook.json`. URLs must be `https` and
 public (an agent on a computer may also use `http` on that computer).
+
+### Agents in workspaces
+
+With workspaces on, an agent works in a workspace in one of two ways:
+
+- **Added to it.** Someone who manages the workspace adds the agent (or makes
+  a one-time invite link for a new one) on the workspace's page, with edit or
+  view access.
+- **Placed there by its owner.** In **Settings › Agents** in the app, or on the
+  Agents page of heyquilt.com (an org's agents: on the org's People page, with
+  Agents: Update), **Available in** says where the agent works: only where it
+  is added, all your workspaces (or all the org's), or the ones you pick. A
+  workspace's admins can still change when a placed agent joins its sessions,
+  or keep it out of that workspace.
+
+**Joins** says whether the agent joins every session in the workspace as it
+starts, or only when invited. A session's owner can keep an agent out of that
+one session from its people list, and let it back in.
+
+An agent that joins every session needs to hear when one starts: it calls
+`quilt_workspace_webhook` with a public `https` URL, and when someone starts a
+session in one of its workspaces, Quilt POSTs `session.started` there with
+the session's invite link, signed like the session webhooks above. Quilt never
+keeps the link: it is passed on in the same moment. Receivers whose address
+resolves to a private network are skipped.
+
+The library tools read and write the workspace's files (images, video,
+documents, data), so agents put what they make there with a note instead of
+in chat. A hosted agent can write up to 2 MB per call (text or base64); an
+agent on a computer can also send a project file of up to 500 MB.
 
 ### Agents are told to update
 

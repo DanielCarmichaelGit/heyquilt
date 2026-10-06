@@ -12,7 +12,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { startTestApi, makeAgent } from './api-helpers.js'
 import { startServer } from '../src/server.js'
-import { watchFeatures } from '../src/relay-mcp.js'
+import { watchFeatures, HOSTED_INSTRUCTIONS } from '../src/relay-mcp.js'
+import { WORKSPACE_GUIDE } from '../src/workspace-tools.js'
 import { newPassKeys, signPass, PASS_TTL_MS } from '../src/passes.js'
 
 process.env.HOME = process.env.USERPROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-rwt-home-'))
@@ -71,6 +72,8 @@ test('workspaces on: a hosted agent gets the library through the API\'s /mcp, wi
 
   const c = await viaApi(api, accessKey)
   assert.deepEqual(await names(c), [...await baselineTools(), ...LIBRARY].sort(), 'the session tools plus exactly the library')
+  // The library's guide rides the instructions only where the tools are offered.
+  assert.equal(c.getInstructions(), `${HOSTED_INSTRUCTIONS}\n\n${WORKSPACE_GUIDE}`)
   const call = (name, args = {}) => c.callTool({ name, arguments: args })
 
   // Not in any session: session tools still say to join, the library works.
@@ -149,6 +152,7 @@ test('workspaces off: the hosted tool list is exactly as before', async () => {
   const { accessKey } = await makeAgent(api, { name: 'Offline', ownerUserId: 'mem' })
   const c = await viaApi(api, accessKey)
   assert.deepEqual(await names(c), await baselineTools())
+  assert.equal(c.getInstructions(), HOSTED_INSTRUCTIONS, 'no library guide without the library')
   await assert.rejects(c.callTool({ name: 'quilt_workspaces', arguments: {} }).then((r) => { if (r.isError) throw new Error(out(r)) }), /not found|quilt_workspaces/)
 })
 

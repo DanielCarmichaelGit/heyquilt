@@ -7,6 +7,7 @@ import { apiCall } from '@/lib/api.js'
 import { rememberSpace } from '@/lib/space-cookie.js'
 import { isSlug } from '@/lib/space.js'
 import { isRoom } from '@/lib/activity-view.js'
+import { placementFromForm } from '@/lib/agent-placement.js'
 
 // The Computers and Agents pages, and the overview that counts them. These actions don't
 // redirect: the form re-renders the page it was on, so revalidating that page (and the
@@ -53,6 +54,17 @@ export async function revokeAgent (formData) {
   const user = await requireUser(AGENTS)
   await apiCall(user, 'DELETE', `/v1/agents/${encodeURIComponent(String(formData.get('id')))}`)
   refresh(AGENTS)
+}
+
+// Where one of your agents works (workspaces on): its Available in and Joins. The answer
+// comes back to the form, which shows "Saved." or the API's reason.
+export async function saveAgentPlacement (prev, formData) {
+  const user = await requireUser(AGENTS)
+  const id = String(formData.get('id') || '')
+  const r = await apiCall(user, 'PUT', `/v1/me/agents/${encodeURIComponent(id)}/placement`, placementFromForm(formData))
+  if (!r.ok) return { error: r.data?.error || 'Couldn’t save where it works. Try again.' }
+  revalidatePath(AGENTS)
+  return { saved: true }
 }
 
 // Renaming a session you own, from the dashboard or its page (the API checks you own it).

@@ -8,6 +8,8 @@ import { isSlug } from '@/lib/space.js'
 
 const enc = (v) => encodeURIComponent(String(v ?? ''))
 const back = (path, q) => redirect(`${path}?${new URLSearchParams(q)}`)
+/** An agent's Joins from a form: 'all' or 'invited'; nothing (kept as it is) when the form has none. */
+const sessionsOf = (formData) => formData.get('sessions') ? (formData.get('sessions') === 'all' ? 'all' : 'invited') : undefined
 
 function baseOf (formData) {
   const slug = String(formData.get('slug') || '')
@@ -47,7 +49,7 @@ export async function setMember (formData) {
   const { base } = baseOf(formData)
   const id = String(formData.get('id')); const account = String(formData.get('account'))
   const user = await requireUser(base)
-  const r = await apiCall(user, 'PUT', `/v1/workspaces/${enc(id)}/members/${enc(account)}`, { access: formData.get('access') })
+  const r = await apiCall(user, 'PUT', `/v1/workspaces/${enc(id)}/members/${enc(account)}`, { access: formData.get('access'), sessions: sessionsOf(formData) })
   revalidatePath(`${base}/${id}`)
   back(`${base}/${id}`, r.ok ? { message: 'Saved.' } : { error: r.data?.error || 'Could not save.' })
 }
@@ -59,4 +61,27 @@ export async function removeMember (formData) {
   const r = await apiCall(user, 'DELETE', `/v1/workspaces/${enc(id)}/members/${enc(account)}`)
   revalidatePath(`${base}/${id}`)
   back(`${base}/${id}`, r.ok ? { message: 'Removed.' } : { error: r.data?.error || 'Could not remove.' })
+}
+
+// An agent the org placed here: the workspace's say over when it joins sessions, keeping it
+// out of this workspace, and letting it back in (which drops the workspace's say entirely).
+async function agentOverride (formData, method, body, done) {
+  const { base } = baseOf(formData)
+  const id = String(formData.get('id')); const agentId = String(formData.get('agentId'))
+  const user = await requireUser(base)
+  const r = await apiCall(user, method, `/v1/workspaces/${enc(id)}/agents/${enc(agentId)}`, body)
+  revalidatePath(`${base}/${id}`)
+  back(`${base}/${id}`, r.ok ? { message: done } : { error: r.data?.error || 'Could not save.' })
+}
+
+export async function setAgentJoins (formData) {
+  await agentOverride(formData, 'PUT', { sessions: sessionsOf(formData) || 'invited' }, 'Saved.')
+}
+
+export async function keepAgentOut (formData) {
+  await agentOverride(formData, 'PUT', { excluded: true }, 'It is no longer in this workspace.')
+}
+
+export async function letAgentBackIn (formData) {
+  await agentOverride(formData, 'DELETE', undefined, 'It is back in this workspace.')
 }

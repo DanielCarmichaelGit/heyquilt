@@ -2,12 +2,15 @@ import { notFound } from 'next/navigation'
 import Notice from '@/components/Notice.js'
 import AgentInvite from '@/components/AgentInvite.js'
 import AgentInviteList from '@/components/AgentInviteList.js'
+import AgentPlacement from '@/components/AgentPlacement.js'
 import { requireUser } from '@/lib/session.js'
 import { apiCall } from '@/lib/api.js'
 import { orgMe } from '@/lib/org.js'
 import { allowed, assignableRoles } from '@/lib/org-view.js'
 import { HOSTED_NOTE } from '@/lib/agent-view.js'
-import { setRole, removeMember, setAgentTeam, createOrgAgentInvite, cancelOrgAgentInvite, orgAgentInviteWaiting } from './actions.js'
+import { workspacesOn } from '@/lib/workspaces.js'
+import { orgWorkspaces } from '@/lib/agent-placement.js'
+import { setRole, removeMember, setAgentTeam, createOrgAgentInvite, cancelOrgAgentInvite, orgAgentInviteWaiting, saveOrgAgentPlacement } from './actions.js'
 import { leaveOrg } from '../actions.js'
 
 export const metadata = { title: 'People' }
@@ -74,6 +77,13 @@ export default async function People ({ params, searchParams }) {
     canInvite ? apiCall(user, 'GET', `/v1/orgs/${slug}/agent-invites`) : null
   ])
   const members = membersRes.data?.members || []
+  // With workspaces on and Agents: Update, each agent's Available in and Joins, among the org's workspaces.
+  const placing = canSetAgentRole && await workspacesOn(user.accessToken)
+  const [orgAgentsRes, workspacesRes] = placing
+    ? await Promise.all([apiCall(user, 'GET', `/v1/orgs/${slug}/agents`), apiCall(user, 'GET', '/v1/me/workspaces')])
+    : [null, null]
+  const placements = new Map((orgAgentsRes?.data?.agents || []).map((a) => [a.id, a.placement]))
+  const workspaces = orgWorkspaces(workspacesRes?.data?.workspaces, slug)
   const roles = assignableRoles(rolesRes?.data?.roles, me)
   const pick = (list) => list.map(({ id, name }) => ({ id, name }))
   const canPick = (m) => roles.length > 0 && (!m.roleId || roles.some((r) => r.id === m.roleId))
@@ -104,6 +114,8 @@ export default async function People ({ params, searchParams }) {
                       <button className='btn ghost danger'>Revoke</button>
                     </form>)}
                 </span>
+                {/* Under the row, full width (the row wraps). */}
+                {placing && placements.has(m.agentId) && <div style={{ flexBasis: '100%' }}><AgentPlacement agent={{ id: m.agentId, name: m.name, placement: placements.get(m.agentId) }} workspaces={workspaces} action={saveOrgAgentPlacement} slug={slug} allLabel={`All ${me.org.name} workspaces`} /></div>}
               </div>)
             : (
               <div key={m.id} className='list-row'>

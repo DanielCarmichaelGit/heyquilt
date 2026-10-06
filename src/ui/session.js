@@ -7,6 +7,7 @@ import { conversations } from './feed-convs.js'
 import { renderTree, openTreeMenu, closeTreeMenu, claimFolder } from './tree.js'
 import { renderFileView } from './fileview.js'
 import { gitMarkup, bindGit, unbindGit, renderGitButton, gitFilesChanged, gitSessionChanged } from './git.js'
+import { changesMarkup, bindChanges, unbindChanges, changesChanged } from './changes.js'
 import { quiltMark } from './mark.js'
 import { openSettings } from './home.js'
 import { fileCardHref, renderable, textHtml, mentionAt, mentionCandidates, completeMention } from './chat.js'
@@ -77,6 +78,7 @@ export function mountSession (id) {
         <button class="people-btn" id="people-btn" aria-haspopup="true" aria-expanded="false" aria-controls="people-menu"></button>
         <div class="popover people-menu" id="people-menu" role="dialog" aria-label="People in this session" hidden></div>
       </div>
+      ${changesMarkup()}
       ${gitMarkup()}
       ${openInMarkup()}
       <button class="btn sm ghost" id="tasks-btn" type="button" aria-pressed="false" title="Tasks">${I.board}<span class="wide-only">Tasks</span><span class="tasks-n" id="tasks-count" hidden></span></button>
@@ -130,6 +132,7 @@ export function mountSession (id) {
   bindAccess()
   for (const el of [$('#merges'), $('#main')]) bindMerges(el, { sessionId: () => current, onCompare: openMerge, editors: editorsByPreference })
   bindGit(id, mounted.signal)
+  bindChanges(id, mounted.signal, { onOpen: openFile })
   bindMain()
   bindTreeEvents()
   bindChat()
@@ -161,6 +164,7 @@ export function sessionUnmount () {
   closeTreeMenu()
   unbindGit()
   pendingAssign = ''
+  unbindChanges()
   current = null
 }
 
@@ -178,6 +182,7 @@ export function sessionUpdated (id) {
   if (ws(id).mode === 'ai') renderMain()
   if (ws(id).mode === 'tasks') paintBoard()
   scheduleTree()
+  changesChanged()
 }
 
 export function sessionMessage (id) {
@@ -213,6 +218,7 @@ export function sessionFileChanged (id, { path }) {
   if (id !== current) return
   scheduleTree()
   gitFilesChanged()
+  changesChanged()
   const w = ws(id)
   if (w.mode === 'merge' && shownMerge()?.path === path) refreshFile(path, false)
   if (w.fileTabs.includes(path)) {

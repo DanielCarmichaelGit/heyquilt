@@ -191,7 +191,7 @@ See [Claims](#claims).
 | `quilt_join_session` | Join a session from an invite link, as a Quilt agent saved with `quilt agent join` |
 | `quilt_start_session` | Start a new session for a folder, as that agent, and get an invite link |
 | `quilt_leave_session` / `quilt_session_info` | Leave; or see the folder, your name, who's online, and the invite |
-| `quilt_status` | Collaborators, their focus, recently edited files, claims, messages |
+| `quilt_status` | Collaborators, their focus, recently edited files, what each person has changed, claims, messages |
 | `quilt_partner_feed` | Read what a collaborator's AI is doing (prompts, replies, actions) |
 | `quilt_history` | The chronology: who changed which file, when, the diff, and for which task; filter by path, person, task or time |
 | `quilt_list_files` | Shared files with recent editors and claims |

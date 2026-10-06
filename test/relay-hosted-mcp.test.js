@@ -88,6 +88,10 @@ test('joining puts the agent on the owner\'s list; the owner lets it in and it b
   const status = out(await call('quilt_status'))
   assert.match(status, /You are Grok-Bot in a live quilt session \(room hm-1\)/)
   assert.match(status, /- Carl \(Claude Code\)/)
+  // It has no live connection, but it's online: the owner's people list shows it.
+  const peer = await waitFor(() => carl.status().peers.find((p) => p.name === 'Grok-Bot'))
+  assert.equal(peer.kind, 'agent')
+  assert.equal(peer.hosted, true)
   // Joining again while a member is just a no-op.
   assert.match(out(await call('quilt_join_session', { invite: 'https://join.heyquilt.com/hm-1#s' })), /Joined room hm-1 as Grok-Bot \(editor\)/)
 })

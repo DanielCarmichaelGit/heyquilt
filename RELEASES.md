@@ -9,6 +9,10 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.13 — 2026-10-07
+
+- **Agents that work over the web show up with everyone else.** An agent that joins through Quilt's hosted connection (like a Grok bot) or a chat link has no app running, so it never appeared among the people in a session, only at the bottom of the member list in the people menu, even while it was answering in chat. It now shows in the people count, the chat header, @mentions and task assignment, and to every AI's `quilt_status`, for a few minutes after each thing it does.
+
 ## 0.3.12 — 2026-10-07
 
 See what has changed in a session, and who changed it.

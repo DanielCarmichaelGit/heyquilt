@@ -3352,6 +3352,13 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
           .map(([p, ts]) => ({ path: p, secondsAgo: Math.round((now - ts) / 1000) }))
       })
     }
+    // Agents working over HTTP (the hosted MCP, chat links) have no live connection, so no
+    // presence: the relay marks them online for a few minutes after each call instead.
+    for (const m of this.members) {
+      if (m.online && m.kind === 'agent' && m.name !== this.name && !peers.some((p) => p.name === m.name)) {
+        peers.push({ name: m.name, tool: '', kind: 'agent', hosted: true, agent: null, agents: [], work: null, focus: '', editing: [] })
+      }
+    }
     return {
       room: this.room,
       server: this.server,

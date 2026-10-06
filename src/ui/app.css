@@ -1091,7 +1091,7 @@ body.has-update #app { padding-top: var(--update-bar); } /* padding, not margin:
 .ws-stats { display: flex; gap: 14px; font-size: 12px; color: var(--muted); }
 .ws-stats b { color: var(--text); font-weight: 600; }
 .ws-foot { display: flex; align-items: center; gap: 8px; padding: 10px 16px 12px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
-.ws-card.add { align-items: center; justify-content: center; gap: 8px; border: 1.5px dashed var(--border-strong); box-shadow: none; background: transparent; color: var(--muted); }
+.ws-card.add { align-items: center; justify-content: center; gap: 8px; padding: 24px; text-align: center; border: 1.5px dashed var(--border-strong); box-shadow: none; background: transparent; color: var(--muted); }
 .ws-card.add b { color: var(--text); font-weight: 600; }
 .ws-card.add span { font-size: 12.5px; }
 .ws-card.add:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 4%, transparent); }

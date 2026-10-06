@@ -15,8 +15,10 @@ import { runSession, decodeInvite, newConn, readConfig, runningElsewhere, person
 import { INVALID_INVITE } from './ui/invite.js'
 import { toolLabel } from './agents/common.js'
 import { sessionPasses } from './pass-source.js'
-import { pickAgent, agentAccess } from './agent-join.js'
-import { setSessionWorkspace, announceSessionStarted, announceWhenReported } from './account.js'
+import { pickAgent, agentAccess, readAgent } from './agent-join.js'
+import { setSessionWorkspace, announceSessionStarted, announceWhenReported, apiUrl } from './account.js'
+import { registerWorkspaceTools } from './workspace-tools.js'
+import { quiltHome } from './legacy.js'
 import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, MAX_VERIFIED } from './agent-task-workflow.js'
 import { formatHistory } from './history.js'
 import { renderInbox, describeEvent, INBOX_HOW } from './inbox.js'
@@ -658,6 +660,81 @@ export async function runMcp () {
   }
 
   await server.connect(new StdioServerTransport())
+  // The workspace library tools arrive a moment later (the client is told the tool list
+  // changed), so startup never waits on the API.
+  addWorkspaceTools(server).catch(() => {})
+}
+
+// How long the startup check of the API's features may take before the tools are left out.
+export const FEATURES_TIMEOUT_MS = 2000
+// Up to the library's largest file, to or from storage.
+const TRANSFER_TIMEOUT_MS = 10 * 60 * 1000
+const MAX_LOCAL_FILE = 500 * 1024 * 1024
+
+/**
+ * Adds the workspace library tools when this computer has an agent (the only one saved, as
+ * sessions pick it) and that agent's API says workspaces are on. Anything else (no agent,
+ * several, the flag off, the API slow, unreachable or odd) adds nothing and never throws.
+ * Returns whether the tools were added.
+ */
+export async function addWorkspaceTools (server, { fetch: fetchImpl = globalThis.fetch } = {}) {
+  let name, api
+  try {
+    name = pickAgent()
+    api = String(readAgent({ name }).api || apiUrl()).replace(/\/+$/, '')
+  } catch { return false }
+  try {
+    const res = await fetchImpl(`${api}/v1/features`, { signal: AbortSignal.timeout(FEATURES_TIMEOUT_MS) })
+    if (!res.ok || (await res.json())?.workspaces !== true) return false
+  } catch { return false }
+  const call = async (method, route, body) => {
+    // A fresh access key every call: it is refreshed (and saved) when it has nearly run out.
+    const saved = await agentAccess({ name, fetch: fetchImpl })
+    let res
+    try {
+      res = await fetchImpl(String(saved.api).replace(/\/+$/, '') + route, {
+        method,
+        headers: { authorization: `Bearer ${saved.accessKey}`, ...(body ? { 'content-type': 'application/json' } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(60_000)
+      })
+    } catch (err) {
+      throw new Error(`Couldn't reach Quilt (${err.cause?.code || err.message}).`)
+    }
+    const data = await res.json().catch(() => null)
+    if (!res.ok) throw Object.assign(new Error(data?.error || `Quilt answered ${res.status}.`), { status: res.status })
+    if (!data || typeof data !== 'object') throw new Error('Quilt sent back something unexpected.')
+    return data
+  }
+  const fetchBytes = async (url) => {
+    const res = await fetchImpl(url, { signal: AbortSignal.timeout(TRANSFER_TIMEOUT_MS) })
+    if (!res.ok) throw new Error(`the download failed (${res.status})`)
+    return Buffer.from(await res.arrayBuffer())
+  }
+  const put = async (url, bytes, headers) => (await fetchImpl(url, { method: 'PUT', headers, body: bytes, signal: AbortSignal.timeout(TRANSFER_TIMEOUT_MS) })).status
+  try {
+    registerWorkspaceTools(server, { call, fetchBytes, put, saveDir: path.join(quiltHome(), 'workspaces'), readLocal: readLocalFile })
+  } catch { return false }
+  return true
+}
+
+/**
+ * A file on this computer for quilt_workspace_write_file's fromPath. Never the agent's own
+ * keys or anything else in ~/.quilt, nor an .env file, so a prompt-injected agent can't put
+ * secrets in a library other people read.
+ */
+async function readLocalFile (p) {
+  const abs = await fs.promises.realpath(path.resolve(p))
+  let home = path.resolve(quiltHome())
+  try { home = await fs.promises.realpath(home) } catch {}
+  const rel = path.relative(home, abs)
+  if (rel === '' || !(rel.startsWith('..') || path.isAbsolute(rel))) throw new Error('Quilt\'s own files (keys and settings) are not sent to a library.')
+  const base = path.basename(abs)
+  if (/^\.env(\..*)?$/.test(base) && base !== '.env.example') throw new Error('refusing to send environment/secret files')
+  const st = await fs.promises.stat(abs)
+  if (!st.isFile()) throw new Error(`${p} is not a file`)
+  if (st.size > MAX_LOCAL_FILE) throw new Error('That file is too large (at most 500 MB).')
+  return fs.promises.readFile(abs)
 }
 
 // Agents may only send or save files inside the project folder, and may not

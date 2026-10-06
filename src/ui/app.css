@@ -516,6 +516,8 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 .side-sessions .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
 .side-sessions .ct { font-size: 11.5px; font-weight: 700; color: var(--muted); background: var(--panel-2); border-radius: 999px; padding: 0 7px; line-height: 18px; }
 /* Settings and Shut down sit at the bottom, under a rule, apart from the places you go. */
+/* Narrow windows' top bar and drawer (see the 760px block below); hidden on wide windows. */
+.mbar, .side-scrim { display: none; }
 .side-foot { margin-top: auto; display: flex; flex-direction: column; gap: 2px; padding-top: 10px; border-top: 1px solid var(--border); }
 
 .page { overflow-y: auto; padding: 44px 48px 64px; }
@@ -611,14 +613,19 @@ details.choice-foot .hint { display: block; margin-top: 6px; }
    row of workspaces. */
 @media (max-width: 760px) {
   .app-shell { grid-template-columns: 1fr; height: auto; min-height: 100vh; }
-  .side { border-right: 0; border-bottom: 1px solid var(--border); padding: 14px 16px; gap: 4px; }
-  .side .brand { padding-bottom: 8px; }
-  .side-nav { flex-direction: row; flex-wrap: wrap; gap: 4px; }
-  .side-nav button { width: auto; }
-  .side-label { padding: 10px 10px 2px; }
-  .side-workspaces { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; padding-bottom: 2px; }
-  .side-workspaces button { flex: none; max-width: 220px; }
-  .side-foot { margin-top: 4px; padding-top: 6px; }
+  /* A slim sticky bar instead of the sidebar. */
+  .mbar { display: flex; align-items: center; gap: 6px; position: sticky; top: 0; z-index: 30; height: 52px; padding: 0 10px; background: color-mix(in srgb, var(--panel) 92%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); }
+  .mbar .btn.icon { width: 36px; height: 36px; }
+  .mbar-brand { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; background: none; cursor: pointer; }
+  .mbar-brand svg { width: 26px; height: 26px; }
+  .mbar-title { flex: 1; min-width: 0; font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mbar-me { padding: 0; border: 0; background: none; cursor: pointer; border-radius: 50%; }
+  .mbar-me .avatar { width: 32px; height: 32px; font-size: 13px; }
+  /* The full sidebar becomes a drawer. */
+  .side { position: fixed; top: 0; bottom: 0; left: 0; z-index: 41; width: min(300px, 86vw); height: 100dvh; transform: translateX(-102%); transition: transform .2s ease; box-shadow: var(--shadow-pop); border-right: 1px solid var(--border); }
+  .app-shell.side-open .side { transform: none; }
+  .app-shell.side-open .side-scrim { display: block; position: fixed; inset: 0; z-index: 40; background: rgba(43, 42, 56, .35); }
+  @media (prefers-reduced-motion: reduce) { .side { transition: none; } }
   .page { padding: 28px 16px 48px; overflow: visible; }
   .page-head h1 { font-size: 30px; }
   .choices { grid-template-columns: 1fr; }
@@ -1262,4 +1269,10 @@ body.has-update #app { padding-top: var(--update-bar); } /* padding, not margin:
 .tile.dragging, tr.dragging { opacity: .45; }
 .tile.folder.drop-on, tr.is-folder.drop-on, .crumbs a.drop-on { outline: 2px solid var(--accent); outline-offset: 2px; background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
 .files-sec .sec-head .btn.sm { height: 28px; }
+.files-sec .sec-head { flex-wrap: wrap; row-gap: 4px; }
+.files-sec .sec-head .hint, .files-sec .sec-link { white-space: nowrap; }
+@media (max-width: 560px) {
+  /* On a phone the usage line drops under the heading instead of squeezing it. */
+  .files-sec .sec-head .hint { order: 10; flex-basis: 100%; }
+}
 

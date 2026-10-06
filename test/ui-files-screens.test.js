@@ -50,6 +50,10 @@ test('the sidebar stays a sidebar at the desktop app\'s minimum width (880px); i
   const css = ui('app.css')
   assert.ok(css.includes('@media (max-width: 760px) {\n  .app-shell { grid-template-columns: 1fr;'))
   assert.ok(!/@media \(max-width: 900px\) \{\n  \.app-shell/.test(css))
-  assert.ok(css.includes('.side-workspaces { flex-wrap: nowrap; overflow-x: auto;'))
+  // Narrow windows get a slim bar and the sidebar as a drawer, not a stacked header.
+  assert.ok(css.includes('.mbar, .side-scrim { display: none; }'))
+  assert.ok(css.includes('.app-shell.side-open .side { transform: none; }'))
+  const h = ui('home.js')
+  for (const bit of ['function mobileBarHtml (view)', 'data-side-open', 'data-side-close', "shell.classList.toggle('side-open', open)", '${mobileBarHtml(view)}']) assert.ok(h.includes(bit), bit)
 })
 

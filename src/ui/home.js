@@ -23,6 +23,8 @@ export function renderShell (view) {
   const scroll = page ? page.scrollTop : 0
   $('#app').innerHTML = `
     <div class="app-shell">
+      ${mobileBarHtml(view)}
+      <div class="side-scrim" data-side-close></div>
       ${sidebarHtml(view)}
       <main class="page" id="page">${view === 'settings' ? settingsHtml() : view.startsWith('wsfiles:') ? allFilesHtml(state.workspace) : view.startsWith('ws:') ? workspacePageHtml() : homeHtml()}</main>
     </div>`
@@ -38,6 +40,27 @@ export function renderShell (view) {
     bindWorkspacePage($('#page'), { go, rerender: () => renderShell(view), newSessionDialog, inviteDialog: workspaceInviteDialog, dialog })
     bindSessionActions($('#page'))
   } else bindHome()
+}
+
+/** Narrow windows: a slim bar with the logo, where you are, your avatar and a menu
+ * button; the full sidebar slides in from the left as a drawer. Hidden on wide windows. */
+function placeName (view) {
+  if (view === 'settings') return 'Settings'
+  const id = view.startsWith('wsfiles:') ? view.slice(8) : view.startsWith('ws:') ? view.slice(3) : ''
+  if (!id) return 'Home'
+  const name = (state.workspaces || []).find((w) => w.id === id)?.name || state.workspace?.workspace?.name || 'Workspace'
+  return view.startsWith('wsfiles:') ? `${name} · Files` : name
+}
+
+function mobileBarHtml (view) {
+  const p = state.profile
+  return `
+    <header class="mbar">
+      <button type="button" class="btn ghost icon" data-side-open aria-label="Open the menu" aria-expanded="false">${I.menu}</button>
+      <button type="button" class="mbar-brand" data-view="home" aria-label="Home">${quiltMark({ word: false })}</button>
+      <span class="mbar-title">${esc(placeName(view))}</span>
+      <button type="button" class="mbar-me" data-view="settings" title="Your profile and settings">${avatar(p.name, p.color)}</button>
+    </header>`
 }
 
 function sidebarHtml (view) {
@@ -93,6 +116,13 @@ function bindSidebar () {
   document.querySelectorAll('[data-view]').forEach((b) => {
     b.onclick = () => go(b.dataset.view)
   })
+  // The narrow drawer: open from the bar's menu button; the scrim, Escape or going anywhere closes it.
+  const shell = $('.app-shell')
+  const toggle = $('[data-side-open]')
+  const setDrawer = (open) => { shell.classList.toggle('side-open', open); toggle?.setAttribute('aria-expanded', String(open)) }
+  if (toggle) toggle.onclick = () => setDrawer(!shell.classList.contains('side-open'))
+  $('[data-side-close]')?.addEventListener('click', () => setDrawer(false))
+  shell.addEventListener('keydown', (e) => { if (e.key === 'Escape' && shell.classList.contains('side-open')) { setDrawer(false); toggle?.focus() } })
   const btn = $('#sessions-btn')
   const menu = $('#sessions-menu')
   const setOpen = (open) => { menu.hidden = !open; btn.setAttribute('aria-expanded', String(open)) }

@@ -548,3 +548,12 @@ test('an agent pass reaches the workspace routes and nothing else; person, expir
     assert.deepEqual([r.status, r.body], [404, { error: 'not found' }])
   } finally { off.close() }
 })
+
+test('letAgentBackIn logs a failed clean-up instead of failing the grant', async () => {
+  const { letAgentBackIn } = await import('../src/api/routes/grants.js')
+  const logs = []
+  const store = { removeSessionAgentExclusion: async () => { throw new Error('table missing') } }
+  await letAgentBackIn(store, 'room-x', 'agent:5983184b-937a-469c-9728-c2ec96030f93', true, (m) => logs.push(m))
+  assert.equal(logs.length, 1)
+  assert.match(logs[0], /table missing/)
+})

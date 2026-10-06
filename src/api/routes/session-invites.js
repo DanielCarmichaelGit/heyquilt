@@ -29,7 +29,7 @@ export function sessionInviteRoutes ({ store, person, now, site, mailer, log, li
     }
     // No grant, no invite: an open one would block inviting them again.
     try { await store.putGrant(grant) } catch (err) { await store.cancelSessionInvite(invite.id).catch(() => {}); throw err }
-    await letAgentBackIn(store, grant.room, grant.account, workspaces)
+    await letAgentBackIn(store, grant.room, grant.account, workspaces, log)
     return invite
   }
   // An account invite shows the name the owner saw, never the person's email.

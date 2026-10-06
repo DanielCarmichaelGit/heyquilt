@@ -29,12 +29,13 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
  * The owner letting an agent into a session again (a grant) also ends keeping it out of that
  * session, which removing it from a session in a workspace starts. Only with workspaces on.
  */
-export async function letAgentBackIn (store, room, account, workspaces) {
+export async function letAgentBackIn (store, room, account, workspaces, log = () => {}) {
   if (!workspaces || !String(account).startsWith('agent:') || !UUID.test(account.slice(6))) return
-  await store.removeSessionAgentExclusion(room, account.slice(6))
+  // The grant is already written: a failure here is logged, never the request's answer.
+  try { await store.removeSessionAgentExclusion(room, account.slice(6)) } catch (err) { log(`could not end keeping ${account} out of ${room}: ${err.message}`) }
 }
 
-export function grantRoutes ({ store, person, now = Date.now, workspaces = false }) {
+export function grantRoutes ({ store, person, now = Date.now, workspaces = false, log = () => {} }) {
   return [
     ['GET', /^\/v1\/sessions\/([^/]+)\/grants$/, async (req, body, [room]) => {
       await sessionOwner(store, person, req, room)
@@ -50,7 +51,7 @@ export function grantRoutes ({ store, person, now = Date.now, workspaces = false
       let tighten
       try { tighten = cleanTighten(body.tighten) } catch (err) { throw new HttpError(400, err.message) }
       const grant = await store.putGrant({ room, account, typeId: type.id, tighten, grantedBy: me })
-      await letAgentBackIn(store, room, account, workspaces)
+      await letAgentBackIn(store, room, account, workspaces, log)
       return { grant: await grantView(store, grant) }
     }],
 

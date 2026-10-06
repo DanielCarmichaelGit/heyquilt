@@ -137,16 +137,18 @@ test('ending a room while a file is being uploaded to the relay\'s disk does not
     const req = http.request(new URL(target.url, base), { method: 'PUT', headers: { 'content-length': 10 } }, (res) => { res.resume(); resolve(res.statusCode) })
     req.on('error', reject)
     req.write('hello')
-    // Ended once the relay has started writing the file, then the rest is sent.
-    const started = fs.watch(dir, () => {
-      started.close()
+    // Ended once the relay has started writing the file, then the rest is sent. Polled,
+    // not fs.watch: file events can be late or never come (sandboxes, some file systems).
+    // Stops when the test does, so a stuck run fails at its timeout instead of hanging.
+    const wait = () => { if (t.signal.aborted) throw new Error('stopped'); return new Promise((resolve) => setTimeout(resolve, 5)) }
+    ;(async () => {
+      while (!fs.readdirSync(dir).some((f) => f.endsWith('.tmp'))) await wait()
       const ended = new Promise((resolve) => owner.once('fatal', resolve))
       owner.adminRequest({ op: 'end' }).catch(() => {})
-      ended.then(async () => {
-        for (;;) { if (!fs.existsSync(dir)) break; await new Promise((resolve) => setImmediate(resolve)) }
-        req.end('world')
-      })
-    })
+      await ended
+      while (fs.existsSync(dir)) await wait()
+      req.end('world')
+    })().catch(reject)
   })
   assert.equal(await reply, 500)
   assert.equal((await (await fetch(`${base}/healthz`)).json()).ok, true, 'the relay is still running')

@@ -10,6 +10,15 @@ export const DONE_TTL_MS = 24 * 60 * 60 * 1000
 export const KINDS = ['conflict', 'ai', 'claimed']
 export const STATES = ['open', 'editing', 'done']
 export const HOWS = ['mine', 'theirs', 'hand', 'agent', 'review']
+// How the opener's side came about: pulled commits, an edit during a git command, or (null) offline.
+export const VIAS = ['pull', 'hold']
+
+/** What the opener did to the file, for agents and status text ("changed it offline"…). */
+export function mergeAction (m, deleted = !!m.oursDeleted) {
+  if (m.via === 'pull') return deleted ? 'pulled commits that delete it' : 'pulled commits that change it'
+  if (m.via === 'hold') return deleted ? 'deleted it during a git command' : 'changed it during a git command'
+  return deleted ? 'deleted it offline' : 'changed it offline'
+}
 
 const HEX_ID = /^[0-9a-f]{16}$/i
 // eslint-disable-next-line no-control-regex
@@ -52,11 +61,12 @@ export function publicMerge (v) {
   // Deleted offline: ours is gone, not merely too big to share (records from before this field have none).
   if (v.oursDeleted != null && typeof v.oursDeleted !== 'boolean') return null
   if (v.oursDeleted && v.ours != null) return null
+  if (v.via != null && !VIAS.includes(v.via)) return null
   return {
     id: v.id, path: v.path, by: v.by, byId: v.byId ?? null, others: v.others, ts: v.ts,
     kind: v.kind, state: v.state, ours: v.ours ?? null, base: v.base ?? null, theirsHash: v.theirsHash ?? null,
     binary: !!v.binary, local: !!v.local, oursDeleted: !!v.oursDeleted, claimedBy: v.claimedBy ?? null, resolvedBy: v.resolvedBy ?? null,
-    how: v.how ?? null, doneTs: v.doneTs ?? null, reason: v.reason ?? null
+    how: v.how ?? null, doneTs: v.doneTs ?? null, reason: v.reason ?? null, via: v.via ?? null
   }
 }
 
@@ -80,7 +90,7 @@ export function readMerges (map) {
 }
 
 /** Opens a record. Text beyond the cap stays on the opener's disk only (`local`); `oursDeleted`: the opener deleted the file. */
-export function openMerge (doc, map, { path, by, byId = null, others = [], kind, ours = null, oursDeleted = false, base = null, theirsHash = null, binary = false, claimedBy = null, reason = null }, origin) {
+export function openMerge (doc, map, { path, by, byId = null, others = [], kind, ours = null, oursDeleted = false, base = null, theirsHash = null, binary = false, claimedBy = null, reason = null, via = null }, origin) {
   if (!KINDS.includes(kind)) throw new Error('bad merge kind')
   const fits = (t) => t == null || t.length <= MAX_RECORD_TEXT
   const local = !fits(ours) || !fits(base)
@@ -89,7 +99,7 @@ export function openMerge (doc, map, { path, by, byId = null, others = [], kind,
     path, by, byId, others: others.filter((n) => n && n !== by).slice(0, 20), ts: Date.now(),
     kind, state: 'open',
     ours: fits(ours) ? ours : null, base: fits(base) ? base : null, theirsHash, binary: !!binary, local, oursDeleted: !!oursDeleted,
-    claimedBy, resolvedBy: null, how: null, doneTs: null, reason
+    claimedBy, resolvedBy: null, how: null, doneTs: null, reason, via
   }
   const out = publicMerge(rec)
   if (!out) throw new Error('bad merge record') // never write what readers would drop as junk

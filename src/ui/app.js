@@ -339,7 +339,7 @@ export function openInvite (id) {
       <button class="btn" type="button" id="inv-agent-make">${I.bot}<span>Invite an AI agent</span></button>
       <p class="error" id="inv-agent-error"></p>
     </div>
-    ${s.status.access?.owner ? `<div class="label inv-agent-label">A chat AI</div>
+    ${s.status.access?.owner || s.status.access?.canAdmit ? `<div class="label inv-agent-label">A chat AI</div>
     <div id="inv-chat" class="inv-agent">
       <p class="hint">For ChatGPT, claude.ai, Grok and other AIs you use in a chat window: make a chat link and paste it into the chat. It can read and send messages, read and add tasks, read files, and add pictures, documents and notes. It can't change existing files. It shows up in the session as its own member and works for 10 minutes: extend it from the people menu while it works, or make a new one after.</p>
       <button class="btn" type="button" id="inv-chat-make">${I.link}<span>Make a chat link</span></button>

@@ -340,12 +340,15 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 .t-caret.open { transform: rotate(90deg); }
 .t-ico { color: var(--faint); display: grid; place-items: center; width: 14px; }
 .t-dir .t-name { font-weight: 600; }
-.t-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 0 1 auto; }
+.t-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: min(4.5em, 100%); flex: 0 1 auto; }
 .t-badge { flex: none; display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; font-weight: 700; padding: 0 6px; height: 18px; border-radius: 999px; white-space: nowrap; }
 .t-badge svg { width: 10px; height: 10px; }
 .t-badge.edit { background: color-mix(in srgb, var(--edit) 15%, transparent); color: var(--edit); }
+/* On a narrow row the "edited" badge gives way first: the file name and a claim stay whole. */
+.t-badge.edit, .t-badge.mine { flex: 0 1 auto; min-width: 0; display: block; line-height: 18px; overflow: hidden; text-overflow: ellipsis; }
 .t-badge.mine { background: var(--panel-2); color: var(--muted); }
 .t-badge.claim { background: color-mix(in srgb, var(--violet) 16%, transparent); color: var(--violet); }
+.t-badge.claim.away { background: var(--panel-2); color: var(--muted); }
 .t-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--edit); flex: none; }
 .t-more { margin-left: auto; flex: none; width: 24px; height: 22px; border: 0; background: none; border-radius: 6px; color: var(--muted); cursor: pointer; display: grid; place-items: center; opacity: 0; }
 .t-row:hover .t-more, .t-row:focus-within .t-more, .t-more:focus-visible { opacity: 1; }
@@ -356,7 +359,12 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 .pop-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px; border: 0; background: none; border-radius: 4px; cursor: pointer; text-align: left; font-weight: 500; }
 .pop-item:hover, .pop-item:focus-visible { background: var(--panel-2); outline: none; }
 .pop-item svg, .pop-note svg { width: 14px; height: 14px; }
-.pop-note { display: flex; gap: 8px; align-items: center; padding: 8px; font-size: 13px; color: var(--muted); }
+.pop-note { display: flex; gap: 8px; align-items: flex-start; padding: 8px; font-size: 13px; color: var(--muted); }
+.pop-note svg { flex: none; margin-top: 2px; }
+.pop-queue { padding: 4px 8px 8px; display: flex; flex-direction: column; gap: 6px; }
+.pop-req { font-size: 13px; overflow-wrap: anywhere; }
+.pop-req .hint { margin-top: 2px; }
+.pop-form textarea.input { height: auto; }
 .pop-form { display: flex; flex-direction: column; gap: 8px; padding: 4px; }
 .pop-form .input { height: 34px; }
 .pop-form .btn { align-self: flex-end; }
@@ -706,59 +714,29 @@ details.choice-foot .hint { display: block; margin-top: 6px; }
 .gh-base { width: auto; flex: 0 1 170px; min-width: 110px; }
 .field > label .hint { text-transform: none; letter-spacing: 0; font-weight: 400; }
 
-.git-wrap { position: relative; }
-.git-label { max-width: 160px; overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); font-size: 12.5px; }
-.git-panel { position: absolute; top: calc(100% + 8px); right: 0; width: 380px; max-width: calc(100vw - 24px); padding: 12px; max-height: 76vh; overflow: auto; }
-.git-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-height: 30px; }
-.git-head .spacer { flex: 1; }
-.git-branch { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-weight: 600; }
-.git-branch svg { width: 14px; height: 14px; color: var(--muted); flex: none; }
-.git-branch code { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
-.git-chip { display: inline-flex; align-items: center; height: 22px; padding: 0 7px; border-radius: 3px; font-size: 11.5px; font-weight: 600; background: var(--panel-2); color: var(--muted); }
-.git-chip.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
-.git-chip.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
-.git-clean { margin: 6px 0 0; }
-.git-files { margin-top: 6px; }
-.git-files summary { cursor: pointer; font-size: 13px; color: var(--muted); font-weight: 500; padding: 2px 0; }
-.git-files ul { list-style: none; margin: 6px 0 0; padding: 6px; max-height: 180px; overflow: auto; background: var(--panel-2); border-radius: 4px; }
-.git-files li { display: flex; gap: 8px; align-items: baseline; font-size: 12.5px; padding: 1px 0; }
-.git-files code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-size: 12px; }
-.git-st { flex: none; width: 54px; font-size: 11px; font-weight: 600; color: var(--edit); }
-.git-st.new, .git-st.added { color: var(--ok); }
-.git-st.deleted, .git-st.conflicted { color: var(--bad); }
-.git-sec { display: flex; flex-direction: column; gap: 8px; padding-top: 12px; margin-top: 12px; border-top: 1px solid var(--border); }
-.git-sec-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.git-sec-head b { font-weight: 600; flex: none; }
-.git-sec-head .hint { font-size: 12px; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.git-sec > .btn { align-self: flex-start; }
-.git-sec .input { height: 34px; }
-.git-sec textarea.input { height: auto; min-height: 64px; }
-.git-pr-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.git-pr-foot .hint { font-size: 12px; line-height: 1.4; }
-.git-pr-foot .btn { flex: none; }
-.git-pr-foot a { display: inline-flex; align-items: center; gap: 5px; font-weight: 500; font-size: 13px; }
-.git-pr-foot a svg { width: 13px; height: 13px; }
-.git-panel .error { margin: 8px 0 0; }
-@media (max-width: 900px) {
-  .git-panel { position: fixed; top: 60px; right: 8px; left: 8px; width: auto; }
-}
 .tag.summary { font-size: 10.5px; font-weight: 600; color: var(--muted); background: var(--panel-2); }
 .pm-toggle { cursor: pointer; }
 .pm-toggle input { accent-color: var(--ok); }
 
+.branch-label { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-size: 12.5px; color: var(--muted); }
+.branch-label svg { flex: none; width: 15px; height: 15px; }
+/* A long branch name (or the branch in the pause note) ends in an ellipsis; the full name is in the tooltip. */
+.branch-label .branch-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.branch-label .tag { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* commit timing */
+.commit-wrap { position: relative; }
 .commit-chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 4px; border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--border)); background: color-mix(in srgb, var(--warn) 10%, var(--panel)); color: var(--warn); font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
 .commit-chip.ready { border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); background: color-mix(in srgb, var(--ok) 10%, var(--panel)); color: var(--ok); }
 .commit-chip svg { width: 13px; height: 13px; }
-.git-coord { margin: 4px 0 8px; }
-.git-coord:empty { display: none; }
-.coord-line { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 4px; font-size: 12.5px; font-weight: 600; }
-.coord-line svg { width: 13px; height: 13px; }
-.coord-line.wait { background: color-mix(in srgb, var(--warn) 10%, var(--panel)); color: var(--warn); }
-.coord-line.ok { background: color-mix(in srgb, var(--ok) 10%, var(--panel)); color: var(--ok); }
-.coord-reqs { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
-.coord-reqs li { padding: 6px 10px; border: 1px solid var(--border); border-radius: 4px; }
-.coord-reqs li div { color: var(--muted); }
+.commit-panel { position: absolute; top: calc(100% + 8px); right: 0; width: 320px; max-width: calc(100vw - 24px); padding: 10px; max-height: 70vh; overflow: auto; }
+.commit-reqs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+.commit-reqs li { padding: 8px 10px; border: 1px solid var(--border); border-radius: 4px; }
+.commit-reqs li div { color: var(--muted); margin: 2px 0 6px; }
+.commit-foot { display: flex; justify-content: flex-end; margin-top: 8px; }
+@media (max-width: 900px) {
+  .commit-panel { position: fixed; top: 60px; right: 8px; left: 8px; width: auto; }
+}
 .open-in { display: flex; }
 .open-in [data-open-in] + #open-in-more { margin-left: -1px; border-top-left-radius: 0; border-bottom-left-radius: 0; }
 .open-in .btn:has(+ #open-in-more) { border-top-right-radius: 0; border-bottom-right-radius: 0; }
@@ -1014,8 +992,8 @@ body.has-update #app { padding-top: var(--update-bar); } /* padding, not margin:
 .task button.task-move svg { width: 14px; height: 14px; flex: none; }
 .task button.task-move:hover { background: color-mix(in srgb, var(--accent) 16%, var(--panel)); }
 .task-foot { display: flex; align-items: center; gap: 6px; margin-top: 4px; min-height: 28px; }
-.task.mine { box-shadow: inset 3px 0 0 var(--accent), var(--shadow); }
-.task.mine-ai { box-shadow: inset 3px 0 0 var(--violet), var(--shadow); }
+.task.mine { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 55%, var(--panel)), var(--shadow); }
+.task.mine-ai { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--violet) 55%, var(--panel)), var(--shadow); }
 .task .dd-btn.task-assign, .task select.task-assign { width: 100%; margin-top: 8px; height: 26px; font-size: 12px; }
 .task-files { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 0; padding: 0; list-style: none; }
 /* What the agent ran and saw before moving the card to Done. */
@@ -1063,5 +1041,8 @@ body.has-update #app { padding-top: var(--update-bar); } /* padding, not margin:
 .pm-access .pm-now { flex-basis: 100%; }
 .pm-access select.input { flex: 1; }
 .pm-check { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+.pm-admit { display: flex; flex-direction: column; gap: 6px; padding: 4px 0 8px; font-size: 12.5px; color: var(--muted); }
+.pm-admit > span { font-weight: 600; color: var(--text); }
+.pm-admit .input { height: 30px; width: 100%; font-size: 12.5px; }
 .composer.muted .box { opacity: .6; }
 .composer.muted textarea { cursor: not-allowed; }

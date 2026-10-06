@@ -23,7 +23,7 @@ import { UpdateCheck } from './update-check.js'
 import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, pickChecklist, MAX_VERIFIED } from './agent-task-workflow.js'
 import { HistoryLog, queryHistory, parseSince, formatHistory, currentTask } from './history.js'
 import { changeRefusal, TALK_REFUSED } from './session-access.js'
-import { chatAbout, renderChatAbout, waitingOn, renderUnanswered } from './duties.js'
+import { chatAbout, renderChatAbout, waitingOn, renderUnanswered, heldRefusal, queuedFor, renderQueueNotice, renderQueued } from './duties.js'
 import { describeSubscription, WEBHOOK_EVENTS } from './webhooks.js'
 
 const FEED_CAP = 300
@@ -43,7 +43,8 @@ export const INSTRUCTIONS =
   '(open tasks assigned to you are listed first). Assign work with quilt_assign_task. ' +
   'quilt_history tells you who changed which file, when, with the diff: read it for the files you are about to touch. ' +
   'Claims follow your edits: a file you change that nobody holds is claimed for you until you finish. ' +
-  'Do not edit files someone else has claimed; message them with quilt_message instead. Claim ahead only for a larger change across several files. Always re-read a file right before editing it. ' +
+  'Do not edit files someone else has claimed: ask for the file in its file queue with quilt_request_file (a title and up to 300 characters on what you plan), and you are handed it with context when they are done. ' +
+  'When someone waits in the queue for a file you hold, finish your change and hand it off with quilt_handoff and your context; you cannot finish or release it before. Claim ahead only for a larger change across several files. Always re-read a file right before editing it. ' +
   TASK_WORKFLOW
 
 export const HOSTED_INSTRUCTIONS =
@@ -53,7 +54,8 @@ export const HOSTED_INSTRUCTIONS =
   'around, quilt_write_file to change a file (always read it right before; the file is claimed for you while you work on it, release it with quilt_release when done), quilt_claim ahead of a larger change across several files, quilt_share to ' +
   'tell everyone what you are doing, and quilt_message to talk. The shared task board is quilt_tasks, quilt_add_task, quilt_assign_task and quilt_move_task. ' +
   'quilt_history tells you who changed which file, when, with the diff: read it for the files you are about to touch. ' +
-  'Do not edit files someone else has claimed: a refused write tells you who holds the file; message them with quilt_message and carry on with other work. ' +
+  'Do not edit files someone else has claimed: a refused write tells you who holds the file; ask for it in its file queue with quilt_request_file (a title, and up to 300 characters on what you plan) and carry on with other work: you are woken when it is handed to you. ' +
+  'When someone waits in the queue for a file you hold, every answer says so: finish your change, then hand it off with quilt_handoff and your context (what you changed, what is left). You cannot finish a task or release the file before. A claim whose holder does nothing for 20 minutes goes to the next in its queue. ' +
   'Read what people said about a file before you change it: quilt_read_messages, and each write tells you what was said about that file. ' +
   'This rule is enforced: while someone who messaged or mentioned you waits for an answer, writes, claims and task changes are refused until you answer with quilt_message. ' +
   'Everyone sees your changes on their own disk within moments. ' +
@@ -65,6 +67,7 @@ const NOT_LINKED = 'Your user is not in a quilt session in their browser right n
   'browser and share a folder or join one from an invite link, then try again. (This link is theirs and works for every session.)'
 const NOT_JOINED = 'You are not in a session. Call quilt_join_session with an invite link (https://join.heyquilt.com/<room>#<secret>).'
 const WAITING = 'The session owner has not let you in yet. They see you on their list; call quilt_session_info to check again.'
+const DENIED = 'The session owner did not let you in. Ask them for a new invite and call quilt_join_session again.'
 const REMOVED = 'You are no longer in that session. Ask for a new invite and call quilt_join_session again.'
 // Let in by a grant, but the pass named no room: the accounts API retries with one for the
 // room in x-quilt-room. A client that reaches the relay some other way just calls again.
@@ -107,10 +110,16 @@ function sessionTools (server, ctx) {
     if (!n || !r || !Array.isArray(r.content)) return r
     return { ...r, content: [...r.content, { type: 'text', text: `⚠️ ${n}` }] }
   }
+  // Someone waiting in the file queue for a file this agent holds is told to it with every answer, until it hands the file off.
+  const queueNote = (room, r) => {
+    const n = renderQueueNotice(queuedFor(claimsOf(room), me))
+    if (!n || !r || !Array.isArray(r.content)) return r
+    return { ...r, content: [...r.content, { type: 'text', text: `📥 ${n}` }] }
+  }
   const tool = (name, def, fn) => server.registerTool(name, def, async (args) => stale(await ctx.withSession((room) => {
     const doc = room.doc
     const parts = { room, doc, feed: doc.getArray('agentFeed'), chat: doc.getArray('chat'), activity: doc.getArray('activity'), files: doc.getMap('files'), blobs: doc.getMap('blobs') }
-    return fn(args || {}, parts)
+    return queueNote(room, fn(args || {}, parts))
   })))
   if (ctx.updates) {
     server.registerTool('quilt_check_update', {
@@ -203,7 +212,7 @@ function sessionTools (server, ctx) {
       lines.push(`- ${p.name} (${p.tool || 'unknown tool'}${p.kind === 'agent' ? ', agent' : ''})${ai ? ` · ${ai}` : ''}${p.focus ? ` · focus: ${p.focus}` : ''}${editing.length ? ` · editing ${editing.join(', ')}` : ''}`)
     }
     const cl = claimsOf(room)
-    lines.push('', '## Claimed files', ...(cl.length ? cl.map((c) => `- ${c.pattern} by ${c.by}${c.note ? ` (${c.note})` : ''}`) : ['- None.']))
+    lines.push('', '## Claimed files', ...(cl.length ? cl.map((c) => `- ${c.pattern} by ${c.by}${c.note ? ` (${c.note})` : ''}${c.queue.length ? ` · waiting: ${c.queue.map((r) => `${r.by} ("${r.title}")`).join(', ')}` : ''}`) : ['- None.']))
     const acts = activity.toArray().filter(Boolean).slice(-12).reverse()
     lines.push('', '## Recent file changes', ...(acts.length ? acts.map((x) => `- ${x.by} ${x.kind} ${x.path} (${ago(x.ts)})`) : ['- None yet.']))
     const msgs = chat.toArray().filter(visible).slice(-8)
@@ -272,6 +281,7 @@ function sessionTools (server, ctx) {
       const cur = readTasks(taskMap(doc)).find((t) => t.id === id)
       if (!cur) return fail('no such task')
       if (column === 'done' && !verifiedEnough(verified)) return fail(doneRefusal({ task: cur, checklist: checklistOf(files) }))
+      { const q = column === 'done' && renderQueued(queuedFor(claimsOf(room), me), 'move the task again'); if (q) return fail(q) }
       const task = updateTask(doc, taskMap(doc), { id, column, ...(column === 'done' ? { verified } : {}) }, AGENT)
       if (column === 'doing') {
         const tf = task.files || []
@@ -442,7 +452,7 @@ function sessionTools (server, ctx) {
     const paths = [...new Set([...files.keys(), ...blobs.keys()])].filter((p) => isSafeRelPath(p) && (!pre || p.startsWith(pre))).sort()
     const shown = paths.slice(0, 500).map((p) => {
       const c = cl.find((x) => x.m(p))
-      return `- ${p}${c ? ` (claimed by ${c.by})` : ''}`
+      return `- ${p}${c ? ` (claimed by ${c.by}${c.queue.length ? `, ${c.queue.length} waiting` : ''})` : ''}`
     })
     return text(paths.length ? shown.join('\n') + (paths.length > 500 ? `\n… and ${paths.length - 500} more` : '') : 'No files.')
   })
@@ -482,7 +492,7 @@ function sessionTools (server, ctx) {
     const refusal = a && changeRefusal(a, rel)
     if (refusal) return fail(`${refusal[0].toUpperCase()}${refusal.slice(1)}.`)
     const claim = claimsOf(room).find((c) => c.by !== me && globMatcher(c.pattern)(rel))
-    if (claim) return fail(`${rel} is claimed by ${claim.by}${claim.note ? ` (${claim.note})` : ''}. Do not retry: send ${claim.by} a direct message with quilt_message saying what you wanted to change and why, then carry on with other work.`)
+    if (claim) return fail(heldRefusal(rel, claim))
     if (blobs.get(rel)?.stored) return fail(`${rel} is a large file kept in storage; it can't be changed here.`)
     const held = claimsOf(room).some((c) => c.by === me && globMatcher(c.pattern)(rel))
     const claimedNow = !held && autoClaim(room, rel)
@@ -539,14 +549,66 @@ function sessionTools (server, ctx) {
     inputSchema: { pattern: z.string().optional() }
   }, ({ pattern }, { room }) => {
     const mine = claimsOf(room).filter((c) => c.by === me && (!pattern || c.pattern === pattern.trim()))
+    // A file someone waits for is handed off, not released.
+    const waited = mine.filter((c) => c.queue.length)
+    if (pattern && waited.length) return fail(renderQueued(queuedFor(waited, me), 'release the rest'))
     const released = []
-    for (const c of mine) {
+    for (const c of mine.filter((x) => !x.queue.length)) {
       try { room.claimRequest(ctx.who(room), { op: 'release', pattern: c.pattern }); released.push(c.pattern) } catch {}
       const key = `${roomKey(room)}\0${c.pattern}`
       clearTimeout(autoHeld.get(key)); autoHeld.delete(key)
     }
     if (released.length) room.broadcastClaims()
-    return text(released.length ? `Released ${released.join(', ')}.` : 'Nothing to release.')
+    return text((released.length ? `Released ${released.join(', ')}.` : 'Nothing to release.') + (waited.length ? ` Kept ${waited.map((c) => c.pattern).join(', ')}: someone is waiting for ${waited.length === 1 ? 'it' : 'them'}; hand off with quilt_handoff.` : ''))
+  })
+
+  tool('quilt_request_file', {
+    description: 'Ask for a file someone else holds (claimed), instead of editing it: your request joins its file queue, its holder is told, and when they finish they hand it to you with their context. ' +
+      'You are woken (a direct message, in quilt_inbox and your webhook) when it is yours. Asking again for the same file updates your request.',
+    inputSchema: {
+      path: z.string().min(1).max(500).describe('The file you need, relative path'),
+      title: z.string().min(1).max(120).describe('What you will do, e.g. "Working on retry logic for task t-12"'),
+      description: z.string().max(300).optional().describe('Your plan in summary: what you want to change and why (300 characters at most)'),
+      task: z.string().max(80).optional().describe('The task id this is for, if any')
+    }
+  }, ({ path: p, title, description, task }, { room }) => {
+    const err = writable(room)
+    if (err) return fail(err)
+    try {
+      const r = room.claimRequest({ ...ctx.who(room), talk: ctx.access(room)?.talk !== false }, { op: 'request', path: cleanPath(p), title, description: description || '', task })
+      room.broadcastClaims()
+      return text(`Asked for ${cleanPath(p)}: you are number ${r.position} in the queue for ${r.pattern} (held by ${r.holder}). ${r.holder} is told; you will be handed it with their context. Carry on with other work.`)
+    } catch (e) { return fail(e.message) }
+  })
+
+  tool('quilt_handoff', {
+    description: 'Hand a file you hold to someone waiting for it in its file queue (the first, unless you name them), with your context: what you changed, what is left, anything they should know. ' +
+      'The claim becomes theirs and they get your context in a direct message. Required before you finish or release a file someone is waiting for.',
+    inputSchema: {
+      path: z.string().min(1).max(500).describe('The file (or the claimed pattern) to hand off'),
+      context: z.string().min(1).max(2000).describe('What you changed, what is left, gotchas'),
+      to: z.string().max(80).optional().describe('Who to hand it to (a name or request id); omit for the first in the queue')
+    }
+  }, ({ path: p, context, to }, { room }) => {
+    try {
+      const r = room.claimRequest(ctx.who(room), { op: 'handoff', pattern: cleanPath(p), context, to: to || '' })
+      const key = `${roomKey(room)}\0${r.pattern}`
+      clearTimeout(autoHeld.get(key)); autoHeld.delete(key)
+      room.broadcastClaims()
+      return text(`Handed ${r.pattern} to ${r.to} with your context.${r.waiting ? ` ${r.waiting} more waiting: ${r.to} hands it on next.` : ''}`)
+    } catch (e) { return fail(e.message) }
+  })
+
+  tool('quilt_withdraw_request', {
+    description: 'Take back your request for a file (from quilt_request_file) when you no longer need it.',
+    inputSchema: { path: z.string().min(1).max(500).describe('The file you asked for') }
+  }, ({ path: p }, { room }) => {
+    const rel = cleanPath(p)
+    const mine = claimsOf(room).flatMap((c) => c.queue).filter((r) => r.by === me && r.path === rel)
+    let n = 0
+    for (const r of mine) n += room.claimRequest(ctx.who(room), { op: 'withdraw', request: r.id }).withdrawn || 0
+    if (n) room.broadcastClaims()
+    return text(n ? `Withdrew your request for ${rel}.` : `You had not asked for ${rel}.`)
   })
 }
 
@@ -589,12 +651,17 @@ export async function handleHostedMcp ({ req, res, pass, relay }) {
     if (!room) return { error: relay.refused(h.room)[1] }
     touched.add(room)
     if (!room.exists) { relay.hosted.delete(account); relay.saveHosted(); return { error: REMOVED } }
+    if (h.denied) { relay.hosted.delete(account); relay.saveHosted(); tellRoom(); return { error: DENIED } }
     const access = room.hostedAccess(pass)
     if (access.needsRoomPass) {
       if (!res.headersSent) res.setHeader('x-quilt-retry', 'room-pass')
       return { error: NEEDS_ROOM_PASS, room, access }
     }
-    if (access.state !== 'approved') return { error: h.pending ? WAITING : REMOVED, room, access }
+    if (access.state !== 'approved') {
+      // Still waiting, but the relay restarted and forgot: back on the owner's list.
+      if (h.pending && ![...room.pending].some(([k, p]) => k.hosted && p.id === account)) room.hostedRequest(pass, h.invitedAs || 'viewer')
+      return { error: h.pending ? WAITING : REMOVED, room, access }
+    }
     h.seenAt = Date.now()
     relay.saveHosted()
     room.hostedActive(account)
@@ -641,7 +708,7 @@ export async function handleHostedMcp ({ req, res, pass, relay }) {
     const a = room.hostedRequest(pass, auth)
     // A webhook outlives the session it was set in: it carries over to the next one, with a fresh take of its room.
     const webhook = relay.webhooks ? relay.webhooks.rejoin(relay.hosted.get(account)?.webhook, { name: me, room }) : undefined
-    relay.hosted.set(account, { room: inv.room, since: Date.now(), seenAt: Date.now(), pending: a.state === 'pending', inbox: takeStock(room.doc, me), ...(webhook ? { webhook } : {}) })
+    relay.hosted.set(account, { room: inv.room, since: Date.now(), seenAt: Date.now(), pending: a.state === 'pending', ...(a.state === 'pending' ? { invitedAs: auth, name: me, kind: pass.kind } : {}), inbox: takeStock(room.doc, me), ...(webhook ? { webhook } : {}) })
     relay.saveHosted()
     tellRoom()
     if (a.state === 'pending') return text(`Asked to join room ${inv.room} as ${auth === 'viewer' ? 'a viewer' : 'an editor'}. ${WAITING}`)
@@ -676,6 +743,10 @@ export async function handleHostedMcp ({ req, res, pass, relay }) {
       touched.add(room)
       room.hostedSeen.delete(account)
       for (const [k, p] of room.pending) if (k.hosted && p.id === account) room.pending.delete(k)
+      // Leaving lets go of its claims: nobody else could.
+      room.dropRequests((r) => r.byId === account)
+      room.dropClaims((c) => c.byId === account, (c) => `${c.by} left the session.`)
+      room.broadcastClaims()
       room.broadcastMembers()
     }
     return text(`Left room ${h.room}.`)

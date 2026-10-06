@@ -5,7 +5,6 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { renderStatus } from './status.js'
-import * as gitops from './git.js'
 import { migrateDir } from './legacy.js'
 
 export async function startControl (session, extras = {}) {
@@ -21,12 +20,16 @@ export async function startControl (session, extras = {}) {
     // What this person's AI should hear (an edit of its that Quilt undone); handed over once.
     'POST /notices': () => ({ notices: session.takeNotices() }),
     'POST /release': async (b) => ({ released: await session.release(b.pattern) }),
+    // The file queue: ask for a file someone holds, hand one we hold to someone waiting, take a request back.
+    'POST /request-file': (b) => session.requestFile(b.path, { title: b.title, description: b.description, task: b.task }),
+    'POST /handoff': (b) => session.handoff(b.path, { to: b.to, context: b.context }),
+    'POST /withdraw-request': async (b) => ({ withdrawn: await session.withdrawRequest(b.request) }),
     // Who owns one path (the hooks ask before every edit). `shared` is false for paths Quilt doesn't sync.
     'POST /claim-for': (b) => {
       const rel = String(b.path || '').replace(/\\/g, '/').replace(/^\.\//, '')
       const shared = session.syncable(rel)
       const c = shared ? session.claimFor(rel) : null
-      return { path: rel, shared, claim: c ? { by: c.by, pattern: c.pattern, note: c.note } : null, mine: !!c && c.by === session.name, me: session.name, focus: session.focus || '' }
+      return { path: rel, shared, claim: c ? { by: c.by, pattern: c.pattern, note: c.note, queue: c.queue || [] } : null, mine: !!c && c.by === session.name, me: session.name, focus: session.focus || '' }
     },
     // Before an agent changes files (any tool): is each one ours to edit (free ones are claimed for
     // us), and what did people ask about them? See Session.prepareEdit and duties.js.
@@ -47,8 +50,9 @@ export async function startControl (session, extras = {}) {
     'POST /history': (b) => ({ entries: session.historyQuery(b) }),
     'GET /tree': () => session.tree(),
     'POST /sharing': (b) => ({ on: session.setAgentSharing(b.on !== false) }),
-    'GET /commits': () => ({ ...session.commitStatus({ includeMe: false }), host: gitops.hostsGit(session, { joined: !!extras.joined }) }),
+    'GET /commits': () => session.commitStatus({ includeMe: false }),
     'POST /commit-request': (b) => session.requestCommit(b.message),
+    'POST /commit-request/done': (b) => ({ done: session.resolveCommitRequests({ ids: b.id ? [String(b.id)] : null }) }),
     'POST /work': (b) => ({ work: session.setWork(b.state, b.note) }),
     'GET /tasks': () => ({ tasks: session.taskList() }),
     // Mentions, direct messages and tasks handed to this member since sequence number `after` (agents wake on these).
@@ -75,14 +79,6 @@ export async function startControl (session, extras = {}) {
     },
     'POST /merges/resolve': (b) => session.resolveMerge(String(b.id || ''), { how: b.how }),
     'POST /merges/send': (b) => session.prepareMergeSend(String(b.id || '')),
-    'POST /commit': async (b) => {
-      if (!gitops.hostsGit(session, { joined: !!extras.joined })) throw new Error('Only the session host can commit: git lives on their computer. Ask for a commit with quilt_request_commit instead.')
-      const open = session.commitStatus().open
-      const message = String(b.message || '').trim() || open.map((r) => r.message).join('; ')
-      const r = await gitops.commit(session.root, message)
-      session.resolveCommitRequests({ hash: r.hash })
-      return r
-    },
     'GET /info': () => ({ room: session.room, dir: session.root, name: session.name, kind: session.kind, invite: extras.invite || null, viewInvite: extras.viewInvite || null, access: session.access, pid: process.pid })
   }
   const server = http.createServer(async (req, res) => {

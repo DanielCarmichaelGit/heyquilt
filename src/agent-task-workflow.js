@@ -109,7 +109,7 @@ export function pickupBrief ({ task, history = [], claims = [], checklist = '', 
   }
   const others = claims.filter((c) => c.by !== me)
   if (others.length) {
-    lines.push('', 'Claims to respect (message the holder instead of editing):')
+    lines.push('', 'Claims to respect (ask for the file with quilt_request_file instead of editing it):')
     for (const c of others) lines.push(`- ${c.pattern} by ${c.by}${c.note ? ` (${c.note})` : ''}`)
   }
   lines.push('', TASK_WORKFLOW, '', checklistBlock(checklist))

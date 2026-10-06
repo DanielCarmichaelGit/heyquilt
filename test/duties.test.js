@@ -62,5 +62,5 @@ test('a refusal names the holder, the covering claim, and what to do instead', (
   const t = heldRefusal('src/auth/login.js', { by: 'dana', pattern: 'src/auth', note: 'refactoring' })
   assert.match(t, /^src\/auth\/login\.js is claimed by dana \(refactoring\), as part of their claim on src\/auth/)
   assert.match(t, /Do not retry/)
-  assert.match(t, /quilt_message \(to: "dana"\)/)
+  assert.match(t, /quilt_request_file \(path "src\/auth\/login\.js"/)
 })

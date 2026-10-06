@@ -106,6 +106,10 @@ code, .mono { font-family: var(--mono); font-size: 13px; }
   .qh-wrap { transition: none; }
 }
 .page { padding: 32px 0 64px; }
+.legal { max-width: 720px; line-height: 1.6; }
+.legal h2 { font-size: 18px; margin: 32px 0 8px; }
+.legal ul { padding-left: 20px; }
+.legal li { margin: 6px 0; }
 /* ---- The Quilt mark (mark.js): patches, thread, sewing in once, and the loading animation ---- */
 .qm { display: block; overflow: visible; }
 .qm-p { fill: none; stroke-width: 15; transform-box: fill-box; transform-origin: center; }

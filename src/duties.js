@@ -5,7 +5,10 @@
 // - before editing a file: who holds it (claims are what keep agents off each other's
 //   files), and what was said about it in chat lately, as context;
 // - before moving work on (claims, tasks, commits, "done"): every direct message and
-//   mention is answered (a message back to that person, or to everyone, after theirs).
+//   mention is answered (a message back to that person, or to everyone, after theirs);
+// - before finishing or letting go of a file: anyone waiting for it in its file queue is
+//   handed it, with the holder's context (quilt_handoff). A file someone else holds is
+//   asked for in its queue (quilt_request_file), not taken.
 //
 // Chat never blocks a file: Quilt can't tell "don't touch it" from "is it done?". A file
 // is held by a claim; a message about it is something the agent reads.
@@ -65,15 +68,44 @@ export function waitingOn (messages, me, { now = Date.now(), windowMs = REQUEST_
   const out = []
   for (const m of messages || []) {
     if (!m || !m.by || m.by === me || typeof m.text !== 'string' || (m.ts || 0) < now - windowMs) continue
+    if (fileQueueMessage(m)) continue // a file queue request or a handoff: handled by handing off, not by a reply
     const kind = m.to === me ? 'dm' : !m.to && mentioned(m.text, [me]).length ? 'mention' : null
     if (kind && !answered(messages, me, m.by, m.ts)) out.push({ id: m.id, kind, by: m.by, text: m.text, ts: m.ts })
   }
   return out
 }
 
+/** A message the relay wrote for the file queue: someone asking for a file, or a file handed over. */
+export const fileQueueMessage = (m) => !!m && (m.kind === 'queue' || m.kind === 'handoff')
+
 /** Direct messages and mentions among inbox `events` that `me` has not answered yet. */
 export function unanswered (events, { messages = [], me } = {}) {
-  return (events || []).filter((e) => e && (e.kind === 'dm' || e.kind === 'mention') && e.by !== me && !answered(messages, me, e.by, e.ts))
+  return (events || []).filter((e) => e && (e.kind === 'dm' || e.kind === 'mention') && !e.queue && e.by !== me && !answered(messages, me, e.by, e.ts))
+}
+
+/**
+ * Files `me` holds that someone is waiting for: [{ pattern, queue: [{ id, path, by, title,
+ * description, task }] }], from the relay's claim list.
+ */
+export function queuedFor (claims, me) {
+  return (claims || []).filter((c) => c && c.by === me && Array.isArray(c.queue) && c.queue.length).map((c) => ({ pattern: c.pattern, queue: c.queue }))
+}
+
+const requestLine = (r) => `${r.by}${r.path ? ` (for ${r.path})` : ''}: "${quote(r.title)}"${r.description ? ` — ${quote(r.description)}` : ''}${r.task ? ` (task ${r.task})` : ''}`
+
+/** Who is waiting for the files `me` holds, as lines an agent reads with every answer; '' when nobody is. */
+export function renderQueueNotice (held) {
+  if (!held || !held.length) return ''
+  const lines = held.map((h) => `- ${h.pattern}: ${h.queue.map(requestLine).join('; then ')}`)
+  return 'Waiting in the file queue for files you hold:\n' + lines.join('\n') + '\n' +
+    'Finish the change you are making to each, then hand it off with quilt_handoff (path, and context: what you changed, what is left, anything they should know). ' +
+    'You cannot finish or release these files until you do.'
+}
+
+/** Why an agent may not finish (or let go of files) yet: files it holds that someone is waiting for. '' when none. */
+export function renderQueued (held, then = 'finish again') {
+  if (!held || !held.length) return ''
+  return 'Not yet: ' + renderQueueNotice(held).replace(/^Waiting/, 'people are waiting') + ` Then ${then}.`
 }
 
 const quote = (t) => {
@@ -113,7 +145,14 @@ export function heldRefusal (rel, claim, error) {
   const holder = claim ? claim.by : 'someone else'
   const why = claim ? (claim.note ? ` (${claim.note})` : '') : error ? ` (${error})` : ''
   const covered = claim && claim.pattern && claim.pattern !== rel ? `, as part of their claim on ${claim.pattern}` : ''
-  return `${rel} is claimed by ${holder}${why}${covered}, so Quilt refuses edits to it and would undo them. Do not retry or work around it. ` +
-    `Send ${holder} a direct message with quilt_message (to: "${holder}") saying what you wanted to change in ${rel} and why, ` +
-    'and ask them to make the change or hand the file over. Then carry on with other work.'
+  return `${rel} is claimed by ${holder}${why}${covered}, so Quilt refuses edits to it and would undo them. ${askForIt(rel, claim)}`
+}
+
+/** What to do about a file someone else holds: ask for it in its file queue, and carry on. */
+export function askForIt (rel, claim) {
+  const holder = claim ? claim.by : 'its holder'
+  const waiting = claim && Array.isArray(claim.queue) && claim.queue.length ? ` ${claim.queue.length} already waiting for it.` : ''
+  return `Do not retry or work around it.${waiting} ` +
+    `Ask for it in its file queue with quilt_request_file (path "${rel}", a title like "Working on <what> for <task>", and a description of up to 300 characters: what you plan to change and why). ` +
+    `${holder} is told, and hands it to you with their context when they are done; you are woken when it is yours. Carry on with other work meanwhile.`
 }

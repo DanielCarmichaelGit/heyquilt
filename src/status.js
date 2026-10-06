@@ -2,6 +2,7 @@
 // `quilt status`, and the MCP `quilt_status` tool, so every tool sees the same view.
 
 import { taskMarkdown } from './tasks.js'
+import { mergeAction } from './merges.js'
 
 const ago = (ts) => {
   const s = Math.max(0, Math.round((Date.now() - ts) / 1000))
@@ -48,7 +49,7 @@ export function renderStatus (st, { asAi = false, mentionYours = false } = {}) {
     for (const m of merges) {
       const who = m.by === st.me.name ? 'you' : m.by
       const otherName = m.others[0] ? (m.others[0] === st.me.name ? 'you' : m.others[0]) : null
-      const action = m.oursDeleted ? 'deleted it offline' : 'changed it offline'
+      const action = mergeAction(m)
       const theirsPart = m.theirsHash === null ? ', it was deleted in the session' : otherName ? `, ${otherName} changed it in the session` : ''
       out.push(`- \`${m.path}\` (id ${m.id}): ${who} ${action}${theirsPart}${m.kind === 'ai' ? '; merged by AI, needs a look' : ''}. See quilt_merges.`)
     }

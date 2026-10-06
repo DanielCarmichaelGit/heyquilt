@@ -52,11 +52,13 @@ within milliseconds. Your agents can also see what the other agents are doing.
   and writes the shared files like everyone else.
 - **AIs in a chat window, with nothing to set up.** ChatGPT, claude.ai, Grok and
   other AIs you only talk to in a chat can join through a *chat link*: the session
-  owner makes one in **Invite → A chat AI** (or `quilt chat-link`), pastes it into
+  owner (or whoever may let people in) makes one in **Invite → A chat AI** (or
+  `quilt chat-link`), pastes it into
   the chat, and the AI works by opening links. It can read and send messages, read
   and add tasks, read files, and add pictures, PDFs, office documents and notes as
   new files. It can't change existing files. It shows in the session as its own
-  member and works for 10 minutes: the owner extends it from the people menu (or
+  member and works for 10 minutes: the owner, or whoever may let people in, extends
+  it from the people menu (or
   `quilt chat-link extend <name> <minutes>`) while it still works. Once it runs
   out, or the owner removes it, a new link is needed.
 
@@ -421,10 +423,13 @@ relay for now.
   session's version wins and yours is copied to `.quilt/conflicts/<time>/`.
   Use `--prefer local` to push your versions instead.
 
-**Git:** the working tree is shared, but `.git` isn't. The simplest workflow
-is that one person commits and pushes. Avoid `git checkout`, `reset`, `stash`
-and `rebase` during a session unless you've agreed on it: they rewrite files,
-and the changes sync to everyone.
+**Git:** the working tree is shared, but `.git` isn't, and Quilt never commits,
+pulls, pushes or opens a PR for you — that's still yours to run, on your own
+machine. A `git stash`, `reset --hard` or `checkout -- .` reverts your files
+as git does, and the session's work comes back onto them a moment later
+(your stash keeps your copy); commits you pull are merged into the session's
+work line by line. Checking out another branch pauses that folder until
+you're back on the one the session syncs.
 
 ## Security
 
@@ -483,3 +488,7 @@ Layout: `src/ui/` + `src/ui-server.js` (the app), `src/runner.js` (start/stop a 
 reconnect), `src/session.js` (folder ⇄ CRDT sync, presence, claims, chat),
 `src/control.js` (local API for CLI/MCP), `src/mcp.js`, `src/setup.js`,
 `bin/quilt.js` (CLI).
+
+## License
+
+Quilt is proprietary, paid software. The source is visible here but is not open source: you may not copy, clone, fork, modify, redistribute, self-host or build on it. See [LICENSE](LICENSE).

@@ -53,3 +53,13 @@ test('without posting rights the Share my AI chat switch is disabled and says wh
 test('no em dashes in the app', () => {
   for (const f of ['app.js', 'session.js', 'common.js', 'app.css']) assert.ok(!ui(f).includes(EM_DASH), f)
 })
+
+test('the people menu lets the owner set who can let people into the session', () => {
+  const s = ui('session.js')
+  for (const bit of ['Who can let people in', 'data-admit-by', '/admit-by', 'Anyone who can edit', 'Anyone in the session', 'Only the owner']) {
+    assert.ok(s.includes(bit), bit)
+  }
+  // Non-owners who may admit pick a role; access types stay with the owner.
+  assert.ok(s.includes('const asType = !!(state.accessTypes && acc.owner)'))
+})
+

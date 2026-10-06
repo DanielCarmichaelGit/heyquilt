@@ -15,8 +15,12 @@ import { quiltHome, adoptLegacyEnv } from '../src/legacy.js'
 import { downloadUrl } from '../src/releases.js'
 import { installUpdate } from './updater.js'
 import { registerOnStart } from '../src/integrations.js'
+import { adoptLoginShellPath } from '../src/shell-path.js'
 
 adoptLegacyEnv()
+// Opened from Finder or the Dock, the app has a minimal PATH: git (Homebrew's, Xcode's) is
+// found through your login shell's PATH, read while the app gets ready. Never rejects.
+const shellPath = adoptLoginShellPath()
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const CLI_SHIM = path.join(quiltHome(), 'bin', 'quilt')
@@ -90,6 +94,7 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 async function start () {
+  await shellPath // before anything can run git
   ui = await startUi({ port: 0, onShutdown: () => app.quit() })
   registerProcess('app', { port: ui.port, url: ui.url, desktop: true })
   process.on('SIGTERM', () => app.quit()) // `quilt stop`

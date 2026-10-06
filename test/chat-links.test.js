@@ -174,7 +174,7 @@ test('the owner\'s controls apply: messages off, then removing the member ends t
   assert.match(r.text, /expired or the session owner removed it/)
 })
 
-test('only the owner can make a link', async () => {
+test('links expire, names never clash, and someone who may not let people in can\'t make one', async () => {
   const other = { meta: { members: {}, identities: {} }, saveMeta () {} }
   const l = makeChatLink(other, { name: 'Grok', minutes: 60 }, 1000)
   assert.ok(findChatLink(other, l.token, 2000), 'live')
@@ -186,8 +186,8 @@ test('only the owner can make a link', async () => {
   assert.equal(makeChatLink(room, { name: 'dana' }).name, 'dana 2')
   // From a session that isn't the owner's: refused before asking the relay.
   const s = Object.create(Session.prototype)
-  Object.assign(s, { conn: {}, access: { owner: false } })
-  await assert.rejects(s.createChatLink({ name: 'x' }), /only the session owner/)
+  Object.assign(s, { conn: {}, access: { owner: false, role: 'editor', canAdmit: false } })
+  await assert.rejects(s.createChatLink({ name: 'x' }), /only people who may let others into this session/)
 })
 
 test('files come only from the public internet, and only things that are not code', async () => {

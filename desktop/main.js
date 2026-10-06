@@ -132,7 +132,8 @@ function update () {
     try {
       const next = await installUpdate(downloadUrl(), { tempDir: app.getPath('temp'), onProgress: progress })
       quitting = true
-      if (next === 'relaunch') app.relaunch()
+      // An AppImage relaunches from its file, not from the mount it runs in now.
+      if (next === 'relaunch') app.relaunch(process.env.APPIMAGE ? { execPath: process.env.APPIMAGE, args: process.argv.slice(1) } : undefined)
       setTimeout(() => app.quit(), 300) // let the renderer show "Restarting…"
       return { ok: true }
     } catch (err) {

@@ -69,7 +69,9 @@ test('downloadUrl picks the asset for this platform', () => {
   assert.equal(downloadUrl('darwin', 'arm64'), base + 'quilt-mac-arm64.dmg')
   assert.equal(downloadUrl('darwin', 'x64'), base + 'quilt-mac-x64.dmg')
   assert.equal(downloadUrl('win32', 'x64'), base + 'quilt-windows-x64.exe')
-  assert.equal(downloadUrl('linux', 'x64'), 'https://github.com/DanielCarmichaelGit/heyquilt/releases/latest')
+  assert.equal(downloadUrl('linux', 'x64'), base + 'quilt-linux-x86_64.AppImage')
+  assert.equal(downloadUrl('linux', 'arm64'), base + 'quilt-linux-arm64.AppImage')
+  assert.equal(downloadUrl('freebsd', 'x64'), 'https://github.com/DanielCarmichaelGit/heyquilt/releases/latest')
 })
 
 test('releaseNotesBody turns a section into the GitHub release body', () => {
@@ -118,4 +120,20 @@ test('seenVersion is remembered in ~/.quilt, not the page', () => {
   markSeen('0.3.1')
   assert.equal(seenVersion(), '0.3.1')
   assert.equal(JSON.parse(fs.readFileSync(path.join(home, '.quilt', 'settings.json'), 'utf8')).seenRelease, '0.3.1')
+})
+
+test('the release workflow publishes every file the release notes and the app point people to', () => {
+  const yml = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'release.yml'), 'utf8')
+  const publish = yml.slice(yml.indexOf('gh release create'))
+  const body = releaseNotesBody({ version: '9.9.9', summary: '', items: [] })
+  const named = [...body.matchAll(/quilt-[\w.-]+\.(?:dmg|exe|AppImage)/g)].map((m) => m[0])
+  assert.ok(named.length >= 5)
+  for (const f of named) assert.ok(publish.includes(`out/${f}`), `${f} is published`)
+  for (const [p, a] of [['darwin', 'arm64'], ['darwin', 'x64'], ['win32', 'x64'], ['linux', 'x64'], ['linux', 'arm64']]) {
+    assert.ok(publish.includes(`out/${downloadUrl(p, a).split('/').pop()}`), `the ${p}-${a} update is published`)
+  }
+  for (const f of ['quilt-cli-linux-x64.tar.gz', 'quilt-cli-linux-arm64.tar.gz', 'install.sh']) assert.ok(publish.includes(`out/${f}`), f)
+  const install = fs.readFileSync(path.join(ROOT, 'scripts', 'install.sh'), 'utf8')
+  assert.match(install, /quilt-cli-linux-\$arch\.tar\.gz/, 'the installer asks for the bundles the workflow builds')
+  assert.match(body, /releases\/latest\/download\/install\.sh \| sh/)
 })

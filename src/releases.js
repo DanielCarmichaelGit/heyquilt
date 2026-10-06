@@ -59,7 +59,10 @@ export function compareVersions (a, b) {
 
 /** Where to get the newest build for this computer. */
 export function downloadUrl (platform = process.platform, arch = process.arch) {
-  const file = platform === 'darwin' ? `quilt-mac-${arch === 'arm64' ? 'arm64' : 'x64'}.dmg` : platform === 'win32' ? 'quilt-windows-x64.exe' : null
+  const file = platform === 'darwin' ? `quilt-mac-${arch === 'arm64' ? 'arm64' : 'x64'}.dmg`
+    : platform === 'win32' ? 'quilt-windows-x64.exe'
+      : platform === 'linux' ? `quilt-linux-${arch === 'arm64' ? 'arm64' : 'x86_64'}.AppImage`
+        : null
   return file ? `${RELEASES_PAGE}/latest/download/${file}` : `${RELEASES_PAGE}/latest`
 }
 
@@ -106,10 +109,13 @@ export function releaseNotesBody (release) {
     '- Mac (Apple silicon): quilt-mac-arm64.dmg',
     '- Mac (Intel): quilt-mac-x64.dmg',
     '- Windows: quilt-windows-x64.exe',
+    '- Linux desktop: quilt-linux-x86_64.AppImage (Intel/AMD), quilt-linux-arm64.AppImage (ARM)',
+    `- Linux servers and cloud machines (no desktop): \`curl -fsSL ${RELEASES_PAGE}/latest/download/install.sh | sh\``,
     '',
     '**Note on signing:** these builds are unsigned (no Apple Developer ID / notarization, no Windows code-signing certificate configured). Windows SmartScreen or macOS Gatekeeper may warn on first launch.',
     '',
     '- **macOS:** if you see "Apple could not verify Quilt is free of malware," click **Done**, then open **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to Quilt. You only need to do this once. (On older macOS you can instead right-click the app and choose **Open**.)',
-    '- **Windows:** if SmartScreen shows "Windows protected your PC," click **More info**, then **Run anyway**.')
+    '- **Windows:** if SmartScreen shows "Windows protected your PC," click **More info**, then **Run anyway**.',
+    '- **Linux:** make the AppImage runnable (`chmod +x quilt-linux-*.AppImage`) and open it. If it says FUSE is missing, install `libfuse2` (or run it with `--appimage-extract-and-run`).')
   return lines.join('\n') + '\n'
 }

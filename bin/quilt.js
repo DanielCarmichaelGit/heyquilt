@@ -94,6 +94,8 @@ async function main () {
       const dir = argv.find((a, k) => !a.startsWith('--') && !(i >= 0 && k === i + 1))
       return (await import('../src/doctor.js')).doctor({ dir, watchSeconds: secs })
     }
+    case '-v': case '--version': case 'version':
+      console.log(`quilt ${(await import('../src/releases.js')).currentVersion()}`); return
     case undefined: case '-h': case '--help': case 'help':
       process.stdout.write(HELP); return
     default:

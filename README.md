@@ -67,8 +67,11 @@ within milliseconds. Your agents can also see what the other agents are doing.
 ### Download the app
 
 Get Quilt for [Mac (Apple silicon)](https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/quilt-mac-arm64.dmg),
-[Mac (Intel)](https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/quilt-mac-x64.dmg) or
-[Windows](https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/quilt-windows-x64.exe), and open it.
+[Mac (Intel)](https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/quilt-mac-x64.dmg),
+[Windows](https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/quilt-windows-x64.exe) or
+Linux ([x86_64](https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/quilt-linux-x86_64.AppImage),
+[ARM](https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/quilt-linux-arm64.AppImage): an
+AppImage, `chmod +x` it), and open it.
 Everything happens in the app: start a session, send the invite link, and
 partners click it to join. Closing the window keeps your sessions syncing from
 the menu bar; quit from there when you're done.
@@ -83,6 +86,19 @@ it can't check it. Open **System Settings → Privacy & Security** and click
 Your AI tools can use Quilt as soon as the app opens: it connects every one it
 finds (see [Your AI tools are connected already](#the-terminal-way)). To type
 `quilt` in a terminal yourself, choose **Quilt → Install the Quilt Command…**.
+
+### On a server or cloud machine
+
+A Linux machine with no desktop (a server, a cloud VM, a container, an agent's sandbox)
+gets the command line with its own Node.js, so nothing else needs installing:
+
+```bash
+curl -fsSL https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/install.sh | sh
+quilt login
+```
+
+Run the same line again to update. Agents on that machine find Quilt's MCP server by
+themselves (see below), and `quilt join <invite>` syncs a project there.
 
 ### From source
 
@@ -469,10 +485,14 @@ Every release ships with notes, and the app tells people when it's out of date.
 2. Add a `## <version> — <date>` section at the top of `RELEASES.md` saying what
    changed, one bold-led bullet per change. `npm test` fails if the top section
    doesn't match package.json, so a release can't go out without notes.
-3. Commit on `main`, then `npm run release`. It runs the tests, builds the Mac and
-   Windows apps, tags `v<version>`, pushes, and creates the GitHub release with the
-   notes from `RELEASES.md` as its body (`--dry-run` to see the steps first,
-   `--notes` to print the body, `--notes-only` to fix the notes of a published release).
+3. Commit on `main`, then `npm run release`. It runs the tests, tags `v<version>` and
+   pushes. GitHub then builds every platform on its own machines
+   (`.github/workflows/release.yml`): the Mac DMGs, the Windows installer, the Linux
+   AppImages and the Linux command-line bundles with `install.sh`. It publishes the
+   release with the notes from `RELEASES.md` as its body, about 15 minutes later. So
+   any machine can release, a cloud one included. (`--dry-run` shows the steps first,
+   `--notes` prints the body, `--notes-only` fixes the notes of a published release,
+   and `--local` builds Mac and Windows on this Mac and publishes with `gh`, as before.)
 
 The app checks GitHub's latest release every ten minutes. Older versions show a bar
 across the top with an **Update Quilt** button (a Download link in a browser), and
@@ -481,7 +501,7 @@ newer release opens the notes by itself once, even while the app is open, and th
 for a new version open the first time it runs. Update Quilt downloads the build for this
 computer and installs it: on a Mac it mounts the DMG and swaps the app in place (asking
 for an administrator only if the Applications folder needs one), on Windows it runs the
-installer; then Quilt restarts. The builds are unsigned, so this is done by hand in
+installer, and on Linux it swaps the AppImage file in place; then Quilt restarts. The builds are unsigned, so this is done by hand in
 `desktop/updater.js` rather than with Electron's updater.
 
 Layout: `src/ui/` + `src/ui-server.js` (the app), `src/runner.js` (start/stop a session), `src/server.js` (relay), `src/connection.js` (client protocol +

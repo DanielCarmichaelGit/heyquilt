@@ -18,7 +18,9 @@
     "dist:mac": "electron-builder --mac",
     "dist:win": "electron-builder --win",
     "icons": "electron desktop/make-icons.cjs",
-    "release": "node scripts/release.mjs"
+    "release": "node scripts/release.mjs",
+    "dist:linux": "electron-builder --linux",
+    "dist:cli": "node scripts/cli-bundle.mjs"
   },
   "engines": {
     "node": ">=22"
@@ -135,6 +137,21 @@
     "nsis": {
       "oneClick": true,
       "perMachine": false
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "artifactName": "quilt-linux-${arch}.${ext}",
+      "category": "Development",
+      "icon": "desktop/build/icon.png",
+      "synopsis": "Real-time pair coding, whatever AI tool you use"
     }
   }
 }

@@ -5,6 +5,7 @@ import { orgAccess } from '../org-access.js'
 import { workspaceAccess, cleanColor, cleanDescription, cleanAccess, autoColor } from '../workspace-access.js'
 import { workspaceReach, canSeeFiles } from '../workspace-reach.js'
 import { listedFiles, usageView, removeObjects } from './workspace-files.js'
+import { workspaceAgents, cleanMemberSessions, placementCandidates } from './workspace-agents.js'
 
 const ROOM = /^[A-Za-z0-9_-]{1,64}$/
 const ACCOUNT = /^(person|agent):[A-Za-z0-9_-]{1,64}$/
@@ -61,6 +62,9 @@ export function workspaceRoutes (ctx) {
         for (const org of await store.orgsForUser(me.userId)) for (const ws of await store.listWorkspacesOfOrg(org.id)) await add(ws)
       }
       for (const ws of await store.listWorkspacesForMember(me.account)) await add(ws)
+      // An agent also finds the workspaces its placement reaches (its owner's or its org's;
+      // workspaceAccess answers null for the rest).
+      if (me.account.startsWith('agent:')) for (const ws of await placementCandidates(store, me.agent || await store.agentById(me.account.slice(6)))) await add(ws)
       return { workspaces: [...seen.values()].sort((a, b) => a.name.localeCompare(b.name)) }
     }],
 
@@ -86,7 +90,8 @@ export function workspaceRoutes (ctx) {
       const owner = ownerAccount ? { account: ownerAccount, name: (await nameOf(ownerAccount)) || '' } : { account: null, name: (await store.orgById(ws.orgId))?.name || '' }
       const sessions = (await store.listWorkspaceSessions(ws.id)).map((s) => sessionView(s, t))
       const files = canSeeFiles(access) ? await listedFiles(store, await store.listWorkspaceFiles(ws.id)) : []
-      return { workspace: ws, access, canDelete, owner, members, sessions, files, usage: await usageView(store, ws, ctx) }
+      const agents = await workspaceAgents(store, ws, { admin: access.admin })
+      return { workspace: ws, access, canDelete, owner, members, agents, sessions, files, usage: await usageView(store, ws, ctx) }
     }],
 
     ['PATCH', /^\/v1\/workspaces\/([^/]+)$/, async (req, body, [id]) => {
@@ -126,10 +131,12 @@ export function workspaceRoutes (ctx) {
       if (!ACCOUNT.test(account)) throw new HttpError(400, 'that is not an account')
       const access = cleanAccess(body.access)
       const [kind, who] = account.split(':')
+      // Whether an agent also joins every session here as it starts; kept when not sent.
+      const sessions = cleanMemberSessions(body.sessions, kind)
       if (kind === 'agent' ? !(await store.agentById(who)) : !(await store.profile(who))) throw new HttpError(404, 'no such account')
       if (r.ws.orgId && kind === 'person' && !(await store.memberOf(r.ws.orgId, who))) throw new HttpError(404, 'that person is not in the org')
       if (r.ws.orgId && kind === 'agent' && !(await store.memberByAgent(r.ws.orgId, who))) throw new HttpError(404, 'that agent is not in the org')
-      return { member: await store.putWorkspaceMember({ workspaceId: r.ws.id, account, access, addedBy: r.me.account }) }
+      return { member: await store.putWorkspaceMember({ workspaceId: r.ws.id, account, access, addedBy: r.me.account, sessions }) }
     }],
 
     ['DELETE', /^\/v1\/workspaces\/([^/]+)\/members\/([^/]+)$/, async (req, body, [id, account]) => {

@@ -43,15 +43,25 @@ async function sameOwnerAgent (store, ws, agentId) {
 }
 
 /**
+ * `agentId`'s placement when it covers `ws`, before the workspace's override (so an admin
+ * can still find an agent they kept out, to let it back in); null otherwise.
+ */
+export async function placementIn (store, ws, agentId) {
+  if (!ws || !(await sameOwnerAgent(store, ws, agentId))) return null
+  const placement = await store.agentPlacement(agentId)
+  if (!placement || placement.reach === 'manual') return null
+  if (placement.reach === 'workspaces' && !(placement.workspaceIds || []).includes(ws.id)) return null
+  return placement
+}
+
+/**
  * How `agentId`'s placement reaches `ws`: { access, scopes, via: 'placed' | 'global', sessions }
  * or null. Ids in a placement that aren't `ws` are ignored, so a deleted workspace's id left
  * in the list never matters.
  */
 export async function agentReach (store, ws, agentId) {
-  if (!ws || !(await sameOwnerAgent(store, ws, agentId))) return null
-  const placement = await store.agentPlacement(agentId)
-  if (!placement || placement.reach === 'manual') return null
-  if (placement.reach === 'workspaces' && !(placement.workspaceIds || []).includes(ws.id)) return null
+  const placement = await placementIn(store, ws, agentId)
+  if (!placement) return null
   const override = await store.workspaceAgentOverride(ws.id, agentId)
   if (override?.excluded) return null
   return { access: placement.access, scopes: [...(placement.scopes || [])], via: placement.reach === 'all' ? 'global' : 'placed', sessions: override?.sessions ?? placement.sessions }

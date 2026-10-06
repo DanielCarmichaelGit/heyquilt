@@ -60,6 +60,10 @@ export function joinRoutes ({ store, now, apiUrl, limitJoin, agentAuth, log = ()
           if (await store.teamById(invite.orgId, x.teamId)) await store.addTeamMember({ teamId: x.teamId, memberId: m.id, access: x.access, scopes: x.scopes })
         }
       }
+      // A workspace's invite (workspace-agents.js) makes the agent one of its members.
+      if (invite.workspaceId) {
+        await store.putWorkspaceMember({ workspaceId: invite.workspaceId, account: `agent:${agent.id}`, access: invite.workspaceAccess || 'edit', sessions: invite.workspaceSessions || 'invited', addedBy: invite.createdBy })
+      }
       await store.setInviteAgent(invite.id, agent.id)
       const keys = await agentAuth.mintKeys(agent.id)
       return { ...keys, api: apiUrl, refresh: `${apiUrl}/v1/agents/token`, mcp: `${apiUrl}/mcp`, next: joinNext({ name: agent.name, apiUrl, hasKey: !!agent.publicKey }) }
@@ -69,6 +73,8 @@ export function joinRoutes ({ store, now, apiUrl, limitJoin, agentAuth, log = ()
       // (team membership, etc): leave the invite used rather than hand out a link that
       // would make a second, equally broken agent on top of the first.
       let deleted = !agent
+      // Member rows name the agent as text, so deleting it leaves them: remove this one first.
+      if (agent && invite.workspaceId) await store.removeWorkspaceMember(invite.workspaceId, `agent:${agent.id}`).catch(() => {})
       if (agent) {
         try { await store.deleteAgent(agent.id); deleted = true } catch (delErr) {
           log(`join rollback: couldn't delete half-made agent ${agent.id}: ${delErr?.stack || delErr?.message || delErr}`)

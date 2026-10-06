@@ -28,6 +28,7 @@ import { grantRoutes } from './routes/grants.js'
 import { sessionInviteRoutes } from './routes/session-invites.js'
 import { workspaceRoutes } from './routes/workspaces.js'
 import { workspaceFileRoutes } from './routes/workspace-files.js'
+import { workspaceAgentRoutes } from './routes/workspace-agents.js'
 import { HOSTED_RELAY } from '../settings.js'
 import { roomAccess } from './access.js'
 import { parseInvite } from '../ui/invite.js'
@@ -163,6 +164,9 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   const routes = [
     ['GET', /^\/healthz$/, async () => ({ ok: true })],
 
+    // Which optional parts this API has on, for the app and the MCPs to decide what to show. Public.
+    ['GET', /^\/v1\/features$/, async () => ({ workspaces: !!workspaces })],
+
     ['POST', /^\/v1\/device\/start$/, async (req, body) => {
       limitStarts(req)
       const { publicKey, deviceName, platform } = body
@@ -271,7 +275,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx), ...agentRoutes(ctx), ...agentInviteRoutes(ctx), ...joinRoutes(ctx), ...relayRoutes(ctx), ...sessionRoutes(ctx), ...accessTypeRoutes(ctx), ...grantRoutes(ctx), ...sessionInviteRoutes(ctx), ...issueRoutes(ctx))
   // Always routed: with the flag off each answers a plain 404 of its own, so the app's
   // check at every launch isn't filed as a missing route.
-  routes.push(...workspaceRoutes({ ...ctx, workspaces }))
+  routes.push(...workspaceRoutes({ ...ctx, workspaces }), ...workspaceAgentRoutes({ ...ctx, workspaces }))
   const wsFiles = workspaceFileRoutes({ ...ctx, workspaces })
   routes.push(...wsFiles.routes)
 

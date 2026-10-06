@@ -208,4 +208,14 @@ test('watchFeatures: off until the API says on, keeps the last answer through a 
   assert.ok(seen >= 3, `probed ${seen} times`)
   await new Promise((resolve) => setTimeout(resolve, 60))
   assert.equal(calls, seen, 'stop() ends the repeat')
+  // Until the API answers once (it may still be starting), it is asked again sooner; then only every everyMs.
+  let tries = 0
+  const early = watchFeatures({ apiUrl: 'http://api.test', fetch: async () => { if (++tries < 3) throw new Error('down'); return json({ workspaces: true }) }, everyMs: 60 * 60 * 1000, retryMs: 20 })
+  assert.equal(await early.ready, false)
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  assert.equal(early.on(), true, 'on once the API answered')
+  const after = tries
+  await new Promise((resolve) => setTimeout(resolve, 80))
+  assert.equal(tries, after, 'no more early tries after an answer')
+  early.stop()
 })

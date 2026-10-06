@@ -539,13 +539,15 @@ const WORKSPACE_TRANSFER_TIMEOUT_MS = 20 * 1000
  * (404) has no workspaces. Never throws; its timer never holds the process open; stop()
  * ends it and any probe in flight. `ready` is the first probe's answer.
  */
-export function watchFeatures ({ apiUrl, fetch: fetchImpl = globalThis.fetch, everyMs = FEATURES_EVERY_MS, timeoutMs = FEATURES_TIMEOUT_MS, log = () => {} }) {
+export function watchFeatures ({ apiUrl, fetch: fetchImpl = globalThis.fetch, everyMs = FEATURES_EVERY_MS, retryMs = 30_000, timeoutMs = FEATURES_TIMEOUT_MS, log = () => {} }) {
   const url = `${String(apiUrl).replace(/\/+$/, '')}/v1/features`
   let known = false
   let inflight = null
   let current = null // the AbortController of the probe in flight
   let stopped = false
+  let answered = false // until the API has answered once, ask again sooner
   const set = (on) => {
+    answered = true
     if (on !== known) log(`hosted agents: workspace tools ${on ? 'on' : 'off'}`)
     known = on
   }
@@ -576,6 +578,9 @@ export function watchFeatures ({ apiUrl, fetch: fetchImpl = globalThis.fetch, ev
   const ready = probe()
   const timer = setInterval(() => { probe() }, everyMs)
   timer.unref?.()
+  // The API may still be starting (both deployed together): until it answers, try every retryMs.
+  const early = setInterval(() => { if (answered) clearInterval(early); else probe() }, retryMs)
+  early.unref?.()
   return {
     ready,
     on: () => !stopped && known,
@@ -583,6 +588,7 @@ export function watchFeatures ({ apiUrl, fetch: fetchImpl = globalThis.fetch, ev
     stop () {
       stopped = true
       clearInterval(timer)
+      clearInterval(early)
       current?.abort(new Error('stopped'))
     }
   }
@@ -614,7 +620,9 @@ export function hostedWorkspaceAccess ({ apiUrl, pass, fetch: fetchImpl = global
   }
   const put = async (url, bytes, headers) => {
     try {
-      return (await fetchImpl(url, { method: 'PUT', headers, body: bytes, signal: AbortSignal.timeout(WORKSPACE_TRANSFER_TIMEOUT_MS) })).status
+      const res = await fetchImpl(url, { method: 'PUT', headers, body: bytes, signal: AbortSignal.timeout(WORKSPACE_TRANSFER_TIMEOUT_MS) })
+      await res.body?.cancel().catch(() => {}) // the status is all we need; let the socket go
+      return res.status
     } catch (err) {
       throw new Error(`The upload did not go through (${err?.cause?.code || err?.name || 'no answer'}).`)
     }

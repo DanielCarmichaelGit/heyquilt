@@ -24,6 +24,7 @@ import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, 
 import { HistoryLog, queryHistory, parseSince, formatHistory, currentTask } from './history.js'
 import { changeRefusal, TALK_REFUSED } from './session-access.js'
 import { describeSubscription, WEBHOOK_EVENTS } from './webhooks.js'
+import { registerWorkspaceTools, bytesFetcher } from './workspace-tools.js'
 
 const FEED_CAP = 300
 const ACTIVITY_CAP = 300
@@ -522,6 +523,105 @@ function sessionTools (server, ctx) {
   })
 }
 
+// The workspace library for hosted agents (see workspace-tools.js), offered only while the
+// accounts API says workspaces are on.
+export const FEATURES_EVERY_MS = 10 * 60 * 1000
+const FEATURES_TIMEOUT_MS = 5000
+// One API call, and one upload or download (at most 2 MB from here), from the relay: under
+// the API's own 30 s wait for the relay, so a slow call is reported by the tool, not cut off.
+const WORKSPACE_CALL_TIMEOUT_MS = 20 * 1000
+const WORKSPACE_TRANSFER_TIMEOUT_MS = 20 * 1000
+
+/**
+ * Asks `<apiUrl>/v1/features` now and every `everyMs` whether workspaces are on. on() is
+ * false until the API first says true. A failed probe (unreachable, slow, a server error, an
+ * odd answer) keeps the last answer, so off when there was none; an API without the route
+ * (404) has no workspaces. Never throws; its timer never holds the process open; stop()
+ * ends it and any probe in flight. `ready` is the first probe's answer.
+ */
+export function watchFeatures ({ apiUrl, fetch: fetchImpl = globalThis.fetch, everyMs = FEATURES_EVERY_MS, timeoutMs = FEATURES_TIMEOUT_MS, log = () => {} }) {
+  const url = `${String(apiUrl).replace(/\/+$/, '')}/v1/features`
+  let known = false
+  let inflight = null
+  let current = null // the AbortController of the probe in flight
+  let stopped = false
+  const set = (on) => {
+    if (on !== known) log(`hosted agents: workspace tools ${on ? 'on' : 'off'}`)
+    known = on
+  }
+  async function ask () {
+    const ac = new AbortController()
+    current = ac
+    const timer = setTimeout(() => ac.abort(new Error('the features check took too long')), timeoutMs)
+    timer.unref?.()
+    try {
+      const res = await fetchImpl(url, { signal: ac.signal })
+      if (res.status === 404) { set(false); return }
+      if (!res.ok) return
+      const body = await res.json()
+      if (body && typeof body === 'object') set(body.workspaces === true)
+    } catch {
+      // Unreachable, slow or garbled: keep what we knew.
+    } finally {
+      clearTimeout(timer)
+      ac.abort()
+      current = null
+    }
+  }
+  function probe () {
+    if (stopped) return Promise.resolve(known)
+    if (!inflight) inflight = ask().catch(() => {}).finally(() => { inflight = null })
+    return inflight.then(() => known)
+  }
+  const ready = probe()
+  const timer = setInterval(() => { probe() }, everyMs)
+  timer.unref?.()
+  return {
+    ready,
+    on: () => !stopped && known,
+    probe,
+    stop () {
+      stopped = true
+      clearInterval(timer)
+      current?.abort(new Error('stopped'))
+    }
+  }
+}
+
+/**
+ * How a hosted agent's library tools reach the accounts API: as the agent, with the pass
+ * the relay was handed (`Authorization: QuiltPass`, which only the workspace routes take).
+ * Errors carry the API's message and status. The pass never goes into an error or a log.
+ */
+export function hostedWorkspaceAccess ({ apiUrl, pass, fetch: fetchImpl = globalThis.fetch }) {
+  const api = String(apiUrl).replace(/\/+$/, '')
+  const call = async (method, route, body) => {
+    let res
+    try {
+      res = await fetchImpl(api + route, {
+        method,
+        headers: { authorization: `QuiltPass ${pass}`, ...(body ? { 'content-type': 'application/json' } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(WORKSPACE_CALL_TIMEOUT_MS)
+      })
+    } catch (err) {
+      throw new Error(`Couldn't reach Quilt (${err?.cause?.code || err?.name || 'no answer'}).`)
+    }
+    const data = await res.json().catch(() => null)
+    if (!res.ok) throw Object.assign(new Error(data?.error || `Quilt answered ${res.status}.`), { status: res.status })
+    if (!data || typeof data !== 'object') throw new Error('Quilt sent back something unexpected.')
+    return data
+  }
+  const put = async (url, bytes, headers) => {
+    try {
+      return (await fetchImpl(url, { method: 'PUT', headers, body: bytes, signal: AbortSignal.timeout(WORKSPACE_TRANSFER_TIMEOUT_MS) })).status
+    } catch (err) {
+      throw new Error(`The upload did not go through (${err?.cause?.code || err?.name || 'no answer'}).`)
+    }
+  }
+  return { call, fetchBytes: bytesFetcher(fetchImpl, { timeoutMs: WORKSPACE_TRANSFER_TIMEOUT_MS }), put, saveDir: null, readLocal: null }
+}
+
 async function serve (mcp, req, res) {
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })
   res.on('close', () => { transport.close().catch(() => {}); mcp.close().catch(() => {}) })
@@ -532,9 +632,10 @@ async function serve (mcp, req, res) {
 /**
  * Hosted agents: one MCP request (stateless) for the holder of `pass`, who is in whichever
  * session `relay.hosted` remembers for them. `relay` is { getRoom, roomEnded, refused, hosted,
- * saveHosted, log, endedMessage }.
+ * saveHosted, log, endedMessage }. `workspaces`, given only while the API has them on and
+ * the holder is an agent, is { apiUrl, pass (as sent), fetch }: the library tools are added.
  */
-export async function handleHostedMcp ({ req, res, pass, relay }) {
+export async function handleHostedMcp ({ req, res, pass, relay, workspaces = null }) {
   const image = String(req.headers['x-quilt-image'] || '').trim()
   const mcp = new McpServer({ name: 'quilt', version: '0.2.0' }, { instructions: HOSTED_INSTRUCTIONS })
   const me = pass.name
@@ -654,6 +755,8 @@ export async function handleHostedMcp ({ req, res, pass, relay }) {
   })
 
   sessionTools(mcp, ctx)
+  // The library works whether or not the agent is in a session (it never touches relay.hosted).
+  if (workspaces) registerWorkspaceTools(mcp, hostedWorkspaceAccess(workspaces))
   await serve(mcp, req, res)
 }
 

@@ -7,6 +7,7 @@ import crypto from 'node:crypto'
 import assert from 'node:assert/strict'
 import { startTestApi, makeOrg, makeAgent } from './api-helpers.js'
 import { verifyWebhook } from '../src/webhooks.js'
+import { newPassKeys, signPass, PASS_TTL_MS } from '../src/passes.js'
 
 let t
 before(async () => { t = await startTestApi({ workspaces: true }) })
@@ -449,4 +450,62 @@ test('session.started: allowLocalWebhooks (tests only) delivers to this computer
     await h.api.flushWebhooks()
     assert.deepEqual([x.deliveries.map((d) => d.url), x.lookups], [['http://127.0.0.1:9/hook'], []])
   } finally { x.close() }
+})
+
+// Hosted agents reach the library through the relay, which holds the agent's pass (not its
+// key): the workspace routes, and only they, take `Authorization: QuiltPass <pass>`.
+test('an agent pass reaches the workspace routes and nothing else; person, expired, forged and revoked passes are refused', async () => {
+  const keys = newPassKeys()
+  const p = await startTestApi({ workspaces: true, passKey: keys.privateKey })
+  try {
+    const w = (await p.call('POST', '/v1/workspaces', { name: 'Pass place' }, 'mem')).body.workspace
+    const { agent, accessKey } = await makeAgent(p, { name: 'Hosty', ownerUserId: 'mem' })
+    await p.store.putAgentPlacement({ agentId: agent.id, reach: 'all', access: 'edit', sessions: 'invited', updatedBy: 'person:mem' })
+    const minted = await p.call('POST', '/v1/passes', {}, null, asAgent(accessKey))
+    assert.equal(minted.status, 200, JSON.stringify(minted.body))
+    const asPass = (pass) => ({ authorization: `QuiltPass ${pass}` })
+    const mine = await p.call('GET', '/v1/me/workspaces', null, null, asPass(minted.body.pass))
+    assert.equal(mine.status, 200, JSON.stringify(mine.body))
+    assert.deepEqual(mine.body.workspaces.map((x) => x.id), [w.id])
+    // A room pass (what the API's /mcp hands the relay while the agent is in a session) works too.
+    const roomPass = await p.call('POST', '/v1/passes', { room: 'pass-room' }, null, asAgent(accessKey))
+    assert.equal((await p.call('GET', '/v1/me/workspaces', null, null, asPass(roomPass.body.pass))).status, 200)
+    // The library and the agent's webhook take it as well.
+    assert.equal((await p.call('GET', `/v1/workspaces/${w.id}/files`, null, null, asPass(minted.body.pass))).status, 200)
+    assert.equal((await p.call('DELETE', '/v1/agents/me/webhook', null, null, asPass(minted.body.pass))).status, 200)
+
+    // Not on any other route: the agent's own page, its keys, passes, the hosted MCP.
+    for (const [method, path] of [['GET', '/v1/agents/me'], ['POST', '/v1/passes'], ['GET', '/v1/me'], ['GET', `/v1/me/agents/${agent.id}/placement`]]) {
+      const r = await p.call(method, path, method === 'POST' ? {} : null, null, asPass(minted.body.pass))
+      assert.equal(r.status, 401, `${method} ${path}: ${JSON.stringify(r.body)}`)
+    }
+
+    const sign = (over, key = keys.privateKey) => signPass({ v: 1, sub: agent.id, kind: 'agent', name: 'Hosty', key: '', exp: Date.now() + PASS_TTL_MS, ...over }, key)
+    const refused = async (pass, why) => {
+      const r = await p.call('GET', '/v1/me/workspaces', null, null, asPass(pass))
+      assert.equal(r.status, 401, `${why}: ${JSON.stringify(r.body)}`)
+    }
+    await refused(sign({ kind: 'person', sub: 'mem' }), "a person's pass")
+    await refused(sign({ exp: Date.now() - 1000 }), 'an expired pass')
+    await refused(sign({}, newPassKeys().privateKey), 'a pass signed by someone else')
+    await refused(sign({ sub: 'not-a-uuid' }), 'a pass for no agent id')
+    await refused(sign({ sub: crypto.randomUUID() }), 'a pass for an agent that does not exist')
+    await refused('garbage', 'not a pass')
+    await p.store.revokeAgent(agent.id)
+    await refused(minted.body.pass, 'a revoked agent')
+  } finally { p.close() }
+
+  // An API without a pass key takes no passes at all; with the flag off, the routes stay a plain 404.
+  const noKey = await startTestApi({ workspaces: true })
+  try {
+    const pass = signPass({ v: 1, sub: crypto.randomUUID(), kind: 'agent', name: 'X', key: '', exp: Date.now() + PASS_TTL_MS }, newPassKeys().privateKey)
+    assert.equal((await noKey.call('GET', '/v1/me/workspaces', null, null, { authorization: `QuiltPass ${pass}` })).status, 401)
+  } finally { noKey.close() }
+  const off = await startTestApi({ passKey: keys.privateKey })
+  try {
+    const { accessKey } = await makeAgent(off, { name: 'Offy', ownerUserId: 'mem' })
+    const pass = (await off.call('POST', '/v1/passes', {}, null, asAgent(accessKey))).body.pass
+    const r = await off.call('GET', '/v1/me/workspaces', null, null, { authorization: `QuiltPass ${pass}` })
+    assert.deepEqual([r.status, r.body], [404, { error: 'not found' }])
+  } finally { off.close() }
 })

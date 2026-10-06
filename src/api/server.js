@@ -45,6 +45,9 @@ const POLL_INTERVAL_S = 3
 const MAX_BODY = 16 * 1024
 // A hosted agent's MCP request (a whole file, at most) and how long it may take on the relay.
 const MAX_MCP_BODY = 2 * 1024 * 1024
+// With workspaces on, room for a 2 MB library file sent as base64 (a third larger) and its call
+// around it: the relay's MCP reads up to 4 MB.
+const MAX_MCP_BODY_WORKSPACES = 4 * 1024 * 1024
 const MCP_TIMEOUT_MS = 30 * 1000
 // A pass minted for a hosted agent is reused until this close to its end: 5 minutes, so
 // a change to its grant reaches it as soon as it reaches a connected app.
@@ -280,8 +283,9 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx), ...agentRoutes(ctx), ...agentInviteRoutes(ctx), ...joinRoutes(ctx), ...relayRoutes(ctx), ...sessionRoutes(ctx), ...accessTypeRoutes(ctx), ...grantRoutes(ctx), ...sessionInviteRoutes(ctx), ...issueRoutes(ctx))
   // Always routed: with the flag off each answers a plain 404 of its own, so the app's
   // check at every launch isn't filed as a missing route.
-  routes.push(...workspaceRoutes({ ...ctx, workspaces }), ...workspaceAgentRoutes({ ...ctx, workspaces, relayUrl, webhookFetch, webhookLookup, allowLocalWebhooks, trackDelivery, limitAnnounce }))
-  const wsFiles = workspaceFileRoutes({ ...ctx, workspaces })
+  // Only these take a hosted agent's pass (workspaceReach), so they alone get the pass key.
+  routes.push(...workspaceRoutes({ ...ctx, workspaces, passKey }), ...workspaceAgentRoutes({ ...ctx, workspaces, passKey, relayUrl, webhookFetch, webhookLookup, allowLocalWebhooks, trackDelivery, limitAnnounce }))
+  const wsFiles = workspaceFileRoutes({ ...ctx, workspaces, passKey })
   routes.push(...wsFiles.routes)
 
   async function openLink (code) {
@@ -376,7 +380,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     if (!bearer(req).startsWith('qa_')) throw new HttpError(401, 'send your agent access key as "Authorization: Bearer <accessKey>"')
     const { agent } = await agentAuth.agentFromRequest(req)
     limitMcp(agent.id)
-    const body = ['POST', 'PUT'].includes(req.method) ? await readRaw(req, MAX_MCP_BODY) : undefined
+    const body = ['POST', 'PUT'].includes(req.method) ? await readRaw(req, workspaces ? MAX_MCP_BODY_WORKSPACES : MAX_MCP_BODY) : undefined
     const holder = { sub: agent.id, kind: 'agent', name: agent.name.slice(0, 64), key: agent.publicKey || '' }
     const passFor = async (room) => {
       const cacheKey = `${agent.id}\n${room}`

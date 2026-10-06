@@ -20,7 +20,7 @@ import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { WebSocketServer } from 'ws'
 import * as Y from 'yjs'
-import { handleAgentMcp, handleHostedMcp } from './relay-mcp.js'
+import { handleAgentMcp, handleHostedMcp, watchFeatures } from './relay-mcp.js'
 import { UpdateCheck } from './update-check.js'
 import {
   MSG_SYNC, MSG_AWARENESS, MSG_QUERY_AWARENESS, MSG_AUTH, MSG_CLAIM, MSG_CLAIMS, MAX_SHARED_FILE_BYTES,
@@ -1080,6 +1080,10 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
   // Without sign-in the limit is per address, and the message says so (as before).
   const TOO_MANY = passKey ? 'too many new sessions; try again later' : 'too many new sessions from this address; try again later'
   if (dataDir) fs.mkdirSync(dataDir, { recursive: true })
+  // Whether the accounts API has workspaces on, for hosted agents' library tools: asked in
+  // the background (never holding up the start) and again every 10 minutes.
+  const apiFetch = opts.apiFetch || globalThis.fetch
+  const features = cfg.apiUrl ? watchFeatures({ apiUrl: cfg.apiUrl, fetch: apiFetch, log }) : null
   // Who is in which session, for the dashboard (presence.js). Off unless both settings are set,
   // and then only for connections with a pass. Visits a crash left open are ended now.
   const presence = cfg.apiUrl && cfg.relayApiSecret
@@ -1301,7 +1305,8 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       if (!passKey) return text(404, 'this relay has sign-in off; hosted agents need it on')
       const pass = httpPass(req)
       if (!pass) return text(401, SIGN_IN)
-      return handleHostedMcp({ req, res, pass, relay: { getRoom, roomEnded, refused, hosted, saveHosted, webhooks, log, endedMessage: ENDED_MESSAGE, updates } })
+      const workspaces = features && features.on() && pass.kind === 'agent' ? { apiUrl: cfg.apiUrl, pass: String(req.headers['x-quilt-pass']), fetch: apiFetch } : null
+      return handleHostedMcp({ req, res, pass, workspaces, relay: { getRoom, roomEnded, refused, hosted, saveHosted, webhooks, log, endedMessage: ENDED_MESSAGE, updates } })
         .catch((err) => { log(`mcp error: ${err.message}`); if (!res.headersSent) text(500, 'mcp error') })
     }
     const mm = url.pathname.match(/^\/mcp\/([A-Za-z0-9_-]{20,64})$/)
@@ -1530,7 +1535,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
   sweeper.unref()
 
   return new Promise((resolve, reject) => {
-    httpServer.once('error', (err) => { clearInterval(heartbeat); clearInterval(sweeper); reject(err) })
+    httpServer.once('error', (err) => { clearInterval(heartbeat); clearInterval(sweeper); features?.stop(); reject(err) })
     httpServer.listen(port, host, () => {
       const actualPort = httpServer.address().port
       resolve({
@@ -1539,10 +1544,12 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         rooms, // exposed for tests
         store, // exposed for tests
         presence, // exposed for tests
+        features, // exposed for tests
         sweep,
         close: async () => {
           clearInterval(heartbeat)
           clearInterval(sweeper)
+          features?.stop()
           updates.stop()
           // Rooms are saved first, synchronously: Fly's kill timeout is about as long as
           // presence gets to reach the accounts API, so a hung or slow API must never be

@@ -335,7 +335,7 @@ function workspaceInviteDialog (id) {
     <p class="lead">They get into every session in this workspace once they sign in.</p>
     <div class="field"><label for="wi-access">Access</label>
       <select class="input" id="wi-access"><option value="edit">Can edit</option><option value="view">View only</option></select></div>
-    ${toggle('wiEvery', false, 'Also join every session in this workspace as it starts', 'For agents. Off: the agent is in the workspace, sees its files, and joins a session only when invited there.')}
+    ${toggle('wiEvery', false, 'Also join every session in this workspace as it starts', 'For your own agents. Off: the agent is in the workspace, sees its files, and joins a session only when invited there.')}
     <div class="label inv-sub">People you've worked with, and ${isOrg ? `${esc(orgName)}'s agents` : 'your agents'}</div>
     <div class="inv-list" id="wi-people"><p class="hint">Loading…</p></div>
     <div class="inv-agent wi-new-agent" id="wi-new-agent"><button class="btn sm" type="button" data-wi-invite-agent>${I.bot}<span>Invite a new agent</span></button><span class="hint">You'll get a link to paste into your AI.</span></div>
@@ -347,6 +347,8 @@ function workspaceInviteDialog (id) {
   const joins = () => (form.querySelector('[name=wiEvery]').checked ? 'all' : 'invited')
   const already = new Set([d?.owner?.account, ...(d?.members || []).map((m) => m.account), ...(d?.agents || []).filter((a) => !a.excluded).map((a) => a.account)].filter(Boolean))
   const list = $('#wi-people', back)
+  // Only an agent's owner can make it join every session: someone else's agent joins when invited.
+  const ownAgents = new Set()
   // { list, note }: a note says why no agents could be listed (an org's need Agents: Read).
   const agents = !isOrg
     ? api('GET', '/api/agents').then((r) => ({ list: r.agents }), () => ({ list: [] }))
@@ -357,6 +359,7 @@ function workspaceInviteDialog (id) {
     api('GET', '/api/collaborators').then((r) => r.collaborators).catch(() => []),
     agents
   ]).then(([people, { list: mine, note }]) => {
+    for (const a of mine) ownAgents.add(`agent:${a.id}`)
     const seen = new Set()
     const rows = [...people.filter((c) => c.kind !== 'agent' || !isOrg), ...mine.map((a) => ({ account: `agent:${a.id}`, name: a.name, kind: 'agent' }))].filter((c) => c.account && !seen.has(c.account) && seen.add(c.account))
     const why = note ? `<p class="hint wi-note">${esc(note)}</p>` : ''
@@ -373,7 +376,7 @@ function workspaceInviteDialog (id) {
     $('#wi-error', back).textContent = ''
     const account = b.dataset.addAccount
     try {
-      await api('POST', `/api/workspaces/${encodeURIComponent(id)}/members`, { account, access: $('#wi-access', back).value, ...(account.startsWith('agent:') ? { sessions: joins() } : {}) })
+      await api('POST', `/api/workspaces/${encodeURIComponent(id)}/members`, { account, access: $('#wi-access', back).value, ...(account.startsWith('agent:') ? { sessions: ownAgents.has(account) ? joins() : 'invited' } : {}) })
       b.outerHTML = '<span class="hint">Added</span>'
       toast(`Added ${b.dataset.name}`)
       await openWorkspace(id)

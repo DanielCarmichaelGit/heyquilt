@@ -1,7 +1,7 @@
 // Workspaces: account API helpers (see docs/superpowers/specs/2026-10-03-workspaces-design.md).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { listWorkspaces, listOrgs, createWorkspace, getWorkspace, putWorkspaceMember, setSessionWorkspace } from '../src/account.js'
+import { listWorkspaces, listOrgs, createWorkspace, getWorkspace, putWorkspaceMember, setSessionWorkspace, announceSessionStarted, announceWhenReported } from '../src/account.js'
 
 const fakeFetch = (status, body) => {
   const calls = []
@@ -39,4 +39,37 @@ test('listOrgs reads GET /v1/orgs with the token, and an odd reply throws', asyn
   assert.deepEqual(await listOrgs({ token: 'qd_x', api: 'https://api.test', fetch }), [{ slug: 'acme', name: 'Acme' }])
   assert.deepEqual(fetch.calls[0], { url: 'https://api.test/v1/orgs', method: 'GET', body: null, auth: 'Bearer qd_x' })
   await assert.rejects(listOrgs({ token: 'qd_x', api: 'https://api.test', fetch: fakeFetch(200, { orgs: null }) }), /unexpected reply/)
+})
+
+test('announceSessionStarted posts the link for the room to its workspace', async () => {
+  const fetch = fakeFetch(200, { notified: ['a1'], withoutWebhook: [] })
+  const r = await announceSessionStarted({ token: 't', api: 'https://api.test', fetch, id: 'w1', room: 'room-1', link: 'https://join.heyquilt.com/room-1#s' })
+  assert.deepEqual(r, { notified: ['a1'], withoutWebhook: [] })
+  assert.deepEqual(fetch.calls.map((c) => [c.method, c.url, c.body, c.auth]), [['POST', 'https://api.test/v1/workspaces/w1/sessions/room-1/started', { link: 'https://join.heyquilt.com/room-1#s' }, 'Bearer t']])
+  await assert.rejects(announceSessionStarted({ token: 't', api: 'https://api.test', fetch: fakeFetch(200, {}), id: 'w1', room: 'r', link: 'x' }))
+})
+
+test('announceWhenReported tries again while the API has not heard who owns the session, and never throws', async () => {
+  const waits = []
+  const sleep = async (ms) => { waits.push(ms) }
+  const logs = []
+  const log = (l) => logs.push(l)
+  const early = Object.assign(new Error('not yet'), { status: 409 })
+  let n = 0
+  const ok = await announceWhenReported(async () => { if (++n < 3) throw early; return { notified: ['a1', 'a2'], withoutWebhook: [] } }, { sleep, log, delays: [10, 20, 30] })
+  assert.deepEqual([ok.notified, n, waits], [['a1', 'a2'], 3, [10, 20]])
+  assert.ok(logs.some((l) => /2 agents/.test(l)), logs.join(' | '))
+  // Any other failure is logged once, not retried.
+  logs.length = 0; waits.length = 0; n = 0
+  assert.equal(await announceWhenReported(async () => { n++; throw Object.assign(new Error('nope'), { status: 400 }) }, { sleep, log, delays: [10] }), null)
+  assert.deepEqual([n, waits.length], [1, 0])
+  assert.match(logs.join(), /nope/)
+  // Gives up after the last wait.
+  n = 0; waits.length = 0
+  assert.equal(await announceWhenReported(async () => { n++; throw early }, { sleep, log, delays: [10, 20] }), null)
+  assert.deepEqual([n, waits], [3, [10, 20]])
+  // Stops once the session is gone.
+  let alive = true; n = 0
+  assert.equal(await announceWhenReported(async () => { n++; alive = false; throw early }, { sleep, log, delays: [10, 20], alive: () => alive }), null)
+  assert.equal(n, 1)
 })

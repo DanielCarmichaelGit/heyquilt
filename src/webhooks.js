@@ -12,6 +12,8 @@
 // delivers for hosted agents, and the local session, which delivers for agents
 // joined from a computer.
 import crypto from 'node:crypto'
+import dns from 'node:dns'
+import net from 'node:net'
 
 export const WEBHOOK_EVENTS = ['chat.mention', 'chat.dm', 'task.assigned']
 export const EVENT_OF_KIND = { mention: 'chat.mention', dm: 'chat.dm', task: 'task.assigned' }
@@ -31,6 +33,47 @@ const isPrivateIp = (host) => {
   }
   if (h.includes(':')) return /^(::1|::|fc|fd|fe80)/i.test(h)
   return false
+}
+
+// Addresses that are not on the public internet: unspecified, loopback, private, shared
+// (CGNAT), link-local, benchmarking, multicast and reserved; for IPv6 also unique-local,
+// link-local, site-local, multicast, IPv4-compatible and NAT64. Two lists, because a
+// BlockList matches IPv4 rules against IPv4-mapped IPv6 addresses (wanted) and IPv6 rules
+// covering ::ffff:0:0/96 against every IPv4 address (not wanted).
+const PRIVATE_V4 = new net.BlockList()
+for (const [a, p] of [['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15], ['224.0.0.0', 3]]) PRIVATE_V4.addSubnet(a, p, 'ipv4')
+const PRIVATE_V6 = new net.BlockList()
+for (const [a, p] of [['::', 96], ['64:ff9b::', 96], ['fc00::', 7], ['fe80::', 10], ['fec0::', 10], ['ff00::', 8]]) PRIVATE_V6.addSubnet(a, p, 'ipv6')
+
+/** Whether `address` (an IP, as DNS answers it) is not on the public internet. Anything that isn't an address counts as private. */
+export function isPrivateAddress (address) {
+  let a = String(address || '').replace(/^\[|\]$/g, '').split('%')[0]
+  const mapped = a.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i)
+  if (mapped) a = mapped[1]
+  const kind = net.isIP(a)
+  if (kind === 4) return PRIVATE_V4.check(a, 'ipv4')
+  if (kind === 6) return PRIVATE_V6.check(a, 'ipv6') || PRIVATE_V4.check(a, 'ipv6')
+  return true
+}
+
+/**
+ * Whether a webhook URL's host is on the public internet as it resolves now: { ok: true }, or
+ * { ok: false, reason }. A trailing dot is the same host; a local name or address never reaches
+ * DNS; every address the name resolves to must be public. Never throws. `lookup` is for tests.
+ * (parseWebhookUrl only reads the URL as written; this is for sends from Quilt's own servers.)
+ */
+export async function publicWebhookHost (url, { lookup = dns.promises.lookup } = {}) {
+  let host
+  try { host = new URL(url).hostname.toLowerCase() } catch { return { ok: false, reason: 'not a valid URL' } }
+  const bare = host.replace(/^\[|\]$/g, '').replace(/\.+$/, '')
+  if (!bare || LOCAL_HOSTS.has(bare) || bare.endsWith('.localhost')) return { ok: false, reason: `${host} is a local address` }
+  if (net.isIP(bare)) return isPrivateAddress(bare) ? { ok: false, reason: `${host} is a local or private address` } : { ok: true }
+  let addrs
+  try { addrs = await lookup(bare, { all: true, verbatim: true }) } catch (err) { return { ok: false, reason: `${host} did not resolve (${err?.code || err?.message || err})` } }
+  if (!Array.isArray(addrs) || !addrs.length) return { ok: false, reason: `${host} did not resolve` }
+  const bad = addrs.find((a) => isPrivateAddress(a?.address))
+  if (bad) return { ok: false, reason: `${host} resolves to a local or private address (${bad.address})` }
+  return { ok: true }
 }
 
 /**

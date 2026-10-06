@@ -6,6 +6,7 @@ import { test, before, after } from 'node:test'
 import crypto from 'node:crypto'
 import assert from 'node:assert/strict'
 import { startTestApi, makeOrg, makeAgent } from './api-helpers.js'
+import { verifyWebhook } from '../src/webhooks.js'
 
 let t
 before(async () => { t = await startTestApi({ workspaces: true }) })
@@ -38,7 +39,8 @@ test('flag off: every new route answers a plain 404', async () => {
       ['DELETE', `/v1/workspaces/${id}/agents/${id}`, null, 'mem'],
       ['POST', `/v1/workspaces/${id}/agent-invites`, { access: 'edit', sessions: 'all' }, 'mem'],
       ['PUT', `/v1/sessions/r1/agents/${id}/exclude`, null, 'mem'],
-      ['DELETE', `/v1/sessions/r1/agents/${id}/exclude`, null, 'mem']
+      ['DELETE', `/v1/sessions/r1/agents/${id}/exclude`, null, 'mem'],
+      ['POST', `/v1/workspaces/${id}/sessions/r1/started`, { link: 'https://join.heyquilt.com/r1#s' }, 'mem']
     ]
     for (const [method, path, body, who] of cases) {
       const r = await off.call(method, path, body, who)
@@ -285,4 +287,166 @@ test('GET /v1/workspaces/:id in an org workspace: placed org agents are managed 
   await t.call('PUT', `/v1/orgs/${o.slug}/agents/${agent.id}/placement`, { reach: 'all', sessions: 'all', access: 'edit' }, 'admin')
   const got = await t.call('GET', `/v1/workspaces/${w.id}`, null, 'mem')
   assert.deepEqual(got.body.agents.map((a) => [a.name, a.via, a.managedBy, a.sessions]), [['Orgy', 'global', 'org', 'all']])
+})
+
+// The session-started hand-off. Deliveries go through a recorded fetch; host names resolve
+// through a table, so nothing here touches the network.
+const RESOLVES = { 'hooks.example.com': ['93.184.216.34'], 'inside.example.com': ['93.184.216.34', '10.0.0.5'], 'six.example.com': ['2606:2800:220:1::1', '::ffff:127.0.0.1'] }
+async function handoffApi (opts = {}) {
+  const deliveries = []; const lookups = []; const logs = []; const storeCalls = []
+  const webhookFetch = async (url, init) => { deliveries.push({ url, init, payload: JSON.parse(init.body) }); return { ok: true, status: 200 } }
+  const webhookLookup = async (host, o) => {
+    lookups.push([host, o])
+    if (!RESOLVES[host]) throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: 'ENOTFOUND' })
+    return RESOLVES[host].map((address) => ({ address, family: address.includes(':') ? 6 : 4 }))
+  }
+  // Every argument the API hands its store, to show the link never reaches it.
+  const wrapStore = (store) => new Proxy(store, {
+    get (target, k) {
+      const v = target[k]
+      return typeof v === 'function' ? (...args) => { storeCalls.push(JSON.stringify(args)); return v.apply(target, args) } : v
+    }
+  })
+  const h = await startTestApi({ workspaces: true, webhookFetch, webhookLookup, wrapStore, log: (l) => logs.push(String(l)), ...opts })
+  /** A room in `ws` linked and owned by `owner` (a person id), as the relay reports it, named `name`. */
+  const startedRoom = async (ws, room, owner, name = '') => {
+    const linked = await h.call('POST', `/v1/workspaces/${ws.id}/sessions`, { room }, owner)
+    assert.equal(linked.status, 200, JSON.stringify(linked.body))
+    const at = Date.now()
+    await h.store.ingestPresence([{ id: `${room}-s`, type: 'start', room, account: `person:${owner}`, owner: true, name: '', at }, ...(name ? [{ id: `${room}-n`, type: 'name', room, name, at }] : [])], at)
+  }
+  const place = (agent, owner, body) => h.call('PUT', `/v1/me/agents/${agent.id}/placement`, body, owner)
+  return { h, deliveries, lookups, logs, storeCalls, startedRoom, place, close: () => h.close() }
+}
+
+test('session.started: each agent that joins and has a webhook is sent the link, signed; the link is never kept', async () => {
+  const x = await handoffApi()
+  const { h } = x
+  try {
+    const w = (await h.call('POST', '/v1/workspaces', { name: 'Teaser' }, 'gm')).body.workspace
+    const { agent: member } = await makeAgent(h, { name: 'Aaron', ownerUserId: 'gm' })
+    const { agent: placed } = await makeAgent(h, { name: 'Pete', ownerUserId: 'gm' })
+    const { agent: global } = await makeAgent(h, { name: 'Gail', ownerUserId: 'gm' })
+    const { agent: kept } = await makeAgent(h, { name: 'Xena', ownerUserId: 'gm' })
+    const { agent: invited } = await makeAgent(h, { name: 'Ivy', ownerUserId: 'gm' })
+    await h.call('PUT', `/v1/workspaces/${w.id}/members/agent:${member.id}`, { access: 'edit', sessions: 'all' }, 'gm')
+    await x.place(placed, 'gm', { reach: 'workspaces', workspaceIds: [w.id], sessions: 'all', access: 'edit' })
+    await x.place(global, 'gm', { reach: 'all', sessions: 'all', access: 'edit' })
+    await x.place(kept, 'gm', { reach: 'all', sessions: 'all', access: 'edit' })
+    await x.place(invited, 'gm', { reach: 'all', sessions: 'invited', access: 'edit' })
+    const hooks = {}
+    for (const a of [member, placed, kept, invited]) hooks[a.id] = await h.store.putAgentWebhook({ agentId: a.id, url: `https://hooks.example.com/${a.name.toLowerCase()}`, secret: `secret-of-${a.name}-0123456789` })
+    const room = 'teaser-1'
+    await x.startedRoom(w, room, 'gm', 'Teaser site')
+    assert.equal((await h.call('PUT', `/v1/sessions/${room}/agents/${kept.id}/exclude`, null, 'gm')).status, 200)
+
+    const SECRET = 'link-secret-' + crypto.randomBytes(8).toString('hex')
+    const link = `https://join.heyquilt.com/${room}#${SECRET}`
+    x.storeCalls.length = 0
+    // As pasted, with the CLI's words around it: sent on as the plain link.
+    const r = await h.call('POST', `/v1/workspaces/${w.id}/sessions/${room}/started`, { link: ` quilt join ${link} ` }, 'gm')
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.deepEqual([r.body.notified.slice().sort(), r.body.withoutWebhook], [[member.id, placed.id].sort(), [global.id]])
+    await h.api.flushWebhooks()
+    assert.equal(x.deliveries.length, 2)
+    const byUrl = Object.fromEntries(x.deliveries.map((d) => [d.url, d]))
+    for (const [agent, via] of [[member, 'member'], [placed, 'placed']]) {
+      const d = byUrl[hooks[agent.id].url]
+      assert.ok(d, `${agent.name} was sent it`)
+      const hd = d.init.headers
+      assert.equal(d.init.method, 'POST')
+      assert.equal(hd['x-quilt-event'], 'session.started')
+      assert.ok(verifyWebhook(hooks[agent.id].secret, hd['x-quilt-timestamp'], d.init.body, hd['x-quilt-signature']), 'signed with its own secret')
+      const { id, ts, ...rest } = d.payload
+      assert.match(id, /^[0-9a-f-]{36}$/)
+      assert.equal(typeof ts, 'number')
+      assert.deepEqual(rest, { event: 'session.started', workspace: { id: w.id, name: 'Teaser' }, room, name: 'Teaser site', link, by: 'Gee', via })
+    }
+    // Looked up before sending, every address at once.
+    assert.deepEqual(x.lookups.map(([host, o]) => [host, o.all]), [['hooks.example.com', true], ['hooks.example.com', true]])
+    // Nothing about the link reached the store, the request log or the API's own log.
+    assert.ok(x.storeCalls.length > 0)
+    assert.ok(!x.storeCalls.some((c) => c.includes(SECRET)), 'not handed to the store')
+    assert.ok(!JSON.stringify(h.store.listEvents()).includes(SECRET), 'not in request events')
+    assert.ok(!x.logs.some((l) => l.includes(SECRET)), 'not logged')
+  } finally { x.close() }
+})
+
+test('session.started: only the owner who linked it, for this workspace, with a link to that room on this relay', async () => {
+  const x = await handoffApi()
+  const { h } = x
+  try {
+    const w = (await h.call('POST', '/v1/workspaces', { name: 'Gate' }, 'gm')).body.workspace
+    const other = (await h.call('POST', '/v1/workspaces', { name: 'Other' }, 'gm')).body.workspace
+    await h.call('PUT', `/v1/workspaces/${w.id}/members/person:lim`, { access: 'edit' }, 'gm')
+    const { agent } = await makeAgent(h, { name: 'Pete', ownerUserId: 'gm' })
+    await x.place(agent, 'gm', { reach: 'all', sessions: 'all', access: 'edit' })
+    await h.store.putAgentWebhook({ agentId: agent.id, url: 'https://hooks.example.com/p', secret: 'pete-secret-0123456789' })
+    await x.startedRoom(w, 'gate-1', 'gm')
+    const post = (room, link, who = 'gm', ws = w) => h.call('POST', `/v1/workspaces/${ws.id}/sessions/${room}/started`, link === undefined ? {} : { link }, who)
+    const good = 'https://join.heyquilt.com/gate-1#abc'
+    assert.equal((await post('gate-1', good, 'lim')).status, 403, 'a member who does not own it')
+    assert.equal((await post('gate-1', good, 'out')).status, 404, 'an outsider cannot find the workspace')
+    assert.equal((await post('gate-1', good, 'gm', other)).status, 404, 'another workspace')
+    assert.equal((await post('gate-1', 'https://join.heyquilt.com/gate-2#abc')).status, 400, 'a link for another room')
+    assert.equal((await post('gate-1', 'https://join.heyquilt.com/gate-1')).status, 400, 'no secret')
+    assert.equal((await post('gate-1', 'https://evil.example.com/join/gate-1#abc')).status, 400, 'a relay that is not this one')
+    assert.equal((await post('gate-1', 'not a link')).status, 400)
+    assert.equal((await post('gate-1')).status, 400, 'no link')
+    assert.equal((await post('../x', good)).status, 404)
+    // Linked by gm, but the relay says someone else owns it.
+    await h.store.ingestPresence([{ id: 'gate-3-s', type: 'start', room: 'gate-3', account: 'person:out', owner: true, name: '', at: Date.now() }], Date.now())
+    await h.store.setSessionWorkspace('gate-3', w.id, { linkedBy: 'person:gm', at: Date.now() })
+    assert.equal((await post('gate-3', 'https://join.heyquilt.com/gate-3#abc')).status, 403, 'not the owner the relay reported')
+    // Linked, but the relay has not said who owns it yet: try again shortly.
+    assert.equal((await h.call('POST', `/v1/workspaces/${w.id}/sessions`, { room: 'gate-4' }, 'gm')).status, 200)
+    const early = await post('gate-4', 'https://join.heyquilt.com/gate-4#abc')
+    assert.equal(early.status, 409, JSON.stringify(early.body))
+    await h.api.flushWebhooks()
+    assert.equal(x.deliveries.length, 0)
+    assert.equal((await post('gate-1', good)).status, 200)
+    await h.api.flushWebhooks()
+    assert.equal(x.deliveries.length, 1)
+  } finally { x.close() }
+})
+
+test('session.started: a webhook whose host is or resolves to a private address is skipped and logged', async () => {
+  const x = await handoffApi()
+  const { h } = x
+  try {
+    const w = (await h.call('POST', '/v1/workspaces', { name: 'Hosts' }, 'gm')).body.workspace
+    const urls = ['https://inside.example.com/a', 'https://six.example.com/b', 'https://localhost./c', 'https://nowhere.example.com/d', 'https://127.0.0.1./e', 'https://hooks.example.com/ok']
+    for (const [i, url] of urls.entries()) {
+      const { agent } = await makeAgent(h, { name: `Hook${i}`, ownerUserId: 'gm' })
+      await x.place(agent, 'gm', { reach: 'all', sessions: 'all', access: 'edit' })
+      await h.store.putAgentWebhook({ agentId: agent.id, url, secret: `secret-${i}-0123456789abcdef` })
+    }
+    await x.startedRoom(w, 'hosts-1', 'gm')
+    const r = await h.call('POST', `/v1/workspaces/${w.id}/sessions/hosts-1/started`, { link: 'https://join.heyquilt.com/hosts-1#abc' }, 'gm')
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.equal(r.body.notified.length, urls.length)
+    await h.api.flushWebhooks()
+    assert.deepEqual(x.deliveries.map((d) => d.url), ['https://hooks.example.com/ok'])
+    // A trailing dot is the same host: local without asking DNS.
+    assert.deepEqual(x.lookups.map(([host]) => host).sort(), ['hooks.example.com', 'inside.example.com', 'nowhere.example.com', 'six.example.com'])
+    for (const host of ['inside.example.com', 'six.example.com', 'localhost.', 'nowhere.example.com', '127.0.0.1.']) {
+      assert.ok(x.logs.some((l) => /session\.started/.test(l) && l.includes(host)), `${host} logged: ${x.logs.join(' | ')}`)
+    }
+  } finally { x.close() }
+})
+
+test('session.started: allowLocalWebhooks (tests only) delivers to this computer without a lookup', async () => {
+  const x = await handoffApi({ allowLocalWebhooks: true })
+  const { h } = x
+  try {
+    const w = (await h.call('POST', '/v1/workspaces', { name: 'Local' }, 'gm')).body.workspace
+    const { agent, accessKey } = await makeAgent(h, { name: 'Lo', ownerUserId: 'gm' })
+    await x.place(agent, 'gm', { reach: 'all', sessions: 'all', access: 'edit' })
+    const put = await h.call('PUT', '/v1/agents/me/webhook', { url: 'http://127.0.0.1:9/hook' }, null, asAgent(accessKey))
+    assert.equal(put.status, 200, JSON.stringify(put.body))
+    await x.startedRoom(w, 'local-1', 'gm')
+    assert.equal((await h.call('POST', `/v1/workspaces/${w.id}/sessions/local-1/started`, { link: 'https://join.heyquilt.com/local-1#abc' }, 'gm')).status, 200)
+    await h.api.flushWebhooks()
+    assert.deepEqual([x.deliveries.map((d) => d.url), x.lookups], [['http://127.0.0.1:9/hook'], []])
+  } finally { x.close() }
 })

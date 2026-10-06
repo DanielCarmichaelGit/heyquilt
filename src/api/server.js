@@ -50,7 +50,7 @@ const MCP_TIMEOUT_MS = 30 * 1000
 // a change to its grant reaches it as soon as it reaches a connected app.
 const PASS_REUSE_MARGIN_MS = 5 * 60 * 1000
 
-export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, apiUrl = 'https://api.heyquilt.com', mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, tokenLimit = 30, joinLimit = 20, trustProxy = false, maxStartKeys = 10_000, passKey = '', passLimit = 60, relayUrl = HOSTED_RELAY, mcpLimit = 600, reportKey = '', reportLimit = 10, slowMs = 2000, pruneEveryMs = 60 * 60 * 1000, keepEventsMs = 30 * 24 * 60 * 60 * 1000, keepIssuesMs = 90 * 24 * 60 * 60 * 1000, pruneStartMs = 10_000, relaySecret = '', workspaces = false, fileStore = null, maxFileBytes = 500 * 1024 * 1024, workspaceQuotaBytes = 5 * 1024 * 1024 * 1024, maxWorkspaceFiles = 2000 }) {
+export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, apiUrl = 'https://api.heyquilt.com', mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, tokenLimit = 30, joinLimit = 20, trustProxy = false, maxStartKeys = 10_000, passKey = '', passLimit = 60, relayUrl = HOSTED_RELAY, mcpLimit = 600, reportKey = '', reportLimit = 10, slowMs = 2000, pruneEveryMs = 60 * 60 * 1000, keepEventsMs = 30 * 24 * 60 * 60 * 1000, keepIssuesMs = 90 * 24 * 60 * 60 * 1000, pruneStartMs = 10_000, relaySecret = '', workspaces = false, fileStore = null, maxFileBytes = 500 * 1024 * 1024, workspaceQuotaBytes = 5 * 1024 * 1024 * 1024, maxWorkspaceFiles = 2000, webhookFetch = globalThis.fetch, webhookLookup, allowLocalWebhooks = false }) {
   // PASS_SIGNING_KEY. A bad one should stop the API at start, not fail every pass later.
   if (passKey) passPublicKey(passKey)
   const site = String(siteUrl || '').replace(/\/+$/, '')
@@ -271,11 +271,14 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   ]
 
   // Org routes live in their own modules and share the caller check and the limiter.
+  // Webhook deliveries in flight (the session-started hand-off), so tests can wait for them.
+  const deliveries = new Set()
+  const trackDelivery = (p) => { deliveries.add(p); p.finally(() => deliveries.delete(p)); return p }
   const ctx = { store, user, person, device, bearer, now, site, apiUrl: api, mailer, log, limit: limitInvites, limitSend: limitInviteSend, limitTokens, limitJoin, agentAuth, reportKey, limitReports, relaySecret, files, maxFileBytes, workspaceQuotaBytes, maxWorkspaceFiles }
   routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx), ...agentRoutes(ctx), ...agentInviteRoutes(ctx), ...joinRoutes(ctx), ...relayRoutes(ctx), ...sessionRoutes(ctx), ...accessTypeRoutes(ctx), ...grantRoutes(ctx), ...sessionInviteRoutes(ctx), ...issueRoutes(ctx))
   // Always routed: with the flag off each answers a plain 404 of its own, so the app's
   // check at every launch isn't filed as a missing route.
-  routes.push(...workspaceRoutes({ ...ctx, workspaces }), ...workspaceAgentRoutes({ ...ctx, workspaces }))
+  routes.push(...workspaceRoutes({ ...ctx, workspaces }), ...workspaceAgentRoutes({ ...ctx, workspaces, relayUrl, webhookFetch, webhookLookup, allowLocalWebhooks, trackDelivery }))
   const wsFiles = workspaceFileRoutes({ ...ctx, workspaces })
   routes.push(...wsFiles.routes)
 
@@ -484,9 +487,14 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   const firstPrune = setTimeout(() => { pruneNow() }, pruneStartMs)
   firstPrune.unref()
 
+  /** Waits for every webhook delivery started so far (and any they start) to finish. */
+  async function flushWebhooks () {
+    while (deliveries.size) await Promise.allSettled([...deliveries])
+  }
+
   return new Promise((resolve) => server.listen(port, host, () => {
     const p = server.address().port
-    resolve({ port: p, url: `http://${host}:${p}`, close: () => { clearInterval(prune); clearTimeout(firstPrune); return new Promise((r) => server.close(r)) }, startKeys: () => limitStarts.size(), sweepFiles: (at) => wsFiles.sweep(at) })
+    resolve({ port: p, url: `http://${host}:${p}`, close: () => { clearInterval(prune); clearTimeout(firstPrune); return new Promise((r) => server.close(r)) }, startKeys: () => limitStarts.size(), sweepFiles: (at) => wsFiles.sweep(at), flushWebhooks })
   }))
 }
 

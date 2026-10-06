@@ -4,6 +4,8 @@ import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import http from 'node:http'
+import net from 'node:net'
+import crypto from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -11,8 +13,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { startServer } from '../src/server.js'
 import { Session } from '../src/session.js'
-import { encodeInvite } from '../src/runner.js'
-import { startTestApi, API_URL } from './api-helpers.js'
+import { encodeInvite, decodeInvite } from '../src/runner.js'
+import { startTestApi, API_URL, makeAgent } from './api-helpers.js'
 import { newPassKeys } from '../src/passes.js'
 import { agentJoin } from '../src/agent-join.js'
 
@@ -305,4 +307,44 @@ test("an agent started in a person's folder works in its own copy and leaves the
     if (folder === copy) assert.doesNotMatch(text(again), /stays theirs/)
     assert.match(text(await call2('quilt_leave_session')), /Left the session/)
   }
+})
+
+test('quilt_start_session in a workspace hands the link to the agents that join it by themselves', async (t) => {
+  // Its own API (workspaces on), relay (reporting who owns each session) and home with one agent.
+  const keys = newPassKeys()
+  const relayPort = await new Promise((resolve) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)) }) })
+  const relaySecret = crypto.randomBytes(16).toString('hex')
+  const deliveries = []
+  const webhookFetch = async (url, init) => { deliveries.push({ url, payload: JSON.parse(init.body) }); return { ok: true, status: 200 } }
+  const api2 = await startTestApi({ passKey: keys.privateKey, workspaces: true, relaySecret, relayUrl: `ws://127.0.0.1:${relayPort}`, webhookFetch, allowLocalWebhooks: true })
+  t.after(() => api2.close())
+  const relay2 = await startServer({ port: relayPort, host: '127.0.0.1', log: () => {}, passPublicKey: keys.publicKey, apiUrl: api2.api.url, relayApiSecret: relaySecret })
+  t.after(() => relay2.close())
+  const home2 = tmp('home2')
+  const link = (await api2.call('POST', '/v1/agent-invites', {}, 'mem')).body.link.replace(API_URL, api2.api.url)
+  const starter = await agentJoin({ link, name: 'starter', dir: path.join(home2, '.quilt'), log: () => {} })
+  const ws = (await api2.call('POST', '/v1/workspaces', { name: 'Agents' }, 'mem')).body.workspace
+  assert.equal((await api2.call('PUT', `/v1/workspaces/${ws.id}/members/agent:${starter.agentId}`, { access: 'edit' }, 'mem')).status, 200)
+  const { agent: helper } = await makeAgent(api2, { name: 'Helper', ownerUserId: 'mem' })
+  assert.equal((await api2.call('PUT', `/v1/me/agents/${helper.id}/placement`, { reach: 'all', sessions: 'all', access: 'edit' }, 'mem')).status, 200)
+  await api2.store.putAgentWebhook({ agentId: helper.id, url: 'https://hooks.example.com/helper', secret: 'helper-secret-0123456789' })
+
+  const dir = tmp('ws-handoff')
+  const c4 = new Client({ name: 'claude-code', version: '1.0.0' })
+  await c4.connect(new StdioClientTransport({ command: process.execPath, args: [BIN, 'mcp'], cwd: dir, env: { ...process.env, HOME: home2, QUILT_SERVER: `ws://127.0.0.1:${relayPort}` }, stderr: 'ignore' }))
+  t.after(() => c4.close().catch(() => {}))
+  const r = await c4.callTool({ name: 'quilt_start_session', arguments: { workspace: ws.id } })
+  assert.ok(!r.isError, text(r))
+  assert.doesNotMatch(text(r), /Could not add it/)
+  const room = JSON.parse(fs.readFileSync(path.join(dir, '.quilt', 'config.json'), 'utf8')).room
+  await waitFor(() => deliveries.length > 0, 15000)
+  await api2.api.flushWebhooks()
+  assert.equal(deliveries.length, 1)
+  const p = deliveries[0].payload
+  assert.deepEqual([deliveries[0].url, p.event, p.room, p.workspace.id, p.via, p.by], ['https://hooks.example.com/helper', 'session.started', room, ws.id, 'global', 'starter'])
+  // The link joins that room on that relay (decodeInvite takes the relay QUILT_SERVER names).
+  const prev = process.env.QUILT_SERVER
+  process.env.QUILT_SERVER = `ws://127.0.0.1:${relayPort}`
+  try { assert.equal(decodeInvite(p.link).room, room) } finally { if (prev === undefined) delete process.env.QUILT_SERVER; else process.env.QUILT_SERVER = prev }
+  assert.match(text(await c4.callTool({ name: 'quilt_leave_session', arguments: {} })), /Left the session/)
 })

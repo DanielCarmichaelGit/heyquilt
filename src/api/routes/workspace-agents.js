@@ -7,9 +7,12 @@ import { newToken, hashToken } from '../tokens.js'
 import { orgAccess } from '../org-access.js'
 import { cleanAccess, stillInOrg } from '../workspace-access.js'
 import { workspaceReach } from '../workspace-reach.js'
-import { cleanPlacement, placementIn, SESSIONS } from '../agent-placement.js'
+import { cleanPlacement, placementIn, agentsJoiningSession, SESSIONS } from '../agent-placement.js'
 import { AGENT_INVITE_TTL_MS, inviteStatus } from './agent-invites.js'
-import { parseWebhookUrl, newSecret } from '../../webhooks.js'
+import crypto from 'node:crypto'
+import { parseWebhookUrl, newSecret, publicWebhookHost, deliverWebhook } from '../../webhooks.js'
+import { parseInvite, buildInvite } from '../../ui/invite.js'
+import { isHostedRelay, HOSTED_RELAY } from '../../settings.js'
 
 const ROOM = /^[A-Za-z0-9_-]{1,64}$/
 export const AGENT_WEBHOOK_EVENTS = ['session.started']
@@ -67,8 +70,15 @@ export async function placementCandidates (store, agent) {
   return agent.ownerUserId ? store.listWorkspacesOwnedBy(agent.ownerUserId) : []
 }
 
+/** A relay address as join links carry it (ws:// or wss://, no trailing slash). */
+const relayForm = (url) => String(url || '').replace(/\/+$/, '').replace(/^http(s?):\/\//, 'ws$1://')
+
 export function workspaceAgentRoutes (ctx) {
-  const { store, person, now, apiUrl, limitSend, workspaces = false } = ctx
+  const { store, person, now, apiUrl, limitSend, log = () => {}, workspaces = false } = ctx
+  // The session-started hand-off: how webhooks are sent (tests record them), how host names
+  // resolve, and whether a receiver on this computer is allowed (tests only).
+  const { relayUrl = HOSTED_RELAY, webhookFetch = globalThis.fetch, webhookLookup, allowLocalWebhooks = false, trackDelivery = (p) => p } = ctx
+  const ownRelay = relayForm(relayUrl)
   const { caller, reach } = workspaceReach(ctx)
   const gated = (fn) => (...args) => {
     if (!workspaces) throw new HttpError(404, 'not found')
@@ -120,6 +130,28 @@ export function workspaceAgentRoutes (ctx) {
     const me = await caller(req)
     if (!me.account.startsWith('agent:')) throw new HttpError(403, 'Only an agent has a webhook here.')
     return me.agent || await store.agentById(me.account.slice(6))
+  }
+
+  /**
+   * Sends one agent its session.started event, after checking its webhook still points at the
+   * public internet as it resolves now (the URL was only checked as written when it was set).
+   * Never throws: a skipped or failed send is logged, without the link.
+   */
+  async function sendSessionStarted (agentId, hook, payload) {
+    try {
+      let url
+      try { url = parseWebhookUrl(hook.url, { allowLocal: allowLocalWebhooks }) } catch (e) {
+        log(`session.started to agent ${agentId} skipped: ${hook.url}: ${e.message}`)
+        return
+      }
+      if (!allowLocalWebhooks) {
+        const host = await publicWebhookHost(url, webhookLookup ? { lookup: webhookLookup } : {})
+        if (!host.ok) { log(`session.started to agent ${agentId} skipped: ${host.reason}`); return }
+      }
+      await deliverWebhook({ url, secret: hook.secret }, payload, { fetch: webhookFetch, now, log })
+    } catch (err) {
+      log(`session.started to agent ${agentId} failed: ${err?.message || err}`)
+    }
   }
 
   const routes = [
@@ -213,12 +245,42 @@ export function workspaceAgentRoutes (ctx) {
       return { ok: true }
     }],
 
+    // The session's owner, as soon as it has started a session in this workspace, hands over
+    // its join link; every agent that joins the session by itself and has a webhook is sent it
+    // at once. The link is used for these sends and never kept. 409 until the relay has said
+    // who owns the session (the app tries again shortly).
+    ['POST', /^\/v1\/workspaces\/([^/]+)\/sessions\/([^/]+)\/started$/, async (req, body, [id, room]) => {
+      const r = await reach(req, id)
+      if (!ROOM.test(room)) throw new HttpError(404, 'that session is not in this workspace')
+      const session = await store.sessionByRoom(room)
+      if (!session || session.workspaceId !== r.ws.id) throw new HttpError(404, 'that session is not in this workspace')
+      if (session.workspaceLinkedBy !== r.me.account) throw new HttpError(403, 'Only the session owner can do that.')
+      if (!session.ownerAccount) throw new HttpError(409, 'Quilt has not heard who owns this session yet; try again in a moment.')
+      if (session.ownerAccount !== r.me.account) throw new HttpError(403, 'Only the session owner can do that.')
+      let invite
+      try { invite = parseInvite(String(body.link || ''), { allowRelay: (s) => isHostedRelay(s) || relayForm(s) === ownRelay }) } catch { throw new HttpError(400, 'link must be this session\'s Quilt invite link') }
+      if (invite.room !== room || !invite.secret) throw new HttpError(400, 'link must be this session\'s Quilt invite link')
+      // Sent as Quilt writes it, whatever surrounded it in the request.
+      const link = buildInvite({ server: invite.relay || HOSTED_RELAY, room, secret: invite.secret }, isHostedRelay)
+      const by = r.me.userId ? ((await store.profile(r.me.userId))?.name || '') : (r.me.agent?.name || '')
+      const notified = []
+      const withoutWebhook = []
+      for (const { agentId, via } of await agentsJoiningSession(store, room)) {
+        const hook = await store.agentWebhook(agentId)
+        if (!hook) { withoutWebhook.push(agentId); continue }
+        notified.push(agentId)
+        const payload = { event: 'session.started', id: crypto.randomUUID(), ts: now(), workspace: { id: r.ws.id, name: r.ws.name }, room, name: session.name || '', link, by, via }
+        trackDelivery(sendSessionStarted(agentId, hook, payload))
+      }
+      return { notified, withoutWebhook }
+    }],
+
     // The agent's own webhook for workspace events. The secret signs deliveries; it is
     // answered on every PUT, and every PUT makes a new one.
     ['PUT', /^\/v1\/agents\/me\/webhook$/, async (req, body) => {
       const agent = await meAsAgent(req)
       let url
-      try { url = parseWebhookUrl(body.url) } catch (e) { throw new HttpError(400, e.message) }
+      try { url = parseWebhookUrl(body.url, { allowLocal: allowLocalWebhooks }) } catch (e) { throw new HttpError(400, e.message) }
       const hook = await store.putAgentWebhook({ agentId: agent.id, url, secret: newSecret() })
       return { url: hook.url, secret: hook.secret, events: [...AGENT_WEBHOOK_EVENTS] }
     }],

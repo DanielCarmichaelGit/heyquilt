@@ -26,7 +26,9 @@ export async function startTestApi (opts = {}) {
   for (const [id, name, email, confirmed = true, kind = 'personal'] of CAST) store.addUser(id, { name, email, confirmed, kind })
   const sent = []
   const mailer = { send: async (m) => { sent.push(m) } }
-  const api = await startApi({ store, verifyUser, siteUrl: SITE, apiUrl: API_URL, startLimit: 1000, inviteLimit: 1000, inviteSendLimit: 1000, tokenLimit: 1000, joinLimit: 1000, reportLimit: 1000, mailer, ...opts })
+  // `wrapStore` lets a test see every call the API makes to its store (the cast is already in it).
+  const { wrapStore = (s) => s, ...rest } = opts
+  const api = await startApi({ store: wrapStore(store), verifyUser, siteUrl: SITE, apiUrl: API_URL, startLimit: 1000, inviteLimit: 1000, inviteSendLimit: 1000, tokenLimit: 1000, joinLimit: 1000, reportLimit: 1000, mailer, ...rest })
   const call = async (method, path, body, userId, headers = {}) => {
     const res = await fetch(api.url + path, {
       method,

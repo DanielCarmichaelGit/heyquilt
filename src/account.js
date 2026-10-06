@@ -242,6 +242,45 @@ export async function setSessionWorkspace ({ token, id, room, api = apiUrl(), fe
   if (!r.session) throw new Error(BAD_REPLY)
   return r.session
 }
+/**
+ * Tells the API the session in `room` (already in workspace `id`) has started, with its join
+ * link, so every agent that joins it by itself is sent the link at once. The API never keeps
+ * it. { notified, withoutWebhook } (agent ids); throws with .status (409: the relay has not
+ * said who owns the session yet).
+ */
+export async function announceSessionStarted ({ token, id, room, link, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'POST', `${ws$(id)}/sessions/${encodeURIComponent(room)}/started`, { link }, token)
+  if (!Array.isArray(r.notified)) throw new Error(BAD_REPLY)
+  return r
+}
+
+// Waits between tries while the API has not heard from the relay who owns a new session
+// (it reports at once when the owner connects, and every minute after).
+export const ANNOUNCE_DELAYS_MS = [1000, 2000, 4000, 8000, 15_000, 30_000, 30_000]
+const idle = (ms) => new Promise((resolve) => { const t = setTimeout(resolve, ms); t.unref?.() })
+
+/**
+ * Runs `announce` (an announceSessionStarted call) in the background of a session start: tries
+ * again after each delay while the API answers 409, stops once `alive()` says the session is
+ * gone, and logs the outcome. Resolves the API's answer or null; never throws.
+ */
+export async function announceWhenReported (announce, { alive = () => true, log = () => {}, delays = ANNOUNCE_DELAYS_MS, sleep = idle } = {}) {
+  for (let i = 0; ; i++) {
+    if (!alive()) return null
+    try {
+      const r = await announce()
+      if (r.notified.length) log(`told ${r.notified.length === 1 ? '1 agent' : `${r.notified.length} agents`} in this workspace that the session started`)
+      return r
+    } catch (err) {
+      if (err.status !== 409 || i >= delays.length) {
+        log(`could not tell this workspace's agents the session started: ${err.message}`)
+        return null
+      }
+    }
+    await sleep(delays[i])
+  }
+}
+
 export async function unsetSessionWorkspace ({ token, id, room, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
   await call(fetchImpl, api, 'DELETE', `${ws$(id)}/sessions/${encodeURIComponent(room)}`, null, token)
 }

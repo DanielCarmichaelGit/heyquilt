@@ -2,7 +2,7 @@
 // failed delivery is tried again.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseWebhookUrl, parseWebhookEvents, makeSubscription, describeSubscription, webhookPayload, signWebhook, verifyWebhook, deliverWebhook, deliverEvents, WEBHOOK_EVENTS } from '../src/webhooks.js'
+import { parseWebhookUrl, parseWebhookEvents, makeSubscription, describeSubscription, webhookPayload, signWebhook, verifyWebhook, deliverWebhook, deliverEvents, WEBHOOK_EVENTS, isPrivateAddress, publicWebhookHost } from '../src/webhooks.js'
 
 test('a webhook URL must be https and public; the local session also takes http to this computer', () => {
   assert.equal(parseWebhookUrl(' https://hooks.example.com/quilt?x=1 '), 'https://hooks.example.com/quilt?x=1')
@@ -120,4 +120,33 @@ test('deliverEvents sends only the events the subscription asks for, in order', 
   assert.equal(rs.length, 2)
   assert.deepEqual(f.calls.map((c) => JSON.parse(c.init.body).event), ['chat.mention', 'task.assigned'])
   assert.deepEqual(f.calls.map((c) => JSON.parse(c.init.body).to), ['G', 'G'])
+})
+
+test('isPrivateAddress: loopback, private, link-local, unique-local and mapped addresses; public ones are not', () => {
+  for (const a of ['127.0.0.1', '10.1.2.3', '172.16.0.1', '172.31.255.255', '192.168.1.1', '169.254.169.254', '100.64.0.1', '0.0.0.0', '224.0.0.1', '::1', '::', 'fc00::1', 'fd12::3', 'fe80::1', 'febf::1', '::ffff:127.0.0.1', '::ffff:10.0.0.1', '::ffff:7f00:1', '[::1]', 'fe80::1%en0', 'not-an-ip']) {
+    assert.equal(isPrivateAddress(a), true, a)
+  }
+  for (const a of ['93.184.216.34', '8.8.8.8', '172.32.0.1', '2606:2800:220:1::1', '::ffff:8.8.8.8']) assert.equal(isPrivateAddress(a), false, a)
+})
+
+test('publicWebhookHost: every resolved address must be public; a trailing dot is the same host', async () => {
+  const table = { 'pub.example.com': ['8.8.8.8', '2606:2800:220:1::1'], 'mixed.example.com': ['8.8.8.8', '192.168.0.2'], 'empty.example.com': [] }
+  const asked = []
+  const lookup = async (host, o) => {
+    asked.push([host, o])
+    if (!table[host]) throw Object.assign(new Error('nope'), { code: 'ENOTFOUND' })
+    return table[host].map((address) => ({ address, family: address.includes(':') ? 6 : 4 }))
+  }
+  assert.deepEqual(await publicWebhookHost('https://pub.example.com/x', { lookup }), { ok: true })
+  assert.deepEqual(asked, [['pub.example.com', { all: true, verbatim: true }]])
+  assert.deepEqual(await publicWebhookHost('https://pub.example.com./x', { lookup }), { ok: true })
+  assert.equal(asked[1][0], 'pub.example.com')
+  for (const url of ['https://mixed.example.com/x', 'https://empty.example.com/x', 'https://missing.example.com/x', 'https://localhost./x', 'https://a.localhost./x', 'https://127.0.0.1./x', 'https://[::1]/x', 'https://10.0.0.1/x', 'not a url']) {
+    const r = await publicWebhookHost(url, { lookup })
+    assert.equal(r.ok, false, url)
+    assert.ok(r.reason, url)
+  }
+  // Literal addresses and local names never reach DNS.
+  assert.deepEqual(asked.map(([h]) => h), ['pub.example.com', 'pub.example.com', 'mixed.example.com', 'empty.example.com', 'missing.example.com'])
+  assert.deepEqual(await publicWebhookHost('https://8.8.8.8/x', { lookup }), { ok: true })
 })

@@ -6,22 +6,32 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import net from 'node:net'
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-ui-ws-'))
 process.env.HOME = process.env.USERPROFILE = home
 
 const { startUi } = await import('../src/ui-server.js')
 const { startServer } = await import('../src/server.js')
-const { startTestApi, linkDevice, makeOrg } = await import('./api-helpers.js')
+const { startTestApi, linkDevice, makeOrg, makeAgent } = await import('./api-helpers.js')
 const { newPassKeys } = await import('../src/passes.js')
 const { loadIdentity } = await import('../src/identity.js')
 const { saveAccount } = await import('../src/account.js')
 
+const freePort = () => new Promise((resolve) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)) }) })
+
 let ui, accounts, relay
+// What the API sent to agents' webhooks (session.started), recorded instead of sent.
+const deliveries = []
 before(async () => {
   const keys = newPassKeys()
-  accounts = await startTestApi({ passKey: keys.privateKey, workspaces: true })
-  relay = await startServer({ port: 0, host: '127.0.0.1', log: () => {}, passPublicKey: keys.publicKey })
+  // The relay reports who owns each session to the API (as it does in production), which the
+  // session-started hand-off waits for; the API knows the relay's address for join links.
+  const relayPort = await freePort()
+  const relaySecret = crypto.randomBytes(16).toString('hex')
+  const webhookFetch = async (url, init) => { deliveries.push({ url, payload: JSON.parse(init.body) }); return { ok: true, status: 200 } }
+  accounts = await startTestApi({ passKey: keys.privateKey, workspaces: true, relaySecret, relayUrl: `ws://127.0.0.1:${relayPort}`, webhookFetch, allowLocalWebhooks: true })
+  relay = await startServer({ port: relayPort, host: '127.0.0.1', log: () => {}, passPublicKey: keys.publicKey, apiUrl: accounts.api.url, relayApiSecret: relaySecret })
   process.env.QUILT_API_URL = accounts.api.url
   process.env.QUILT_SERVER = `ws://127.0.0.1:${relay.port}`
   const { token } = await linkDevice(accounts, 'mem', loadIdentity())
@@ -62,6 +72,29 @@ test('a session started inside a workspace is linked on the API and shows under 
   assert.deepEqual(got.body.sessions.map((x) => x.room), [room])
   await api('POST', `/api/sessions/${s.body.id}/stop`)
   assert.deepEqual((await api('GET', `/api/workspaces/${id}`)).body.recent.map((r) => r.dir), [path.join(home, 'site')])
+})
+
+test('a session started in a workspace sends its link to a placed agent with a webhook', async () => {
+  const id = (await api('POST', '/api/workspaces', { name: 'Handoff' })).body.workspace.id
+  const { agent } = await makeAgent(accounts, { name: 'Pete', ownerUserId: 'mem' })
+  const placed = await accounts.call('PUT', `/v1/me/agents/${agent.id}/placement`, { reach: 'workspaces', workspaceIds: [id], sessions: 'all', access: 'edit' }, 'mem')
+  assert.equal(placed.status, 200, JSON.stringify(placed.body))
+  await accounts.store.putAgentWebhook({ agentId: agent.id, url: 'https://hooks.example.com/pete', secret: 'pete-secret-0123456789' })
+  const s = await api('POST', '/api/sessions', { mode: 'create', dir: path.join(home, 'handoff'), workspace: id })
+  assert.equal(s.status, 200, JSON.stringify(s.body))
+  const room = s.body.status.room
+  const until = Date.now() + 15_000
+  while (!deliveries.some((d) => d.payload.room === room) && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 50))
+  await accounts.api.flushWebhooks()
+  const mine = deliveries.filter((d) => d.payload.room === room)
+  assert.equal(mine.length, 1, JSON.stringify(deliveries))
+  const p = mine[0].payload
+  assert.deepEqual([mine[0].url, p.event, p.workspace, p.via, p.by], ['https://hooks.example.com/pete', 'session.started', { id, name: 'Handoff' }, 'placed', 'Mo'])
+  const { decodeInvite } = await import('../src/runner.js')
+  const joined = decodeInvite(p.link)
+  assert.deepEqual([joined.room, joined.server], [room, process.env.QUILT_SERVER])
+  assert.ok(joined.secret)
+  await api('POST', `/api/sessions/${s.body.id}/stop`)
 })
 
 test('a session the API will not put in its workspace starts outside any workspace', async () => {

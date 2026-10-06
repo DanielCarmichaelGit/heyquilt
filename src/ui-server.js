@@ -17,7 +17,7 @@ import * as gitops from './git.js'
 import { installedEditors, openIn } from './editors.js'
 import { migrateDir } from './legacy.js'
 import { writePrivateJson } from './private-file.js'
-import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession, createAgentInvite, listAgents, listAccessTypes, listCollaborators, listGrants, putGrant, deleteGrant, inviteToSession, listSessionInvites, cancelSessionInvite, listWorkspaces, listOrgs, createWorkspace, getWorkspace, updateWorkspace, deleteWorkspace, putWorkspaceMember, removeWorkspaceMember, setSessionWorkspace, listWorkspaceFiles, createWorkspaceFile, confirmWorkspaceFile, workspaceFileDownload, updateWorkspaceFile, deleteWorkspaceFile, createWorkspaceFolder, listWorkspaceFileVersions } from './account.js'
+import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession, createAgentInvite, listAgents, listAccessTypes, listCollaborators, listGrants, putGrant, deleteGrant, inviteToSession, listSessionInvites, cancelSessionInvite, listWorkspaces, listOrgs, createWorkspace, getWorkspace, updateWorkspace, deleteWorkspace, putWorkspaceMember, removeWorkspaceMember, setSessionWorkspace, announceSessionStarted, announceWhenReported, listWorkspaceFiles, createWorkspaceFile, confirmWorkspaceFile, workspaceFileDownload, updateWorkspaceFile, deleteWorkspaceFile, createWorkspaceFolder, listWorkspaceFileVersions } from './account.js'
 import { effectiveAccess, builtinType } from './session-access.js'
 import { cleanSessionName, BAD_SESSION_NAME, SESSION_NAME_MAX } from './session-name.js'
 import { personPasses } from './pass-source.js'
@@ -359,10 +359,20 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       // Put the new room in its workspace before anyone else connects. A failure is logged, never
       // fatal, and the session is outside any workspace here too, as it is on the API.
       // mode was reassigned to 'create' for github clones above, so this covers both.
-      await asAccount((token) => setSessionWorkspace({ token, id: workspace, room: conn.room })).catch((err) => {
+      const linked = await asAccount((token) => setSessionWorkspace({ token, id: workspace, room: conn.room })).then(() => true, (err) => {
         log(`could not add this session to its workspace: ${err.message}`)
         forgetWorkspace(entry.run.dir)
+        return false
       })
+      // Then hand its link to the agents that join it by themselves, in the background: the
+      // session never waits for this, and a failure is only logged.
+      if (linked) {
+        const link = entry.run.invite
+        announceWhenReported(() => asAccount((token) => announceSessionStarted({ token, id: workspace, room: conn.room, link })), {
+          alive: () => runs.get(id) === entry && current(),
+          log
+        }).catch(() => {})
+      }
     }
     return summary(id)
   }

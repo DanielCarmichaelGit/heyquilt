@@ -16,7 +16,7 @@ import { INVALID_INVITE } from './ui/invite.js'
 import { toolLabel } from './agents/common.js'
 import { sessionPasses } from './pass-source.js'
 import { pickAgent, agentAccess } from './agent-join.js'
-import { setSessionWorkspace } from './account.js'
+import { setSessionWorkspace, announceSessionStarted, announceWhenReported } from './account.js'
 import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, MAX_VERIFIED } from './agent-task-workflow.js'
 import { formatHistory } from './history.js'
 import { renderInbox, describeEvent, INBOX_HOW } from './inbox.js'
@@ -422,6 +422,12 @@ export async function runMcp () {
       try {
         const saved = await agentAccess({ name: agentKey })
         await setSessionWorkspace({ token: saved.accessKey, id: workspace, room: conn.room, api: saved.api })
+        // Then hand its link to the agents that join it by themselves, in the background:
+        // starting never waits for this, and a failure is only logged.
+        announceWhenReported(() => announceSessionStarted({ token: saved.accessKey, id: workspace, room: conn.room, link: run.invite, api: saved.api }), {
+          alive: () => joined?.run === run,
+          log: (line) => run.session.log(line)
+        }).catch(() => {})
       } catch (err) {
         workspaceError = `Could not add it to workspace ${workspace}: ${err.message}`
         run.session.log(`could not add this session to workspace ${workspace}: ${err.message}`)

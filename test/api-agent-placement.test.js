@@ -128,6 +128,11 @@ test('agentJoinsSession: exclusion first, then the member row, then placement, e
   assert.equal(await agentJoinsSession(store, 'room-1', id), false, 'kept out of this session')
   await store.removeSessionAgentExclusion('room-1', id)
   assert.equal(await agentJoinsSession(store, 'room-1', id), true)
+  // Linked by someone other than the owner the relay reports: nobody joins, as roomAccess admits nobody.
+  await store.ingestPresence([{ id: `e${++eventId}`, type: 'start', room: 'room-2', account: 'person:u1', owner: true, name: '', at: 1000 }], 1000)
+  await store.setSessionWorkspace('room-2', ws1.id, { linkedBy: 'person:someone-else', at: 1000 })
+  assert.equal(await agentJoinsSession(store, 'room-2', id), false, 'linked by someone other than the owner')
+  assert.deepEqual(await agentsJoiningSession(store, 'room-2'), [])
 })
 
 test('agentsJoiningSession: members with all and placed agents with all, minus the kept out, with via', async () => {

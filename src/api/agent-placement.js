@@ -73,10 +73,14 @@ async function decide (store, session, ws, agentId) {
   return no
 }
 
-/** The room's session and its workspace, or null when it isn't in one. */
+/**
+ * The room's session and its workspace, or null when it isn't in one. As in roomAccess, a
+ * session counts as in a workspace only when its owner (as the relay reports it) put it there.
+ */
 async function sessionAndWorkspace (store, room) {
   const session = await store.sessionByRoom(room)
   if (!session || !session.workspaceId) return null
+  if (!session.ownerAccount || session.ownerAccount !== session.workspaceLinkedBy) return null
   const ws = await store.workspaceById(session.workspaceId)
   return ws ? { session, ws } : null
 }

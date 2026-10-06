@@ -45,13 +45,13 @@ export async function roomAccess (store, room, account, email = '') {
     await store.useAccountInvites(room, account)
     return effectiveAccess(await typeOfGrant(store, grant), grant.tighten)
   }
-  // An agent its owner kept out of this session gets nothing from the workspace (a grant,
-  // above, is the owner letting it back in).
-  if (account.startsWith('agent:') && UUID.test(account.slice(6)) && await store.sessionAgentExcluded(room, account.slice(6))) return null
   // No grant of its own: a session inside a workspace admits the workspace's members, but
   // only when its owner (as the relay reports it) put it there. Anyone else's link, or one
   // made before the relay has named an owner, lets nobody in.
   if (!session.workspaceId || !session.ownerAccount || session.ownerAccount !== session.workspaceLinkedBy) return null
+  // An agent its owner kept out of this session gets nothing from the workspace (a grant,
+  // above, is the owner letting it back in).
+  if (account.startsWith('agent:') && UUID.test(account.slice(6)) && await store.sessionAgentExcluded(room, account.slice(6))) return null
   const ws = await store.workspaceById(session.workspaceId)
   if (!ws) return null
   const wa = await workspaceAccess(store, ws, account, { orgGrants: ws.orgId ? await orgGrantsFor(store, ws.orgId, account) : null })

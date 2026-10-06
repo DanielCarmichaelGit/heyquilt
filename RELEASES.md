@@ -20,6 +20,7 @@ AIs take turns on a file instead of stepping on each other, and Quilt recognises
 - **Quilt stays out of git.** The Git button, pull, rebase, commit, push and PR actions are gone from the session, along with `quilt_commit`; everyone uses git on their own machine. Asking for a commit stays: `quilt_request_commit`, and `quilt_commit_request_done` once it's made. Starting a session from a GitHub repo and branch is unchanged.
 - **Quilt keeps git away from its own state.** When a session starts in a git folder, Quilt adds `.quilt/` to the project's `.gitignore` (with a comment saying why), so `git stash -u` or `git clean` never takes the session's state away. The line is shared like any edit, so your partners' git ignores it too; a `.gitignore` that already ignores `.quilt` is left as it is.
 - **git clean deletes; git stash -u puts away.** Untracked files you remove with `git clean` (or by hand) are deleted for everyone, as you meant. Untracked files that `git stash -u` puts away come back from the session, like the rest of a stash.
+- **A git conflict waits for you.** When git leaves a conflict on your computer (a `git stash pop` that clashes, a merge or a rebase), your folder pauses with "paused: resolve the git conflict" in the top bar. Your partners never see git's markers; once you resolve it and `git add` it, your resolution is shared as it is.
 
 ## 0.3.9 — 2026-10-05
 

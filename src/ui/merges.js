@@ -6,15 +6,23 @@ import { changedLines } from './fileview.js'
 const you = (name, me, fallback = 'someone') => !name ? fallback : name === me ? 'you' : esc(name)
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1)
 
+/** How the opener's side came about (merges.js VIAS). */
+export function done (m, deleted = false) {
+  if (m.via === 'pull') return deleted ? 'pulled commits that delete this' : 'pulled commits that change this'
+  if (m.via === 'hold') return deleted ? 'deleted this during a git command' : 'changed this during a git command'
+  return deleted ? 'deleted this offline' : 'changed this offline'
+}
+
 /** One plain sentence: who changed what, where. */
 function describe (m, me) {
   const who = cap(you(m.by, me))
   const other = you(m.others[0], me)
-  if (m.kind === 'ai') return `${who} changed this offline and ${other} changed it in the session. An AI combined the two: have a look.`
-  if (m.kind === 'claimed') return `${who} changed this offline, but ${you(m.claimedBy, me)} ${m.claimedBy === me ? 'have' : 'has'} it claimed. The session's version is in the file.`
-  if (m.oursDeleted) return `${who} deleted this offline and ${other} changed it in the session.`
-  if (m.theirsHash === null) return `${who} changed this offline, but it was deleted in the session.`
-  return `${who} changed this offline and ${other} changed it in the session${m.reason ? ` (${esc(m.reason)})` : ''}.`
+  const did = done(m)
+  if (m.kind === 'ai') return `${who} ${did} and ${other} changed it in the session. An AI combined the two: have a look.`
+  if (m.kind === 'claimed') return `${who} ${did}, but ${you(m.claimedBy, me)} ${m.claimedBy === me ? 'have' : 'has'} it claimed. The session's version is in the file.`
+  if (m.oursDeleted) return `${who} ${done(m, true)} and ${other} changed it in the session.`
+  if (m.theirsHash === null) return `${who} ${did}, but it was deleted in the session.`
+  return `${who} ${did} and ${other} changed it in the session${m.reason ? ` (${esc(m.reason)})` : ''}.`
 }
 
 const mineLabel = (m, me) => m.oursDeleted ? 'Delete it' : m.by === me ? 'Keep mine' : `Keep ${esc(m.by)}'s`

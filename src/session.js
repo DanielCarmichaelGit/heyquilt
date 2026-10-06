@@ -32,7 +32,7 @@ import { merge3, withMarkers, hasMarkers } from './merge3.js'
 import { aiMerge, findMergeCli } from './merge-ai.js'
 import { openMerge, updateMerge, readMerges, pruneMerges, cleanName } from './merges.js'
 import { ensureQuiltIgnored } from './gitignore.js'
-import { gitDir, headKey, headRef, gitRuns, askTwice, lastCallTimedOut, busy as gitBusy, leftoverLock, STALE_LOCK_MS, indexStamp, classify, filesAt, changesBetween, treeState, branchTip, watchGit, SETTLE_MS, BURST_PATHS } from './gitstate.js'
+import { gitDir, headKey, headRef, gitRuns, askTwice, lastCallTimedOut, busy as gitBusy, leftoverLock, STALE_LOCK_MS, indexStamp, classify, filesAt, changesBetween, treeState, branchTip, watchGit, unmergedPaths, stashStamp, SETTLE_MS, BURST_PATHS } from './gitstate.js'
 
 export { applyTextDiff }
 
@@ -174,6 +174,8 @@ export class Session extends EventEmitter {
     this.gitWatcher = null
     this.hold = null // { kind: 'busy'|'settling'|'switching', since, prevHead, to? } while this folder's sync is held
     this.heldPaths = new Set() // paths that changed (here or in the room) while held
+    this.heldConflicts = new Set() // paths git left a conflict in during this hold (see noteConflict)
+    this.holdStash = null // the stash's mark when the hold began: a change means the person stashed
     this.headChangedAt = 0
     this.settleTimer = null
     this.savedGit = null // { key, sha, held } from state.json: the branch synced, and whether a hold was on, at the last stop
@@ -715,7 +717,7 @@ export class Session extends EventEmitter {
   myKey () { return (this.identity || this.conn?.identity)?.publicKey || null }
 
   /** Merges one captured path. Returns what happened, or null when nothing needed doing. */
-  async mergeOne ({ rel, base }) {
+  async mergeOne ({ rel, base, via = null }) {
     const release = () => this.merging.delete(rel)
     const disk = this.readDisk(rel)
     if (disk && (disk.skip || disk.tooLarge)) { release(); return null }
@@ -740,8 +742,8 @@ export class Session extends EventEmitter {
       return null
     }
     const binary = [base, ours, theirs].some((k) => typeof k === 'string' && k.startsWith('bin:'))
-    if (claimedByOther) return this.openConflict({ rel, base, ours, theirs, theirsBy, disk, kind: 'claimed', claimedBy: claim.by, binary })
-    if (binary || ours === null || theirs === undefined) return this.openConflict({ rel, base, ours, theirs, theirsBy, disk, kind: 'conflict', binary })
+    if (claimedByOther) return this.openConflict({ rel, base, ours, theirs, theirsBy, disk, kind: 'claimed', claimedBy: claim.by, binary, via })
+    if (binary || ours === null || theirs === undefined) return this.openConflict({ rel, base, ours, theirs, theirsBy, disk, kind: 'conflict', binary, via })
     const { text, conflicts } = merge3(base || '', ours, theirs)
     if (!conflicts.length) {
       this.applyMerged(rel, text, `with ${theirsBy || 'the session'}'s changes`)
@@ -766,7 +768,7 @@ export class Session extends EventEmitter {
       // The record first, so an applied AI merge always has one to review.
       // theirsBy is peer-written (an activity entry): flatten it so a stray
       // control character can't make openMerge throw and drop the record.
-      const rec = openMerge(this.doc, this.merges, { path: rel, by: this.name, byId: this.myKey(), others: theirsBy ? [cleanName(theirsBy)] : [], kind: 'ai', ours, base, theirsHash: sha1(theirs), binary: false }, LOCAL)
+      const rec = openMerge(this.doc, this.merges, { path: rel, by: this.name, byId: this.myKey(), others: theirsBy ? [cleanName(theirsBy)] : [], kind: 'ai', ours, base, theirsHash: sha1(theirs), binary: false, via }, LOCAL)
       // The local copies are for Send to… and review; the record already has
       // ours (an "ai" record is never local), so a failed write mustn't stop the merge it describes.
       try {
@@ -779,7 +781,7 @@ export class Session extends EventEmitter {
       return 'ai'
     }
     const reason = ai.text ? 'the session changed it again while the AI was merging' : ai.refused
-    return this.openConflict({ rel, base, ours, theirs: now, theirsBy: this.lastEditorOf(rel), disk, kind: 'conflict', reason, binary: false })
+    return this.openConflict({ rel, base, ours, theirs: now, theirsBy: this.lastEditorOf(rel), disk, kind: 'conflict', reason, binary: false, via })
   }
 
   /** Writes a merged text to the shared doc and the disk as one edit of ours. */
@@ -811,7 +813,7 @@ export class Session extends EventEmitter {
    * stays on disk and in the doc, ours is kept in the record and under
    * .quilt/merges/<id>/, and everyone sees the record until someone settles it.
    */
-  openConflict ({ rel, base, ours, theirs, theirsBy, disk, kind, reason = null, claimedBy = null, binary }) {
+  openConflict ({ rel, base, ours, theirs, theirsBy, disk, kind, reason = null, claimedBy = null, binary, via = null }) {
     const text = (k) => (typeof k === 'string' && !k.startsWith('bin:') ? k : null)
     // theirsBy and claimedBy are peer-written (an activity entry, a claim):
     // flatten them so a stray control character can't make openMerge throw
@@ -826,6 +828,7 @@ export class Session extends EventEmitter {
       kind,
       ours: binary ? null : text(ours),
       oursDeleted: ours === null,
+      via,
       base: binary ? null : text(base),
       theirsHash: theirs === undefined ? null : sha1(theirs),
       binary,
@@ -1109,6 +1112,7 @@ export class Session extends EventEmitter {
     for (const rel of paths) this.heldPaths.add(rel)
     if (r.kind === 'busy') {
       this.setHold('busy', { prevHead: r.prevHead })
+      if (r.conflict) this.noteConflict(r.conflict)
       this.settleSoon() // polls until the operation is over, in case its end goes unseen
     } else if (r.kind === 'switch') {
       this.setHold('switching', { prevHead: r.prevHead, to: r.head.key })
@@ -1189,6 +1193,7 @@ export class Session extends EventEmitter {
     // The git watcher can start a hold before any burst is classified: commits of the room's work
     // move its starting point on, asked before it can settle (gitTask runs in order).
     if (!this.hold) this.gitTask(() => this.noteCommits()).catch(() => {})
+    if (!this.hold) this.holdStash = stashStamp(this.root)
     // since: when the folder was first held (the app's "git is busy" note waits on it), kept across kinds.
     this.hold = { kind, since: this.hold ? this.hold.since : Date.now(), ...(this.hold ? { prevHead: this.hold.prevHead } : {}), ...extra }
     if (!this.hold.prevHead) this.hold.prevHead = this.gitSeen
@@ -1200,6 +1205,7 @@ export class Session extends EventEmitter {
 
   releaseHold () {
     this.hold = null
+    this.heldConflicts.clear()
     clearTimeout(this.settleTimer); this.settleTimer = null
     this.emit('hold', null)
     this.scheduleStatusWrite()
@@ -1244,6 +1250,11 @@ export class Session extends EventEmitter {
       }
     }
     if (busy) { this.setHold('busy'); this.settleSoon(); return } // still mid-operation: look again later
+    // git left a conflict for the person (a `stash pop` that clashed has no marker file): their
+    // resolution is shared once git has it (git add), never git's conflict markers.
+    const conflicts = await unmergedPaths(this.root)
+    if (!this.settleable()) return
+    if (conflicts && conflicts.size) { this.setHold('busy'); this.noteConflict([...conflicts]); this.settleSoon(); return }
     const head = await headKey(this.root)
     if (!this.settleable()) return
     if (!head) {
@@ -1272,8 +1283,9 @@ export class Session extends EventEmitter {
     // What git wrote is accounted for here: the next flush is an edit unless git moves again.
     this.gitIndex = indexStamp(this.root)
     this.headChangedAt = 0
+    const why = this.hold.back ? 'back' : stashStamp(this.root) !== this.holdStash ? 'stash' : 'reset'
     this.releaseHold()
-    this.writeBack(plan.discarded, true)
+    this.writeBack(plan.discarded, why)
     // Not awaited: merging (an AI merge can take a while) never holds up the next git work.
     this.mergeSettled(plan).catch((err) => this.log(`could not merge: ${err.message}`))
   }
@@ -1322,7 +1334,9 @@ export class Session extends EventEmitter {
     const old = await filesAt(this.root, prev?.sha, changed.filter((rel) => changes.get(rel) !== 'A'))
     if (!old) return null
     if (old.failed) this.log(`⚠️ git could not read ${old.failed} file${old.failed === 1 ? '' : 's'} at the old commit; merged without a base (a merge record at worst)`)
-    const advance = changed.map((rel) => ({ rel, base: old.get(rel) ?? undefined }))
+    // A file git made the person resolve (stash pop, rebase) holds their merge of the commits and the
+    // session's work: merged against the session's version this disk had, it is taken as resolved.
+    const advance = changed.map((rel) => ({ rel, base: this.heldConflicts.has(rel) && this.lastKnown.has(rel) ? this.lastKnown.get(rel) : old.get(rel) ?? undefined, via: 'pull' }))
     const rest = [...paths].filter((rel) => !changes.has(rel) && free(rel))
     const tree = rest.length ? await twice(() => treeState(this.root, rest)) : { dirty: new Set(), tracked: new Set() }
     if (!tree) {
@@ -1333,13 +1347,13 @@ export class Session extends EventEmitter {
       const atHead = await filesAt(this.root, head.sha, rest)
       if (!atHead) return null
       this.log(`⚠️ git could not say what it changed here; ${rest.length} held file${rest.length === 1 ? '' : 's'} merged against your last commit`)
-      return { advance, discarded: [], edited: rest.map((rel) => ({ rel, base: atHead.get(rel) ?? undefined })), considered: new Set([...paths, ...changes.keys()]) }
+      return { advance, discarded: [], edited: rest.map((rel) => ({ rel, base: atHead.get(rel) ?? undefined, via: this.rejoin ? undefined : 'hold' })), considered: new Set([...paths, ...changes.keys()]) }
     }
     const discarded = []; const edited = []
     for (const rel of rest) {
       // git calls an untracked or ignored file clean too, but nothing put it back to a commit: that is an edit.
       if (!tree.dirty.has(rel) && (tree.tracked.has(rel) || !this.onDisk(rel))) discarded.push(rel)
-      else edited.push({ rel, base: this.lastKnown.get(rel) })
+      else edited.push({ rel, base: this.lastKnown.get(rel), via: this.rejoin ? undefined : 'hold' })
     }
     return { advance, discarded, edited, considered: new Set([...paths, ...changes.keys()]) }
   }
@@ -1404,11 +1418,24 @@ export class Session extends EventEmitter {
       const head = await headKey(this.root)
       if (!away() || !head || head.key !== this.git.key) return
       // Back: let it settle, then merge whatever the commits did and restore the rest.
-      this.hold = { kind: 'settling', since: Date.now(), prevHead: this.hold.prevHead }
+      this.hold = { kind: 'settling', since: Date.now(), prevHead: this.hold.prevHead, back: true }
       this.emit('hold', this.hold)
       this.scheduleStatusWrite()
       this.settleSoon()
     }).catch((err) => this.log(`could not read git: ${err.message}`)).finally(() => { this.checkingBack = false })
+  }
+
+  /** git left a conflict here (`stash pop`, a merge, a rebase): held until it's resolved, said once per hold. */
+  noteConflict (paths) {
+    if (!this.hold) return
+    for (const rel of paths) this.heldConflicts.add(rel)
+    const fresh = !this.hold.conflict
+    this.hold.conflict = [...this.heldConflicts]
+    if (!fresh) return
+    const list = this.hold.conflict.slice(0, 3).join(', ') + (this.hold.conflict.length > 3 ? ', …' : '')
+    this.log(`⏸️ git left a conflict in ${list} on this computer; Quilt shares your resolution once you resolve it and git add it.`)
+    this.emit('hold', this.hold)
+    this.scheduleStatusWrite()
   }
 
   /** Puts the room's version of each path back on disk (a discard on this machine never discards the room's work). */
@@ -1423,7 +1450,11 @@ export class Session extends EventEmitter {
       if (disk) this.lastKnown.set(rel, disk.key); else this.lastKnown.delete(rel)
       if (this.tryWrite(rel)) n++
     }
-    if (say && n) this.log(`↩️ Quilt kept the session's work; your stash still has your copy. (${n} file${n === 1 ? '' : 's'})`)
+    if (!say || !n) return
+    const files = `${n} file${n === 1 ? '' : 's'}`
+    if (say === 'back') this.log(`▶️ Back on ${this.git.key}: caught up with the session (${files}).`)
+    else if (say === 'reset') this.log(`↩️ Quilt kept the session's work: git put ${files} back to your last commit on this computer only, and the session's version is back.`)
+    else this.log(`↩️ Quilt kept the session's work; your stash still has your copy. (${files})`)
   }
 
   /** Runs mergeOne over held entries ({ rel, base }), keeping each out of normal sync while it runs. Returns the conflicts. */
@@ -3188,7 +3219,7 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
       chat: this.messages({ limit: 20, markRead: false }),
       unread: this.unreadCount(),
       fileCount: this.files.size + this.blobs.size,
-      git: this.git ? { branch: this.git.branch, key: this.git.key, hold: this.hold ? { kind: this.hold.kind, since: this.hold.since, to: this.hold.to || null } : null } : null
+      git: this.git ? { branch: this.git.branch, key: this.git.key, hold: this.hold ? { kind: this.hold.kind, since: this.hold.since, to: this.hold.to || null, conflict: this.hold.conflict || null } : null } : null
     }
   }
 

@@ -24,6 +24,7 @@ import { renderChatAbout, renderUnanswered, heldRefusal, renderQueueNotice, rend
 import { describeSubscription, WEBHOOK_EVENTS } from './webhooks.js'
 import { UpdateCheck } from './update-check.js'
 import { getSettings } from './settings.js'
+import { mergeAction } from './merges.js'
 
 /**
  * The "quilt-<room>" folder inside `cwd`. Invites only carry plain room names, but a room that
@@ -299,14 +300,15 @@ export async function runMcp () {
     return n ? `Withdrew your request for ${rel}.` : `You had not asked for ${rel}.`
   }))
 
+  const did = (m, deleted = false) => mergeAction(m, deleted)
   const mergeLine = (m, me) => {
     const who = m.by === me ? 'you' : m.by
     const other = m.others[0] ? (m.others[0] === me ? 'you' : m.others[0]) : 'the session'
     const what = m.kind === 'ai' ? `merged by AI, waiting for a look`
-      : m.kind === 'claimed' ? `${who} changed it offline but ${m.claimedBy} has it claimed`
-      : m.oursDeleted ? `${who} deleted it offline and ${other} changed it in the session`
-      : m.theirsHash === null ? `${who} changed it offline but it was deleted in the session`
-      : `${who} changed it offline and ${other} changed it in the session`
+      : m.kind === 'claimed' ? `${who} ${did(m)} but ${m.claimedBy} has it claimed`
+      : m.oursDeleted ? `${who} ${did(m, true)} and ${other} changed it in the session`
+      : m.theirsHash === null ? `${who} ${did(m)} but it was deleted in the session`
+      : `${who} ${did(m)} and ${other} changed it in the session`
     return `- \`${m.path}\` (id ${m.id}, ${m.state}): ${what}${m.reason ? ` — ${m.reason}` : ''}`
   }
 

@@ -189,12 +189,38 @@ test('a first join takes the room\'s .gitignore, then adds the line to it; a vie
 })
 
 test('reset --hard by an agent is the same', async (t) => {
-  const { dirA, dirB } = await pairRepos(t)
+  const { B, dirA, dirB } = await pairRepos(t)
   write(dirA, 'README.md', 'hello from alice\n')
   await waitFor(() => read(dirB, 'README.md') === 'hello from alice\n')
   git(dirB, 'reset', '-q', '--hard')
   await never(() => read(dirA, 'README.md') !== 'hello from alice\n', 2500)
   await waitFor(() => read(dirB, 'README.md') === 'hello from alice\n', 8000)
+  // Nothing was stashed, so the line doesn't say there is a stash.
+  assert.ok(B.logs.some((l) => l.includes('git put 1 file back to your last commit on this computer only')), B.logs.join('\n'))
+  assert.ok(!B.logs.some((l) => l.includes('your stash still has your copy')), B.logs.join('\n'))
+})
+
+test('a stash pop that clashes is git mid-conflict: the person resolves it, the partner never sees markers, and the resolution is shared', async (t) => {
+  const { A, B, dirA, dirB } = await pairRepos(t)
+  // Alice's uncommitted line 2 is the room's work; a commit elsewhere rewrites the same line.
+  write(dirA, 'src/app.js', 'line1\nline2 (alice)\nline3\nline4\nline5\n')
+  await waitFor(() => read(dirB, 'src/app.js') === 'line1\nline2 (alice)\nline3\nline4\nline5\n')
+  const c = tmp('c'); git(c, 'clone', '-q', git(dirA, 'remote', 'get-url', 'origin'), '.')
+  write(c, 'src/app.js', 'line1\nline2 (remote)\nline3\nline4\nline5\n'); git(c, 'commit', '-qam', 'remote'); git(c, 'push', '-q', 'origin', 'main')
+  git(dirB, 'stash', '-q'); git(dirB, 'pull', '-q', '--ff-only')
+  assert.throws(() => git(dirB, 'stash', 'pop', '-q'), 'the pop clashes')
+  assert.match(read(dirB, 'src/app.js'), /<<<<<<< /)
+  // Held while git's conflict is there: bob keeps his markers, alice never gets them.
+  await never(() => /<<<<<<< /.test(read(dirA, 'src/app.js') || '') || !/<<<<<<< /.test(read(dirB, 'src/app.js') || ''), 4000)
+  await waitFor(() => B.status().git.hold?.conflict?.includes('src/app.js'))
+  assert.ok(B.logs.some((l) => l.includes('git left a conflict in src/app.js on this computer')), B.logs.join('\n'))
+  assert.equal(A.mergeList().filter((m) => m.state === 'open').length, 0)
+  // Bob resolves (both changes) and tells git: his resolution is the session's now, no record.
+  write(dirB, 'src/app.js', 'line1\nline2 (remote, alice)\nline3\nline4\nline5\n'); git(dirB, 'add', 'src/app.js')
+  await waitFor(() => read(dirA, 'src/app.js') === 'line1\nline2 (remote, alice)\nline3\nline4\nline5\n', 10000)
+  await waitFor(() => B.status().git.hold === null)
+  assert.equal(A.mergeList().filter((m) => m.state === 'open').length, 0)
+  assert.equal(B.mergeList().filter((m) => m.state === 'open').length, 0)
 })
 
 test('stash, pull, pop lands once with the pulled commit merged, no flicker', async (t) => {
@@ -225,13 +251,13 @@ test('a pull that changes a file the partner is editing merges three-way; an ove
   git(c, 'commit', '-qam', 'remote'); git(c, 'push', '-q', 'origin', 'main')
   write(dirA, 'README.md', 'hello (alice)\n')
   await waitFor(() => read(dirB, 'README.md') === 'hello (alice)\n')
+  // Stashed and pulled, never popped: the pulled commits meet the room's work in Quilt, not in git.
   git(dirB, 'stash', '-q'); git(dirB, 'pull', '-q', '--ff-only')
-  // The pop clashes on README.md (git exits 1, leaving its markers in the file); src/app.js pops cleanly.
-  assert.throws(() => git(dirB, 'stash', 'pop', '-q'))
   await waitFor(() => read(dirA, 'src/app.js') === 'line1 (remote)\nline2\nline3\nline4\nline5 (alice)\n', 10000)
   const rec = await waitFor(() => A.mergeList().find((m) => m.path === 'README.md' && m.state === 'open'), 10000)
   assert.equal(rec.kind, 'conflict')
-  assert.equal(read(dirA, 'README.md'), 'hello (alice)\n', 'git\'s markers never reach the room')
+  assert.equal(rec.via, 'pull', 'the record says the commits were pulled, not edited offline')
+  assert.equal(read(dirA, 'README.md'), 'hello (alice)\n', 'the room keeps its work')
 })
 
 test('a rebase with a conflict never shows git markers to the partner; continuing merges the result', async (t) => {
@@ -265,6 +291,7 @@ test('checking out another branch pauses that folder; coming back resumes and me
   git(dirB, 'stash', '-q'); git(dirB, 'checkout', '-q', 'main')
   await waitFor(() => B.status().git.hold === null, 10000)
   await waitFor(() => read(dirB, 'README.md') === 'main work\n' && read(dirB, 'src/app.js') === 'line1\nline2\nline3\nline4\nline5\n')
+  assert.ok(B.logs.some((l) => l.includes('Back on main: caught up with the session')), B.logs.join('\n'))
 })
 
 test('stopped while paused on another branch: the next start stays paused, then resumes on the way back', async (t) => {

@@ -717,7 +717,7 @@ details.choice-foot .hint { display: block; margin-top: 6px; }
 .pm-toggle input { accent-color: var(--ok); }
 
 .branch-label { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-size: 12.5px; color: var(--muted); }
-.branch-label svg { flex: none; }
+.branch-label svg { flex: none; width: 15px; height: 15px; }
 /* A long branch name (or the branch in the pause note) ends in an ellipsis; the full name is in the tooltip. */
 .branch-label .branch-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .branch-label .tag { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

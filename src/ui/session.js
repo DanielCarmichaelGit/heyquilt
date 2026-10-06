@@ -475,9 +475,9 @@ function renderTop () {
       const note = g.hold && (g.hold.kind === 'switching' || held >= HOLD_NOTE_MS)
       clearTimeout(holdNoteTimer)
       if (g.hold && !note) holdNoteTimer = setTimeout(renderTop, HOLD_NOTE_MS - held + 20)
-      const tag = note ? (g.hold.kind === 'switching' ? `paused · you're on ${esc(g.hold.to || '?')}` : 'syncing paused: git is busy') : ''
+      const tag = note ? (g.hold.kind === 'switching' ? `paused · you're on ${esc(g.hold.to || '?')}` : g.hold.conflict ? 'paused: resolve the git conflict' : 'syncing paused: git is busy') : ''
       label.innerHTML = `${I.branch}<span class="branch-name" title="${esc(g.key)}">${esc(g.key)}</span>${tag ? `<span class="tag" title="${tag}">${tag}</span>` : ''}`
-      label.title = g.hold ? (g.hold.kind === 'switching' ? `This session syncs ${g.key}. Sync resumes when you're back on it.` : 'Quilt waits for git to finish, then catches up.') : `This folder is on ${g.key}`
+      label.title = g.hold ? (g.hold.kind === 'switching' ? `This session syncs ${g.key}. Sync resumes when you're back on it.` : g.hold.conflict ? `git left a conflict in ${g.hold.conflict.join(', ')} on this computer. Resolve it and git add it; Quilt then shares your resolution.` : 'Quilt waits for git to finish, then catches up.') : `This folder is on ${g.key}`
     }
   }
   const people = [st.me, ...st.peers]

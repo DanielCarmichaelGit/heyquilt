@@ -216,6 +216,9 @@ export async function classify (root, { changed = [], before = null, leftover = 
   const tree = await treeState(root, changed)
   // git could not say (a timeout in a big repo): held as busy, and asked again when it settles.
   if (!tree) return { kind: 'busy', head, prevHead: before }
+  // git left a conflict for the person (a `stash pop` that clashed leaves no MERGE_HEAD): mid-operation too.
+  const conflict = changed.filter((rel) => tree.unmerged.has(rel))
+  if (conflict.length) return { kind: 'busy', head, prevHead: before, conflict }
   // Clean paths print nothing, and so does a path git has never heard of (outside the repo, or nonexistent).
   const deleted = (rel) => !indexWrote && !tree.tracked.has(rel) && !exists(root, rel)
   const clean = changed.filter((rel) => !tree.dirty.has(rel) && !deleted(rel))
@@ -335,8 +338,8 @@ export async function changedBetween (root, shaA, shaB) {
 
 /**
  * What git says about `paths` now, in two git calls whatever their number:
- * `dirty` (changed, staged, untracked or conflicted) and `tracked` (in the
- * index). Null when git fails.
+ * `dirty` (changed, staged, untracked or conflicted), `unmerged` (a conflict
+ * git left for the person to resolve) and `tracked` (in the index). Null when git fails.
  */
 export async function treeState (root, paths) {
   const spec = paths.length <= MAX_PATHSPECS ? ['--', ...paths] : []
@@ -345,15 +348,37 @@ export async function treeState (root, paths) {
   const listed = await run(root, ['--literal-pathspecs', 'ls-files', '-z', ...spec])
   if (listed === null) return null
   const dirty = new Set()
+  const unmerged = new Set()
   const f = status.split('\0')
   for (let i = 0; i < f.length; i++) {
     const e = f[i]
     if (e[0] === '1') dirty.add(e.split(' ').slice(8).join(' '))
     else if (e[0] === '2') dirty.add(e.split(' ').slice(9).join(' ')).add(f[++i]) // renamed: both paths
-    else if (e[0] === 'u') dirty.add(e.split(' ').slice(10).join(' '))
+    else if (e[0] === 'u') { const rel = e.split(' ').slice(10).join(' '); dirty.add(rel); unmerged.add(rel) }
     else if (e[0] === '?' || e[0] === '!') dirty.add(e.slice(2))
   }
-  return { dirty, tracked: new Set(listed.split('\0').filter(Boolean)) }
+  return { dirty, unmerged, tracked: new Set(listed.split('\0').filter(Boolean)) }
+}
+
+/**
+ * Paths with a conflict git left in the index for the person to resolve
+ * (stages 1-3), whatever made it: a merge, a rebase, a `stash pop`, `checkout -m`.
+ * Null when git fails.
+ */
+export async function unmergedPaths (root) {
+  const out = await run(root, ['ls-files', '-u', '-z'])
+  if (out === null) return null
+  const paths = new Set()
+  for (const e of out.split('\0')) { const tab = e.indexOf('\t'); if (tab > 0) paths.add(e.slice(tab + 1)) }
+  return paths
+}
+
+/** A cheap mark that changes whenever something is stashed or a stash is dropped (the stash reflog). */
+export function stashStamp (root) {
+  let dir = gitDir(root)
+  if (!dir) return null
+  try { dir = path.resolve(dir, fs.readFileSync(path.join(dir, 'commondir'), 'utf8').trim()) } catch {} // a worktree keeps its stash with the main repo
+  try { const st = fs.statSync(path.join(dir, 'logs', 'refs', 'stash')); return `${st.mtimeMs}:${st.size}` } catch { return null }
 }
 
 /** Watches HEAD, the index and the in-progress markers; events: head, index, busy, idle. */

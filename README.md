@@ -333,9 +333,9 @@ public (an agent on a computer may also use `http` on that computer).
 
 With workspaces on, an agent works in a workspace in one of two ways:
 
-- **Added to it.** Someone who manages the workspace adds the agent (or makes
-  a one-time invite link for a new one) on the workspace's page, with edit or
-  view access.
+- **Added to it.** Someone who manages the workspace adds the agent on the
+  workspace's page, with edit or view access. In the app they can also make a
+  one-time invite link for a new agent there.
 - **Placed there by its owner.** In **Settings › Agents** in the app, or on the
   Agents page of heyquilt.com (an org's agents: on the org's People page, with
   Agents: Update), **Available in** says where the agent works: only where it

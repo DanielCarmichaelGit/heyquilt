@@ -334,6 +334,9 @@ What phase 3 changed from the design above, and why:
   `quilt_workspaces`: in its description and at the top of its answer.
 - **Placement scopes limit session folders only;** the library follows the placement's access (edit or view).
   Neither the app nor the website edits a placement's access or folder limits yet: a save keeps them.
+- **A placed agent isn't added as a member as well.** An agent already in a workspace by placement (or kept out
+  of it) is not offered in the workspace's Add list, in the app or on the website; its Joins and keep-out are
+  managed from its card instead.
 - **Keep-out can be undone.** A session owner who keeps an agent out of one session can let it back in from the
   session's people list, and inviting the agent again clears the keep-out.
 - **Where the website shows it.** Available in and Joins are on the Agents page (personal) and on each agent row

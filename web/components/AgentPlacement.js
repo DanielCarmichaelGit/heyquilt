@@ -13,9 +13,11 @@ export default function AgentPlacement ({ agent, workspaces, action, slug, allLa
   const { shown, hidden } = placementChoices(agent.placement, workspaces)
   const [state, formAction, pending] = useActionState(action, null)
   const [reach, setReach] = useState(place.reach)
+  // "Saved." is about what was sent: any change after it hides it until the next save.
+  const [changed, setChanged] = useState(false)
   const key = `place-${agent.id}`
   return (
-    <form action={formAction} className='stack' style={{ gap: 8 }}>
+    <form action={(data) => { setChanged(false); return formAction(data) }} onChange={() => setChanged(true)} className='stack' style={{ gap: 8 }}>
       {slug && <input type='hidden' name='slug' value={slug} />}
       <input type='hidden' name='id' value={agent.id} />
       <input type='hidden' name='access' value={place.access} />
@@ -47,7 +49,7 @@ export default function AgentPlacement ({ agent, workspaces, action, slug, allLa
           {JOINS_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
         <button className='btn ghost' disabled={pending}>{pending ? 'Saving…' : 'Save'}</button>
-        {state?.saved && !pending && <span className='muted'>Saved.</span>}
+        {state?.saved && !pending && !changed && <span className='muted'>Saved.</span>}
       </div>
       {state?.error && <p className='notice bad'>{state.error}</p>}
     </form>

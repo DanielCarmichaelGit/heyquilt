@@ -45,6 +45,9 @@ export async function roomAccess (store, room, account, email = '') {
     await store.useAccountInvites(room, account)
     return effectiveAccess(await typeOfGrant(store, grant), grant.tighten)
   }
+  // An agent its owner kept out of this session gets nothing from the workspace (a grant,
+  // above, is the owner letting it back in).
+  if (account.startsWith('agent:') && UUID.test(account.slice(6)) && await store.sessionAgentExcluded(room, account.slice(6))) return null
   // No grant of its own: a session inside a workspace admits the workspace's members, but
   // only when its owner (as the relay reports it) put it there. Anyone else's link, or one
   // made before the relay has named an owner, lets nobody in.
@@ -52,5 +55,8 @@ export async function roomAccess (store, room, account, email = '') {
   const ws = await store.workspaceById(session.workspaceId)
   if (!ws) return null
   const wa = await workspaceAccess(store, ws, account, { orgGrants: ws.orgId ? await orgGrantsFor(store, ws.orgId, account) : null })
-  return wa ? effectiveAccess(builtinType(wa.access === 'edit' ? 'builtin:edit' : 'builtin:view'), {}) : null
+  if (!wa) return null
+  // An agent there by placement: its placement's folders are its folder limits.
+  if (wa.via === 'placed' || wa.via === 'global') return effectiveAccess({ files: wa.access, folders: wa.scopes || [], talk: true }, {})
+  return effectiveAccess(builtinType(wa.access === 'edit' ? 'builtin:edit' : 'builtin:view'), {})
 }

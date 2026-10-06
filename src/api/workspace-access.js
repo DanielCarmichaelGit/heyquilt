@@ -1,6 +1,7 @@
 // Who may do what in a workspace (the spec's "Access" section), and the field cleaners
-// the routes share. Pure apart from one store read.
+// the routes share. Pure apart from store reads.
 import { HttpError, stripInvisible } from './http.js'
+import { agentReach } from './agent-placement.js'
 
 export const COLORS = ['lilac', 'mint', 'peach', 'rose', 'periwinkle', 'sky']
 export const ACCESS = ['edit', 'view']
@@ -34,20 +35,26 @@ export function cleanAccess (value) {
  * `account`'s place in `workspace`: { access, admin, via } or null.
  * Personal: the owner is admin. Org: Workspaces: Update is admin; Workspaces: Read alone
  * is view. A member row gives its access and beats org Read; in an org workspace it counts
- * only while its person or agent is still in the org. `orgGrants` is the caller's org
- * access ({ can }) or null when they aren't in the org.
+ * only while its person or agent is still in the org. Next, an agent the workspace's owner
+ * placed there (src/api/agent-placement.js) gets its placement's access, with `scopes`
+ * (folder limits) and via 'placed' or 'global'. `orgGrants` is the caller's org access
+ * ({ can }) or null when they aren't in the org.
  */
 export async function workspaceAccess (store, workspace, account, { orgGrants = null } = {}) {
   if (workspace.ownerUserId && account === `person:${workspace.ownerUserId}`) return { access: 'edit', admin: true, via: 'owner' }
   if (workspace.orgId && orgGrants && orgGrants.can('workspaces', 'u')) return { access: 'edit', admin: true, via: 'org' }
   const member = await store.workspaceMember(workspace.id, account)
   if (member && await stillInOrg(store, workspace, account, orgGrants)) return { access: member.access, admin: false, via: 'member' }
+  if (account.startsWith('agent:')) {
+    const r = await agentReach(store, workspace, account.slice(6))
+    if (r) return { access: r.access, admin: false, via: r.via, scopes: r.scopes }
+  }
   if (workspace.orgId && orgGrants && orgGrants.can('workspaces', 'r')) return { access: 'view', admin: false, via: 'org' }
   return null
 }
 
 /** Whether a member row still counts: always in a personal workspace; in an org's, only for its people and agents. */
-async function stillInOrg (store, workspace, account, orgGrants) {
+export async function stillInOrg (store, workspace, account, orgGrants) {
   if (!workspace.orgId) return true
   const [kind, id] = account.split(':')
   if (kind === 'agent') return !!(await store.memberByAgent(workspace.orgId, id))

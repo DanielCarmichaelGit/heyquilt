@@ -2,7 +2,7 @@ import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { startTestApi, makeOrg, makeAgent } from './api-helpers.js'
 import { keyStatus, REUSED } from '../src/api/agent-auth.js'
-import { generateIdentity } from '../src/identity.js'
+import { generateIdentity, signAgentResume } from '../src/identity.js'
 
 let t
 before(async () => { t = await startTestApi() })
@@ -182,4 +182,45 @@ test('key refreshes are rate-limited per address', async () => {
   try {
     for (const want of [401, 401, 429]) assert.equal((await limited.call('POST', '/v1/agents/token', { refreshKey: 'qr_x' })).status, want)
   } finally { await limited.close() }
+})
+
+test('resume: only the holder of the key an agent joined with gets new keys, once per signature', async () => {
+  const identity = generateIdentity()
+  const { agent, refreshKey } = await makeAgent(t, { ownerUserId: 'mem', publicKey: identity.publicKey })
+  const resume = (body) => t.call('POST', '/v1/agents/resume', body)
+  const signed = (who = identity, at = Date.now()) => ({ agentId: agent.id, at, signature: signAgentResume(who, agent.id, at) })
+
+  // Someone with only a copy of the refresh key: reusing it revokes the keys, and they can't sign.
+  assert.equal((await refresh(refreshKey)).status, 200)
+  assert.equal((await refresh(refreshKey)).status, 401)
+  assert.equal((await resume(signed(generateIdentity()))).status, 401, "another key's signature")
+  assert.equal((await resume({ agentId: agent.id, at: Date.now(), signature: 'nope' })).status, 401)
+
+  const body = signed()
+  const r = await resume(body)
+  assert.equal(r.status, 200)
+  assert.match(r.body.accessKey, /^qa_/)
+  assert.equal((await me(r.body.accessKey)).status, 200)
+  assert.equal((await refresh(r.body.refreshKey)).status, 200, 'the new refresh key works')
+  assert.equal((await resume(body)).status, 401, 'a signature works once')
+
+  // A second resume revokes the pair the first one made.
+  const again = await resume(signed())
+  assert.equal(again.status, 200)
+  assert.equal((await me(r.body.accessKey)).status, 401)
+  assert.equal((await t.store.listAgentKeys(agent.id)).filter((k) => !k.revokedAt).length, 1)
+})
+
+test('resume: refused for a bad clock, a hosted agent, an unknown one, and one a person revoked', async () => {
+  const identity = generateIdentity()
+  const { agent } = await makeAgent(t, { ownerUserId: 'mem', publicKey: identity.publicKey })
+  const resume = (agentId, at = Date.now(), who = identity) => t.call('POST', '/v1/agents/resume', { agentId, at, signature: signAgentResume(who, agentId, at) })
+  assert.equal((await resume(agent.id, Date.now() - 11 * 60 * 1000)).status, 400)
+  const hosted = await makeAgent(t, { ownerUserId: 'mem' })
+  assert.equal((await resume(hosted.agent.id)).status, 404)
+  assert.equal((await resume(crypto.randomUUID())).status, 404)
+  await t.store.revokeAgent(agent.id)
+  const r = await resume(agent.id)
+  assert.equal(r.status, 401)
+  assert.match(r.body.error, /revoked/)
 })

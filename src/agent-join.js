@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { quiltHome } from './legacy.js'
-import { generateIdentity } from './identity.js'
+import { generateIdentity, signAgentResume } from './identity.js'
 import { writePrivateJson } from './private-file.js'
 
 export const DEFAULTS = { provider: 'Quilt CLI', type: 'command-line agent' }
@@ -103,8 +103,33 @@ export async function agentJoin ({ link, name, provider = DEFAULTS.provider, typ
 
 async function refresh (saved, file, fetchImpl) {
   const r = await send(fetchImpl, saved.api, 'POST', '/v1/agents/token', { refreshKey: saved.refreshKey }, null, { signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS) })
-  if (!r.ok) throw Object.assign(new Error(r.body?.error || `Couldn't refresh the agent's keys (${r.status}).`), { status: r.status })
-  const next = { ...saved, accessKey: r.body.accessKey, accessExpiresAt: r.body.accessExpiresAt, refreshKey: r.body.refreshKey, refreshExpiresAt: r.body.refreshExpiresAt }
+  if (r.status === 401 && saved.identity) return resume(saved, file, fetchImpl, r)
+  if (!r.ok) throw refused(r, `Couldn't refresh the agent's keys (${r.status}).`)
+  return keep(saved, file, r.body)
+}
+
+/**
+ * The refresh key was turned away: most often a refresh the API made whose reply never
+ * arrived (the computer slept or went offline), so the key we kept was already spent and
+ * the API revoked the agent's keys. The agent signs for the key it joined with and gets
+ * new ones. `turnedAway` is the refresh's reply, the error to give if this fails too.
+ */
+async function resume (saved, file, fetchImpl, turnedAway) {
+  // The API's clock, not a test's: the signature has to be close to it.
+  const at = Date.now()
+  const r = await send(fetchImpl, saved.api, 'POST', '/v1/agents/resume', { agentId: saved.agentId, at, signature: signAgentResume(saved.identity, saved.agentId, at) }, null, { signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS) })
+  if (r.ok) return keep(saved, file, r.body)
+  // An API without resume, or that doesn't know the agent: the refresh's answer says what happened.
+  if (r.status === 404) throw refused(turnedAway, `Couldn't refresh the agent's keys (${turnedAway.status}).`)
+  // Revoked by a person, a signature that doesn't match, or a clock that's off: signed out.
+  if (r.status === 400 || r.status === 401) throw Object.assign(refused(r, `Couldn't sign the agent back in (${r.status}).`), { status: 401 })
+  throw refused(r, `Couldn't sign the agent back in (${r.status}).`)
+}
+
+const refused = (r, fallback) => Object.assign(new Error(r.body?.error || fallback), { status: r.status })
+
+function keep (saved, file, body) {
+  const next = { ...saved, accessKey: body.accessKey, accessExpiresAt: body.accessExpiresAt, refreshKey: body.refreshKey, refreshExpiresAt: body.refreshExpiresAt }
   // Save straight away: the old refresh key is spent, and using it again would revoke the agent.
   save(file, next)
   return next
@@ -196,10 +221,29 @@ export async function agentAccess ({ name, dir, fetch: fetchImpl = globalThis.fe
   })
 }
 
+/**
+ * The API turned `accessKey` away before it ran out (its keys were revoked): signs back in
+ * with the agent's key. Resolves to the saved agent with new keys, the keys another process
+ * already got, or null for an agent without a key of its own.
+ */
+export async function agentResume ({ name, dir, accessKey, fetch: fetchImpl = globalThis.fetch }) {
+  const file = agentFile(name, dir)
+  return withLock(file, () => {
+    const latest = load(file, name)
+    if (latest.accessKey !== accessKey) return latest
+    if (!latest.identity) return null
+    return resume(latest, file, fetchImpl, { status: 401, body: { error: "This agent's keys were revoked. Invite it again." } })
+  })
+}
+
 /** Who the agent is, refreshing its keys first when the access key has (nearly) run out. */
 export async function agentWhoami ({ name, dir, fetch: fetchImpl = globalThis.fetch, now = Date.now }) {
   const saved = await agentAccess({ name, dir, fetch: fetchImpl, now })
-  const r = await send(fetchImpl, saved.api, 'GET', '/v1/agents/me', null, saved.accessKey)
+  let r = await send(fetchImpl, saved.api, 'GET', '/v1/agents/me', null, saved.accessKey)
+  if (r.status === 401) {
+    const back = await agentResume({ name, dir, accessKey: saved.accessKey, fetch: fetchImpl })
+    if (back) r = await send(fetchImpl, back.api, 'GET', '/v1/agents/me', null, back.accessKey)
+  }
   if (!r.ok) throw new Error(r.body?.error || `Couldn't reach Quilt (${r.status}).`)
   return r.body
 }

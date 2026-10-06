@@ -57,6 +57,7 @@ export const MCP_INSTRUCTIONS =
   '(open tasks assigned to you are listed first), add work with quilt_add_task, assign it with quilt_assign_task, ' +
   'and move a task with quilt_move_task when you start or finish it. ' +
   'quilt_history tells you who changed which file, when, with the diff: read it for the files you are about to touch. ' +
+  'If git refuses to pull because untracked files would be overwritten, those files came from the session: quilt_status lists them under Pulling (and whether they match); make way and pull with rm <files> && git pull --autostash, and Quilt keeps them for everyone. ' +
   'When you edit files for a request that is not already on the board, Quilt adds an In progress task from that chat: use it instead of adding a duplicate, and move it to Done when you finish. ' +
   'Before you change files, call quilt_before_edit with their paths: it tells you whether each is yours to edit (claiming free ones for you, so partners are refused instead of overwriting you), ' +
   'and shows what people said about those files in chat, so you know what was asked or planned before you change them. ' +

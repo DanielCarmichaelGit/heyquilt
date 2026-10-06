@@ -381,11 +381,55 @@ export function stashStamp (root) {
   try { const st = fs.statSync(path.join(dir, 'logs', 'refs', 'stash')); return `${st.mtimeMs}:${st.size}` } catch { return null }
 }
 
-/** Watches HEAD, the index and the in-progress markers; events: head, index, busy, idle. */
+/**
+ * What the last fetch brought that HEAD doesn't have yet: files the upstream
+ * branch adds (since HEAD and it parted), as Map path -> the file there as Quilt
+ * keys it (text, or "bin:<sha1>"; undefined when it can't be read). Limited
+ * to `paths` when given. Empty with no upstream or nothing new; null when git fails.
+ */
+export async function upstreamAdds (root, paths = null) {
+  if (paths && !paths.length) return new Map()
+  const up = await run(root, ['rev-parse', '-q', '--verify', '@{upstream}^{commit}'])
+  if (up === null) return new Map() // no upstream (or none fetched): nothing is coming
+  const sha = up.trim()
+  const spec = paths && paths.length <= MAX_PATHSPECS ? ['--', ...paths] : []
+  const out = await run(root, ['--literal-pathspecs', 'diff', '--name-only', '-z', '--no-renames', '--diff-filter=A', `HEAD...${sha}`, ...spec])
+  if (out === null) return null
+  let added = out.split('\0').filter(Boolean)
+  if (paths && !spec.length) { const want = new Set(paths); added = added.filter((rel) => want.has(rel)) }
+  if (!added.length) return new Map()
+  const at = await filesAt(root, sha, added)
+  if (!at) return null
+  return new Map(added.map((rel) => [rel, at.get(rel)]))
+}
+
+/**
+ * Before a pull: the upstream branch, how many commits behind HEAD is, and the
+ * files those commits add that sit in this folder untracked (the session put
+ * them here). git refuses to pull over those. Null when git fails or there is
+ * no upstream.
+ */
+export async function pullState (root) {
+  const name = await run(root, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'])
+  if (name === null) return null
+  const count = await run(root, ['rev-list', '--count', 'HEAD..@{upstream}'])
+  if (count === null) return null
+  const behind = Number(count.trim()) || 0
+  if (!behind) return { upstream: name.trim(), behind, adds: new Map() }
+  const adds = await upstreamAdds(root)
+  if (!adds) return null
+  const paths = [...adds.keys()]
+  const listed = paths.length ? await run(root, ['--literal-pathspecs', 'ls-files', '-z', ...(paths.length <= MAX_PATHSPECS ? ['--', ...paths] : [])]) : ''
+  if (listed === null) return null
+  const tracked = new Set(listed.split('\0').filter(Boolean))
+  return { upstream: name.trim(), behind, adds: new Map([...adds].filter(([rel]) => !tracked.has(rel))) }
+}
+
+/** Watches HEAD, the index, a fetch (FETCH_HEAD) and the in-progress markers; events: head, index, fetch, busy, idle. */
 export function watchGit (root, onEvent) {
   const dir = gitDir(root)
   if (!dir) return { close: async () => {} }
-  const names = new Set(['HEAD', 'index', ...MARKERS.map(([f]) => f)])
+  const names = new Set(['HEAD', 'index', 'FETCH_HEAD', ...MARKERS.map(([f]) => f)])
   let wasBusy = !!busy(root, dir)
   const watcher = watch(dir, { ignoreInitial: true, depth: 0, followSymlinks: false })
   const onAny = (p) => {
@@ -393,6 +437,7 @@ export function watchGit (root, onEvent) {
     if (!names.has(name)) return
     if (name === 'HEAD') onEvent({ type: 'head' })
     else if (name === 'index') onEvent({ type: 'index' })
+    else if (name === 'FETCH_HEAD') onEvent({ type: 'fetch' })
     else {
       const now = !!busy(root, dir)
       if (now !== wasBusy) { wasBusy = now; onEvent({ type: now ? 'busy' : 'idle' }) }

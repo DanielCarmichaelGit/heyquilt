@@ -12,7 +12,7 @@ import { Connection } from './connection.js'
 import { loadIdentity } from './identity.js'
 import { writePrivateJson } from './private-file.js'
 import { MAX_SHARED_FILE_BYTES } from './protocol.js'
-import { formatBytes } from './status.js'
+import { formatBytes, pullAdvice } from './status.js'
 import {
   loadIgnore, IGNORE_FILES, isIgnored, isSafeRelPath, resolveInside, looksBinary, sha1, walk,
   toPosix, globMatcher, MAX_TEXT_BYTES, MAX_BINARY_BYTES, LARGE_FILE_BYTES, MAX_STORED_BINARY_BYTES
@@ -32,7 +32,7 @@ import { merge3, withMarkers, hasMarkers } from './merge3.js'
 import { aiMerge, findMergeCli } from './merge-ai.js'
 import { openMerge, updateMerge, readMerges, pruneMerges, cleanName } from './merges.js'
 import { ensureQuiltIgnored } from './gitignore.js'
-import { gitDir, headKey, headRef, gitRuns, askTwice, lastCallTimedOut, busy as gitBusy, leftoverLock, STALE_LOCK_MS, indexStamp, classify, filesAt, changesBetween, treeState, branchTip, watchGit, unmergedPaths, stashStamp, SETTLE_MS, BURST_PATHS } from './gitstate.js'
+import { gitDir, headKey, headRef, gitRuns, askTwice, lastCallTimedOut, busy as gitBusy, leftoverLock, STALE_LOCK_MS, indexStamp, classify, filesAt, changesBetween, treeState, branchTip, watchGit, unmergedPaths, stashStamp, upstreamAdds, pullState, SETTLE_MS, BURST_PATHS } from './gitstate.js'
 
 export { applyTextDiff }
 
@@ -43,6 +43,8 @@ const RECENT_MS = 2 * 60 * 1000
 const AGENT_FEED_CAP = 300
 const AUTO_CLAIM_QUIET_MS = 5 * 60 * 1000 // a file we stopped editing this long ago is let go of
 const NOTICE_CAP = 20
+// A file removed to make way for a pull is kept for everyone this long; with no pull by then, the removal was meant.
+const PULL_WAIT_MS = 60 * 1000
 // chokidar drops a 'change' for a path within 50ms of the previous one (no
 // trailing event), so each change is re-checked once that window has passed.
 const WATCH_RECHECK_MS = 80
@@ -62,8 +64,13 @@ const GIT_FAILURES_TO_SAY = 30
 const FLUSH_MS = 40 // file changes are flushed this long after the first
 
 export class Session extends EventEmitter {
-  constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, summarize = null, identity = null, passes = null, startName = '', autoClaimQuietMs = AUTO_CLAIM_QUIET_MS, webhookTransport = null }) {
+  constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, summarize = null, identity = null, passes = null, startName = '', autoClaimQuietMs = AUTO_CLAIM_QUIET_MS, webhookTransport = null, pullWaitMs = PULL_WAIT_MS }) {
     super()
+    this.pullWaitMs = pullWaitMs
+    this.pull = null // { upstream, behind, adds: [{ path, same, waiting }] }: what a pull would bring over files the session put here
+    this.pullWait = new Map() // path -> { since, stash, timer }: removed to make way for a pull, kept for everyone meanwhile
+    this.pullWaitOver = new Set() // waited for and no pull came: not waited for again until the next fetch
+    this.pullSaid = ''
     this.root = path.resolve(dir)
     this.server = server
     this.room = room
@@ -997,7 +1004,9 @@ export class Session extends EventEmitter {
     const indexChanged = stamp !== this.gitIndex
     this.gitIndex = stamp
     this.burstByIndex = indexChanged
-    return indexChanged || Date.now() - this.headChangedAt < 2000 || !!this.gitBusy() || paths.length >= BURST_PATHS
+    return indexChanged || Date.now() - this.headChangedAt < 2000 || !!this.gitBusy() || paths.length >= BURST_PATHS ||
+      // A session file gone from here: git is asked first whether a fetched pull brings it (making way, not a deletion).
+      paths.some((rel) => this.syncable(rel) && this.sharedKey(rel) !== undefined && !this.onDisk(rel))
   }
 
   /** The git operation under way in this folder, or null; a leftover index.lock doesn't count. */
@@ -1067,12 +1076,20 @@ export class Session extends EventEmitter {
     }
     const runs = r.head ? true : await gitRuns(this.root) // asked while still held
     if (this.stopped) return
+    // Removed files the fetched upstream adds: making way for a pull (git won't pull over untracked files), kept for everyone.
+    if (r.head && (r.kind === 'edit' || r.kind === 'discard')) r.awaitPull = await this.makingWay(paths)
+    if (this.stopped) return
     const behind = this.endClassify(c)
     try { this.settleBurst(r, paths, again, runs) } finally { this.requeue(behind) }
   }
 
   /** Acts on what git says a burst was (classifyBurst). Nothing here waits on git. */
   settleBurst (r, paths, again, runs) {
+    if (r.awaitPull && r.awaitPull.length) {
+      this.waitForPull(r.awaitPull, r.kind === 'discard')
+      const away = new Set(r.awaitPull)
+      paths = paths.filter((rel) => !away.has(rel))
+    }
     if (this.hold) {
       // git's watcher started a hold meanwhile: the burst is held with the rest.
       for (const rel of paths) this.heldPaths.add(rel)
@@ -1286,7 +1303,15 @@ export class Session extends EventEmitter {
     const why = this.hold.back ? 'back' : stash !== this.stashSeen ? 'stash' : 'reset'
     this.stashSeen = stash
     this.releaseHold()
+    // Made way for a pull that has landed now: those files are the pull's (merged in plan.advance).
+    for (const rel of [...this.pullWait.keys()]) if (this.onDisk(rel)) this.endPullWait(rel)
+    if (plan.awaitPull && plan.awaitPull.length) {
+      this.waitForPull(plan.awaitPull.filter((a) => a.stash).map((a) => a.rel), true)
+      this.waitForPull(plan.awaitPull.filter((a) => !a.stash).map((a) => a.rel), false)
+    }
     this.writeBack(plan.discarded, why)
+    if (plan.advance.length) this.pullWaitOver.clear() // new commits: what was waited for is a different question now
+    this.refreshPull()
     // Not awaited: merging (an AI merge can take a while) never holds up the next git work.
     this.mergeSettled(plan).catch((err) => this.log(`could not merge: ${err.message}`))
   }
@@ -1356,7 +1381,15 @@ export class Session extends EventEmitter {
       if (!tree.dirty.has(rel) && (tree.tracked.has(rel) || !this.onDisk(rel))) discarded.push(rel)
       else edited.push({ rel, base: this.lastKnown.get(rel), via: this.rejoin ? undefined : 'hold' })
     }
-    return { advance, discarded, edited, considered: new Set([...paths, ...changes.keys()]) }
+    const gone = [...discarded, ...edited.map((e) => e.rel)].filter((rel) => !changes.has(rel))
+    const away = new Set(await this.makingWay(gone))
+    return {
+      advance,
+      discarded: discarded.filter((rel) => !away.has(rel)),
+      edited: edited.filter((e) => !away.has(e.rel)),
+      awaitPull: [...away].map((rel) => ({ rel, stash: discarded.includes(rel) })),
+      considered: new Set([...paths, ...changes.keys()])
+    }
   }
 
   onDisk (rel) {
@@ -1426,6 +1459,92 @@ export class Session extends EventEmitter {
     }).catch((err) => this.log(`could not read git: ${err.message}`)).finally(() => { this.checkingBack = false })
   }
 
+  /**
+   * Of these paths, the ones gone from this folder that the fetched upstream
+   * adds, and that the session has: they were moved out of the way of a pull.
+   */
+  async makingWay (paths) {
+    const gone = paths.filter((rel) => this.syncable(rel) && !this.onDisk(rel) && this.sharedKey(rel) !== undefined && !this.pullWaitOver.has(rel))
+    if (!gone.length) return []
+    const up = await upstreamAdds(this.root, gone)
+    return up ? [...up.keys()] : []
+  }
+
+  /** rel is in the way of a fetched pull (as last asked of git), and the session has it. */
+  blocksPull (rel) {
+    return !!(this.pull && this.pull.adds.some((a) => a.path === rel && !a.waiting) && this.sharedKey(rel) !== undefined && !this.pullWaitOver.has(rel))
+  }
+
+  /** Keeps files removed (or stashed: `stash`) to make way for a pull for everyone, until it lands or PULL_WAIT_MS passes. */
+  waitForPull (rels, stash) {
+    const fresh = rels.filter((rel) => !this.pullWait.has(rel))
+    if (!fresh.length) return
+    for (const rel of fresh) {
+      const timer = setTimeout(() => this.pullWaitEnded(rel), this.pullWaitMs)
+      timer.unref()
+      this.pullWait.set(rel, { since: Date.now(), stash, timer })
+    }
+    this.log(`⏳ ${fresh.join(', ')} out of the way for a pull: kept for everyone until it lands.`)
+    this.refreshPull()
+  }
+
+  endPullWait (rel) {
+    const w = this.pullWait.get(rel)
+    if (!w) return
+    clearTimeout(w.timer)
+    this.pullWait.delete(rel)
+  }
+
+  /** No pull came in time: a removal was meant (shared as a deletion), a stash puts the session's copy back. */
+  pullWaitEnded (rel) {
+    const w = this.pullWait.get(rel)
+    if (!w || this.stopped) return
+    if (this.held()) { w.timer = setTimeout(() => this.pullWaitEnded(rel), SETTLE_MS); w.timer.unref(); return } // after git is done
+    this.pullWait.delete(rel)
+    if (this.onDisk(rel)) return
+    this.pullWaitOver.add(rel)
+    if (w.stash) {
+      this.log(`↩️ No pull came: ${rel} is back from the session.`)
+      this.writeBack([rel])
+    } else {
+      this.log(`🗑️ No pull came: ${rel} is deleted for everyone.`)
+      try { this.ingest(rel) } catch (err) { this.log(`could not sync ${rel}: ${err.message}`) } // as a deletion, not asked of git again
+    }
+    this.refreshPull()
+  }
+
+  /** Asks git what a pull would bring over files the session put here (after a fetch, a settle, a start). */
+  refreshPull () {
+    if (!this.git || this.stopped) return
+    this.gitTask(async () => {
+      const st = await pullState(this.root)
+      if (!this.stopped) this.setPull(st)
+    }).catch(() => {})
+  }
+
+  setPull (st) {
+    const adds = []
+    for (const [rel, key] of st ? st.adds : []) {
+      const waiting = this.pullWait.has(rel)
+      if (!waiting && !this.onDisk(rel)) continue // not in the way
+      if (this.sharedKey(rel) === undefined) continue // not the session's: git's usual advice applies
+      const disk = waiting ? null : this.readDisk(rel)
+      const here = disk && disk.key !== undefined ? disk.key : this.sharedKey(rel)
+      adds.push({ path: rel, same: here === key, waiting })
+    }
+    adds.sort((a, b) => a.path < b.path ? -1 : 1)
+    this.pull = st ? { upstream: st.upstream, behind: st.behind, adds } : null
+    // Told once per set of files in the way (at the top of the AI's next quilt answer, and in the log).
+    const said = adds.filter((a) => !a.waiting).map((a) => `${a.path}:${a.same}`).join('|')
+    if (said && said !== this.pullSaid) {
+      const text = pullAdvice(this.pull)
+      this.notice(text)
+      this.log(`⬇️ ${text}`)
+    }
+    this.pullSaid = said
+    this.scheduleStatusWrite()
+  }
+
   /** git left a conflict here (`stash pop`, a merge, a rebase): held until it's resolved, said once per hold. */
   noteConflict (paths) {
     if (!this.hold) return
@@ -1478,6 +1597,9 @@ export class Session extends EventEmitter {
     if (!this.syncable(rel)) return false
     if (this.merging.has(rel)) return false // its offline merge hasn't run yet; see mergeOffline
     if (this.held()) { this.heldPaths.add(rel); return false } // git is at work in this folder; see onSettled
+    if (this.pullWait.has(rel)) { if (!this.onDisk(rel)) return false; this.endPullWait(rel) } // made way for a pull: not a deletion
+    // A plain `rm` of a file a fetched pull would bring (git said to remove it): making way, not a deletion.
+    if (!this.onDisk(rel) && this.blocksPull(rel)) { this.waitForPull([rel], false); return false }
     if (this.downloading.has(rel)) return false // our copy is being replaced by a download
     if (this.writeFailed.has(rel)) return false // the shared version never reached the disk: what's there is no edit of ours
     if (IGNORE_FILES.includes(path.posix.basename(rel))) this.ig = loadIgnore(this.root)
@@ -1741,6 +1863,7 @@ export class Session extends EventEmitter {
     if (!this.syncable(rel)) return
     if (this.merging.has(rel)) return // mergeOffline writes this path once it has merged it
     if (this.held()) { this.heldPaths.add(rel); return } // written back when the hold ends (writeBack)
+    if (this.pullWait.has(rel) && !this.onDisk(rel)) return // out of the way for a pull: putting it back would block it
     let abs
     try { abs = resolveInside(this.root, rel) } catch (err) { this.log(err.message); return }
     const shared = this.sharedKey(rel)
@@ -1799,7 +1922,7 @@ export class Session extends EventEmitter {
   writeFile (rel, abs, data) {
     try {
       fs.writeFileSync(abs, data)
-      return
+      return this.noteWritten(rel, abs)
     } catch (err) {
       if (err.code !== 'EACCES' && err.code !== 'EPERM') throw err
     }
@@ -1810,6 +1933,19 @@ export class Session extends EventEmitter {
       this.moveAside(rel, abs)
       fs.writeFileSync(abs, data)
     }
+    this.noteWritten(rel, abs)
+  }
+
+  /**
+   * The re-scan learns of a file Quilt wrote at once: the watcher can miss
+   * events in a folder Quilt just created, and a file the re-scan never saw
+   * would never be noticed gone.
+   */
+  noteWritten (rel, abs) {
+    try {
+      const st = fs.lstatSync(abs)
+      this.diskStats.set(rel, `${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`)
+    } catch {}
   }
 
   /** Moves whatever sits at rel (first join: a folder, or a file where a folder must go) into the backup folder. */
@@ -2102,10 +2238,11 @@ export class Session extends EventEmitter {
   async startWatcher () {
     this.gitIndex = indexStamp(this.root)
     this.stashSeen = stashStamp(this.root)
+    this.refreshPull() // a fetch before this start may already have something to say
     if (this.git) {
       this.gitWatcher = watchGit(this.root, (e) => {
         if (this.stopped) return
-        if (e.type === 'head') { this.headChangedAt = Date.now(); this.queue(HEAD_CHANGED) } else if (e.type === 'busy') { this.setHold('busy'); this.settleSoon() } else this.settleSoon() // idle, index
+        if (e.type === 'head') { this.headChangedAt = Date.now(); this.queue(HEAD_CHANGED) } else if (e.type === 'busy') { this.setHold('busy'); this.settleSoon() } else if (e.type === 'fetch') { this.pullWaitOver.clear(); this.refreshPull() } else this.settleSoon() // idle, index
         if (this.hold && this.hold.kind === 'switching') this.checkBackOnBranch()
       })
       if (this.hold && this.hold.kind === 'switching') this.checkBackOnBranch() // back before the watcher started?
@@ -3244,7 +3381,7 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
       chat: this.messages({ limit: 20, markRead: false }),
       unread: this.unreadCount(),
       fileCount: this.files.size + this.blobs.size,
-      git: this.git ? { branch: this.git.branch, key: this.git.key, hold: this.hold ? { kind: this.hold.kind, since: this.hold.since, to: this.hold.to || null, conflict: this.hold.conflict || null } : null } : null
+      git: this.git ? { branch: this.git.branch, key: this.git.key, hold: this.hold ? { kind: this.hold.kind, since: this.hold.since, to: this.hold.to || null, conflict: this.hold.conflict || null } : null, pull: this.pull } : null
     }
   }
 
@@ -3257,6 +3394,7 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
   }
 
   async stop () {
+    for (const w of this.pullWait.values()) clearTimeout(w.timer)
     this.ready = false
     clearInterval(this.autoClaimTimer)
     if (this.autoClaims.size && this.conn && !this.stopped) {

@@ -9,6 +9,7 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { startServer } from '../src/server.js'
 import { Session } from '../src/session.js'
+import { renderStatus } from '../src/status.js'
 import { generateIdentity } from '../src/identity.js'
 
 let srv, server
@@ -48,7 +49,7 @@ const LOGO2 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 2, 0xfe, 0xff])
 const readBuf = (dir, rel) => { try { return fs.readFileSync(path.join(dir, rel)) } catch { return null } }
 
 /** A bare remote, two clones (alice, bob) with one commit, both in a fresh room. `extra`: more files for the commit. */
-async function pairRepos (t, extra = {}) {
+async function pairRepos (t, extra = {}, bobOpts = {}) {
   const bare = tmp('bare'); git(bare, 'init', '-q', '--bare', '-b', 'main')
   const seed = tmp('seed'); git(seed, 'clone', '-q', bare, '.')
   write(seed, 'src/app.js', 'line1\nline2\nline3\nline4\nline5\n'); write(seed, 'README.md', 'hello\n')
@@ -59,7 +60,7 @@ async function pairRepos (t, extra = {}) {
   const dirB = tmp('b'); git(dirB, 'clone', '-q', bare, '.')
   const room = `ga${++rooms}`
   const A = await open(t, dirA, 'alice', { room })
-  const B = await open(t, dirB, 'bob', { room })
+  const B = await open(t, dirB, 'bob', { room, ...bobOpts })
   await waitFor(() => A.status().connected && B.status().connected)
   return { A, B, dirA, dirB, bare, room }
 }
@@ -636,4 +637,87 @@ test('a resumed hold settles while a partner keeps typing, even with git slow to
   const last = read(dirA, 'src/app.js')
   await waitFor(() => read(dirB, 'src/app.js') === last)
   assert.equal(A.mergeList().filter((m) => m.state === 'open').length, 0)
+})
+
+/**
+ * The session put two new files in bob's folder (untracked there), and a commit
+ * elsewhere adds the same two. Bob also has the room's uncommitted work in README.md.
+ * His first pull fetches, then git refuses: untracked files would be overwritten.
+ */
+async function sessionFilesCommitted (t, { same = true, bobOpts = {} } = {}) {
+  const p = await pairRepos(t, {}, bobOpts)
+  write(p.dirA, 'README.md', 'hello, edited in the session\n')
+  write(p.dirA, 'docs/notes.md', 'notes from the session\n')
+  write(p.dirA, 'docs/todo.md', 'todo from the session\n')
+  await waitFor(() => read(p.dirB, 'docs/notes.md') && read(p.dirB, 'docs/todo.md') && read(p.dirB, 'README.md') === 'hello, edited in the session\n')
+  const c = tmp('c'); git(c, 'clone', '-q', p.bare, '.')
+  write(c, 'docs/notes.md', same ? 'notes from the session\n' : 'notes, committed differently\n')
+  write(c, 'docs/todo.md', 'todo from the session\n')
+  git(c, 'add', '.'); git(c, 'commit', '-qm', 'docs'); git(c, 'push', '-q', 'origin', 'main')
+  assert.throws(() => git(p.dirB, '-c', 'pull.rebase=true', 'pull', '-q', '--autostash'), /untracked working tree files would be overwritten/)
+  return p
+}
+const pullingPaths = (B) => (B.status().git.pull?.adds || []).map((a) => `${a.path}:${a.same ? 'same' : 'differs'}${a.waiting ? ':waiting' : ''}`).sort()
+
+test('files the session put here that pulled commits add are named to the AI: the same, and how to pull', async (t) => {
+  const { B } = await sessionFilesCommitted(t)
+  await waitFor(() => pullingPaths(B).length === 2)
+  assert.deepEqual(pullingPaths(B), ['docs/notes.md:same', 'docs/todo.md:same'])
+  const notes = B.takeNotices().join('\n')
+  assert.match(notes, /docs\/notes\.md/)
+  assert.match(notes, /same content/)
+  assert.match(notes, /rm docs\/notes\.md docs\/todo\.md && git pull --autostash/)
+  const md = renderStatus(B.status())
+  assert.match(md, /## Pulling/)
+  assert.match(md, /`docs\/todo\.md`: same content as the session's/)
+})
+
+test('removing them to make way for the pull never removes them from the session, and the pull lands them', async (t) => {
+  const { A, B, dirA, dirB } = await sessionFilesCommitted(t)
+  await waitFor(() => pullingPaths(B).length === 2)
+  fs.rmSync(path.join(dirB, 'docs/notes.md')); fs.rmSync(path.join(dirB, 'docs/todo.md'))
+  await never(() => read(dirA, 'docs/notes.md') === null || read(dirA, 'docs/todo.md') === null, 2500)
+  await waitFor(() => pullingPaths(B).every((p) => p.endsWith(':waiting')))
+  git(dirB, '-c', 'pull.rebase=true', 'pull', '-q', '--autostash')
+  await waitFor(() => read(dirB, 'docs/notes.md') === 'notes from the session\n' && read(dirB, 'docs/todo.md') === 'todo from the session\n')
+  await never(() => read(dirA, 'docs/notes.md') === null || read(dirA, 'docs/todo.md') === null, 2500)
+  await waitFor(() => read(dirB, 'README.md') === 'hello, edited in the session\n')
+  await waitFor(() => pullingPaths(B).length === 0)
+  assert.equal(git(dirB, 'status', '--porcelain', '--', 'docs'), '', 'the pulled files are tracked and match')
+  assert.equal(A.mergeList().filter((m) => m.state === 'open').length, 0)
+  assert.equal(B.mergeList().filter((m) => m.state === 'open').length, 0)
+})
+
+test('removed and the pull never comes: shared as a deletion once the wait is over', async (t) => {
+  const { B, dirA, dirB } = await sessionFilesCommitted(t, { bobOpts: { pullWaitMs: 2000 } })
+  fs.rmSync(path.join(dirB, 'docs/notes.md'))
+  await never(() => read(dirA, 'docs/notes.md') === null, 1200)
+  await waitFor(() => read(dirA, 'docs/notes.md') === null, 10000)
+  assert.ok(B.logs.some((l) => l.includes('No pull came: docs/notes.md is deleted for everyone')), B.logs.join('\n'))
+  assert.equal(read(dirA, 'docs/todo.md'), 'todo from the session\n', 'only the removed file goes')
+})
+
+test('stashed away with stash -u to make way: kept for the session, not put back before the pull, landed by it', async (t) => {
+  const { A, dirA, dirB } = await sessionFilesCommitted(t)
+  git(dirB, 'stash', '-u', '-q')
+  await new Promise((resolve) => setTimeout(resolve, 3000)) // past a settle: the files must not come back and block the pull
+  assert.equal(read(dirB, 'docs/notes.md'), null)
+  // The session's work in README.md came back meanwhile, as after any stash: --autostash carries it over the pull.
+  git(dirB, '-c', 'pull.rebase=true', 'pull', '-q', '--autostash')
+  git(dirB, 'stash', 'drop', '-q')
+  await waitFor(() => read(dirB, 'docs/notes.md') === 'notes from the session\n' && read(dirB, 'README.md') === 'hello, edited in the session\n', 10000)
+  assert.equal(read(dirA, 'docs/notes.md'), 'notes from the session\n')
+  assert.equal(A.mergeList().filter((m) => m.state === 'open').length, 0)
+})
+
+test('a committed file that differs from the session\'s: said so; after the pull the two are merged, a record when they clash', async (t) => {
+  const { A, B, dirA, dirB } = await sessionFilesCommitted(t, { same: false })
+  await waitFor(() => pullingPaths(B).length === 2)
+  assert.deepEqual(pullingPaths(B), ['docs/notes.md:differs', 'docs/todo.md:same'])
+  assert.match(B.takeNotices().join('\n'), /docs\/notes\.md differs from the session's/)
+  fs.rmSync(path.join(dirB, 'docs/notes.md')); fs.rmSync(path.join(dirB, 'docs/todo.md'))
+  git(dirB, '-c', 'pull.rebase=true', 'pull', '-q', '--autostash')
+  const rec = await waitFor(() => A.mergeList().find((m) => m.path === 'docs/notes.md' && m.state === 'open'), 10000)
+  assert.equal(rec.via, 'pull')
+  assert.equal(read(dirA, 'docs/notes.md'), 'notes from the session\n', 'the session keeps its version until someone settles it')
 })

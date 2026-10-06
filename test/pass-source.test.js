@@ -77,3 +77,12 @@ test('a session needs a signed-in account or a saved agent', () => {
   assert.throws(() => sessionPasses(), /^Error: Run quilt login first\.$/)
   assert.throws(() => sessionPasses({ agent: 'nobody', dir: tmp() }), /No agent called nobody/)
 })
+
+test("a pass request with no answer gives up, so the connection's retry runs", async () => {
+  // A fetch that never answers, like one sent while a computer that just woke has no network.
+  const hang = (url, { signal }) => new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason)))
+  const ps = personPasses({ token: 'qd_x', api: 'http://quilt.invalid', fetch: hang, file: path.join(tmp(), 'account.json'), timeoutMs: 50 })
+  const started = Date.now()
+  await assert.rejects(ps.get(), /Couldn't reach Quilt \(ETIMEDOUT\)/)
+  assert.ok(Date.now() - started < 2000, 'gave up after its timeout')
+})

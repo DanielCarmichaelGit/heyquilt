@@ -37,14 +37,15 @@ async function homeWithAgent (api) {
 }
 
 /** Starts `quilt mcp` with HOME and QUILT_API_URL, and connects an MCP client to it. */
-async function startMcp ({ home, apiUrl }) {
+async function startMcp ({ home, apiUrl, env = {} }) {
+  const cwd = tmp('cwd')
   const client = new Client({ name: 'claude-code', version: '1.0.0' })
   const changes = []
   client.setNotificationHandler(ToolListChangedNotificationSchema, (n) => { changes.push(n) })
   const started = Date.now()
-  await client.connect(new StdioClientTransport({ command: process.execPath, args: [BIN, 'mcp'], cwd: tmp('cwd'), env: { ...process.env, HOME: home, QUILT_API_URL: apiUrl }, stderr: 'ignore' }))
+  await client.connect(new StdioClientTransport({ command: process.execPath, args: [BIN, 'mcp'], cwd, env: { ...process.env, HOME: home, QUILT_API_URL: apiUrl, ...env }, stderr: 'ignore' }))
   clients.push(client)
-  return { client, changes, connectMs: Date.now() - started }
+  return { client, changes, cwd, connectMs: Date.now() - started }
 }
 const names = async (client) => (await client.listTools()).tools.map((t) => t.name).sort()
 
@@ -77,7 +78,9 @@ test('flag on with an agent: the eight tools appear, and work over MCP', async (
   const { home, saved } = await homeWithAgent(on)
   const ws = await on.store.createWorkspace({ ownerUserId: 'mem', name: 'Launch', createdBy: 'person:mem' })
   await on.store.putAgentPlacement({ agentId: saved.agentId, reach: 'all', access: 'edit', sessions: 'invited', updatedBy: 'person:mem' })
-  const { client, changes } = await startMcp({ home, apiUrl: on.api.url })
+  // Its own temp folder, so the test's temp folder counts as elsewhere on this computer.
+  const childTmp = tmp('childtmp')
+  const { client, changes, cwd } = await startMcp({ home, apiUrl: on.api.url, env: { TMPDIR: childTmp } })
   await waitFor(() => changes.length > 0)
   const listed = await names(client)
   assert.deepEqual(listed, [...baseline, ...WS_TOOLS].sort(), 'the same tools plus the library tools')
@@ -89,11 +92,26 @@ test('flag on with an agent: the eight tools appear, and work over MCP', async (
   assert.equal(wrote.isError, undefined, text(wrote))
   const read = await client.callTool({ name: 'quilt_workspace_read_file', arguments: { workspace: ws.id, path: 'brief.md' } })
   assert.match(text(read), /hello from the agent/)
-  // fromPath reads from this computer.
-  const src = path.join(tmp('src'), 'clip.bin')
-  fs.writeFileSync(src, Buffer.from([1, 2, 3, 4]))
-  const fromDisk = await client.callTool({ name: 'quilt_workspace_write_file', arguments: { workspace: 'Launch', path: 'clip.bin', fromPath: src } })
+  // fromPath reads from the project (a relative path is the project's) or the temp folder.
+  fs.writeFileSync(path.join(cwd, 'clip.bin'), Buffer.from([1, 2, 3, 4]))
+  const fromDisk = await client.callTool({ name: 'quilt_workspace_write_file', arguments: { workspace: 'Launch', path: 'clip.bin', fromPath: 'clip.bin' } })
   assert.equal(fromDisk.isError, undefined, text(fromDisk))
+  fs.writeFileSync(path.join(childTmp, 'render.txt'), 'rendered')
+  const fromTmp = await client.callTool({ name: 'quilt_workspace_write_file', arguments: { workspace: 'Launch', path: 'render.txt', fromPath: path.join(childTmp, 'render.txt') } })
+  assert.equal(fromTmp.isError, undefined, text(fromTmp))
+  // Anywhere else (like ~/.ssh) is refused, even through a symlink in the project.
+  const ssh = path.join(home, '.ssh')
+  fs.mkdirSync(ssh)
+  fs.writeFileSync(path.join(ssh, 'id_ed25519'), 'PRIVATE KEY')
+  const outside = await client.callTool({ name: 'quilt_workspace_write_file', arguments: { workspace: 'Launch', path: 'id', fromPath: path.join(ssh, 'id_ed25519') } })
+  assert.equal(outside.isError, true)
+  assert.match(text(outside), /outside this project\. Copy it into the project folder first/)
+  fs.symlinkSync(ssh, path.join(cwd, 'keys'))
+  const linked = await client.callTool({ name: 'quilt_workspace_write_file', arguments: { workspace: 'Launch', path: 'id', fromPath: 'keys/id_ed25519' } })
+  assert.equal(linked.isError, true)
+  assert.match(text(linked), /outside this project/)
+  fs.writeFileSync(path.join(cwd, '.env'), 'SECRET=1')
+  assert.equal((await client.callTool({ name: 'quilt_workspace_write_file', arguments: { workspace: 'Launch', path: 'env', fromPath: '.env' } })).isError, true)
   // Binary reads are saved under ~/.quilt/workspaces/<workspace id>/.
   const bin = await client.callTool({ name: 'quilt_workspace_read_file', arguments: { workspace: 'Launch', path: 'clip.bin' } })
   const savedTo = path.join(home, '.quilt', 'workspaces', ws.id, 'clip.bin')
@@ -102,6 +120,7 @@ test('flag on with an agent: the eight tools appear, and work over MCP', async (
   // The agent's own keys are never sent to the library.
   const keys = await client.callTool({ name: 'quilt_workspace_write_file', arguments: { workspace: 'Launch', path: 'keys.json', fromPath: path.join(home, '.quilt', 'agents', 'helper.json') } })
   assert.equal(keys.isError, true)
+  assert.match(text(keys), /outside this project/)
 })
 
 test('flag on, but no agent on this computer: nothing new', async () => {
@@ -132,4 +151,20 @@ test('an unreachable API adds nothing', async () => {
   const { client } = await startMcp({ home, apiUrl: 'http://127.0.0.1:9' })
   await sleep(500)
   assert.deepEqual(await names(client), baseline)
+})
+
+test('fromPath never sends ~/.quilt, even when the project is the home folder', async () => {
+  const { readLocalFile } = await import('../src/mcp.js')
+  const home = tmp('ownhome')
+  fs.mkdirSync(path.join(home, '.quilt', 'agents'), { recursive: true })
+  fs.writeFileSync(path.join(home, '.quilt', 'agents', 'k.json'), '{}')
+  fs.writeFileSync(path.join(home, '..notes.md'), 'a name, not a way out')
+  const was = process.env.HOME
+  process.env.HOME = home
+  try {
+    await assert.rejects(readLocalFile(path.join(home, '.quilt', 'agents', 'k.json'), [home]), /Quilt's own files/)
+    assert.equal(String(await readLocalFile('..notes.md', [home])), 'a name, not a way out')
+  } finally {
+    process.env.HOME = was
+  }
 })

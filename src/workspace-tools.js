@@ -3,7 +3,8 @@
 // the local MCP (`quilt mcp`, which can also read and save files on this computer) and the
 // hosted MCP on the relay. Each host passes how to reach the API:
 //   call(method, path, body) -> parsed JSON, or throws an Error with .status and the API's message
-//   fetchBytes(url) -> Buffer; put(url, bytes, headers) -> HTTP status
+//   fetchBytes(url, maxBytes) -> Buffer, refusing a body over maxBytes (bytesFetcher makes one)
+//   put(url, bytes, headers) -> HTTP status
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -19,7 +20,43 @@ export const WORKSPACE_GUIDE =
 // The API's own limit on one file; fromPath may send up to this.
 const MAX_FROM_PATH = 500 * 1024 * 1024
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-const BASE64 = /^[A-Za-z0-9+/\s]*={0,2}\s*$/
+const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/
+
+/** Whether `target` is strictly inside `root` (both absolute). A name like "..notes" is inside. */
+export function isInside (root, target) {
+  const rel = path.relative(root, target)
+  return rel !== '' && rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel)
+}
+
+/**
+ * A fetchBytes for registerWorkspaceTools: GETs `url` and answers its bytes, giving up (and
+ * dropping the connection) as soon as the body is larger than `maxBytes`, so a link never
+ * makes the host hold more than the tool asked for.
+ */
+export function bytesFetcher (fetchImpl = globalThis.fetch, { timeoutMs = 10 * 60 * 1000 } = {}) {
+  return async (url, maxBytes = Infinity) => {
+    const ac = new AbortController()
+    const timer = setTimeout(() => ac.abort(new Error('the download took too long')), timeoutMs)
+    timer.unref?.()
+    const tooBig = () => new Error(`the download is larger than expected (over ${formatBytes(maxBytes)})`)
+    try {
+      const res = await fetchImpl(url, { signal: ac.signal })
+      if (!res.ok) { ac.abort(); throw new Error(`the download failed (${res.status})`) }
+      if (Number(res.headers.get('content-length')) > maxBytes) { ac.abort(); throw tooBig() }
+      if (!res.body) return Buffer.alloc(0)
+      const chunks = []
+      let n = 0
+      for await (const chunk of res.body) {
+        n += chunk.length
+        if (n > maxBytes) { ac.abort(); throw tooBig() }
+        chunks.push(chunk)
+      }
+      return Buffer.concat(chunks.map((c) => Buffer.from(c)))
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+}
 
 /** Whether `p` matches `glob`: `*` is any run of characters inside one folder, `**` crosses folders. */
 export function globMatch (glob, p) {
@@ -109,8 +146,7 @@ export function registerWorkspaceTools (server, { call, fetchBytes, put, saveDir
   function savePath (ws, p) {
     const root = path.resolve(saveDir, ws.id)
     const file = path.resolve(root, p)
-    const rel = path.relative(root, file)
-    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) throw new Error('that path cannot be saved here')
+    if (!isInside(root, file)) throw new Error('that path cannot be saved here')
     return file
   }
 
@@ -167,14 +203,14 @@ export function registerWorkspaceTools (server, { call, fetchBytes, put, saveDir
     const dl = await call('GET', `${file$(ws.id, f.id)}/download${version ? `?version=${version}` : ''}`)
     const v = version || f.version
     if (isTextual(dl.mime) && dl.size <= maxInline) {
-      const bytes = await fetchBytes(dl.url)
+      const bytes = await fetchBytes(dl.url, maxInline)
       return `${f.path} (version ${v}, ${formatBytes(bytes.length)}):\n\n${bytes.toString('utf8')}`
     }
     const lines = [`${f.path} (version ${v}) is ${dl.mime || 'a file'}, ${formatBytes(dl.size)}.`, `Download link (expires ${new Date(dl.expiresAt).toISOString()}): ${dl.url}`]
     if (saveDir) {
       try {
         const file = savePath(ws, f.path)
-        const bytes = await fetchBytes(dl.url)
+        const bytes = await fetchBytes(dl.url, Number.isFinite(dl.size) ? dl.size : MAX_FROM_PATH)
         await fs.promises.mkdir(path.dirname(file), { recursive: true })
         await fs.promises.writeFile(file, bytes)
         lines.push(`savedTo: ${file}`)
@@ -191,7 +227,7 @@ export function registerWorkspaceTools (server, { call, fetchBytes, put, saveDir
     path: z.string().describe('Where it goes in the library, like "drafts/brief.md". Missing folders are made; an existing file gets a new version.'),
     text: z.string().optional().describe(`The file's contents as text (up to ${formatBytes(maxInline)})`),
     base64: z.string().optional().describe(`The file's bytes as base64 (up to ${formatBytes(maxInline)})`),
-    ...(readLocal ? { fromPath: z.string().optional().describe(`A file on this computer to upload (up to ${formatBytes(MAX_FROM_PATH)})`) } : {}),
+    ...(readLocal ? { fromPath: z.string().optional().describe(`A file in this project folder (or the temp folder) to upload, up to ${formatBytes(MAX_FROM_PATH)}`) } : {}),
     note: z.string().optional().describe('A short note on what this is or what changed (under 300 characters)')
   }
   server.registerTool('quilt_workspace_write_file', {
@@ -207,8 +243,9 @@ export function registerWorkspaceTools (server, { call, fetchBytes, put, saveDir
       bytes = Buffer.from(String(text), 'utf8')
       if (bytes.length > maxInline) throw tooBig(bytes.length)
     } else if (base64 !== undefined) {
-      const b = String(base64)
-      // Checked before decoding, so a huge string is refused without a huge buffer.
+      // Whitespace (line breaks) first, then the size before decoding, so a huge string is
+      // refused without a huge buffer; the pattern has no nested repeats, so it is linear.
+      const b = String(base64).replace(/\s+/g, '')
       if (Math.floor(b.length * 3 / 4) > maxInline + 3) throw tooBig(Math.floor(b.length * 3 / 4))
       if (!BASE64.test(b)) throw new Error('base64 has characters base64 cannot have.')
       bytes = Buffer.from(b, 'base64')

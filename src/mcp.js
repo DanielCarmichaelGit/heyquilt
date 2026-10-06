@@ -8,6 +8,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 import fs from 'node:fs'
 import path from 'node:path'
+import os from 'node:os'
 import { findDaemon, call } from './control.js'
 import { renderMessage, renderStatus } from './status.js'
 import { formatTasks, columnName, assigneeLabel } from './tasks.js'
@@ -17,7 +18,7 @@ import { toolLabel } from './agents/common.js'
 import { sessionPasses } from './pass-source.js'
 import { pickAgent, agentAccess, readAgent } from './agent-join.js'
 import { setSessionWorkspace, announceSessionStarted, announceWhenReported, apiUrl } from './account.js'
-import { registerWorkspaceTools } from './workspace-tools.js'
+import { registerWorkspaceTools, bytesFetcher, isInside } from './workspace-tools.js'
 import { quiltHome } from './legacy.js'
 import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, MAX_VERIFIED } from './agent-task-workflow.js'
 import { formatHistory } from './history.js'
@@ -662,7 +663,9 @@ export async function runMcp () {
   await server.connect(new StdioServerTransport())
   // The workspace library tools arrive a moment later (the client is told the tool list
   // changed), so startup never waits on the API.
-  addWorkspaceTools(server).catch(() => {})
+  // fromPath reads only from the project: the session's folder, or where the agent runs.
+  const projectDirs = () => [joined?.dir, findDaemon(joined ? joined.dir : undefined)?.dir, process.env.QUILT_DIR || process.cwd()].filter(Boolean)
+  addWorkspaceTools(server, { projectDirs }).catch(() => {})
 }
 
 // How long the startup check of the API's features may take before the tools are left out.
@@ -677,7 +680,7 @@ const MAX_LOCAL_FILE = 500 * 1024 * 1024
  * several, the flag off, the API slow, unreachable or odd) adds nothing and never throws.
  * Returns whether the tools were added.
  */
-export async function addWorkspaceTools (server, { fetch: fetchImpl = globalThis.fetch } = {}) {
+export async function addWorkspaceTools (server, { fetch: fetchImpl = globalThis.fetch, projectDirs = () => [process.cwd()] } = {}) {
   let name, api
   try {
     name = pickAgent()
@@ -706,29 +709,29 @@ export async function addWorkspaceTools (server, { fetch: fetchImpl = globalThis
     if (!data || typeof data !== 'object') throw new Error('Quilt sent back something unexpected.')
     return data
   }
-  const fetchBytes = async (url) => {
-    const res = await fetchImpl(url, { signal: AbortSignal.timeout(TRANSFER_TIMEOUT_MS) })
-    if (!res.ok) throw new Error(`the download failed (${res.status})`)
-    return Buffer.from(await res.arrayBuffer())
-  }
+  const fetchBytes = bytesFetcher(fetchImpl, { timeoutMs: TRANSFER_TIMEOUT_MS })
   const put = async (url, bytes, headers) => (await fetchImpl(url, { method: 'PUT', headers, body: bytes, signal: AbortSignal.timeout(TRANSFER_TIMEOUT_MS) })).status
   try {
-    registerWorkspaceTools(server, { call, fetchBytes, put, saveDir: path.join(quiltHome(), 'workspaces'), readLocal: readLocalFile })
+    registerWorkspaceTools(server, { call, fetchBytes, put, saveDir: path.join(quiltHome(), 'workspaces'), readLocal: (p) => readLocalFile(p, projectDirs()) })
   } catch { return false }
   return true
 }
 
+const realOr = async (p) => { try { return await fs.promises.realpath(p) } catch { return path.resolve(p) } }
+
 /**
- * A file on this computer for quilt_workspace_write_file's fromPath. Never the agent's own
- * keys or anything else in ~/.quilt, nor an .env file, so a prompt-injected agent can't put
- * secrets in a library other people read.
+ * A file for quilt_workspace_write_file's fromPath: only from the project (`dirs`, the first
+ * resolving a relative path) or the temp folder, as quilt_send_file only sends project files,
+ * so a prompt-injected agent can't put ~/.ssh in a library other people read. Never the
+ * agent's own keys or anything else in ~/.quilt, nor an .env file. Symlinks are followed
+ * before the checks.
  */
-async function readLocalFile (p) {
-  const abs = await fs.promises.realpath(path.resolve(p))
-  let home = path.resolve(quiltHome())
-  try { home = await fs.promises.realpath(home) } catch {}
-  const rel = path.relative(home, abs)
-  if (rel === '' || !(rel.startsWith('..') || path.isAbsolute(rel))) throw new Error('Quilt\'s own files (keys and settings) are not sent to a library.')
+export async function readLocalFile (p, dirs = [process.cwd()]) {
+  const abs = await fs.promises.realpath(path.resolve(dirs[0] || process.cwd(), String(p)))
+  const roots = await Promise.all([...dirs, os.tmpdir()].map(realOr))
+  if (!roots.some((root) => isInside(root, abs))) throw new Error(`${p} is outside this project. Copy it into the project folder first, then send it from there.`)
+  const home = await realOr(quiltHome())
+  if (abs === home || isInside(home, abs)) throw new Error('Quilt\'s own files (keys and settings) are not sent to a library.')
   const base = path.basename(abs)
   if (/^\.env(\..*)?$/.test(base) && base !== '.env.example') throw new Error('refusing to send environment/secret files')
   const st = await fs.promises.stat(abs)

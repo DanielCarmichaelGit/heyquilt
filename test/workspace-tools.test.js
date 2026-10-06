@@ -3,10 +3,11 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { startTestApi, makeAgent } from './api-helpers.js'
-import { registerWorkspaceTools, WORKSPACE_GUIDE, globMatch } from '../src/workspace-tools.js'
+import { registerWorkspaceTools, WORKSPACE_GUIDE, globMatch, bytesFetcher, isInside } from '../src/workspace-tools.js'
 
 let t, ws, other, editor, viewer, saveDir
 
@@ -17,7 +18,10 @@ const caller = (key) => async (method, p, body) => {
   if (!res.ok) throw Object.assign(new Error(data?.error || `Quilt answered ${res.status}.`), { status: res.status })
   return data
 }
-const fetchBytes = async (url) => { const r = await fetch(url); if (!r.ok) throw new Error(`download failed (${r.status})`); return Buffer.from(await r.arrayBuffer()) }
+// Every cap the tools ask for, so a test can check they always ask for one.
+const caps = []
+const realFetchBytes = bytesFetcher()
+const fetchBytes = async (url, max) => { caps.push(max); return realFetchBytes(url, max) }
 const put = async (url, bytes, headers) => (await fetch(url, { method: 'PUT', headers, body: bytes })).status
 
 /** The tools as an MCP server would hold them: name -> handler. */
@@ -78,7 +82,9 @@ test('write text, read it back, list, move, delete, by workspace name or id', as
   assert.match(wrote.text, /notes\/plan\.md/)
   assert.match(wrote.text, /version 1/)
 
+  caps.length = 0
   const read = await run('quilt_workspace_read_file', { workspace: ws.id, path: 'notes/plan.md' })
+  assert.deepEqual(caps, [2 * 1024 * 1024], 'an inline read downloads at most maxInline')
   assert.equal(read.isError, false, read.text)
   assert.match(read.text, /# Plan\nShip it\./)
 
@@ -113,7 +119,9 @@ test('a binary read answers a link, and saves a copy when it can', async () => {
   const plain = collect({ call: caller(editor.accessKey) })
   const wrote = await plain.run('quilt_workspace_write_file', { workspace: 'Launch', path: 'art/logo.png', base64: bytes.toString('base64') })
   assert.equal(wrote.isError, false, wrote.text)
+  caps.length = 0
   const hosted = await plain.run('quilt_workspace_read_file', { workspace: 'Launch', path: 'art/logo.png' })
+  assert.deepEqual(caps, [], 'a link alone downloads nothing')
   assert.equal(hosted.isError, false, hosted.text)
   assert.match(hosted.text, /https?:\/\/\S+\/v1\/file-data\//)
   assert.match(hosted.text, /expires/i)
@@ -121,6 +129,7 @@ test('a binary read answers a link, and saves a copy when it can', async () => {
 
   const local = collect({ call: caller(editor.accessKey), saveDir })
   const saved = await local.run('quilt_workspace_read_file', { workspace: 'Launch', path: 'art/logo.png' })
+  assert.deepEqual(caps, [bytes.length], 'a save downloads at most the file\'s size')
   const file = path.join(saveDir, ws.id, 'art', 'logo.png')
   assert.match(saved.text, new RegExp(`savedTo: ${file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
   assert.deepEqual(fs.readFileSync(file), bytes)
@@ -191,4 +200,48 @@ test('globMatch: * stays in a folder, ** crosses folders', () => {
   assert.equal(globMatch('notes/**', 'notes/deep/a.md'), true)
   assert.equal(globMatch('notes/*', 'notes/deep/a.md'), false)
   assert.equal(globMatch('a.b', 'axb'), false, 'dots are literal')
+})
+
+test('base64 is checked in linear time: a long run of spaces and a bad character is refused at once', async () => {
+  const { run } = collect({ call: caller(editor.accessKey) })
+  const started = Date.now()
+  const r = await run('quilt_workspace_write_file', { workspace: 'Launch', path: 'x.bin', base64: ' '.repeat(2_500_000) + '!' })
+  assert.equal(r.isError, true)
+  assert.match(r.text, /characters base64 cannot have/)
+  assert.ok(Date.now() - started < 300, `took ${Date.now() - started}ms`)
+  const wrapped = await run('quilt_workspace_write_file', { workspace: 'Launch', path: 'wrapped.txt', base64: 'aGVs\nbG8=\n' })
+  assert.equal(wrapped.isError, false, wrapped.text)
+  assert.match((await run('quilt_workspace_read_file', { workspace: 'Launch', path: 'wrapped.txt' })).text, /hello/)
+})
+
+test('bytesFetcher stops at the cap, whether or not the size is declared', async () => {
+  const body = Buffer.alloc(64 * 1024, 7)
+  const srv = http.createServer((req, res) => {
+    if (req.url === '/declared') { res.setHeader('content-length', body.length); res.end(body); return }
+    if (req.url === '/missing') { res.statusCode = 404; res.end('no'); return }
+    res.write(body.subarray(0, 1000)) // chunked: no length up front
+    setTimeout(() => res.end(body.subarray(1000)), 20)
+  })
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve))
+  const base = `http://127.0.0.1:${srv.address().port}`
+  try {
+    const get = bytesFetcher()
+    assert.equal((await get(`${base}/declared`, body.length)).length, body.length)
+    await assert.rejects(get(`${base}/declared`, 100), /larger than expected/)
+    await assert.rejects(get(`${base}/chunked`, 2000), /larger than expected/)
+    assert.equal((await get(`${base}/chunked`)).length, body.length)
+    await assert.rejects(get(`${base}/missing`, 10), /failed \(404\)/)
+  } finally {
+    srv.closeAllConnections?.()
+    srv.close()
+  }
+})
+
+test('isInside: strictly inside, and "..name" is a name, not a way out', () => {
+  const root = path.resolve('/r')
+  assert.equal(isInside(root, path.join(root, 'a')), true)
+  assert.equal(isInside(root, path.join(root, '..notes')), true)
+  assert.equal(isInside(root, root), false)
+  assert.equal(isInside(root, path.resolve('/r2/a')), false)
+  assert.equal(isInside(root, path.resolve('/a')), false)
 })

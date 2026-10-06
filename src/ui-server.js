@@ -17,7 +17,7 @@ import * as gitops from './git.js'
 import { installedEditors, openIn } from './editors.js'
 import { migrateDir } from './legacy.js'
 import { writePrivateJson } from './private-file.js'
-import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession, createAgentInvite, listAgents, listAccessTypes, listCollaborators, listGrants, putGrant, deleteGrant, inviteToSession, listSessionInvites, cancelSessionInvite, listWorkspaces, listOrgs, createWorkspace, getWorkspace, updateWorkspace, deleteWorkspace, putWorkspaceMember, removeWorkspaceMember, setSessionWorkspace, announceSessionStarted, announceWhenReported, listWorkspaceFiles, createWorkspaceFile, confirmWorkspaceFile, workspaceFileDownload, updateWorkspaceFile, deleteWorkspaceFile, createWorkspaceFolder, listWorkspaceFileVersions } from './account.js'
+import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession, createAgentInvite, listAgents, listAccessTypes, listCollaborators, listGrants, putGrant, deleteGrant, inviteToSession, listSessionInvites, cancelSessionInvite, listWorkspaces, listOrgs, createWorkspace, getWorkspace, updateWorkspace, deleteWorkspace, putWorkspaceMember, removeWorkspaceMember, getAgentPlacement, putAgentPlacement, listOrgAgents, putWorkspaceAgent, deleteWorkspaceAgent, createWorkspaceAgentInvite, excludeSessionAgent, setSessionWorkspace, announceSessionStarted, announceWhenReported, listWorkspaceFiles, createWorkspaceFile, confirmWorkspaceFile, workspaceFileDownload, updateWorkspaceFile, deleteWorkspaceFile, createWorkspaceFolder, listWorkspaceFileVersions } from './account.js'
 import { effectiveAccess, builtinType } from './session-access.js'
 import { cleanSessionName, BAD_SESSION_NAME, SESSION_NAME_MAX } from './session-name.js'
 import { personPasses } from './pass-source.js'
@@ -113,6 +113,7 @@ export const STATIC = {
   '/feed-convs.js': ['feed-convs.js', 'text/javascript; charset=utf-8'],
   '/board.js': ['board.js', 'text/javascript; charset=utf-8'],
   '/workspaces.js': ['workspaces.js', 'text/javascript; charset=utf-8'],
+  '/agent-place.js': ['agent-place.js', 'text/javascript; charset=utf-8'],
   '/files.js': ['files.js', 'text/javascript; charset=utf-8'],
   '/csv.js': ['csv.js', 'text/javascript; charset=utf-8']
 }
@@ -308,6 +309,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       if (entry.logs.length > 200) entry.logs.shift()
       broadcast('log', { id, ts: Date.now(), line })
     }
+    entry.log = log
     try {
       entry.run = await runSession({
         dir,
@@ -459,6 +461,8 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     }
   })
   const needWorkspaceId = (id) => { if (!/^[0-9a-f-]{36}$/i.test(String(id || ''))) throw httpError(400, 'Which workspace?'); return id }
+  const needAgentId = (id) => { if (!/^[0-9a-f-]{36}$/i.test(String(id || ''))) throw httpError(400, 'Which agent?'); return id }
+  const needOrgSlug = (slug) => { if (!/^[a-z0-9][a-z0-9-]{0,63}$/i.test(String(slug || ''))) throw httpError(400, 'Which org?'); return slug }
   const ofWorkspace = (id) => ({
     running: [...runs.keys()].filter((k) => (readConfig(runs.get(k).run.dir) || {}).workspace === id),
     recent: recentList().filter((r) => r.workspace === id)
@@ -529,6 +533,15 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       }
     }
     await s.removeMember(key)
+    // An agent removed from a session in a workspace is also kept out of this session, so its
+    // workspace (or its placement) doesn't let it straight back in. In the background, after
+    // the removal: it never delays or fails it, and a failure is only logged.
+    const agent = /^agent:([0-9a-f-]{36})$/i.exec(String(key))
+    const r = runs.get(id)
+    if (agent && r && readConfig(r.run.dir)?.workspace) {
+      asAccount((token) => excludeSessionAgent({ token, room: s.room, agentId: agent[1] }))
+        .catch((err) => r.log?.(`could not keep that agent out of this session: ${err.message}`))
+    }
     return warning ? { ok: true, warning: `Removed, but their access is still saved on heyquilt.com, so they can get back in: ${warning}` } : { ok: true }
   }
 
@@ -564,7 +577,15 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     'GET /api/workspaces/:id': (b, id) => asAccount(async (token) => ({ ...(await getWorkspace({ token, id: needWorkspaceId(id) })), ...ofWorkspace(id) })),
     'POST /api/workspaces/:id/update': (b, id) => asAccount(async (token) => ({ workspace: await updateWorkspace({ token, id: needWorkspaceId(id), patch: { name: b.name, description: b.description, color: b.color, archived: b.archived } }) })),
     'POST /api/workspaces/:id/delete': (b, id) => asAccount(async (token) => { await deleteWorkspace({ token, id: needWorkspaceId(id) }); return { ok: true } }),
-    'POST /api/workspaces/:id/members': (b, id) => asAccount(async (token) => ({ member: await putWorkspaceMember({ token, id: needWorkspaceId(id), account: String(b.account || ''), access: String(b.access || '') }) })),
+    'POST /api/workspaces/:id/members': (b, id) => asAccount(async (token) => ({ member: await putWorkspaceMember({ token, id: needWorkspaceId(id), account: String(b.account || ''), access: String(b.access || ''), sessions: b.sessions === undefined ? undefined : String(b.sessions) }) })),
+    // Where agents work: an agent's placement (yours), an org's agents, a workspace's say over
+    // an agent placed there, and a link for a new agent that joins the workspace.
+    'GET /api/agents/:id/placement': (b, id) => asAccount(async (token) => ({ placement: await getAgentPlacement({ token, id: needAgentId(id) }) })),
+    'POST /api/agents/:id/placement': (b, id) => asAccount(async (token) => ({ placement: await putAgentPlacement({ token, id: needAgentId(id), placement: { reach: b.reach, workspaceIds: b.workspaceIds, sessions: b.sessions, access: b.access, scopes: b.scopes } }) })),
+    'GET /api/orgs/:slug/agents': (b, slug) => asAccount(async (token) => ({ agents: await listOrgAgents({ token, slug: needOrgSlug(slug) }) })),
+    'POST /api/workspaces/:id/agents/:aid': (b, id, url, aid) => asAccount(async (token) => ({ override: await putWorkspaceAgent({ token, id: needWorkspaceId(id), agentId: needAgentId(aid), sessions: b.sessions, excluded: b.excluded }) })),
+    'POST /api/workspaces/:id/agents/:aid/remove': (b, id, url, aid) => asAccount(async (token) => { await deleteWorkspaceAgent({ token, id: needWorkspaceId(id), agentId: needAgentId(aid) }); return { ok: true } }),
+    'POST /api/workspaces/:id/agent-invites': (b, id) => asAccount(async (token) => ({ link: (await createWorkspaceAgentInvite({ token, id: needWorkspaceId(id), access: String(b.access || 'edit'), sessions: String(b.sessions || 'invited') })).link })),
     'POST /api/workspaces/:id/members/remove': (b, id) => asAccount(async (token) => { await removeWorkspaceMember({ token, id: needWorkspaceId(id), account: String(b.account || '') }); return { ok: true } }),
     'POST /api/workspaces/:id/sessions/move': (b, id) => asAccount(async (token) => {
       const dir = path.resolve(expandHome(String(b.dir || '')))
@@ -764,9 +785,14 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       let pathKey = url.pathname
         .replace(/^\/api\/sessions\/[a-f0-9]+/, '/api/sessions/:id')
         .replace(/^\/api\/workspaces\/[^/]+/, '/api/workspaces/:id')
-      const sid = (url.pathname.match(/^\/api\/sessions\/([a-f0-9]+)/) || url.pathname.match(/^\/api\/workspaces\/([^/]+)/) || [])[1]
+        .replace(/^\/api\/agents\/[^/]+\//, '/api/agents/:id/')
+        .replace(/^\/api\/orgs\/[^/]+\//, '/api/orgs/:slug/')
+      const sid = (url.pathname.match(/^\/api\/sessions\/([a-f0-9]+)/) || url.pathname.match(/^\/api\/workspaces\/([^/]+)/) || url.pathname.match(/^\/api\/(?:agents|orgs)\/([^/]+)\//) || [])[1]
       const fid = (url.pathname.match(/^\/api\/workspaces\/[^/]+\/files\/([^/]+)/) || [])[1]
       if (fid) pathKey = pathKey.replace(/\/files\/[^/]+/, '/files/:fid')
+      // A workspace's agent (its override): passed where a file id would be.
+      const aid = (url.pathname.match(/^\/api\/workspaces\/[^/]+\/agents\/([^/]+)/) || [])[1]
+      if (aid) pathKey = pathKey.replace(/^(\/api\/workspaces\/:id\/agents)\/[^/]+/, '$1/:aid')
       const key = `${req.method} ${pathKey}`
       const handler = api[key]
       if (!handler) {
@@ -778,7 +804,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       const body = raw ? JSON.parse(raw) : {}
       const startedAt = Date.now()
       try {
-        const out = await handler(body, sid, url, fid)
+        const out = await handler(body, sid, url, fid || aid)
         json(200, out)
         return recordRoute(key, { startedAt, status: 200, body })
       } catch (err) {

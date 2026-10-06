@@ -229,8 +229,9 @@ export async function updateWorkspace ({ token, id, patch, api = apiUrl(), fetch
 export async function deleteWorkspace ({ token, id, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
   await call(fetchImpl, api, 'DELETE', ws$(id), null, token)
 }
-export async function putWorkspaceMember ({ token, id, account, access, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
-  const r = await call(fetchImpl, api, 'PUT', `${ws$(id)}/members/${encodeURIComponent(account)}`, { access }, token)
+/** `sessions` ('all' or 'invited') is for an agent only: whether it joins every session here by itself. Left out, it is kept. */
+export async function putWorkspaceMember ({ token, id, account, access, sessions, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'PUT', `${ws$(id)}/members/${encodeURIComponent(account)}`, { access, ...(sessions !== undefined ? { sessions } : {}) }, token)
   if (!r.member) throw new Error(BAD_REPLY)
   return r.member
 }
@@ -283,6 +284,48 @@ export async function announceWhenReported (announce, { alive = () => true, log 
 
 export async function unsetSessionWorkspace ({ token, id, room, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
   await call(fetchImpl, api, 'DELETE', `${ws$(id)}/sessions/${encodeURIComponent(room)}`, null, token)
+}
+
+// Where agents work (phase 3). Each throws with .status when the API says no.
+const agent$ = (id) => `/v1/me/agents/${encodeURIComponent(id)}/placement`
+
+/** One of your agents' placement: { reach, workspaceIds, sessions, access, scopes }; 'manual' when it has none. */
+export async function getAgentPlacement ({ token, id, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'GET', agent$(id), null, token)
+  if (!r.placement) throw new Error(BAD_REPLY)
+  return r.placement
+}
+export async function putAgentPlacement ({ token, id, placement, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'PUT', agent$(id), placement, token)
+  if (!r.placement) throw new Error(BAD_REPLY)
+  return r.placement
+}
+/** An org's agents ({ id, name, provider, type, hosted, placement }); needs Agents: Read in the org. */
+export async function listOrgAgents ({ token, slug, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'GET', `/v1/orgs/${encodeURIComponent(slug)}/agents`, null, token)
+  if (!Array.isArray(r.agents)) throw new Error(BAD_REPLY)
+  return r.agents
+}
+/** A workspace's say over an agent placed there: `sessions` ('all', 'invited' or null) and `excluded`; a field left out is kept. */
+export async function putWorkspaceAgent ({ token, id, agentId, sessions, excluded, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const body = { ...(sessions !== undefined ? { sessions } : {}), ...(excluded !== undefined ? { excluded } : {}) }
+  const r = await call(fetchImpl, api, 'PUT', `${ws$(id)}/agents/${encodeURIComponent(agentId)}`, body, token)
+  if (!r.override) throw new Error(BAD_REPLY)
+  return r.override
+}
+/** Drops the workspace's say over a placed agent: it follows its own placement again. */
+export async function deleteWorkspaceAgent ({ token, id, agentId, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  await call(fetchImpl, api, 'DELETE', `${ws$(id)}/agents/${encodeURIComponent(agentId)}`, null, token)
+}
+/** A one-time link for a new agent that joins the workspace as a member: { link, invite }. */
+export async function createWorkspaceAgentInvite ({ token, id, access = 'edit', sessions = 'invited', api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'POST', `${ws$(id)}/agent-invites`, { access, sessions }, token)
+  if (!r.link || !r.invite) throw new Error(BAD_REPLY)
+  return r
+}
+/** The session owner keeps an agent out of one session, even when its workspace would let it in. */
+export async function excludeSessionAgent ({ token, room, agentId, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  await call(fetchImpl, api, 'PUT', `${room$(room)}/agents/${encodeURIComponent(agentId)}/exclude`, {}, token)
 }
 
 // Workspace files (phase 2). Each throws with .status when the API says no.

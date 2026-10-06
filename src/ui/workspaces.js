@@ -3,6 +3,7 @@
 // (the Files section, All files and uploads) is files.js.
 import { I, state, $, esc, basename, toast, api, ask, avatar, colorFor, ago, bytes } from './common.js'
 import { filesSectionHtml, bindFilesSection } from './files.js'
+import { workspaceAgentCardHtml } from './agent-place.js'
 
 export const COLORS = { lilac: '#d9c6ea', mint: '#cfe6d4', peach: '#f6dcc0', rose: '#f3d3d0', periwinkle: '#e0dcf0', sky: '#cfe0ee' }
 const coverOf = (w) => COLORS[w.color] || COLORS.lilac
@@ -205,6 +206,12 @@ export function workspacePageHtml () {
   const others = d.sessions.filter((s) => !runningRooms.has(s.room) && !recentRooms.has(s.room))
   const me = `person:${state.account?.id}`
   const members = [...(d.owner.account ? [{ account: d.owner.account, name: d.owner.name, kind: 'person', access: 'edit', owner: true }] : []), ...d.members]
+  // Agents with why they are here (added, placed or global) come from `agents`; a member agent
+  // missing there (revoked, or gone from the org) keeps its plain card so it can be removed.
+  const agents = d.agents || []
+  const listed = new Set(agents.map((a) => a.account))
+  const people = members.filter((m) => !listed.has(m.account))
+  const orgName = w.orgId ? d.owner.name : ''
   return `
   <a class="ws-back" href="#" data-ws-back>${I.caret} All workspaces</a>
   <header class="ws-head">
@@ -225,9 +232,10 @@ export function workspacePageHtml () {
   ${filesSectionHtml(d)}
 
   <section class="sec">
-    <div class="sec-head"><h2>People &amp; agents</h2><span class="count">${members.length}</span></div>
+    <div class="sec-head"><h2>People &amp; agents</h2><span class="count">${people.length + agents.length}</span></div>
     <div class="pc-grid">
-      ${members.map((m) => peopleCardHtml(m, { admin, isOwner: !!m.owner })).join('')}
+      ${people.map((m) => peopleCardHtml(m, { admin, isOwner: !!m.owner })).join('')}
+      ${agents.map((a) => workspaceAgentCardHtml(a, { admin, orgName })).join('')}
       ${admin ? `<button class="pc add" data-add-member>${I.plus}<span>Add a person or an agent</span></button>` : ''}
     </div>
   </section>`
@@ -250,6 +258,33 @@ export function bindWorkspacePage (root, { go, rerender, newSessionDialog, invit
     b.onclick = async () => {
       if (!await ask({ title: 'Remove from this workspace?', message: 'They lose access to its sessions unless a session owner lets them in directly.', ok: 'Remove', danger: true })) return
       try { await api('POST', wsUrl(id, '/members/remove'), { account: b.dataset.memberRemove }); await reload() } catch (err) { toast(err.message) }
+    }
+  })
+  // Agents: Joins writes an added agent's own setting, or the workspace's say over a placed one.
+  const agentOf = (agentId) => (d.agents || []).find((a) => a.agentId === agentId)
+  const agentUrl = (agentId, rest = '') => wsUrl(id, `/agents/${encodeURIComponent(agentId)}${rest}`)
+  root.querySelectorAll('[data-agent-joins]').forEach((sel) => {
+    sel.onchange = async () => {
+      const a = agentOf(sel.dataset.agentJoins)
+      if (!a) return
+      try {
+        if (a.via === 'member') await api('POST', wsUrl(id, '/members'), { account: a.account, access: a.access, sessions: sel.value })
+        else await api('POST', agentUrl(a.agentId), { sessions: sel.value })
+        toast('Saved'); await reload()
+      } catch (err) { toast(err.message); rerender() }
+    }
+  })
+  root.querySelectorAll('[data-agent-exclude]').forEach((b) => {
+    b.onclick = async () => {
+      const a = agentOf(b.dataset.agentExclude)
+      if (!a || !await ask({ title: 'Not in this workspace?', message: `${a.name} leaves this workspace and its sessions. It keeps its other workspaces, and you can let it back in here.`, ok: 'Not in this workspace', danger: true })) return
+      try { await api('POST', agentUrl(a.agentId), { excluded: true }); await reload() } catch (err) { toast(err.message) }
+    }
+  })
+  root.querySelectorAll('[data-agent-include]').forEach((b) => {
+    b.onclick = async () => {
+      b.disabled = true
+      try { await api('POST', agentUrl(b.dataset.agentInclude, '/remove')); toast('Back in'); await reload() } catch (err) { toast(err.message); b.disabled = false }
     }
   })
   root.querySelector('[data-ws-settings]')?.addEventListener('click', () => settingsDialog(reload, go, dialog))

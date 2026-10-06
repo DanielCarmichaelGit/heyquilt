@@ -7,6 +7,7 @@ import { quiltMark } from './mark.js'
 import { updateControl } from './releases.js'
 import { workspacesHtml, bindWorkspaces, workspacePageHtml, bindWorkspacePage, loadWorkspaces, openWorkspace, COLORS } from './workspaces.js'
 import { allFilesHtml, bindAllFiles } from './files.js'
+import { agentRow, bindPlacements, placeableWorkspaces } from './agent-place.js'
 
 export const tildify = (p) => state.defaults.home && String(p).startsWith(state.defaults.home) ? `~${String(p).slice(state.defaults.home.length)}` : p
 const hostOf = (url) => { try { return new URL(String(url).replace(/^ws/, 'http')).host } catch { return url } }
@@ -318,28 +319,38 @@ export function newSessionDialog (workspace = '') {
 }
 
 /**
- * Add someone to a workspace: people you've worked with and your own agents, each with an
- * Add button, at the access picked above. Email invites to a workspace come later.
+ * Add someone to a workspace: people you've worked with and the agents that can be added (your
+ * own in a personal workspace, the org's in an org's), each with an Add button, at the access
+ * picked above. Agents can also join every session here as it starts, and Invite a new agent
+ * makes a link for an agent that joins the workspace once it registers.
  */
 function workspaceInviteDialog (id) {
+  const d = state.workspace
+  const org = d?.workspace?.orgId ? (state.workspaces || []).find((w) => w.id === id)?.space : null
   const { back, form, close } = dialog(`
-    <h3>Add to ${esc(state.workspace?.workspace?.name || 'this workspace')}</h3>
+    <h3>Add to ${esc(d?.workspace?.name || 'this workspace')}</h3>
     <p class="lead">They get into every session in this workspace once they sign in.</p>
     <div class="field"><label for="wi-access">Access</label>
       <select class="input" id="wi-access"><option value="edit">Can edit</option><option value="view">View only</option></select></div>
-    <div class="label inv-sub">People you've worked with, and your agents</div>
+    ${toggle('wiEvery', false, 'Also join every session in this workspace as it starts', 'For agents. Off: the agent is in the workspace, sees its files, and joins a session only when invited there.')}
+    <div class="label inv-sub">People you've worked with, and ${org ? `${esc(org.name)}'s agents` : 'your agents'}</div>
     <div class="inv-list" id="wi-people"><p class="hint">Loading…</p></div>
+    <div class="inv-agent wi-new-agent" id="wi-new-agent"><button class="btn sm" type="button" data-wi-invite-agent>${I.bot}<span>Invite a new agent</span></button><span class="hint">You'll get a link to paste into your AI.</span></div>
     <p class="error" id="wi-error"></p>
     <div class="actions"><button type="button" class="btn primary" data-cancel>Done</button></div>`)
   form.onsubmit = (e) => e.preventDefault()
-  const already = new Set([state.workspace?.owner?.account, ...(state.workspace?.members || []).map((m) => m.account)].filter(Boolean))
+  const joins = () => (form.querySelector('[name=wiEvery]').checked ? 'all' : 'invited')
+  const already = new Set([d?.owner?.account, ...(d?.members || []).map((m) => m.account), ...(d?.agents || []).filter((a) => !a.excluded).map((a) => a.account)].filter(Boolean))
   const list = $('#wi-people', back)
+  const agents = org
+    ? api('GET', `/api/orgs/${encodeURIComponent(org.slug)}/agents`).then((r) => r.agents)
+    : api('GET', '/api/agents').then((r) => r.agents)
   Promise.all([
     api('GET', '/api/collaborators').then((r) => r.collaborators).catch(() => []),
-    api('GET', '/api/agents').then((r) => r.agents.map((a) => ({ account: `agent:${a.id}`, name: a.name, kind: 'agent' }))).catch(() => [])
+    agents.then((list) => list.map((a) => ({ account: `agent:${a.id}`, name: a.name, kind: 'agent' }))).catch(() => [])
   ]).then(([people, agents]) => {
     const seen = new Set()
-    const rows = [...people, ...agents].filter((c) => c.account && !seen.has(c.account) && seen.add(c.account))
+    const rows = [...people.filter((c) => c.kind !== 'agent' || !org), ...agents].filter((c) => c.account && !seen.has(c.account) && seen.add(c.account))
     list.innerHTML = rows.length
       ? rows.map((c) => `<div class="inv-row">${avatar(c.name, null)}<span class="grow">${esc(c.name)}${c.kind === 'agent' ? `<span class="tag bot">${I.bot}agent</span>` : ''}</span>${already.has(c.account)
         ? '<span class="hint">Already in</span>'
@@ -351,8 +362,9 @@ function workspaceInviteDialog (id) {
     if (!b) return
     b.disabled = true
     $('#wi-error', back).textContent = ''
+    const account = b.dataset.addAccount
     try {
-      await api('POST', `/api/workspaces/${encodeURIComponent(id)}/members`, { account: b.dataset.addAccount, access: $('#wi-access', back).value })
+      await api('POST', `/api/workspaces/${encodeURIComponent(id)}/members`, { account, access: $('#wi-access', back).value, ...(account.startsWith('agent:') ? { sessions: joins() } : {}) })
       b.outerHTML = '<span class="hint">Added</span>'
       toast(`Added ${b.dataset.name}`)
       await openWorkspace(id)
@@ -362,6 +374,24 @@ function workspaceInviteDialog (id) {
       $('#wi-error', back).textContent = err.message
       b.disabled = false
     }
+  })
+  const invite = $('[data-wi-invite-agent]', back)
+  invite.onclick = async () => {
+    invite.disabled = true
+    $('#wi-error', back).textContent = ''
+    try {
+      const { link } = await api('POST', `/api/workspaces/${encodeURIComponent(id)}/agent-invites`, { access: $('#wi-access', back).value, sessions: joins() })
+      $('#wi-new-agent', back).innerHTML = agentInviteHtml(agentPaste({ link }), 'wi-paste')
+    } catch (err) {
+      $('#wi-error', back).textContent = err.message
+      invite.disabled = false
+    }
+  }
+  form.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-copy]')
+    if (!b) return
+    e.preventDefault()
+    try { await navigator.clipboard.writeText($(`#${b.dataset.copy}`, form).textContent); toast('Copied') } catch { toast('Select the text and press ⌘/Ctrl+C to copy') }
   })
   return close
 }
@@ -654,18 +684,21 @@ function settingsHtml ({ head = true } = {}) {
   </section>`
 }
 
-function agentRow (a) {
-  const signedOut = a.status === 'reused' || a.status === 'expired'
-  const state = signedOut ? '<span class="pill warn">signed out</span>' : a.canJoinSessions ? '' : '<span class="pill">registered only</span>'
-  const when = a.lastUsedAt ? `last used ${ago(a.lastUsedAt)}` : `added ${ago(a.createdAt)}`
-  return `<div class="kv agent-row"><span>${I.bot}</span><b>${esc(a.name)} ${state}</b><span class="hint">${esc(a.provider)} · ${esc(a.type)} · ${when}</span></div>`
-}
-
-/** The Agents card: your agents from the accounts API, and a one-time invite for a new one. */
+/**
+ * The Agents card: your agents from the accounts API, and a one-time invite for a new one.
+ * With workspaces on, each agent's placement loads first, so its row (Available in and Joins
+ * included) draws once.
+ */
 function bindAgents (root) {
   const list = $('#agents-list', root)
-  api('GET', '/api/agents').then(({ agents }) => {
-    list.innerHTML = agents.length ? agents.map(agentRow).join('') : '<p class="hint">No agents yet. Invite one below.</p>'
+  api('GET', '/api/agents').then(async ({ agents }) => {
+    const on = state.workspacesOn
+    const places = on ? await Promise.all(agents.map((a) => api('GET', `/api/agents/${encodeURIComponent(a.id)}/placement`).then((r) => r.placement, () => null))) : []
+    const mine = placeableWorkspaces(state.workspaces)
+    list.innerHTML = agents.length
+      ? agents.map((a, i) => agentRow(a, places[i], mine)).join('') + (on && places.some(Boolean) ? '<p class="hint ap-note"><b>Available in</b>: the workspaces it is in without being added. <b>Joins</b>: every session there as it starts, or only when invited.</p>' : '')
+      : '<p class="hint">No agents yet. Invite one below.</p>'
+    if (on) bindPlacements(list, agents, places, mine)
   }).catch((err) => { list.innerHTML = `<p class="hint warn">${esc(err.message)}</p>` })
   const sec = $('#agents-sec', root)
   sec.addEventListener('click', async (e) => {

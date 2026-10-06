@@ -107,6 +107,8 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   const limitInviteSend = makeLimiter(inviteSendLimit, 'too many invites sent; wait a bit and try again', { windowMs: 60 * 60_000, keyOf: (userId) => userId })
   const limitTokens = makeLimiter(tokenLimit, 'too many key refreshes; try again in a minute')
   const limitJoin = makeLimiter(joinLimit, 'too many tries; wait a minute and try again')
+  // Session-started hand-offs, per room: a session is announced once, so a few covers retries.
+  const limitAnnounce = makeLimiter(5, 'this session was announced a moment ago', { windowMs: 10 * 60_000, keyOf: (room) => room })
   // Passes, per token (keyed on its hash, counted once the token checks out).
   const limitPasses = makeLimiter(passLimit, 'too many passes; try again in a minute', { keyOf: (tokenHash) => tokenHash })
   // Reports with no sign-in (the app before it's linked): a few batches a minute per address.
@@ -273,12 +275,12 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   // Org routes live in their own modules and share the caller check and the limiter.
   // Webhook deliveries in flight (the session-started hand-off), so tests can wait for them.
   const deliveries = new Set()
-  const trackDelivery = (p) => { deliveries.add(p); p.finally(() => deliveries.delete(p)); return p }
+  const trackDelivery = (p) => { deliveries.add(p); p.finally(() => deliveries.delete(p)).catch(() => {}); return p }
   const ctx = { store, user, person, device, bearer, now, site, apiUrl: api, mailer, log, limit: limitInvites, limitSend: limitInviteSend, limitTokens, limitJoin, agentAuth, reportKey, limitReports, relaySecret, files, maxFileBytes, workspaceQuotaBytes, maxWorkspaceFiles }
   routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx), ...agentRoutes(ctx), ...agentInviteRoutes(ctx), ...joinRoutes(ctx), ...relayRoutes(ctx), ...sessionRoutes(ctx), ...accessTypeRoutes(ctx), ...grantRoutes(ctx), ...sessionInviteRoutes(ctx), ...issueRoutes(ctx))
   // Always routed: with the flag off each answers a plain 404 of its own, so the app's
   // check at every launch isn't filed as a missing route.
-  routes.push(...workspaceRoutes({ ...ctx, workspaces }), ...workspaceAgentRoutes({ ...ctx, workspaces, relayUrl, webhookFetch, webhookLookup, allowLocalWebhooks, trackDelivery }))
+  routes.push(...workspaceRoutes({ ...ctx, workspaces }), ...workspaceAgentRoutes({ ...ctx, workspaces, relayUrl, webhookFetch, webhookLookup, allowLocalWebhooks, trackDelivery, limitAnnounce }))
   const wsFiles = workspaceFileRoutes({ ...ctx, workspaces })
   routes.push(...wsFiles.routes)
 
@@ -445,7 +447,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
           if (failed) throw failed
           got += chunk.length
           if (got > size) throw new HttpError(413, 'more bytes than the link allows')
-          if (!out.write(chunk)) await new Promise((r) => out.once('drain', r))
+          if (!out.write(chunk)) await new Promise((resolve) => out.once('drain', resolve))
           if (failed) throw failed
         }
         if (failed) throw failed

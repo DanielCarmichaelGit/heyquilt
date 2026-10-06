@@ -74,7 +74,7 @@ export async function placementCandidates (store, agent) {
 const relayForm = (url) => String(url || '').replace(/\/+$/, '').replace(/^http(s?):\/\//, 'ws$1://')
 
 export function workspaceAgentRoutes (ctx) {
-  const { store, person, now, apiUrl, limitSend, log = () => {}, workspaces = false } = ctx
+  const { store, person, now, apiUrl, limitSend, limitAnnounce = () => {}, log = () => {}, workspaces = false } = ctx
   // The session-started hand-off: how webhooks are sent (tests record them), how host names
   // resolve, and whether a receiver on this computer is allowed (tests only).
   const { relayUrl = HOSTED_RELAY, webhookFetch = globalThis.fetch, webhookLookup, allowLocalWebhooks = false, trackDelivery = (p) => p } = ctx
@@ -260,6 +260,7 @@ export function workspaceAgentRoutes (ctx) {
       let invite
       try { invite = parseInvite(String(body.link || ''), { allowRelay: (s) => isHostedRelay(s) || relayForm(s) === ownRelay }) } catch { throw new HttpError(400, 'link must be this session\'s Quilt invite link') }
       if (invite.room !== room || !invite.secret) throw new HttpError(400, 'link must be this session\'s Quilt invite link')
+      limitAnnounce(room)
       // Sent as Quilt writes it, whatever surrounded it in the request.
       const link = buildInvite({ server: invite.relay || HOSTED_RELAY, room, secret: invite.secret }, isHostedRelay)
       const by = r.me.userId ? ((await store.profile(r.me.userId))?.name || '') : (r.me.agent?.name || '')

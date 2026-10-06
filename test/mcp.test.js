@@ -57,6 +57,9 @@ test('exposes the join and workspace tools', async () => {
   for (const n of ['quilt_join_session', 'quilt_start_session', 'quilt_leave_session', 'quilt_session_info', 'quilt_partner_feed', 'quilt_list_files', 'quilt_status', 'quilt_claim', 'quilt_inbox', 'quilt_before_edit', 'quilt_set_work']) {
     assert.ok(names.includes(n), n)
   }
+  // Quilt doesn't run git for anyone: no quilt_commit, but requests can be marked done.
+  assert.ok(!names.includes('quilt_commit'))
+  assert.ok(names.includes('quilt_commit_request_done'))
 })
 
 test('MCP instructions require grok → plan → build → test on pickup', async () => {
@@ -101,6 +104,10 @@ test('an agent joins by invite and shows up as an agent', async () => {
   assert.equal(peer.tool, 'Claude Code')
   // Joining twice is refused.
   assert.equal((await call('quilt_join_session', { invite })).isError, true)
+})
+
+test('quilt_commit_request_done with nothing open says so', async () => {
+  assert.equal(text(await call('quilt_commit_request_done')), 'No open commit requests.')
 })
 
 test('the agent can read a partner\'s AI feed and the file tree', async () => {

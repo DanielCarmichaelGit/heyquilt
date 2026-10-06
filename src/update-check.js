@@ -3,7 +3,7 @@
 // quilt_check_update answers for whatever image the agent names.
 import { currentVersion, latestRelease, compareVersions } from './releases.js'
 
-export const UPDATE_HOW = 'Update Quilt (the desktop app: Settings → About → Update Quilt; the CLI: npm i -g github:DanielCarmichaelGit/heyquilt), then rejoin the session.'
+export const UPDATE_HOW = 'Update Quilt (the desktop app: Settings → About → Update Quilt; the CLI: npm i -g github:DanielCarmichaelGit/heyquilt, or on a Linux server run its install script again: curl -fsSL https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/install.sh | sh), then rejoin the session.'
 
 /** True when `image` looks like a Quilt version. */
 export const validImage = (image) => /^v?\d+\.\d+\.\d+$/.test(String(image || '').trim())

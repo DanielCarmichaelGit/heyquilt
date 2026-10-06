@@ -110,3 +110,14 @@ test('cleanName flattens control characters instead of letting a merge record be
   const r = openMerge(doc, map, { ...fields, others: [cleanName('al\nice')] }, null)
   assert.deepEqual(r.others, ['al ice'])
 })
+
+test('a record says how the opener\'s side came about: pulled commits, a git command, or offline', async () => {
+  const { mergeAction } = await import('../src/merges.js')
+  const { doc, map } = fresh()
+  const r = openMerge(doc, map, { ...fields, via: 'pull' }, null)
+  assert.equal(r.via, 'pull')
+  assert.equal(publicMerge({ ...map.get(r.id), via: 'teleport' }), null)
+  assert.equal(mergeAction(r), 'pulled commits that change it')
+  assert.equal(mergeAction({ via: 'hold' }, true), 'deleted it during a git command')
+  assert.equal(mergeAction({ via: null }), 'changed it offline')
+})

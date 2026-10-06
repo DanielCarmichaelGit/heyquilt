@@ -5,7 +5,6 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { renderStatus } from './status.js'
-import * as gitops from './git.js'
 import { migrateDir } from './legacy.js'
 
 export async function startControl (session, extras = {}) {
@@ -41,14 +40,19 @@ export async function startControl (session, extras = {}) {
     'GET /duties': () => session.duties(),
     // What an MCP agent shares about its work (quilt_share): the feed, tasks and "working", for any tool.
     'POST /share-work': (b) => session.shareAgentWork({ tool: b.tool, request: b.request, summary: b.summary, files: Array.isArray(b.files) ? b.files : [] }),
+    // Owner only: a link a chat-only AI works through (chat-links.js). { name, hours } -> { url, name, expiresAt }
+    'POST /chat-link': (b) => session.createChatLink({ name: b.name, minutes: b.minutes }),
+    // Owner only: how long a chat link still works. { who: name or key, minutes } -> { name, expiresAt }
+    'POST /chat-link/extend': (b) => session.extendChatLink(String(b.who || ''), b.minutes),
     'POST /agent': (b) => { session.addAgent(b.client); return { ok: true } },
     'POST /feed': (b) => ({ entries: session.agentFeedFor(b.who, { limit: Math.min(Number(b.limit) || 40, 300) }) }),
     // The chronology: { path, by, since, task, limit } (see Session.historyQuery).
     'POST /history': (b) => ({ entries: session.historyQuery(b) }),
     'GET /tree': () => session.tree(),
     'POST /sharing': (b) => ({ on: session.setAgentSharing(b.on !== false) }),
-    'GET /commits': () => ({ ...session.commitStatus({ includeMe: false }), host: gitops.hostsGit(session, { joined: !!extras.joined }) }),
+    'GET /commits': () => session.commitStatus({ includeMe: false }),
     'POST /commit-request': (b) => session.requestCommit(b.message),
+    'POST /commit-request/done': (b) => ({ done: session.resolveCommitRequests({ ids: b.id ? [String(b.id)] : null }) }),
     'POST /work': (b) => ({ work: session.setWork(b.state, b.note) }),
     'GET /tasks': () => ({ tasks: session.taskList() }),
     // Mentions, direct messages and tasks handed to this member since sequence number `after` (agents wake on these).
@@ -75,14 +79,6 @@ export async function startControl (session, extras = {}) {
     },
     'POST /merges/resolve': (b) => session.resolveMerge(String(b.id || ''), { how: b.how }),
     'POST /merges/send': (b) => session.prepareMergeSend(String(b.id || '')),
-    'POST /commit': async (b) => {
-      if (!gitops.hostsGit(session, { joined: !!extras.joined })) throw new Error('Only the session host can commit: git lives on their computer. Ask for a commit with quilt_request_commit instead.')
-      const open = session.commitStatus().open
-      const message = String(b.message || '').trim() || open.map((r) => r.message).join('; ')
-      const r = await gitops.commit(session.root, message)
-      session.resolveCommitRequests({ hash: r.hash })
-      return r
-    },
     'GET /info': () => ({ room: session.room, dir: session.root, name: session.name, kind: session.kind, invite: extras.invite || null, viewInvite: extras.viewInvite || null, access: session.access, pid: process.pid })
   }
   const server = http.createServer(async (req, res) => {

@@ -1,16 +1,32 @@
 // Agents: swapping a refresh key, who an agent is, and a person's personal agents.
 import { HttpError, needId } from '../http.js'
+import { parsePublicKey, verifyAgentResume } from '../../identity.js'
 import { keyStatus } from '../agent-auth.js'
 
 // Never the key itself, just whether it has one. With a key it joins sessions from a computer
 // running Quilt; without one it is hosted: it joins through the API's /mcp. Either way it can join.
 const profileOf = (a) => ({ id: a.id, name: a.name, provider: a.provider, type: a.type, description: a.description, canJoinSessions: true, hosted: !a.publicKey })
 
-export function agentRoutes ({ store, user, person, now, limitTokens, agentAuth, apiUrl }) {
+export function agentRoutes ({ store, user, person, now, limitTokens, limitStarts, spendResume, resumeWindowMs, agentAuth, apiUrl }) {
   return [
     ['POST', /^\/v1\/agents\/token$/, async (req, body) => {
       limitTokens(req)
       return agentAuth.refresh(body.refreshKey)
+    }],
+
+    // An agent on a computer whose refresh key stopped working signs for the key it joined
+    // with, and gets new keys. A stolen refresh key alone can't do this. Hosted agents
+    // (no key) and agents a person revoked can't either: they're invited again.
+    ['POST', /^\/v1\/agents\/resume$/, async (req, body) => {
+      limitStarts(req)
+      const at = Number(body.at)
+      if (!Number.isFinite(at) || Math.abs(now() - at) > resumeWindowMs) throw new HttpError(400, "this computer's clock is off; check its date and time")
+      const agent = await store.agentById(needId(body.agentId, 'agent'))
+      const key = agent && parsePublicKey(agent.publicKey)
+      if (!key) throw new HttpError(404, 'no such agent')
+      if (!verifyAgentResume(key, agent.id, at, body.signature)) throw new HttpError(401, "this agent's signature doesn't match")
+      spendResume(String(body.signature), at)
+      return agentAuth.resume(agent)
     }],
 
     ['GET', /^\/v1\/agents\/me$/, async (req) => {

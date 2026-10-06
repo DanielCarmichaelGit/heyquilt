@@ -24,6 +24,7 @@ import { renderChatAbout, renderUnanswered, heldRefusal, renderQueueNotice, rend
 import { describeSubscription, WEBHOOK_EVENTS } from './webhooks.js'
 import { UpdateCheck } from './update-check.js'
 import { getSettings } from './settings.js'
+import { mergeAction } from './merges.js'
 
 /**
  * The "quilt-<room>" folder inside `cwd`. Invites only carry plain room names, but a room that
@@ -56,6 +57,7 @@ export const MCP_INSTRUCTIONS =
   '(open tasks assigned to you are listed first), add work with quilt_add_task, assign it with quilt_assign_task, ' +
   'and move a task with quilt_move_task when you start or finish it. ' +
   'quilt_history tells you who changed which file, when, with the diff: read it for the files you are about to touch. ' +
+  'If git refuses to pull because untracked files would be overwritten, those files came from the session: quilt_status lists them under Pulling (and whether they match); make way and pull with rm <files> && git pull --autostash, and Quilt keeps them for everyone. ' +
   'When you edit files for a request that is not already on the board, Quilt adds an In progress task from that chat: use it instead of adding a duplicate, and move it to Done when you finish. ' +
   'Before you change files, call quilt_before_edit with their paths: it tells you whether each is yours to edit (claiming free ones for you, so partners are refused instead of overwriting you), ' +
   'and shows what people said about those files in chat, so you know what was asked or planned before you change them. ' +
@@ -299,14 +301,15 @@ export async function runMcp () {
     return n ? `Withdrew your request for ${rel}.` : `You had not asked for ${rel}.`
   }))
 
+  const did = (m, deleted = false) => mergeAction(m, deleted)
   const mergeLine = (m, me) => {
     const who = m.by === me ? 'you' : m.by
     const other = m.others[0] ? (m.others[0] === me ? 'you' : m.others[0]) : 'the session'
     const what = m.kind === 'ai' ? `merged by AI, waiting for a look`
-      : m.kind === 'claimed' ? `${who} changed it offline but ${m.claimedBy} has it claimed`
-      : m.oursDeleted ? `${who} deleted it offline and ${other} changed it in the session`
-      : m.theirsHash === null ? `${who} changed it offline but it was deleted in the session`
-      : `${who} changed it offline and ${other} changed it in the session`
+      : m.kind === 'claimed' ? `${who} ${did(m)} but ${m.claimedBy} has it claimed`
+      : m.oursDeleted ? `${who} ${did(m, true)} and ${other} changed it in the session`
+      : m.theirsHash === null ? `${who} ${did(m)} but it was deleted in the session`
+      : `${who} ${did(m)} and ${other} changed it in the session`
     return `- \`${m.path}\` (id ${m.id}, ${m.state}): ${what}${m.reason ? ` — ${m.reason}` : ''}`
   }
 
@@ -606,14 +609,12 @@ export async function runMcp () {
     lines.push(c.ready ? '✅ Everyone else\'s AI is idle: a good moment to commit.' : `⏳ Still working: ${c.busy.map((b) => b.why).join('; ')}`)
     if (c.open.length) lines.push('Open commit requests:', ...c.open.map((r) => `- ${r.by}: ${r.message}`))
     else lines.push('No open commit requests.')
-    lines.push(c.host
-      ? 'You host git for this session: when it is ready, commit with quilt_commit (or git yourself).'
-      : 'Git lives with the session host. Ask for a commit with quilt_request_commit; the host commits when everyone is idle.')
+    lines.push('When a commit is made, mark the requests done with quilt_commit_request_done.')
     return lines.join('\n')
   }
 
   server.registerTool('quilt_set_work', {
-    description: 'Tell everyone whether you (this agent) are working or done, so the host knows when it is safe to commit. Set "working" when you start a task and "done" when you finish: ' +
+    description: 'Tell everyone whether you (this agent) are working or done, so people know when it is safe to commit. Set "working" when you start a task and "done" when you finish: ' +
       '"done" lets go of the files claimed for you while you edited. Like every tool that moves work on, it is refused while someone is waiting for an answer from you.',
     inputSchema: {
       state: z.enum(['working', 'done']),
@@ -622,7 +623,7 @@ export async function runMcp () {
   }, ({ state, note }) => withDaemon(async (d) => {
     if (state === 'working') {
       await call(d, 'POST', '/work', { state, note })
-      return 'Marked as working. Set "done" when you finish so the host can commit.'
+      return 'Marked as working. Set "done" when you finish so others know it is safe to commit.'
     }
     const { released } = await call(d, 'POST', '/finish', {})
     await call(d, 'POST', '/work', { state, note })
@@ -642,6 +643,32 @@ export async function runMcp () {
     const r = await call(d, 'POST', '/share-work', { tool: clientTool(), request, summary, files })
     if (r.automatic) return 'Quilt already shares your chat with the session as you work, so nothing more to do.'
     return r.shared ? 'Shared with the session.' : 'Nothing to share: give a summary.'
+  }))
+
+  server.registerTool('quilt_chat_link', {
+    description: 'Session owner only: make a link for an AI that only has a chat window (ChatGPT, claude.ai, Grok and the like). ' +
+      'Your user pastes it into that chat; the AI then reads and sends messages, reads and adds tasks, reads files, and adds pictures, documents and notes ' +
+      'by opening links, with nothing to install. It joins as its own member (removing it ends the link). ' +
+      'It works for ten minutes unless extended with quilt_extend_chat_link; once it runs out, a new link is needed.',
+    inputSchema: {
+      name: z.string().max(40).optional().describe('How it appears in the session, e.g. "ChatGPT"'),
+      minutes: z.number().int().min(1).max(43200).optional().describe('How long the link works (default 10 minutes, at most 30 days)')
+    }
+  }, ({ name, minutes }) => withDaemon(async (d) => {
+    const r = await call(d, 'POST', '/chat-link', { name, minutes })
+    return `Chat link for ${r.name} (works until ${new Date(r.expiresAt).toISOString().slice(0, 16).replace('T', ' ')} UTC):\n${r.url}\n\n` +
+      'Give it to your user to paste into the chat AI, with a line like "Open this link and follow it to join our Quilt session." Anyone with the link can act as that member, so share it only there.'
+  }))
+
+  server.registerTool('quilt_extend_chat_link', {
+    description: 'Session owner only: set how long a chat link still works, from now (shorter or longer). Only a link that still works can be extended; one that ran out needs a new link (quilt_chat_link).',
+    inputSchema: {
+      who: z.string().max(80).describe('The chat AI\'s name in the session, e.g. "ChatGPT"'),
+      minutes: z.number().int().min(1).max(43200).describe('Minutes from now, e.g. 60 for an hour')
+    }
+  }, ({ who, minutes }) => withDaemon(async (d) => {
+    const r = await call(d, 'POST', '/chat-link/extend', { who, minutes })
+    return `${r.name}'s chat link now works until ${new Date(r.expiresAt).toISOString().slice(0, 16).replace('T', ' ')} UTC.`
   }))
 
   server.registerTool('quilt_before_edit', {
@@ -672,7 +699,7 @@ export async function runMcp () {
   }))
 
   server.registerTool('quilt_request_commit', {
-    description: 'Ask the session host to commit the shared changes, e.g. because you need a commit to test or deploy. The host commits once every AI in the session is idle.',
+    description: 'Ask the people in the session for a commit, e.g. because your changes are ready or you need one to test or deploy. Someone commits with git on their machine and marks the request done.',
     inputSchema: { message: z.string().describe('What the commit should say / why you need it') }
   }, ({ message }) => withDaemon(async (d) => {
     await call(d, 'POST', '/commit-request', { message })
@@ -697,13 +724,13 @@ export async function runMcp () {
     return `${c.ready ? '' : `Stopped waiting after ${timeout}s.\n`}${describeCommits(c)}`
   }, { gate: gateFor('quilt_wait_until_idle') }))
 
-  server.registerTool('quilt_commit', {
-    description: 'Host only: commit every change in the shared folder with git and close the open commit requests. Without a message, the open requests\' messages are used. Check quilt_commit_status first.',
-    inputSchema: { message: z.string().optional().describe('Commit message') }
-  }, ({ message }) => withDaemon(async (d) => {
-    const r = await call(d, 'POST', '/commit', { message })
-    return `Committed ${r.files} file${r.files === 1 ? '' : 's'} as ${r.hash}: ${r.subject}`
-  }, { gate: gateFor('quilt_commit') }))
+  server.registerTool('quilt_commit_request_done', {
+    description: 'Mark commit requests done after a commit was made with git (yours or someone\'s). Without an id, every open request is marked done.',
+    inputSchema: { id: z.string().optional().describe('One request id; omit for all open ones') }
+  }, ({ id }) => withDaemon(async (d) => {
+    const { done } = await call(d, 'POST', '/commit-request/done', { id })
+    return done ? `Marked ${done} commit request${done === 1 ? '' : 's'} done.` : 'No open commit requests.'
+  }, { gate: gateFor('quilt_commit_request_done') }))
 
   server.registerTool('quilt_session_info', {
     description: 'Where the shared project lives on disk, how you appear to others, who is online, and the invite link.',

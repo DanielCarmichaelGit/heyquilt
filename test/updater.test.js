@@ -13,6 +13,7 @@ const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-updater-'))
 test('updateFileName takes the installer name from the download URL', () => {
   assert.equal(updateFileName('https://github.com/x/releases/latest/download/quilt-mac-arm64.dmg'), 'quilt-mac-arm64.dmg')
   assert.equal(updateFileName('https://github.com/x/releases/latest/download/quilt-windows-x64.exe?x=1'), 'quilt-windows-x64.exe')
+  assert.equal(updateFileName('https://github.com/x/releases/latest/download/quilt-linux-x86_64.AppImage'), 'quilt-linux-x86_64.AppImage')
   assert.equal(updateFileName('https://github.com/x/releases/latest'), null)
   assert.equal(updateFileName('https://github.com/x/releases/latest/download/..%2Fevil.dmg'), null)
 })
@@ -76,5 +77,24 @@ test('findApp wants exactly one .app', () => {
 
 test('installUpdate refuses URLs without an installer and platforms it cannot update', async () => {
   await assert.rejects(installUpdate('https://github.com/x/releases/latest', { tempDir: tmp() }), /no installer/)
-  await assert.rejects(installUpdate('https://x/quilt-mac-arm64.dmg', { platform: 'linux', tempDir: tmp() }), /Mac and Windows/)
+  await assert.rejects(installUpdate('https://x/quilt-mac-arm64.dmg', { platform: 'freebsd', tempDir: tmp() }), /Mac, Windows and Linux/)
+  await assert.rejects(installUpdate('https://x/quilt-linux-x86_64.AppImage', { platform: 'linux', appImage: '', tempDir: tmp() }), /only when it runs as an AppImage/)
+})
+
+test('on Linux, the new AppImage takes the running one\'s place, runnable', async () => {
+  const body = Buffer.from('#!/bin/sh\necho new quilt\n')
+  const srv = http.createServer((req, res) => { res.writeHead(200, { 'content-length': body.length }); res.end(body) })
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r))
+  try {
+    const dir = tmp()
+    const appImage = path.join(dir, 'Quilt.AppImage')
+    fs.writeFileSync(appImage, 'old', { mode: 0o755 })
+    const phases = []
+    const next = await installUpdate(`http://127.0.0.1:${srv.address().port}/quilt-linux-x86_64.AppImage`, { platform: 'linux', appImage, tempDir: tmp(), onProgress: (p) => phases.push(p.phase) })
+    assert.equal(next, 'relaunch')
+    assert.deepEqual(fs.readFileSync(appImage), body)
+    assert.equal(fs.statSync(appImage).mode & 0o111, 0o111, 'executable')
+    assert.ok(phases.includes('installing'))
+    assert.deepEqual(fs.readdirSync(dir), ['Quilt.AppImage'], 'nothing left beside it')
+  } finally { srv.close() }
 })

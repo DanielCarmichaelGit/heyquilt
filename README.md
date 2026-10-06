@@ -45,19 +45,33 @@ within milliseconds. Your agents can also see what the other agents are doing.
   are working, *claim* files and message each other. With an invite link, an
   agent can even join (or start) a session on its own. Tools without MCP can
   use the `quilt` CLI or read `.quilt/STATUS.md`.
-- **Cloud AIs too.** An AI with no computer of its own (ChatGPT, Grok, claude.ai,
-  anything that can use an MCP server over HTTP) joins through Quilt's hosted
+- **Cloud AIs too.** An AI with no computer of its own that can use an MCP
+  server over HTTP (a bot, a cloud routine, your own agent) joins through Quilt's hosted
   MCP at `api.heyquilt.com/mcp` with the access key it got from an agent
   invite. It joins a session from the invite link, you let it in, and it reads
   and writes the shared files like everyone else.
+- **AIs in a chat window, with nothing to set up.** ChatGPT, claude.ai, Grok and
+  other AIs you only talk to in a chat can join through a *chat link*: the session
+  owner (or whoever may let people in) makes one in **Invite → A chat AI** (or
+  `quilt chat-link`), pastes it into
+  the chat, and the AI works by opening links. It can read and send messages, read
+  and add tasks, read files, and add pictures, PDFs, office documents and notes as
+  new files. It can't change existing files. It shows in the session as its own
+  member and works for 10 minutes: the owner, or whoever may let people in, extends
+  it from the people menu (or
+  `quilt chat-link extend <name> <minutes>`) while it still works. Once it runs
+  out, or the owner removes it, a new link is needed.
 
 ## Quick start
 
 ### Download the app
 
 Get Quilt for [Mac (Apple silicon)](https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/quilt-mac-arm64.dmg),
-[Mac (Intel)](https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/quilt-mac-x64.dmg) or
-[Windows](https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/quilt-windows-x64.exe), and open it.
+[Mac (Intel)](https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/quilt-mac-x64.dmg),
+[Windows](https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/quilt-windows-x64.exe) or
+Linux ([x86_64](https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/quilt-linux-x86_64.AppImage),
+[ARM](https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/quilt-linux-arm64.AppImage): an
+AppImage, `chmod +x` it), and open it.
 Everything happens in the app: start a session, send the invite link, and
 partners click it to join. Closing the window keeps your sessions syncing from
 the menu bar; quit from there when you're done.
@@ -72,6 +86,19 @@ it can't check it. Open **System Settings → Privacy & Security** and click
 Your AI tools can use Quilt as soon as the app opens: it connects every one it
 finds (see [Your AI tools are connected already](#the-terminal-way)). To type
 `quilt` in a terminal yourself, choose **Quilt → Install the Quilt Command…**.
+
+### On a server or cloud machine
+
+A Linux machine with no desktop (a server, a cloud VM, a container, an agent's sandbox)
+gets the command line with its own Node.js, so nothing else needs installing:
+
+```bash
+curl -fsSL https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/install.sh | sh
+quilt login
+```
+
+Run the same line again to update. Agents on that machine find Quilt's MCP server by
+themselves (see below), and `quilt join <invite>` syncs a project there.
 
 ### From source
 
@@ -412,10 +439,13 @@ relay for now.
   session's version wins and yours is copied to `.quilt/conflicts/<time>/`.
   Use `--prefer local` to push your versions instead.
 
-**Git:** the working tree is shared, but `.git` isn't. The simplest workflow
-is that one person commits and pushes. Avoid `git checkout`, `reset`, `stash`
-and `rebase` during a session unless you've agreed on it: they rewrite files,
-and the changes sync to everyone.
+**Git:** the working tree is shared, but `.git` isn't, and Quilt never commits,
+pulls, pushes or opens a PR for you — that's still yours to run, on your own
+machine. A `git stash`, `reset --hard` or `checkout -- .` reverts your files
+as git does, and the session's work comes back onto them a moment later
+(your stash keeps your copy); commits you pull are merged into the session's
+work line by line. Checking out another branch pauses that folder until
+you're back on the one the session syncs.
 
 ## Security
 
@@ -455,10 +485,14 @@ Every release ships with notes, and the app tells people when it's out of date.
 2. Add a `## <version> — <date>` section at the top of `RELEASES.md` saying what
    changed, one bold-led bullet per change. `npm test` fails if the top section
    doesn't match package.json, so a release can't go out without notes.
-3. Commit on `main`, then `npm run release`. It runs the tests, builds the Mac and
-   Windows apps, tags `v<version>`, pushes, and creates the GitHub release with the
-   notes from `RELEASES.md` as its body (`--dry-run` to see the steps first,
-   `--notes` to print the body, `--notes-only` to fix the notes of a published release).
+3. Commit on `main`, then `npm run release`. It runs the tests, tags `v<version>` and
+   pushes. GitHub then builds every platform on its own machines
+   (`.github/workflows/release.yml`): the Mac DMGs, the Windows installer, the Linux
+   AppImages and the Linux command-line bundles with `install.sh`. It publishes the
+   release with the notes from `RELEASES.md` as its body, about 15 minutes later. So
+   any machine can release, a cloud one included. (`--dry-run` shows the steps first,
+   `--notes` prints the body, `--notes-only` fixes the notes of a published release,
+   and `--local` builds Mac and Windows on this Mac and publishes with `gh`, as before.)
 
 The app checks GitHub's latest release every ten minutes. Older versions show a bar
 across the top with an **Update Quilt** button (a Download link in a browser), and
@@ -467,7 +501,7 @@ newer release opens the notes by itself once, even while the app is open, and th
 for a new version open the first time it runs. Update Quilt downloads the build for this
 computer and installs it: on a Mac it mounts the DMG and swaps the app in place (asking
 for an administrator only if the Applications folder needs one), on Windows it runs the
-installer; then Quilt restarts. The builds are unsigned, so this is done by hand in
+installer, and on Linux it swaps the AppImage file in place; then Quilt restarts. The builds are unsigned, so this is done by hand in
 `desktop/updater.js` rather than with Electron's updater.
 
 Layout: `src/ui/` + `src/ui-server.js` (the app), `src/runner.js` (start/stop a session), `src/server.js` (relay), `src/connection.js` (client protocol +

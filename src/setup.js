@@ -58,8 +58,16 @@ ${TASK_WORKFLOW_MD}
   as \`verified\` to \`quilt_move_task\`. Done without evidence is refused.
 - Always re-read a file right before editing it; never rely on an old copy.
 - Prefer small, focused edits over rewriting whole files.
-- Don't run git commands that rewrite the working tree (checkout, reset,
-  stash, rebase) without asking: those changes sync to everyone instantly.
+- Git works as usual here: commit, pull and push yourself. Quilt recognises git
+  commands, so a stash or reset on this computer never erases the session's
+  work (it comes back a moment later), a git conflict pauses this folder until
+  you resolve it and \`git add\` it, and switching branch pauses it until you
+  are back. Deleting a file deletes it for everyone.
+- If git refuses to pull because untracked files would be overwritten, those
+  files came from the session: \`quilt_status\` lists them under "Pulling" and
+  says whether they match the commits. Make way and pull with
+  \`rm <files> && git pull --autostash\`: Quilt keeps them for everyone and the
+  pull lands them (where they differ, Quilt merges the two afterwards).
 ${END}`
 
 function upsertBlock (file, block) {

@@ -132,3 +132,23 @@ test('closing admitBy to owner clears pending from former admitters', async (t) 
   await waitFor(() => last(ed).canAdmit === false)
   await waitFor(() => Array.isArray(lastMembers(ed)?.pending) && lastMembers(ed).pending.length === 0)
 })
+
+test('a chat link lets a chat AI in, so whoever may let people in makes and extends one; only the owner removes it', async (t) => {
+  const { owner, as } = await ownedRoom(t)
+  const ed = await as('ed')
+  const viewer = await as('vic', { role: 'viewer' })
+  // Owner only, at first: an editor is refused.
+  assert.match((await admin(ed, { op: 'chatlink', name: 'ChatGPT' })).error, /cannot let people into this session/)
+  assert.equal((await admin(owner, { op: 'admitBy', admitBy: 'editors' })).ok, true)
+  await waitFor(() => last(ed).canAdmit === true)
+  const made = await admin(ed, { op: 'chatlink', name: 'ChatGPT', minutes: 10 })
+  assert.equal(made.ok, true, made.error)
+  assert.match(made.token, /^[A-Za-z0-9_-]{32}$/)
+  const key = (await waitFor(() => lastMembers(ed)?.members.find((m) => m.chat)))?.key
+  const extended = await admin(ed, { op: 'chatextend', key, minutes: 60 })
+  assert.ok(extended.expiresAt > Date.now() + 59 * 60000, 'an hour from now')
+  // A viewer may not, and only the owner removes a member.
+  assert.match((await admin(viewer, { op: 'chatextend', key, minutes: 60 })).error, /cannot let people into this session/)
+  assert.match((await admin(ed, { op: 'remove', key })).error, /only the session owner/)
+  assert.equal((await admin(owner, { op: 'remove', key })).ok, true)
+})

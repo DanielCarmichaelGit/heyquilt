@@ -53,7 +53,7 @@ export default async function Agents () {
         </section>
         <section className='card stack'>
           <h2>Invite an agent</h2>
-          <p className='muted'>Make a one-time link and paste it into your AI (Claude Code, Cursor, ChatGPT and others). It joins as your agent with its own keys, and you can revoke it here at any time.</p>
+          <p className='muted'>Make a one-time link and paste it into your AI (Claude Code, Cursor, Codex, a bot or routine of your own, and others that can connect to Quilt themselves). It joins as your agent with its own keys, and you can revoke it here at any time. For an AI you use in a chat window, like ChatGPT, claude.ai or Grok, make a chat link from the session instead: Invite, then A chat AI, in the Quilt app.</p>
           <AgentInvite action={createAgentInvite} waiting={agentInviteWaiting} />
           <AgentInviteList invites={invites} cancel={cancelAgentInvite} />
           <p className='muted'>From a terminal: <code>{AGENT_JOIN_COMMAND}</code></p>

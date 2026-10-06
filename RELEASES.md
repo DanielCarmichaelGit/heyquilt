@@ -9,12 +9,36 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.12 — 2026-10-07
+
+See what has changed in a session, and who changed it.
+
+- **Changes, by person or by file.** A new **Changes** button in the session's top bar lists every file changed in the session, with lines added and removed. **By person** shows each person's (and each AI's) files; **By file** shows each file with everyone's share of it, and whether it is new or deleted. Click a file to open it. Everyone in the session sees the same breakdown.
+- **Every edit counts.** Quick edits to one file in a row add up in the counts, though the activity list shows them as one. The files a folder brings when it starts or joins a session are its starting point, not changes.
+
+## 0.3.11 — 2026-10-06
+
+Quilt for Linux, desktops and cloud machines alike; chat-window AIs like ChatGPT and Grok join a session from a link; and computers reconnect more reliably after sleep.
+
+- **Quilt for Linux.** A Linux desktop app (an AppImage for x86_64 and ARM, which updates itself like the Mac and Windows apps), and for servers and cloud machines with no desktop, the command line with its own Node.js: `curl -fsSL https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/install.sh | sh`. Run it again to update. AI agents on that machine get Quilt's MCP server by themselves, like everywhere else.
+- **Releases are built on GitHub.** `npm run release` checks, tests, tags and pushes; GitHub builds Mac, Windows and Linux and publishes the release, so a release can come from any machine. `quilt --version` prints the version.
+- **AIs in a chat window can join, with nothing to set up.** The session owner makes a chat link (**Invite → A chat AI**, or `quilt chat-link`) and pastes it into ChatGPT, claude.ai, Grok or any AI that can open web pages. The AI works by opening links: it reads and sends messages, reads and adds tasks, reads files, and adds pictures, PDFs, office documents and notes as new files, never over existing ones. It's short-lived: a link works for 10 minutes, and the owner (or whoever may let people in) extends it from the people menu while it still works. Once it runs out, a new link is needed.
+- **Pulling over files the session already gave you.** When a teammate commits files the session had already put in your folder, git refuses to pull ("untracked working tree files would be overwritten"). Quilt now spots this after the fetch and tells your AI which files they are, whether they match, and the one line that pulls: `rm <files> && git pull --autostash`. Removing them that way never removes them for anyone else: Quilt keeps them until the pull lands (or shares the deletion if no pull comes within a minute).
+- **Waking your computer reconnects sooner.** Right after a computer starts or wakes, the network may not be back yet. Quilt now gives up on a session pass request after 10 seconds instead of waiting on the system's much longer timeout, so it retries and reconnects soon after your connection returns. This goes for agents on your computer too.
+- **An agent on your computer isn't locked out by a lost reply.** If your computer slept or dropped offline while an agent was renewing its keys, the agent could end up revoked with "This key was already used" and had to be invited again. Now it proves who it is with the key it joined with and gets new keys on its own. A copied key alone still can't do that, and an agent you revoked stays revoked.
+
 ## 0.3.10 — 2026-10-06
 
-AIs take turns on a file instead of stepping on each other: they queue for it, and hand it on with their context.
+AIs take turns on a file instead of stepping on each other, and Quilt recognises what git does in a synced folder instead of sharing it as edits, leaving git itself to you.
 
 - **A file queue for every claimed file.** When your AI needs a file someone else holds, it no longer just messages them: it joins the file's queue with `quilt_request_file` (what it will do, and its plan in up to 300 characters). The holder's AI is told right away and with every Quilt answer after, finishes its change, and hands the file on with `quilt_handoff` and its context: what it changed, what's left, anything to watch for. The next AI is woken with that context and the file is its own. An AI can't finish its work or let go of a file someone is waiting for until it hands it off. In the app, a file's ⋯ menu shows its queue, lets you join or leave it, and lets you hand off a file you hold.
 - **Claims end after 20 minutes of nothing, not 20 minutes away.** A claim is let go once its holder has done nothing in the session for 20 minutes (no edit, no message, no AI activity), even if their app is still open, and it goes to the first one waiting in its queue. Being disconnected alone no longer counts.
+- **Git on one machine no longer undoes the room's work.** A `git stash`, `reset --hard` or `checkout -- .` on your computer (or your AI's) reverts your files as git does, and the session's work comes back onto them a moment later; your stash keeps your copy. Commits you pull are merged into the session's work line by line, overlaps go to your AI, and real clashes show in the Merges bar. A merge or rebase in progress never sends git's conflict markers to anyone. If Quilt can't run git in a folder it has synced with git before, that folder stays paused rather than guessing.
+- **Switching branches pauses that folder.** Check out another branch and that folder stops syncing until you're back, so two branches never mix; a note in the top bar names the branch you're on, or says git is busy while a git command runs. One live document per branch is coming next.
+- **Quilt stays out of git.** The Git button, pull, rebase, commit, push and PR actions are gone from the session, along with `quilt_commit`; everyone uses git on their own machine. Asking for a commit stays: `quilt_request_commit`, and `quilt_commit_request_done` once it's made. Starting a session from a GitHub repo and branch is unchanged.
+- **Quilt keeps git away from its own state.** When a session starts in a git folder, Quilt adds `.quilt/` to the project's `.gitignore` (with a comment saying why), so `git stash -u` or `git clean` never takes the session's state away. The line is shared like any edit, so your partners' git ignores it too; a `.gitignore` that already ignores `.quilt` is left as it is.
+- **git clean deletes; git stash -u puts away.** Untracked files you remove with `git clean` (or by hand) are deleted for everyone, as you meant. Untracked files that `git stash -u` puts away come back from the session, like the rest of a stash.
+- **A git conflict waits for you.** When git leaves a conflict on your computer (a `git stash pop` that clashes, a merge or a rebase), your folder pauses with "paused: resolve the git conflict" in the top bar. Your partners never see git's markers; once you resolve it and `git add` it, your resolution is shared as it is.
 
 ## 0.3.9 — 2026-10-05
 

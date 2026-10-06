@@ -171,7 +171,7 @@ function thumbHtml (d, f) {
 
 function fileTileHtml (d, f, { meta, on = false }) {
   return `
-    <button type="button" class="tile${on ? ' on' : ''}" data-pick-file="${esc(f.id)}" title="${esc(f.path)}">
+    <button type="button" class="tile${on ? ' on' : ''}" data-pick-file="${esc(f.id)}" title="${esc(f.path)}"${canEdit(d) ? ' draggable="true"' : ''}>
       ${thumbHtml(d, f)}
       <span class="nm">${esc(f.name)}</span><span class="mu">${esc(meta)}</span>
     </button>`
@@ -197,6 +197,7 @@ export function filesSectionHtml (d) {
   return `
   <section class="sec files-sec" data-files-drop>
     <div class="sec-head"><h2>Files</h2><span class="count">${count}</span>${usage ? `<span class="hint">${esc(usage)}</span>` : ''}<span class="spacer"></span>
+      ${canEdit(d) ? `<button type="button" class="btn sm ghost" data-new-folder>${I.plus}<span>New folder</span></button>` : ''}
       <a href="#" class="sec-link" data-all-files>All files ${I.caret}</a></div>
     ${empty ? '<p class="hint">No files yet.</p>' : `<div class="tiles">
       ${root.map((f) => folderTileHtml(d, f)).join('')}
@@ -204,6 +205,56 @@ export function filesSectionHtml (d) {
       ${canEdit(d) ? uploadTileHtml(d.workspace.id, 'Upload or drop files') : ''}
     </div>`}
   </section>`
+}
+
+const FILE_DRAG = 'application/x-quilt-file'
+
+/** Asks for a name and makes a folder inside `parent` ('' for the top). */
+async function newFolder (id, parent, reload) {
+  const name = await ask({ title: 'New folder', message: parent ? `Inside ${parent}.` : 'Folders keep files sorted. Drag a file onto one to move it there.', input: { placeholder: 'Name' }, ok: 'Create' })
+  if (!name) return
+  if (name.includes('/')) return toast(NO_SLASH)
+  try { await api('POST', wsUrl(id, '/folders'), { path: parent ? `${parent}/${name}` : name }); toast('Folder made'); await reload() } catch (err) { toast(err.message) }
+}
+
+/**
+ * Files you may edit can be dragged onto a folder (a tile, a list row or a breadcrumb)
+ * to move them there. Uploads from the desktop still use the section's own drop zone.
+ */
+function bindMoveToFolder (root, d, id, reload) {
+  root.querySelectorAll('[data-pick-file][draggable="true"]').forEach((el) => {
+    el.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData(FILE_DRAG, el.dataset.pickFile)
+      e.dataTransfer.effectAllowed = 'move'
+      el.classList.add('dragging')
+    })
+    el.addEventListener('dragend', () => el.classList.remove('dragging'))
+  })
+  const ours = (e) => [...(e.dataTransfer?.types || [])].includes(FILE_DRAG)
+  root.querySelectorAll('[data-folder]').forEach((target) => {
+    target.addEventListener('dragover', (e) => {
+      if (!ours(e)) return
+      e.preventDefault()
+      e.stopPropagation()
+      e.dataTransfer.dropEffect = 'move'
+      target.classList.add('drop-on')
+    })
+    target.addEventListener('dragleave', (e) => { if (!target.contains(e.relatedTarget)) target.classList.remove('drop-on') })
+    target.addEventListener('drop', async (e) => {
+      if (!ours(e)) return
+      e.preventDefault()
+      e.stopPropagation()
+      target.classList.remove('drop-on')
+      const f = filesOf(d).find((x) => x.id === e.dataTransfer.getData(FILE_DRAG))
+      const folder = target.dataset.folder
+      if (!f || f.folder === folder) return
+      try {
+        await api('POST', fileUrl(id, f.id, '/update'), { path: folder ? `${folder}/${f.name}` : f.name })
+        toast(`Moved to ${folder ? folder.split('/').pop() : d.workspace.name}`)
+        await reload()
+      } catch (err) { toast(err.message) }
+    })
+  })
 }
 
 /** Drag and drop onto an element: highlights while files hover, uploads them on drop. */
@@ -246,6 +297,8 @@ export function bindFilesSection (root, { id, reload, go }) {
   const upload = (list) => startUpload(id, list, '', { reload, go })
   bindUpload(sec, upload)
   bindDrop(sec, upload)
+  sec.querySelector('[data-new-folder]').onclick = () => newFolder(id, '', reload)
+  bindMoveToFolder(sec, d, id, reload)
 }
 
 // ------------------------------------------------------------- All files --
@@ -266,7 +319,7 @@ function listHtml (d, folders, files, picked) {
     <thead><tr><th>Name</th><th>Size</th><th>Uploaded by</th><th>Date</th><th>Version</th>${edit ? '<th><span class="sr">Actions</span></th>' : ''}</tr></thead>
     <tbody>
       ${folders.map((f) => { const s = folderStats(d, f.path); return `<tr class="is-folder" tabindex="0" data-folder="${esc(f.path)}"><td class="nm">${I.folder}<span>${esc(f.name)}</span></td><td>${esc(plural(s.count, 'file', 'files'))}</td><td></td><td></td><td></td>${edit ? `<td class="acts">${folderActsHtml(f)}</td>` : ''}</tr>` }).join('')}
-      ${files.map((f) => `<tr tabindex="0" data-pick-file="${esc(f.id)}" class="${f.id === picked ? 'on' : ''}"><td class="nm"><span class="badge" style="background:${badgeColor(f)}">${esc(badgeText(f))}</span><span>${esc(f.name)}</span></td><td>${esc(bytes(f.size || 0))}</td><td>${esc(whoOf(d, f.uploadedBy))}</td><td>${esc(f.uploadedAt ? new Date(f.uploadedAt).toLocaleDateString() : '')}</td><td>v${esc(f.version || 1)}</td>${edit ? '<td></td>' : ''}</tr>`).join('')}
+      ${files.map((f) => `<tr tabindex="0" data-pick-file="${esc(f.id)}" class="${f.id === picked ? 'on' : ''}"${edit ? ' draggable="true"' : ''}><td class="nm"><span class="badge" style="background:${badgeColor(f)}">${esc(badgeText(f))}</span><span>${esc(f.name)}</span></td><td>${esc(bytes(f.size || 0))}</td><td>${esc(whoOf(d, f.uploadedBy))}</td><td>${esc(f.uploadedAt ? new Date(f.uploadedAt).toLocaleDateString() : '')}</td><td>v${esc(f.version || 1)}</td>${edit ? '<td></td>' : ''}</tr>`).join('')}
     </tbody>
   </table></div>`
 }
@@ -357,12 +410,12 @@ export function allFilesHtml (d) {
       <button type="button" role="tab" data-files-mode="tiles" class="${fv.mode !== 'list' ? 'on' : ''}" aria-selected="${fv.mode !== 'list'}">Tiles</button>
       <button type="button" role="tab" data-files-mode="list" class="${fv.mode === 'list' ? 'on' : ''}" aria-selected="${fv.mode === 'list'}">List</button>
     </div>
-    ${edit ? `<button class="btn sm" data-new-folder>${I.plus}<span>Folder</span></button><button class="btn sm primary" data-upload>${I.upload}<span>Upload</span></button>` : ''}
+    ${edit ? `<button class="btn sm" data-new-folder>${I.plus}<span>New folder</span></button><button class="btn sm primary" data-upload>${I.upload}<span>Upload</span></button>` : ''}
   </header>
   ${fv.mode === 'list' && edit ? `<p class="hint files-progress" data-progress>${uploadingTo(id) ? esc(progressLabel()) : ''}</p><input type="file" multiple hidden data-upload-input>` : ''}
-  <div class="files-body${picked ? ' has-preview' : ''}" data-files-drop>
+  <div class="files-body" data-files-drop>
     <div class="files-main">${grid || '<p class="hint">Nothing in this folder yet.</p>'}</div>
-    ${picked ? previewHtml(d, picked) : ''}
+    ${picked ? previewHtml(d, picked) : '<aside class="file-preview empty" aria-hidden="true"><p class="hint">Pick a file to see it here.</p></aside>'}
   </div>`
 }
 
@@ -389,17 +442,16 @@ export function bindAllFiles (root, { id, reload, go, rerender = () => go(`wsfil
     const upload = (list) => startUpload(id, list, fv.folder, { reload, go })
     bindUpload(root, upload)
     bindDrop(root.querySelector('[data-files-drop]'), upload)
-    root.querySelector('[data-new-folder]').onclick = async () => {
-      const name = await ask({ title: 'New folder', message: fv.folder ? `Inside ${fv.folder}.` : '', input: { placeholder: 'Name' }, ok: 'Create' })
-      if (!name) return
-      try { await api('POST', wsUrl(id, '/folders'), { path: fv.folder ? `${fv.folder}/${name}` : name }); await reload() } catch (err) { toast(err.message) }
-    }
+    root.querySelector('[data-new-folder]').onclick = () => newFolder(id, fv.folder, reload)
     bindFolderActs(root, d, id, reload)
+    bindMoveToFolder(root, d, id, reload)
   }
 
   const f = filesOf(d).find((x) => x.id === fv.picked)
   if (!f) return
   loadPreviewText(root, d, f)
+  const panel = root.querySelector('.file-preview:not(.empty)')
+  if (panel && getComputedStyle(panel).position === 'static') panel.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
   /** Saves the patch; `then` runs only once it saved, before the redraw. */
   const update = async (patch, done, then = () => {}) => {
     try { await api('POST', fileUrl(id, f.id, '/update'), patch) } catch (err) { return toast(err.message) }

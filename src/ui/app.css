@@ -606,12 +606,19 @@ details.choice-foot .hint { display: block; margin-top: 6px; }
 .kv .hint { grid-column: 2; }
 .kv code { overflow-wrap: anywhere; }
 
-@media (max-width: 900px) {
+/* The sidebar stays a sidebar down to 760px, below the desktop app's 880px minimum window
+   width, so the app always has it; narrower browsers get it as a header with a scrolling
+   row of workspaces. */
+@media (max-width: 760px) {
   .app-shell { grid-template-columns: 1fr; height: auto; min-height: 100vh; }
-  .side { border-right: 0; border-bottom: 1px solid var(--border); padding: 14px 16px; }
+  .side { border-right: 0; border-bottom: 1px solid var(--border); padding: 14px 16px; gap: 4px; }
   .side .brand { padding-bottom: 8px; }
-  .side-nav { flex-direction: row; }
-  .side-foot { flex-direction: row; align-items: center; padding-top: 8px; }
+  .side-nav { flex-direction: row; flex-wrap: wrap; gap: 4px; }
+  .side-nav button { width: auto; }
+  .side-label { padding: 10px 10px 2px; }
+  .side-workspaces { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; padding-bottom: 2px; }
+  .side-workspaces button { flex: none; max-width: 220px; }
+  .side-foot { margin-top: 4px; padding-top: 6px; }
   .page { padding: 28px 16px 48px; overflow: visible; }
   .page-head h1 { font-size: 30px; }
   .choices { grid-template-columns: 1fr; }
@@ -1182,8 +1189,11 @@ body.has-update #app { padding-top: var(--update-bar); } /* padding, not margin:
 .crumbs .sep { color: var(--faint, var(--muted)); font-weight: 400; }
 .crumbs .here { color: var(--muted); font-weight: 500; }
 .files-progress:empty { display: none; }
-.files-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
-.files-body.has-preview { grid-template-columns: minmax(0, 1fr) 300px; }
+/* The preview column is always there on wide windows (empty until a file is picked), so
+   picking a file never reflows the tiles. */
+.files-body { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start; }
+.file-preview.empty { min-height: 220px; justify-content: center; box-shadow: none; background: transparent; border-style: dashed; }
+.file-preview.empty .hint { margin: 0; text-align: center; }
 .files-main { min-width: 0; }
 .files-scroll { overflow-x: auto; padding: 0 3px 3px 0; }
 .files-list { width: 100%; border-collapse: collapse; font-size: 13px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
@@ -1200,7 +1210,7 @@ body.has-update #app { padding-top: var(--update-bar); } /* padding, not margin:
 .fp-top { display: flex; align-items: center; gap: 6px; }
 .fp-name { flex: 1; min-width: 0; font-size: 14px; overflow-wrap: anywhere; }
 .fp-top .btn.icon { width: 28px; height: 28px; padding: 0; }
-.fp-media { border-radius: 6px; overflow: hidden; background: var(--panel-2); }
+.fp-media { min-height: 120px; border-radius: 6px; overflow: hidden; background: var(--panel-2); }
 .fp-media > img, .fp-media > video { display: block; width: 100%; max-height: 260px; object-fit: contain; background: #1f1c24; }
 .fp-media > audio { display: block; width: 100%; }
 .fp-media > iframe { display: block; width: 100%; height: 340px; border: 0; background: #fff; }
@@ -1240,7 +1250,16 @@ body.has-update #app { padding-top: var(--update-bar); } /* padding, not margin:
 .files-list .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 @media (hover: none) { .tile-wrap .folder-acts { opacity: 1; } }
 @media (max-width: 900px) {
-  .files-body.has-preview { grid-template-columns: minmax(0, 1fr); }
   .file-preview { position: static; }
 }
 @media (max-width: 560px) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 1000px) {
+  .files-body { grid-template-columns: minmax(0, 1fr); }
+  .file-preview { position: static; }
+  .file-preview.empty { display: none; }
+}
+/* Dragging a file onto a folder moves it there. */
+.tile.dragging, tr.dragging { opacity: .45; }
+.tile.folder.drop-on, tr.is-folder.drop-on, .crumbs a.drop-on { outline: 2px solid var(--accent); outline-offset: 2px; background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
+.files-sec .sec-head .btn.sm { height: 28px; }
+

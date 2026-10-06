@@ -31,3 +31,25 @@ test('app routes wsfiles: views and polls the open workspace every 20 seconds', 
 })
 
 test('no em dashes', () => { for (const f of ['files.js', 'workspaces.js', 'app.js', 'home.js', 'app.css']) assert.ok(!ui(f).includes(EM_DASH), f) })
+
+test('picking a file never reflows the tiles: the preview column is always there on wide windows', () => {
+  const f = ui('files.js'); const css = ui('app.css')
+  assert.ok(f.includes('<aside class="file-preview empty"'))
+  assert.ok(!f.includes('has-preview') && !css.includes('has-preview'))
+  assert.ok(css.includes('.files-body { display: grid; grid-template-columns: minmax(0, 1fr) 300px;'))
+  assert.ok(css.includes('.file-preview.empty { display: none; }'))
+})
+
+test('folders: New folder on the workspace page and in All files; files drag onto folders to move', () => {
+  const f = ui('files.js')
+  for (const bit of ['async function newFolder (id, parent, reload)', "const FILE_DRAG = 'application/x-quilt-file'", 'function bindMoveToFolder', ' draggable="true"', "'dragstart'", "newFolder(id, '', reload)", 'bindMoveToFolder(sec, d, id, reload)', 'bindMoveToFolder(root, d, id, reload)', '<span>New folder</span>']) assert.ok(f.includes(bit), bit)
+  assert.ok(ui('app.css').includes('.tile.folder.drop-on'))
+})
+
+test('the sidebar stays a sidebar at the desktop app\'s minimum width (880px); it stacks only below 760px', () => {
+  const css = ui('app.css')
+  assert.ok(css.includes('@media (max-width: 760px) {\n  .app-shell { grid-template-columns: 1fr;'))
+  assert.ok(!/@media \(max-width: 900px\) \{\n  \.app-shell/.test(css))
+  assert.ok(css.includes('.side-workspaces { flex-wrap: nowrap; overflow-x: auto;'))
+})
+

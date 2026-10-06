@@ -69,6 +69,10 @@ test("an agent's passes use its saved key, refreshing its access key first when 
   const p = verifyPass(await agentPasses({ name: 'helper', dir }).get(), KEYS.publicKey)
   assert.deepEqual([p.kind, p.name, p.sub, p.key], ['agent', 'helper', saved.agentId, saved.identity.publicKey])
   assert.notEqual(JSON.parse(fs.readFileSync(file, 'utf8')).refreshKey, saved.refreshKey, 'the keys were refreshed and saved')
+  // Its keys revoked (a refresh reply lost while the computer slept): it signs back in with its own key.
+  for (const k of await t.store.listAgentKeys(saved.agentId)) await t.store.revokeFamily(k.familyId)
+  assert.equal(verifyPass(await agentPasses({ name: 'helper', dir }).get(), KEYS.publicKey).sub, saved.agentId)
+  // Revoked by a person: signed out for good.
   await t.store.revokeAgent(saved.agentId)
   await assert.rejects(agentPasses({ name: 'helper', dir }).get(), (err) => err.signedOut === true)
 })

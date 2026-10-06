@@ -4,7 +4,7 @@
 // asks for passes for its own room: those carry what you may do there.
 import { readPass } from './passes.js'
 import { apiUrl, accountFile, readAccount, resumeAccount, NOT_SIGNED_IN, SIGNED_OUT } from './account.js'
-import { agentAccess, readAgent } from './agent-join.js'
+import { agentAccess, agentResume, readAgent } from './agent-join.js'
 
 export const PASS_EARLY_MS = 2 * 60 * 1000
 export const PASS_REFRESH_MS = 5 * 60 * 1000
@@ -141,7 +141,21 @@ export function agentPasses ({ name, dir, fetch: fetchImpl = globalThis.fetch, n
         if (err.status === 401) throw new SignedOutError(err.message)
         throw err
       }
-      return requestPass(fetchImpl, saved.api, saved.accessKey, AGENT_SIGNED_OUT, room)
+      try {
+        return await requestPass(fetchImpl, saved.api, saved.accessKey, AGENT_SIGNED_OUT, room)
+      } catch (err) {
+        if (!err.signedOut) throw err
+        // Keys revoked before the access key ran out: an agent with its own key signs back in.
+        let back
+        try {
+          back = await agentResume({ name, dir, accessKey: saved.accessKey, fetch: fetchImpl })
+        } catch (e) {
+          if (e.status === 401) throw new SignedOutError(e.message)
+          throw e
+        }
+        if (!back) throw err
+        return requestPass(fetchImpl, back.api, back.accessKey, AGENT_SIGNED_OUT, room)
+      }
     }
   })
 }

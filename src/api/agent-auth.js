@@ -55,6 +55,19 @@ export function makeAgentAuth ({ store, now, bearer }) {
     return pair
   }
 
+  /**
+   * New keys for an agent that proved it holds the key it joined with (routes/agents.js),
+   * after its refresh key stopped working: a reply lost while its computer slept or went
+   * offline leaves it holding a spent key, which revokes its keys. Every key it had is
+   * revoked and it starts a new family. Never for an agent a person revoked.
+   */
+  async function resume (agent) {
+    if (agent.revokedAt) throw new HttpError(401, 'This agent was revoked. Invite it again.')
+    const families = new Set((await store.listAgentKeys(agent.id)).filter((k) => !k.revokedAt).map((k) => k.familyId))
+    for (const f of families) await store.revokeFamily(f)
+    return mintKeys(agent.id)
+  }
+
   /** The agent behind a request's `qa_` bearer key, or a 401. */
   async function agentFromRequest (req) {
     const key = bearer(req)
@@ -68,5 +81,5 @@ export function makeAgentAuth ({ store, now, bearer }) {
     return { agent, keyRow }
   }
 
-  return { mintKeys, refresh, agentFromRequest }
+  return { mintKeys, refresh, resume, agentFromRequest }
 }

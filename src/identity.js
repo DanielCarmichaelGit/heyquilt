@@ -15,6 +15,8 @@ const AUTH_CONTEXT = 'cowove-auth-v1'
 const DEVICE_LINK_CONTEXT = 'quilt-device-link-v1'
 // Signing a linked computer back in (a new token, no browser) has its own context too.
 const DEVICE_RESUME_CONTEXT = 'quilt-device-resume-v1'
+// An agent on a computer proves it holds the key it joined with, to get new keys (agent-join.js).
+const AGENT_RESUME_CONTEXT = 'quilt-agent-resume-v1'
 // The room name device links used to be signed for. The relay client refuses it.
 export const RESERVED_ROOM = 'device-link'
 
@@ -82,4 +84,16 @@ export function signDeviceResume (identity, at) {
 export function verifyDeviceResume (key, at, signature) {
   if (!key || typeof signature !== 'string') return false
   try { return crypto.verify(null, resumePayload(at), key, Buffer.from(signature, 'base64url')) } catch { return false }
+}
+
+const agentResumePayload = (agentId, at) => Buffer.from(`${AGENT_RESUME_CONTEXT}\0${agentId}\0${Number(at)}`)
+
+/** Proves an agent holds the key it joined with when it asks for new keys at time `at` (ms). Returns base64url. */
+export function signAgentResume (identity, agentId, at) {
+  return crypto.sign(null, agentResumePayload(String(agentId), at), privateKeyOf(identity)).toString('base64url')
+}
+
+export function verifyAgentResume (key, agentId, at, signature) {
+  if (!key || typeof signature !== 'string') return false
+  try { return crypto.verify(null, agentResumePayload(String(agentId), at), key, Buffer.from(signature, 'base64url')) } catch { return false }
 }

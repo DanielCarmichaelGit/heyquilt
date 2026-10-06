@@ -289,7 +289,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   ]
 
   // Org routes live in their own modules and share the caller check and the limiter.
-  const ctx = { store, user, person, device, bearer, now, site, apiUrl: api, mailer, log, limit: limitInvites, limitSend: limitInviteSend, limitTokens, limitJoin, agentAuth, reportKey, limitReports, relaySecret }
+  const ctx = { store, user, person, device, bearer, now, site, apiUrl: api, mailer, log, limit: limitInvites, limitSend: limitInviteSend, limitTokens, limitStarts, spendResume, resumeWindowMs: RESUME_WINDOW_MS, limitJoin, agentAuth, reportKey, limitReports, relaySecret }
   routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx), ...agentRoutes(ctx), ...agentInviteRoutes(ctx), ...joinRoutes(ctx), ...relayRoutes(ctx), ...sessionRoutes(ctx), ...accessTypeRoutes(ctx), ...grantRoutes(ctx), ...sessionInviteRoutes(ctx), ...issueRoutes(ctx))
 
   async function openLink (code) {

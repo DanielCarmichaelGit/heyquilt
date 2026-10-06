@@ -668,7 +668,6 @@ export async function runMcp () {
   addWorkspaceTools(server, { projectDirs }).catch(() => {})
 }
 
-// How long the startup check of the API's features may take before the tools are left out.
 /**
  * One try at handing a session's link to the agents that join it by themselves, as the agent
  * `name` that started it. Its access key is read afresh on every try (agentAccess refreshes
@@ -681,6 +680,7 @@ export function agentAnnouncer ({ name, workspace, room, link, access = agentAcc
   }
 }
 
+// How long the startup check of the API's features may take before the tools are left out.
 export const FEATURES_TIMEOUT_MS = 2000
 // Up to the library's largest file, to or from storage.
 const TRANSFER_TIMEOUT_MS = 10 * 60 * 1000

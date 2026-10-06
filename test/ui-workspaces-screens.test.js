@@ -215,7 +215,7 @@ test('the workspace page lists agents from the API\'s agents, with their cards w
 test('the Add dialog: agents of the workspace\'s owner, the every-session switch, and Invite a new agent', () => {
   const h = ui('home.js')
   const dlg = h.slice(h.indexOf('function workspaceInviteDialog'), h.indexOf('/** The GitHub side'))
-  for (const bit of ['Also join every session in this workspace as it starts', 'Invite a new agent', 'data-wi-invite-agent', '/api/orgs/$' + '{encodeURIComponent(org.slug)}/agents', "api('GET', '/api/agents')", '/agent-invites`', "account.startsWith('agent:') ? { sessions: ownAgents.has(account) ? joins() : 'invited' } : {}", "agentInviteHtml(agentPaste({ link }), 'wi-paste')"]) assert.ok(dlg.includes(bit), bit)
+  for (const bit of ['Also join every session in this workspace as it starts', 'Invite a new agent', 'data-wi-invite-agent', '/api/orgs/$' + '{encodeURIComponent(org.slug)}/agents', "api('GET', '/api/agents')", '/agent-invites`', "account.startsWith('agent:') ? { sessions: ownAgents.has(account) || !ownKnown ? joins() : 'invited' } : {}", "agentInviteHtml(agentPaste({ link }), 'wi-paste')"]) assert.ok(dlg.includes(bit), bit)
 })
 
 test('agent-place.js is served, and has no em dashes', () => {

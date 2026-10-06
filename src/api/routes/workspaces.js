@@ -40,8 +40,16 @@ export function workspaceRoutes (ctx) {
     const sessions = await store.listWorkspaceSessions(ws.id)
     const members = await store.listWorkspaceMembers(ws.id)
     return {
-      id: ws.id, name: ws.name, description: ws.description, color: ws.color, createdAt: ws.createdAt, archivedAt: ws.archivedAt,
-      space: await spaceOf(ws), access: access.access, admin: access.admin, via: access.via,
+      id: ws.id,
+      name: ws.name,
+      description: ws.description,
+      color: ws.color,
+      createdAt: ws.createdAt,
+      archivedAt: ws.archivedAt,
+      space: await spaceOf(ws),
+      access: access.access,
+      admin: access.admin,
+      via: access.via,
       // files: the row's count, kept by every upload, delete and sweep (setWorkspaceUsage).
       counts: { sessions: sessions.length, members: members.length, open: sessions.filter((s) => isOpen(s, t)).length, files: ws.fileCount ?? 0 }
     }
@@ -139,7 +147,10 @@ export function workspaceRoutes (ctx) {
       if (r.ws.orgId && kind === 'agent' && !(await store.memberByAgent(r.ws.orgId, who))) throw new HttpError(404, 'that agent is not in the org')
       // Someone else's agent can be added for access, but only its owner makes it join every session.
       if (sessions === 'all' && !(await sameOwnerAgent(store, r.ws, who))) throw new HttpError(400, FOREIGN_JOINS)
-      return { member: await store.putWorkspaceMember({ workspaceId: r.ws.id, account, access, addedBy: r.me.account, sessions }) }
+      const member = await store.putWorkspaceMember({ workspaceId: r.ws.id, account, access, addedBy: r.me.account, sessions })
+      // Answered as GET reports it: an old 'all' on someone else's agent has no effect.
+      if (kind === 'agent' && member.sessions === 'all' && !(await sameOwnerAgent(store, r.ws, who))) return { member: { ...member, sessions: 'invited' } }
+      return { member }
     }],
 
     ['DELETE', /^\/v1\/workspaces\/([^/]+)\/members\/([^/]+)$/, async (req, body, [id, account]) => {

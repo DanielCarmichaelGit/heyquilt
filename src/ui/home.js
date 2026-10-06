@@ -349,17 +349,19 @@ function workspaceInviteDialog (id) {
   const list = $('#wi-people', back)
   // Only an agent's owner can make it join every session: someone else's agent joins when invited.
   const ownAgents = new Set()
+  let ownKnown = false // when your agents couldn't be listed, the API decides (it refuses someone else's)
   // { list, note }: a note says why no agents could be listed (an org's need Agents: Read).
   const agents = !isOrg
-    ? api('GET', '/api/agents').then((r) => ({ list: r.agents }), () => ({ list: [] }))
+    ? api('GET', '/api/agents').then((r) => ({ list: r.agents }), () => ({ list: [], failed: true }))
     : !org
         ? Promise.resolve({ list: [], note: `${orgName}'s agents can't be listed here.` })
         : api('GET', `/api/orgs/${encodeURIComponent(org.slug)}/agents`).then((r) => ({ list: r.agents }), (err) => ({ list: [], note: `${orgName}'s agents can't be listed: ${err.message}` }))
   Promise.all([
     api('GET', '/api/collaborators').then((r) => r.collaborators).catch(() => []),
     agents
-  ]).then(([people, { list: mine, note }]) => {
+  ]).then(([people, { list: mine, note, failed }]) => {
     for (const a of mine) ownAgents.add(`agent:${a.id}`)
+    ownKnown = !note && !failed
     const seen = new Set()
     const rows = [...people.filter((c) => c.kind !== 'agent' || !isOrg), ...mine.map((a) => ({ account: `agent:${a.id}`, name: a.name, kind: 'agent' }))].filter((c) => c.account && !seen.has(c.account) && seen.add(c.account))
     const why = note ? `<p class="hint wi-note">${esc(note)}</p>` : ''
@@ -376,7 +378,7 @@ function workspaceInviteDialog (id) {
     $('#wi-error', back).textContent = ''
     const account = b.dataset.addAccount
     try {
-      await api('POST', `/api/workspaces/${encodeURIComponent(id)}/members`, { account, access: $('#wi-access', back).value, ...(account.startsWith('agent:') ? { sessions: ownAgents.has(account) ? joins() : 'invited' } : {}) })
+      await api('POST', `/api/workspaces/${encodeURIComponent(id)}/members`, { account, access: $('#wi-access', back).value, ...(account.startsWith('agent:') ? { sessions: ownAgents.has(account) || !ownKnown ? joins() : 'invited' } : {}) })
       b.outerHTML = '<span class="hint">Added</span>'
       toast(`Added ${b.dataset.name}`)
       await openWorkspace(id)

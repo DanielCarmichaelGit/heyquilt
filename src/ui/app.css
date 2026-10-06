@@ -340,10 +340,12 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 .t-caret.open { transform: rotate(90deg); }
 .t-ico { color: var(--faint); display: grid; place-items: center; width: 14px; }
 .t-dir .t-name { font-weight: 600; }
-.t-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 0 1 auto; }
+.t-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: min(4.5em, 100%); flex: 0 1 auto; }
 .t-badge { flex: none; display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; font-weight: 700; padding: 0 6px; height: 18px; border-radius: 999px; white-space: nowrap; }
 .t-badge svg { width: 10px; height: 10px; }
 .t-badge.edit { background: color-mix(in srgb, var(--edit) 15%, transparent); color: var(--edit); }
+/* On a narrow row the "edited" badge gives way first: the file name and a claim stay whole. */
+.t-badge.edit, .t-badge.mine { flex: 0 1 auto; min-width: 0; display: block; line-height: 18px; overflow: hidden; text-overflow: ellipsis; }
 .t-badge.mine { background: var(--panel-2); color: var(--muted); }
 .t-badge.claim { background: color-mix(in srgb, var(--violet) 16%, transparent); color: var(--violet); }
 .t-badge.claim.away { background: var(--panel-2); color: var(--muted); }

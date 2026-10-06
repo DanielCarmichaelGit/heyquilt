@@ -175,7 +175,7 @@ export class Session extends EventEmitter {
     this.hold = null // { kind: 'busy'|'settling'|'switching', since, prevHead, to? } while this folder's sync is held
     this.heldPaths = new Set() // paths that changed (here or in the room) while held
     this.heldConflicts = new Set() // paths git left a conflict in during this hold (see noteConflict)
-    this.holdStash = null // the stash's mark when the hold began: a change means the person stashed
+    this.stashSeen = null // the stash's mark when the folder was last quiet: a change by the settle means the person stashed
     this.headChangedAt = 0
     this.settleTimer = null
     this.savedGit = null // { key, sha, held } from state.json: the branch synced, and whether a hold was on, at the last stop
@@ -1193,7 +1193,6 @@ export class Session extends EventEmitter {
     // The git watcher can start a hold before any burst is classified: commits of the room's work
     // move its starting point on, asked before it can settle (gitTask runs in order).
     if (!this.hold) this.gitTask(() => this.noteCommits()).catch(() => {})
-    if (!this.hold) this.holdStash = stashStamp(this.root)
     // since: when the folder was first held (the app's "git is busy" note waits on it), kept across kinds.
     this.hold = { kind, since: this.hold ? this.hold.since : Date.now(), ...(this.hold ? { prevHead: this.hold.prevHead } : {}), ...extra }
     if (!this.hold.prevHead) this.hold.prevHead = this.gitSeen
@@ -1283,7 +1282,9 @@ export class Session extends EventEmitter {
     // What git wrote is accounted for here: the next flush is an edit unless git moves again.
     this.gitIndex = indexStamp(this.root)
     this.headChangedAt = 0
-    const why = this.hold.back ? 'back' : stashStamp(this.root) !== this.holdStash ? 'stash' : 'reset'
+    const stash = stashStamp(this.root)
+    const why = this.hold.back ? 'back' : stash !== this.stashSeen ? 'stash' : 'reset'
+    this.stashSeen = stash
     this.releaseHold()
     this.writeBack(plan.discarded, why)
     // Not awaited: merging (an AI merge can take a while) never holds up the next git work.
@@ -2100,6 +2101,7 @@ export class Session extends EventEmitter {
 
   async startWatcher () {
     this.gitIndex = indexStamp(this.root)
+    this.stashSeen = stashStamp(this.root)
     if (this.git) {
       this.gitWatcher = watchGit(this.root, (e) => {
         if (this.stopped) return

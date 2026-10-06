@@ -101,7 +101,7 @@ test('a stash on one machine does not erase the room\'s work; it comes back afte
   git(dirB, 'stash', '-q') // bob's disk reverts to the commit
   await never(() => read(dirA, 'src/app.js') !== 'line1 (alice)\nline2\nline3\nline4\nline5\n', 2500)
   await waitFor(() => read(dirB, 'src/app.js') === 'line1 (alice)\nline2\nline3\nline4\nline5\n', 8000)
-  assert.ok(B.logs.some((l) => l.includes('Quilt kept the session\'s work')), B.logs.join('\n'))
+  assert.ok(B.logs.some((l) => l.includes('Quilt kept the session\'s work; your stash still has your copy')), B.logs.join('\n'))
   assert.equal(git(dirB, 'stash', 'list').split('\n').filter(Boolean).length, 1, 'the stash is untouched')
 })
 

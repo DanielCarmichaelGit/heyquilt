@@ -74,9 +74,10 @@ export function renderTree (el, tree, { me, expanded, selected }) {
       const recent = f.edited && Date.now() - f.edited.ts < RECENT_MS
       const byOther = recent && f.edited.by !== me
       const ownClaim = f.claim && claimFolder(f.claim.pattern) === f.path ? f.claim : null
+      // The holder of a claim is the one editing it: their claim badge says so, one badge is enough on a narrow row.
       rows.push(`<div class="t-row t-file${selected === f.path ? ' on' : ''}" role="treeitem" tabindex="-1" data-file="${esc(f.path)}" style="--depth:${depth}" title="${esc(f.path)}">
         <span class="t-ico">${I.file}</span><span class="t-name">${esc(f.name)}</span>
-        ${recent ? `<span class="t-badge ${byOther ? 'edit' : 'mine'}">${esc(f.edited.by === me ? 'you' : f.edited.by)} · ${shortAgo(f.edited.ts)}</span>` : ''}
+        ${recent && !(ownClaim && ownClaim.by === f.edited.by) ? `<span class="t-badge ${byOther ? 'edit' : 'mine'}">${esc(f.edited.by === me ? 'you' : f.edited.by)} · ${shortAgo(f.edited.ts)}</span>` : ''}
         ${claimBadge(ownClaim)}
         <button class="t-more" data-more="${esc(f.path)}" data-kind="file" aria-label="More for ${esc(f.name)}">${I.more}</button></div>`)
     }

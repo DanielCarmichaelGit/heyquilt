@@ -32,8 +32,12 @@ export function createMemoryStore ({ now = Date.now } = {}) {
   const accessTypes = new Map(); const grants = new Map(); const sessionInvites = new Map()
   const workspaces = new Map(); const workspaceMembers = new Map()
   const workspaceFiles = new Map(); const workspaceFileVersions = new Map()
+  const agentPlacements = new Map(); const workspaceAgentOverrides = new Map()
+  const sessionAgentExclusions = new Map(); const agentWebhooks = new Map()
   const wmKey = (workspaceId, account) => `${workspaceId}\n${account}`
   const grantKey = (room, account) => `${room}\n${account}`
+  const waoKey = (workspaceId, agentId) => `${workspaceId}\n${agentId}`
+  const saeKey = (room, agentId) => `${room}\n${agentId}`
   const inviteOpenAt = (i, at) => !i.usedAt && !i.cancelledAt && i.expiresAt > at
   const all = (m, keep) => [...m.values()].filter(keep)
   const nameOf = (userId) => profiles.get(userId)?.name || ''
@@ -56,12 +60,17 @@ export function createMemoryStore ({ now = Date.now } = {}) {
   // An org member is a person (named by their profile) or an agent (named when it joined).
   const memberName = (m) => (m?.agentId ? agents.get(m.agentId)?.name || '' : nameOf(m?.userId))
   // Deleting an agent takes its keys and membership with it, like the cascades in
-  // Postgres; an invite it used only forgets it (on delete set null).
+  // Postgres; an invite it used only forgets it (on delete set null). Its workspace
+  // placement, any workspace's say over it, session keep-outs and its webhook go too.
   const dropAgent = (id) => {
     agents.delete(id)
     for (const [k, key] of keyRows) if (key.agentId === id) keyRows.delete(k)
     for (const [k, m] of members) if (m.agentId === id) dropMember(k)
     for (const i of agentInvites.values()) if (i.usedByAgentId === id) i.usedByAgentId = null
+    agentPlacements.delete(id)
+    for (const [k, o] of workspaceAgentOverrides) if (o.agentId === id) workspaceAgentOverrides.delete(k)
+    for (const [k, e] of sessionAgentExclusions) if (e.agentId === id) sessionAgentExclusions.delete(k)
+    agentWebhooks.delete(id)
   }
 
   // Deleting an account takes the sessions it owns (with everyone's visits in them) and its
@@ -71,10 +80,11 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     for (const [id, v] of visits) if (accounts.includes(v.account) || !relaySessions.has(v.room)) visits.delete(id)
     dropOrphans()
   }
-  // Grants and invites go with their session (on delete cascade).
+  // Grants, invites and agent keep-outs go with their session (on delete cascade).
   const dropOrphans = () => {
     for (const [k, g] of grants) if (!relaySessions.has(g.room)) grants.delete(k)
     for (const [id, i] of sessionInvites) if (!relaySessions.has(i.room)) sessionInvites.delete(id)
+    for (const [k, e] of sessionAgentExclusions) if (!relaySessions.has(e.room)) sessionAgentExclusions.delete(k)
   }
   // Mirrors delete_account_access.
   const dropAccess = (accounts) => {
@@ -136,6 +146,10 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     async listPersonalAgents (userId) {
       return all(agents, (a) => a.ownerUserId === userId && !a.revokedAt).sort((a, b) => a.createdAt - b.createdAt).map(copy)
     },
+    // The org's own agents, live ones only, by name (for placement pickers).
+    async listOrgAgents (orgId) {
+      return all(agents, (a) => a.orgId === orgId && !a.revokedAt).sort((a, b) => a.name.localeCompare(b.name)).map(copy)
+    },
     async touchAgent (id) { const a = agents.get(id); if (a) a.lastUsedAt = now() },
     // Revoking an agent kills every key it holds at once.
     async revokeAgent (id) {
@@ -149,10 +163,10 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     async deleteAgent (id) { dropAgent(id) },
     // Agent invites: only the token's hash is kept. Mirrors the one-home and
     // no-role-without-an-org checks and the composite (role_id, org_id) key.
-    async createAgentInvite ({ tokenHash, ownerUserId = null, orgId = null, createdBy = null, roleId = null, teams = [], expiresAt }) {
+    async createAgentInvite ({ tokenHash, ownerUserId = null, orgId = null, createdBy = null, roleId = null, teams = [], expiresAt, workspaceId = null, workspaceAccess = null, workspaceSessions = null }) {
       if ((ownerUserId == null) === (orgId == null) || (roleId && !orgId)) throw checkViolation('an invite is for one person or one org')
       if (!roleInOrg(roleId, orgId)) throw fkViolation('role', 'is not in this org')
-      const row = { id: uuid(), tokenHash, ownerUserId, orgId, createdBy, roleId, teams: copy(teams), expiresAt, usedAt: null, usedByAgentId: null, cancelledAt: null, createdAt: now() }
+      const row = { id: uuid(), tokenHash, ownerUserId, orgId, createdBy, roleId, teams: copy(teams), expiresAt, workspaceId, workspaceAccess, workspaceSessions, usedAt: null, usedByAgentId: null, cancelledAt: null, createdAt: now() }
       agentInvites.set(row.id, row); return copy(row)
     },
     async agentInviteByToken (h) { return copy(all(agentInvites, (i) => i.tokenHash === h)[0]) },
@@ -646,15 +660,18 @@ export function createMemoryStore ({ now = Date.now } = {}) {
         for (const vk of [...workspaceFileVersions.keys()]) if (vk.startsWith(`${f.id}\n`)) workspaceFileVersions.delete(vk)
         workspaceFiles.delete(k)
       }
+      for (const [k, o] of workspaceAgentOverrides) if (o.workspaceId === id) workspaceAgentOverrides.delete(k)
       workspaces.delete(id)
     },
     async workspaceMember (workspaceId, account) { return copy(workspaceMembers.get(wmKey(workspaceId, account))) },
     async listWorkspaceMembers (workspaceId) { return all(workspaceMembers, (m) => m.workspaceId === workspaceId).sort((a, b) => a.addedAt - b.addedAt).map(copy) },
-    async putWorkspaceMember ({ workspaceId, account, access, addedBy }) {
+    // sessions only changes when given: an upsert that omits it keeps whatever the
+    // member already had, and a brand new member defaults to 'invited'.
+    async putWorkspaceMember ({ workspaceId, account, access, addedBy, sessions }) {
       if (!workspaces.has(workspaceId)) throw fkViolation('workspace', 'does not exist')
       const k = wmKey(workspaceId, account)
       const old = workspaceMembers.get(k)
-      const row = { workspaceId, account, access, addedBy, addedAt: old ? old.addedAt : now() }
+      const row = { workspaceId, account, access, addedBy, sessions: sessions !== undefined ? sessions : (old ? old.sessions : 'invited'), addedAt: old ? old.addedAt : now() }
       workspaceMembers.set(k, row); return copy(row)
     },
     async removeWorkspaceMember (workspaceId, account) { return workspaceMembers.delete(wmKey(workspaceId, account)) },
@@ -669,6 +686,45 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       return copy(s)
     },
     async listWorkspaceSessions (workspaceId) { return all(relaySessions, (s) => s.workspaceId === workspaceId).sort((a, b) => b.lastActiveAt - a.lastActiveAt).map(copy) },
+
+    // Workspace agents (see 20261007000000_workspace_agents.sql). Where an agent works,
+    // a workspace's say over one that reaches it, per-session keep-outs, and its webhook.
+    async agentPlacement (agentId) { return copy(agentPlacements.get(agentId)) },
+    async putAgentPlacement ({ agentId, reach = 'manual', workspaceIds = [], sessions = 'invited', access = 'edit', scopes = [], updatedBy }) {
+      if (!agents.has(agentId)) throw fkViolation('agent', 'does not exist')
+      if (scopes.length > 20) throw checkViolation('at most 20 folders')
+      const row = { agentId, reach, workspaceIds: [...workspaceIds], sessions, access, scopes: [...scopes], updatedBy, updatedAt: now() }
+      agentPlacements.set(agentId, row); return copy(row)
+    },
+    async listAgentPlacements (agentIds) { return agentIds.map((id) => agentPlacements.get(id)).filter(Boolean).map(copy) },
+    async workspaceAgentOverride (workspaceId, agentId) { return copy(workspaceAgentOverrides.get(waoKey(workspaceId, agentId))) },
+    async putWorkspaceAgentOverride ({ workspaceId, agentId, sessions = null, excluded = false }) {
+      if (!workspaces.has(workspaceId)) throw fkViolation('workspace', 'does not exist')
+      if (!agents.has(agentId)) throw fkViolation('agent', 'does not exist')
+      const row = { workspaceId, agentId, sessions, excluded }
+      workspaceAgentOverrides.set(waoKey(workspaceId, agentId), row); return copy(row)
+    },
+    async deleteWorkspaceAgentOverride (workspaceId, agentId) { return workspaceAgentOverrides.delete(waoKey(workspaceId, agentId)) },
+    async listWorkspaceAgentOverrides (workspaceId) { return all(workspaceAgentOverrides, (o) => o.workspaceId === workspaceId).map(copy) },
+    async addSessionAgentExclusion ({ room, agentId, excludedBy }) {
+      if (!relaySessions.has(room)) throw fkViolation('session', 'does not exist')
+      if (!agents.has(agentId)) throw fkViolation('agent', 'does not exist')
+      const k = saeKey(room, agentId)
+      const old = sessionAgentExclusions.get(k)
+      const row = { room, agentId, excludedBy, createdAt: old ? old.createdAt : now() }
+      sessionAgentExclusions.set(k, row); return copy(row)
+    },
+    async removeSessionAgentExclusion (room, agentId) { return sessionAgentExclusions.delete(saeKey(room, agentId)) },
+    async sessionAgentExcluded (room, agentId) { return sessionAgentExclusions.has(saeKey(room, agentId)) },
+    async listSessionAgentExclusions (room) { return all(sessionAgentExclusions, (r) => r.room === room).map(copy) },
+    async agentWebhook (agentId) { return copy(agentWebhooks.get(agentId)) },
+    async putAgentWebhook ({ agentId, url, secret }) {
+      if (!agents.has(agentId)) throw fkViolation('agent', 'does not exist')
+      const old = agentWebhooks.get(agentId)
+      const row = { agentId, url, secret, createdAt: old ? old.createdAt : now(), updatedAt: now() }
+      agentWebhooks.set(agentId, row); return copy(row)
+    },
+    async deleteAgentWebhook (agentId) { return agentWebhooks.delete(agentId) },
 
     // Workspace files (see 20261005000000_workspace_files.sql).
     async createWorkspaceFile ({ workspaceId, path, kind, size = 0, mime = '', sha256 = '', objectKey = '', note = '', uploadedBy }) {

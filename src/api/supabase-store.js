@@ -18,16 +18,20 @@ const TEAM = 'id, org_id, name, created_at'
 const TEAM_MEMBER = 'team_id, member_id, access, scopes, added_at'
 const INVITE = 'id, org_id, email, role_id, token_hash, invited_by, expires_at, accepted_at, cancelled_at, created_at'
 const REQUEST = 'id, org_id, user_id, email, status, decided_by, decided_at, created_at'
-const AGENT_INVITE = 'id, token_hash, owner_user_id, org_id, created_by, role_id, teams, expires_at, used_at, used_by_agent_id, cancelled_at, created_at'
+const AGENT_INVITE = 'id, token_hash, owner_user_id, org_id, created_by, role_id, teams, expires_at, used_at, used_by_agent_id, cancelled_at, created_at, workspace_id, workspace_access, workspace_sessions'
 const AGENT_KEY = 'id, agent_id, family_id, access_hash, refresh_hash, access_expires_at, refresh_expires_at, refreshed_at, revoked_at, created_at'
 const RELAY_SESSION = 'room, name, owner_account, created_at, last_active_at, renamed_at, workspace_id, workspace_linked_by'
 const ACCESS_TYPE = 'id, owner_account, name, files, folders, talk, created_at, updated_at'
 const GRANT = 'room, account, type_id, tighten, granted_by, created_at, updated_at'
 const SESSION_INVITE = 'id, room, email, account, account_name, type_id, invited_by, created_at, expires_at, used_at, used_by, cancelled_at'
 const WORKSPACE = 'id, owner_user_id, org_id, name, description, color, created_by, created_at, archived_at, quota_bytes, used_bytes, file_count'
-const WORKSPACE_MEMBER = 'workspace_id, account, access, added_by, added_at'
+const WORKSPACE_MEMBER = 'workspace_id, account, access, sessions, added_by, added_at'
 const WORKSPACE_FILE = 'id, workspace_id, path, kind, size, mime, sha256, version, object_key, note, uploaded_by, uploaded_at, confirmed_at, deleted_at'
 const WORKSPACE_FILE_VERSION = 'file_id, version, size, sha256, object_key, note, uploaded_by, uploaded_at'
+const AGENT_PLACEMENT = 'agent_id, reach, workspace_ids, sessions, access, scopes, updated_by, updated_at'
+const WORKSPACE_AGENT_OVERRIDE = 'workspace_id, agent_id, sessions, excluded'
+const SESSION_AGENT_EXCLUSION = 'room, agent_id, excluded_by, created_at'
+const AGENT_WEBHOOK = 'agent_id, url, secret, created_at, updated_at'
 // PostgREST hands back at most 1000 rows per request: longer lists are read a page at a time.
 const PAGE = 1000
 
@@ -96,6 +100,10 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     },
     async listPersonalAgents (userId) {
       return (await one(db.from('agents').select(AGENT).eq('owner_user_id', userId).is('revoked_at', null).order('created_at'))).map(rowFrom)
+    },
+    // The org's own agents, live ones only, by name (for placement pickers).
+    async listOrgAgents (orgId) {
+      return (await one(db.from('agents').select(AGENT).eq('org_id', orgId).is('revoked_at', null).order('name'))).map(rowFrom)
     },
     async touchAgent (id) { await one(db.from('agents').update({ last_used_at: new Date().toISOString() }).eq('id', id)) },
     // Revoking an agent kills every key it holds at once.
@@ -206,9 +214,13 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     async deleteWorkspace (id) { await one(db.rpc('delete_workspace', { p_id: id })) },
     async workspaceMember (workspaceId, account) { return rowFrom(await one(db.from('workspace_members').select(WORKSPACE_MEMBER).eq('workspace_id', workspaceId).eq('account', account).maybeSingle())) },
     async listWorkspaceMembers (workspaceId) { return (await one(db.from('workspace_members').select(WORKSPACE_MEMBER).eq('workspace_id', workspaceId).order('added_at'))).map(rowFrom) },
-    async putWorkspaceMember ({ workspaceId, account, access, addedBy }) {
-      // Keep added_at on a change of access: upsert only touches access and added_by.
-      return rowFrom(await one(db.from('workspace_members').upsert({ workspace_id: workspaceId, account, access, added_by: addedBy }, { onConflict: 'workspace_id,account' }).select(WORKSPACE_MEMBER).single()))
+    // Keep added_at on a change of access: the upsert only touches access and added_by.
+    // sessions is included only when given, so an upsert that omits it never resets an
+    // existing member's sessions back to the column default.
+    async putWorkspaceMember ({ workspaceId, account, access, addedBy, sessions }) {
+      const payload = { workspace_id: workspaceId, account, access, added_by: addedBy }
+      if (sessions !== undefined) payload.sessions = sessions
+      return rowFrom(await one(db.from('workspace_members').upsert(payload, { onConflict: 'workspace_id,account' }).select(WORKSPACE_MEMBER).single()))
     },
     async removeWorkspaceMember (workspaceId, account) {
       const rows = await one(db.from('workspace_members').delete().eq('workspace_id', workspaceId).eq('account', account).select('account'))
@@ -218,6 +230,56 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
       return rowFrom(await one(db.rpc('set_session_workspace', { p_room: room, p_workspace: workspaceId || null, p_linked_by: linkedBy || null, p_at: ts(at) })))
     },
     async listWorkspaceSessions (workspaceId) { return (await one(db.from('relay_sessions').select(RELAY_SESSION).eq('workspace_id', workspaceId).order('last_active_at', { ascending: false }))).map(rowFrom) },
+
+    // Workspace agents (see 20261007000000_workspace_agents.sql). Where an agent works,
+    // a workspace's say over one that reaches it, per-session keep-outs, and its webhook.
+    async agentPlacement (agentId) { return rowFrom(await one(db.from('agent_placements').select(AGENT_PLACEMENT).eq('agent_id', agentId).maybeSingle())) },
+    async putAgentPlacement ({ agentId, reach = 'manual', workspaceIds = [], sessions = 'invited', access = 'edit', scopes = [], updatedBy }) {
+      return rowFrom(await one(db.from('agent_placements')
+        .upsert({ agent_id: agentId, reach, workspace_ids: workspaceIds, sessions, access, scopes, updated_by: updatedBy, updated_at: new Date().toISOString() }, { onConflict: 'agent_id' })
+        .select(AGENT_PLACEMENT).single()))
+    },
+    async listAgentPlacements (agentIds) {
+      if (!agentIds.length) return []
+      return (await one(db.from('agent_placements').select(AGENT_PLACEMENT).in('agent_id', agentIds))).map(rowFrom)
+    },
+    async workspaceAgentOverride (workspaceId, agentId) {
+      return rowFrom(await one(db.from('workspace_agent_overrides').select(WORKSPACE_AGENT_OVERRIDE).eq('workspace_id', workspaceId).eq('agent_id', agentId).maybeSingle()))
+    },
+    async putWorkspaceAgentOverride ({ workspaceId, agentId, sessions = null, excluded = false }) {
+      return rowFrom(await one(db.from('workspace_agent_overrides')
+        .upsert({ workspace_id: workspaceId, agent_id: agentId, sessions, excluded }, { onConflict: 'workspace_id,agent_id' })
+        .select(WORKSPACE_AGENT_OVERRIDE).single()))
+    },
+    async deleteWorkspaceAgentOverride (workspaceId, agentId) {
+      return (await one(db.from('workspace_agent_overrides').delete().eq('workspace_id', workspaceId).eq('agent_id', agentId).select('agent_id'))).length > 0
+    },
+    async listWorkspaceAgentOverrides (workspaceId) {
+      return (await one(db.from('workspace_agent_overrides').select(WORKSPACE_AGENT_OVERRIDE).eq('workspace_id', workspaceId))).map(rowFrom)
+    },
+    async addSessionAgentExclusion ({ room, agentId, excludedBy }) {
+      return rowFrom(await one(db.from('session_agent_exclusions')
+        .upsert({ room, agent_id: agentId, excluded_by: excludedBy }, { onConflict: 'room,agent_id' })
+        .select(SESSION_AGENT_EXCLUSION).single()))
+    },
+    async removeSessionAgentExclusion (room, agentId) {
+      return (await one(db.from('session_agent_exclusions').delete().eq('room', room).eq('agent_id', agentId).select('agent_id'))).length > 0
+    },
+    async sessionAgentExcluded (room, agentId) {
+      return !!(await one(db.from('session_agent_exclusions').select('agent_id').eq('room', room).eq('agent_id', agentId).maybeSingle()))
+    },
+    async listSessionAgentExclusions (room) {
+      return (await one(db.from('session_agent_exclusions').select(SESSION_AGENT_EXCLUSION).eq('room', room))).map(rowFrom)
+    },
+    async agentWebhook (agentId) { return rowFrom(await one(db.from('agent_webhooks').select(AGENT_WEBHOOK).eq('agent_id', agentId).maybeSingle())) },
+    async putAgentWebhook ({ agentId, url, secret }) {
+      return rowFrom(await one(db.from('agent_webhooks')
+        .upsert({ agent_id: agentId, url, secret, updated_at: new Date().toISOString() }, { onConflict: 'agent_id' })
+        .select(AGENT_WEBHOOK).single()))
+    },
+    async deleteAgentWebhook (agentId) {
+      return (await one(db.from('agent_webhooks').delete().eq('agent_id', agentId).select('agent_id'))).length > 0
+    },
 
     // Workspace files (see 20261005000000_workspace_files.sql).
     async createWorkspaceFile ({ workspaceId, path, kind, size = 0, mime = '', sha256 = '', objectKey = '', note = '', uploadedBy }) {

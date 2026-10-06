@@ -29,7 +29,7 @@ test('members: put upserts and keeps addedAt, list sorts, remove answers whether
   const m1b = await store.putWorkspaceMember({ workspaceId: ws.id, account: 'person:u2', access: 'edit', addedBy: 'person:u1' })
   assert.deepEqual([m1.addedAt, m1b.addedAt, m1b.access], [1000, 1000, 'edit'])
   assert.deepEqual((await store.listWorkspaceMembers(ws.id)).map((m) => m.account), ['person:u2', 'agent:a1'])
-  assert.deepEqual(await store.workspaceMember(ws.id, 'agent:a1'), { workspaceId: ws.id, account: 'agent:a1', access: 'edit', addedBy: 'person:u1', addedAt: 2000 })
+  assert.deepEqual(await store.workspaceMember(ws.id, 'agent:a1'), { workspaceId: ws.id, account: 'agent:a1', access: 'edit', addedBy: 'person:u1', sessions: 'invited', addedAt: 2000 })
   assert.equal(await store.removeWorkspaceMember(ws.id, 'agent:a1'), true)
   assert.equal(await store.removeWorkspaceMember(ws.id, 'agent:a1'), false)
   assert.equal(await store.workspaceMember(ws.id, 'agent:a1'), null)

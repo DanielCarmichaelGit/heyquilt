@@ -606,6 +606,21 @@ test('offline edits to a file someone else claimed wait as a claimed merge', asy
   assert.equal(rec.claimedBy, 'alice')
   assert.equal(read(p.dirB, 'locked.txt'), 'original, alice\n')
   assert.equal(fs.existsSync(path.join(p.dirB, '.quilt', 'rejected')), false, 'not dumped in rejected any more')
+
+  // While alice holds it, bob is told so, can't send it to an AI (its edit would be refused too),
+  // and asks for it; once she hands it over, he settles it by hand.
+  const held = () => B.status().merges.find((m) => m.id === rec.id)
+  assert.equal(held().heldBy, 'alice')
+  assert.equal(held().asked, false)
+  assert.throws(() => B.prepareMergeSend(rec.id), /locked.txt is claimed by alice.*Ask alice for it/)
+  assert.throws(() => B.resolveMerge(rec.id, { how: 'hand' }), /locked.txt is claimed by alice.*Ask alice for it/)
+  await B.requestFile('locked.txt', { title: 'Settle the merge of locked.txt' })
+  await waitFor(() => held().asked === true)
+  await waitFor(() => p.A.claimFor('locked.txt')?.queue?.length === 1)
+  await p.A.handoff('locked.txt', { context: 'all yours' })
+  await waitFor(() => !held().heldBy)
+  B.resolveMerge(rec.id, { how: 'hand' })
+  assert.match(read(p.dirB, 'locked.txt'), /\(bob\)/)
 })
 
 test('a file only bob changed offline is pushed, not merged', async (t) => {

@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import { installedEditors, openCommand, claudeCli, claudeSessionCommand, claudePromptCommand, openIn } from '../src/editors.js'
+import { installedEditors, openCommand, claudeCli, claudeSessionCommand, claudePromptCommand, openIn, claudeRunProblem } from '../src/editors.js'
 
 const mac = (apps) => ({ platform: 'darwin', home: '/Users/me', exists: (p) => apps.includes(p) })
 
@@ -142,4 +142,11 @@ test('a send to another app copies the prompt, then opens the folder', async () 
   const r = await openIn('zed', '/Users/me/p', { ...mac(['/Applications/Zed.app']), run, copy, prompt: 'Merge conflict' })
   assert.deepEqual(r, { copied: true, started: false })
   assert.deepEqual(order, ['copy', 'run open'])
+})
+
+test('a failed Claude Code run is explained: signed out, too slow, or what it said', () => {
+  assert.match(claudeRunProblem('Failed to authenticate: OAuth session expired and could not be refreshed'), /signed out.*`claude \/login`/)
+  assert.match(claudeRunProblem('Invalid API key · Please run /login'), /signed out/)
+  assert.match(claudeRunProblem('timed out'), /more than 5 minutes/)
+  assert.equal(claudeRunProblem('disk full'), 'Claude Code could not merge it (disk full).')
 })

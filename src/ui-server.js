@@ -12,7 +12,7 @@ import { runSession, decodeInvite, newConn, readConfig, recentSessions, forgetRe
 import { MAX_SHARED_FILE_BYTES } from './protocol.js'
 import { getSettings, saveSettings, unsupportedRelay, relayUrl } from './settings.js'
 import * as gitops from './git.js'
-import { installedEditors, openIn } from './editors.js'
+import { installedEditors, openIn, claudeRunProblem } from './editors.js'
 import { migrateDir } from './legacy.js'
 import { readAccount, saveAccount, clearAccount, clearAccountIf, resumeAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession, createAgentInvite, listAgents, listAccessTypes, listCollaborators, listGrants, putGrant, deleteGrant, inviteToSession, listSessionInvites, cancelSessionInvite } from './account.js'
 import { effectiveAccess, builtinType } from './session-access.js'
@@ -570,9 +570,15 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       // The headless run can take minutes; openIn returns once it's started, and logs how it went when it's done.
       const { copied, started } = await openIn(app, s.root, {
         prompt,
-        onDone: (result) => s.log(result.ok
-          ? `Claude Code finished merging ${mergePath}; a session opened`
-          : 'Claude Code could not run; the prompt is on your clipboard')
+        onDone: (result) => {
+          if (result.ok) s.log(`Claude Code finished merging ${mergePath}; a session opened`)
+          else {
+            const problem = `${claudeRunProblem(result.error)}${result.copied ? ' The merge prompt is on your clipboard: paste it into the Claude window that opened.' : ''}`
+            s.log(`${mergePath}: ${problem}`)
+            s.noteMergeSend(mergeId, problem)
+          }
+          pushStatus(id)
+        }
       })
       return { copied, started, app }
     },

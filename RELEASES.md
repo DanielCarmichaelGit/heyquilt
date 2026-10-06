@@ -12,6 +12,8 @@ nothing else is.
 ## 0.3.13 — 2026-10-07
 
 - **Agents that work over the web show up with everyone else.** An agent that joins through Quilt's hosted connection (like a Grok bot) or a chat link has no app running, so it never appeared among the people in a session, only at the bottom of the member list in the people menu, even while it was answering in chat. It now shows in the people count, the chat header, @mentions and task assignment, and to every AI's `quilt_status`, for a few minutes after each thing it does.
+- **Merging a file someone else is working on.** When your pull or offline edits clash with a file a teammate (or their AI) has claimed, the merge bar no longer offers buttons that only fail with "claimed by". It offers **Ask Duncan for it**, which puts you in that file's queue, or **Keep Duncan's**. Once they hand the file over, with their notes, **Keep mine**, **Edit by hand** and **Send to Claude Code** come back.
+- **Send to Claude Code says when it can't.** If Claude Code can't do the merge, for example because its command line is signed out on this computer, the merge bar now says why (run `claude /login`, then send again), and that the prompt is on your clipboard for the Claude window that opened. Before, you only got an empty Claude chat.
 
 ## 0.3.12 — 2026-10-07
 

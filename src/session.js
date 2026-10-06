@@ -174,6 +174,7 @@ export class Session extends EventEmitter {
     this.startName = startName // a new session's name (its folder), sent once the relay lets us in as owner
     this.startNameSent = false
     this.logs = [] // the last 200 log lines (for status and tests)
+    this.mergeSendProblems = new Map() // merge id -> why sending it to an AI failed
     // Git awareness (gitstate.js): a git operation in this folder is recognised, not broadcast as edits.
     this.git = null // { key, branch, sha } this folder was on when the session started (null: not a repo)
     this.gitSeen = null // the head last seen by classifyBurst
@@ -3003,10 +3004,7 @@ export class Session extends EventEmitter {
     // Settling is an edit of the session: viewers (and agents outside their folders) only see the record.
     const refusal = this.writeRefusal(rec.path)
     if (refusal) throw new Error(refusal)
-    if (how === 'mine' || how === 'hand') {
-      const claim = this.claimFor(rec.path)
-      if (claim && claim.by !== this.name) throw new Error(`${rec.path} is claimed by ${claim.by}${claim.note ? ` (${claim.note})` : ''}; ask them, or wait for the release`)
-    }
+    if (how === 'mine' || how === 'hand') this.mergeHeldCheck(rec)
     const onlyThere = () => new Error(`${rec.by === this.name ? 'your' : `${rec.by}'s`} version of ${rec.path} is only in the merge folder on ${rec.by === this.name ? 'the computer you merged on' : 'their computer'}`)
     const { ours, base, theirs } = this.mergeTexts(rec)
     if (how === 'mine') {
@@ -3056,6 +3054,35 @@ export class Session extends EventEmitter {
     throw new Error(`could not share ${rel}; the merge stays open`)
   }
 
+  /** Who else holds a merge's file right now, or null: settling it (or sending it to an AI) writes the file. */
+  mergeHeldBy (rec) {
+    const claim = this.claimFor(rec.path)
+    return claim && claim.by !== this.name ? claim : null
+  }
+
+  mergeHeldCheck (rec) {
+    const claim = this.mergeHeldBy(rec)
+    if (claim) throw new Error(`${rec.path} is claimed by ${claim.by}${claim.note ? ` (${claim.note})` : ''}. Ask ${claim.by} for it to merge the two, or keep ${claim.by}'s version.`)
+  }
+
+  /** A merge as status shows it: without its texts, with who holds the file and whether we asked for it. */
+  mergeStatus ({ ours, base, ...m }) {
+    const claim = m.state === 'done' ? null : this.mergeHeldBy(m)
+    const problem = m.state === 'done' ? null : this.mergeSendProblems.get(m.id)
+    return {
+      ...m,
+      ...(claim ? { heldBy: claim.by, asked: (claim.queue || []).some((r) => r.by === this.name) } : {}),
+      ...(problem ? { sendProblem: problem } : {})
+    }
+  }
+
+  /** How a send of a merge to an AI went: a problem shows on the merge bar (on this computer only) until the next send. */
+  noteMergeSend (id, problem = null) {
+    if (problem) this.mergeSendProblems.set(id, String(problem))
+    else this.mergeSendProblems.delete(id)
+    this.scheduleStatusWrite()
+  }
+
   /** A file being edited by hand lost its markers: that merge is settled. */
   closeHandMerge (rel, text) {
     const rec = this.mergeList().find((m) => m.path === rel && m.state === 'editing')
@@ -3089,6 +3116,8 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
     if (rec.state === 'editing') throw new Error(STILL_MARKED)
     // The prompt asks a tool to write rec.path: never one the session doesn't sync.
     if (!this.syncable(rec.path)) throw new Error(`${rec.path} is not synced in this session, so Quilt will not send it`)
+    this.mergeHeldCheck(rec)
+    this.noteMergeSend(id) // a new try
     const dir = this.mergeDir(id)
     fs.mkdirSync(dir, { recursive: true })
     const { ours, base, theirs } = this.mergeTexts(rec)
@@ -3384,7 +3413,7 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
       tasks: this.taskList(),
       // Without the texts (up to 400 KB a record): status goes out on every
       // change. The full records are at GET /merges and the app's merges route.
-      merges: this.mergeList().map(({ ours, base, ...m }) => m),
+      merges: this.mergeList().map((m) => this.mergeStatus(m)),
       activity: this.activity.toArray().slice(-30),
       changes: this.changes().people.map((p) => ({ ...p, files: p.files.slice(0, 10) })),
       chat: this.messages({ limit: 20, markRead: false }),

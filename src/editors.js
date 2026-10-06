@@ -108,7 +108,14 @@ const run = (file, args, opts = {}) => {
     })
   }
   return new Promise((resolve, reject) => {
-    const child = execFile(file, args, { windowsHide: true, timeout: 60000, ...opts }, (err) => (err ? reject(err) : resolve()))
+    const child = execFile(file, args, { windowsHide: true, timeout: 60000, ...opts }, (err, stdout, stderr) => {
+      if (!err) return resolve()
+      // What the tool said beats "Command failed: <the whole prompt>".
+      const said = `${stderr || ''}\n${stdout || ''}`.split('\n').map((l) => l.trim()).find(Boolean)
+      if (err.killed) err.message = 'timed out'
+      else if (said) err.message = said.slice(0, 300)
+      reject(err)
+    })
     child.stdin?.end() // the Claude CLI waits for stdin to close before running a prompt
   })
 }
@@ -140,6 +147,13 @@ export function claudeSessionCommand (cli, dir, id) {
 /** A Claude Code session that starts by working on `prompt` headless (edits allowed), then can be opened to look at. */
 export function claudePromptCommand (cli, dir, id, prompt) {
   return [cli, ['-p', prompt, '--session-id', id, '--permission-mode', 'acceptEdits'], { cwd: dir, timeout: 300000 }]
+}
+
+/** Why a headless Claude Code run failed, said so the person can fix it. */
+export function claudeRunProblem (message = '') {
+  if (/authenticat|log ?in|oauth|api key/i.test(message)) return 'Claude Code is signed out on this computer, so it could not merge. Run `claude /login` in a terminal, then send it again.'
+  if (/timed? ?out|ETIMEDOUT|SIGTERM/i.test(message)) return 'Claude Code took more than 5 minutes, so Quilt stopped it. Send it again, or edit by hand.'
+  return `Claude Code could not merge it${message ? ` (${message})` : ''}.`
 }
 
 /** Puts text on the clipboard (pbcopy on a Mac, clip on Windows, xclip elsewhere). False when it couldn't. */

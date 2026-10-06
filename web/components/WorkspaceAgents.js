@@ -1,4 +1,4 @@
-import { viaLabel, joinsText, JOINS_OPTIONS } from '@/lib/agent-placement.js'
+import { viaLabel, joinsText, JOINS_OPTIONS, FOREIGN_JOINS } from '@/lib/agent-placement.js'
 
 /** The hidden fields every form here sends: the workspace, and the org for an org's page. */
 function Hidden ({ id, slug, children }) {
@@ -11,9 +11,11 @@ function Hidden ({ id, slug, children }) {
   )
 }
 
+// Someone else's agent added here: Joins shows, disabled, with why (a disabled select isn't
+// sent, so a save keeps its access change and leaves Joins alone).
 function JoinsSelect ({ a }) {
   return (
-    <select className='input' name='sessions' defaultValue={a.sessions} aria-label={`When ${a.name} joins sessions here`}>
+    <select className='input' name='sessions' defaultValue={a.sessions} disabled={a.foreign} title={a.foreign ? FOREIGN_JOINS : undefined} aria-label={`When ${a.name} joins sessions here`}>
       {JOINS_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
     </select>
   )

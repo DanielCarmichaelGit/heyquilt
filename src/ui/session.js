@@ -398,8 +398,8 @@ function bindTop () {
     const f = b.closest('.pm-member')
     if (!await ask({ title: `Remove ${f.querySelector('.nm').textContent.trim()}?`, message: 'They\'ll need a new invite and your approval to come back.', ok: 'Remove', danger: true })) return
     try { const r = await api('POST', `/api/sessions/${current}/members/remove`, { key: f.dataset.key }); toast(r.warning || 'Removed') } catch (err) { toast(err.message) }
-    // In a workspace, a removed agent is kept out of this session in the background: list it once that's done.
-    if (state.workspacesOn && f.dataset.key.startsWith('agent:')) setTimeout(loadKeptOut, 1000)
+    // In a workspace, a removed agent is kept out of this session before the removal answers: list it now.
+    if (state.workspacesOn && f.dataset.key.startsWith('agent:')) loadKeptOut()
   })
   menu.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-let-in]')

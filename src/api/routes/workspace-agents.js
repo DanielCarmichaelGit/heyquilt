@@ -7,7 +7,7 @@ import { newToken, hashToken } from '../tokens.js'
 import { orgAccess } from '../org-access.js'
 import { cleanAccess, stillInOrg } from '../workspace-access.js'
 import { workspaceReach } from '../workspace-reach.js'
-import { cleanPlacement, placementIn, agentsJoiningSession, SESSIONS } from '../agent-placement.js'
+import { cleanPlacement, placementIn, agentsJoiningSession, sameOwnerAgent, SESSIONS } from '../agent-placement.js'
 import { AGENT_INVITE_TTL_MS, inviteStatus } from './agent-invites.js'
 import crypto from 'node:crypto'
 import { parseWebhookUrl, newSecret, publicWebhookHost, deliverWebhook } from '../../webhooks.js'
@@ -16,6 +16,8 @@ import { isHostedRelay, HOSTED_RELAY } from '../../settings.js'
 
 const ROOM = /^[A-Za-z0-9_-]{1,64}$/
 export const AGENT_WEBHOOK_EVENTS = ['session.started']
+/** Why someone else's agent in a workspace never joins every session there. */
+export const FOREIGN_JOINS = 'Only its owner can make an agent join every session.'
 
 /** A placement as the routes answer it; an agent with none is 'manual' (it works only where it is added). */
 export function placementView (agentId, p) {
@@ -35,7 +37,8 @@ export function cleanMemberSessions (value, kind) {
  * The agents in `ws` for its page: member agents (via 'member', managed by the workspace),
  * then agents of the workspace's owner placed there (via 'placed' or 'global', managed by
  * the owner or the org), with the workspace's override applied. Agents the workspace kept
- * out are listed (excluded: true) only for an admin, so they can be let back in.
+ * out are listed (excluded: true) only for an admin, so they can be let back in. `foreign`
+ * marks someone else's agent added here: it joins only when invited, whatever its row says.
  */
 export async function workspaceAgents (store, ws, { admin = false } = {}) {
   const out = []
@@ -46,7 +49,8 @@ export async function workspaceAgents (store, ws, { admin = false } = {}) {
     const agent = await store.agentById(agentId)
     if (!agent || agent.revokedAt || !(await stillInOrg(store, ws, m.account, null))) continue
     seen.add(agentId)
-    out.push({ account: m.account, agentId, name: agent.name, provider: agent.provider, via: 'member', access: m.access, sessions: m.sessions || 'invited', managedBy: 'workspace', excluded: false })
+    const foreign = !(await sameOwnerAgent(store, ws, agentId))
+    out.push({ account: m.account, agentId, name: agent.name, provider: agent.provider, via: 'member', access: m.access, sessions: foreign ? 'invited' : (m.sessions || 'invited'), managedBy: 'workspace', excluded: false, foreign })
   }
   const own = ws.orgId ? await store.listOrgAgents(ws.orgId) : ws.ownerUserId ? await store.listPersonalAgents(ws.ownerUserId) : []
   const placed = []
@@ -57,7 +61,7 @@ export async function workspaceAgents (store, ws, { admin = false } = {}) {
     const override = await store.workspaceAgentOverride(ws.id, agent.id)
     const excluded = !!override?.excluded
     if (excluded && !admin) continue
-    placed.push({ account: `agent:${agent.id}`, agentId: agent.id, name: agent.name, provider: agent.provider, via: p.reach === 'all' ? 'global' : 'placed', access: p.access, sessions: override?.sessions ?? p.sessions, managedBy: ws.orgId ? 'org' : 'owner', excluded })
+    placed.push({ account: `agent:${agent.id}`, agentId: agent.id, name: agent.name, provider: agent.provider, via: p.reach === 'all' ? 'global' : 'placed', access: p.access, sessions: override?.sessions ?? p.sessions, managedBy: ws.orgId ? 'org' : 'owner', excluded, foreign: false })
   }
   placed.sort((a, b) => a.name.localeCompare(b.name))
   return [...out, ...placed]
@@ -184,6 +188,8 @@ export function workspaceAgentRoutes (ctx) {
     ['PUT', /^\/v1\/orgs\/([^/]+)\/agents\/([^/]+)\/placement$/, async (req, body, [slug, id]) => {
       const a = await orgFor(req, slug)
       a.need('agents', 'u')
+      // Placing an agent puts it in the org's workspaces, so it takes Workspaces: Update too.
+      a.need('workspaces', 'u')
       const agent = await orgAgent(a, id)
       const p = await placementFrom(body, (ws) => ws.orgId === a.org.id)
       return { placement: placementView(agent.id, await store.putAgentPlacement({ agentId: agent.id, ...p, updatedBy: `person:${a.u.userId}` })) }
@@ -280,7 +286,10 @@ export function workspaceAgentRoutes (ctx) {
       const by = r.me.userId ? ((await store.profile(r.me.userId))?.name || '') : (r.me.agent?.name || '')
       const notified = []
       const withoutWebhook = []
+      // An agent that started the session is in it already: it isn't sent its own link.
+      const starter = session.ownerAccount.startsWith('agent:') ? session.ownerAccount.slice(6) : null
       for (const { agentId, via } of await agentsJoiningSession(store, room)) {
+        if (agentId === starter) continue
         const hook = await store.agentWebhook(agentId)
         if (!hook) { withoutWebhook.push(agentId); continue }
         notified.push(agentId)

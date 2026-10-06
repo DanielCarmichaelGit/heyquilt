@@ -160,11 +160,16 @@ test('removing an agent from a session in a workspace also keeps it out of that 
   const room = s.body.status.room
   await memberOfRoom(room, `agent:${agent.id}`, 'Kip')
   await memberOfRoom(room, 'person:lim', 'Lim')
-  const removed = await api('POST', `/api/sessions/${s.body.id}/members/remove`, { key: `agent:${agent.id}` })
+  // The keep-out is written first, while the relay still lists the agent: no pass can be
+  // issued between its removal and its exclusion.
+  const real = accounts.store.addSessionAgentExclusion
+  let stillMember = null
+  accounts.store.addSessionAgentExclusion = async (row) => { stillMember = !!relay.rooms.get(room).meta.members[`agent:${agent.id}`]; return real.call(accounts.store, row) }
+  let removed
+  try { removed = await api('POST', `/api/sessions/${s.body.id}/members/remove`, { key: `agent:${agent.id}` }) } finally { accounts.store.addSessionAgentExclusion = real }
   assert.deepEqual([removed.status, removed.body.ok], [200, true], JSON.stringify(removed.body))
-  const until = Date.now() + 10_000
-  while (!(await accounts.store.sessionAgentExcluded(room, agent.id)) && Date.now() < until) await sleep(50)
-  assert.equal(await accounts.store.sessionAgentExcluded(room, agent.id), true)
+  assert.equal(stillMember, true, 'excluded before the relay removed it')
+  assert.equal(await accounts.store.sessionAgentExcluded(room, agent.id), true, 'done by the time the removal answers')
   // A person removed from the same session: no exclusion is asked for.
   assert.equal((await api('POST', `/api/sessions/${s.body.id}/members/remove`, { key: 'person:lim' })).status, 200)
   assert.deepEqual((await accounts.store.listSessionAgentExclusions(room)).map((e) => e.agentId), [agent.id])
@@ -200,6 +205,32 @@ test('the removal answers at once even when the API turns the exclusion down, an
   while (!(await logged()) && Date.now() < until) await sleep(50)
   assert.ok(await logged())
   await api('POST', `/api/sessions/${s.body.id}/stop`)
+})
+
+test('a keep-out the API answers too late is given up after keepOutMs, and the agent is still removed', async () => {
+  const ui3 = await startUi({ port: 0, keepOutMs: 300 })
+  const real = accounts.store.addSessionAgentExclusion
+  try {
+    const call = (method, p, body) => fetch(`http://127.0.0.1:${ui3.port}${p}`, { method, headers: { 'x-quilt-token': ui3.token, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }).then(async (r) => ({ status: r.status, body: await r.json() }))
+    assert.equal((await call('GET', '/api/workspaces')).body.on, true)
+    const id = await newWorkspace('Slow')
+    const { agent } = await makeAgent(accounts, { name: 'Sloane', ownerUserId: 'mem' })
+    const s = await call('POST', '/api/sessions', { mode: 'create', dir: path.join(home, 'slow'), workspace: id })
+    const room = s.body.status.room
+    await memberOfRoom(room, `agent:${agent.id}`, 'Sloane')
+    // Answers only long after the app gave up on it.
+    accounts.store.addSessionAgentExclusion = (row) => new Promise((resolve) => setTimeout(() => resolve(real.call(accounts.store, row)), 2000))
+    const started = Date.now()
+    const r = await call('POST', `/api/sessions/${s.body.id}/members/remove`, { key: `agent:${agent.id}` })
+    assert.deepEqual([r.status, r.body], [200, { ok: true }])
+    assert.ok(Date.now() - started < 2500, `answered in ${Date.now() - started} ms`)
+    const until = Date.now() + 5000
+    while (relay.rooms.get(room)?.meta.members[`agent:${agent.id}`] && Date.now() < until) await sleep(50)
+    assert.equal(relay.rooms.get(room)?.meta.members[`agent:${agent.id}`], undefined, 'removed from the session')
+    const logs = (await call('GET', '/api/state')).body.sessions.find((x) => x.id === s.body.id).logs
+    assert.ok(logs.some((l) => /could not keep that agent out of this session/.test(l.line)), JSON.stringify(logs))
+    await call('POST', `/api/sessions/${s.body.id}/stop`)
+  } finally { accounts.store.addSessionAgentExclusion = real; await ui3.close() }
 })
 
 test('an app that has not seen workspaces on (the flag off at launch) only removes, even in a session it once put in a workspace', async () => {

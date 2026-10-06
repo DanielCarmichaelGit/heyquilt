@@ -66,6 +66,9 @@ export function viaLabel (a, orgName = '') {
   return a?.via === 'global' ? 'Global' : 'Placed'
 }
 
+/** Why someone else's agent in a workspace never joins every session there (the API's words). */
+export const FOREIGN_JOINS = 'Only its owner can make an agent join every session.'
+
 /** Joins, said in words (for someone who can't change it). */
 export const joinsText = (sessions) => sessions === 'all' ? 'Joins every session' : 'Joins when invited'
 

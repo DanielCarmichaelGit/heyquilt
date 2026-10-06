@@ -77,8 +77,9 @@ export default async function People ({ params, searchParams }) {
     canInvite ? apiCall(user, 'GET', `/v1/orgs/${slug}/agent-invites`) : null
   ])
   const members = membersRes.data?.members || []
-  // With workspaces on and Agents: Update, each agent's Available in and Joins, among the org's workspaces.
-  const placing = canSetAgentRole && await workspacesOn(user.accessToken)
+  // With workspaces on, Agents: Update and Workspaces: Update (placing an agent puts it in the
+  // org's workspaces), each agent's Available in and Joins, among the org's workspaces.
+  const placing = canSetAgentRole && allowed(me, 'workspaces', 'u') && await workspacesOn(user.accessToken)
   const [orgAgentsRes, workspacesRes] = placing
     ? await Promise.all([apiCall(user, 'GET', `/v1/orgs/${slug}/agents`), apiCall(user, 'GET', '/v1/me/workspaces')])
     : [null, null]

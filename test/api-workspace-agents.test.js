@@ -308,10 +308,10 @@ test('GET /v1/workspaces/:id lists member and placed agents with via, access, se
   const got = await t.call('GET', `/v1/workspaces/${w.id}`, null, 'gm')
   assert.equal(got.status, 200, JSON.stringify(got.body))
   assert.deepEqual(got.body.agents, [
-    { account: `agent:${member.id}`, agentId: member.id, name: 'Aaron', provider: 'Anthropic', via: 'member', access: 'view', sessions: 'all', managedBy: 'workspace', excluded: false },
-    { account: `agent:${global.id}`, agentId: global.id, name: 'Gail', provider: 'OpenAI', via: 'global', access: 'edit', sessions: 'invited', managedBy: 'owner', excluded: false },
-    { account: `agent:${placed.id}`, agentId: placed.id, name: 'Pete', provider: 'Cursor', via: 'placed', access: 'view', sessions: 'all', managedBy: 'owner', excluded: false },
-    { account: `agent:${gone.id}`, agentId: gone.id, name: 'Xena', provider: 'Anthropic', via: 'global', access: 'edit', sessions: 'all', managedBy: 'owner', excluded: true }
+    { account: `agent:${member.id}`, agentId: member.id, name: 'Aaron', provider: 'Anthropic', via: 'member', access: 'view', sessions: 'all', managedBy: 'workspace', excluded: false, foreign: false },
+    { account: `agent:${global.id}`, agentId: global.id, name: 'Gail', provider: 'OpenAI', via: 'global', access: 'edit', sessions: 'invited', managedBy: 'owner', excluded: false, foreign: false },
+    { account: `agent:${placed.id}`, agentId: placed.id, name: 'Pete', provider: 'Cursor', via: 'placed', access: 'view', sessions: 'all', managedBy: 'owner', excluded: false, foreign: false },
+    { account: `agent:${gone.id}`, agentId: gone.id, name: 'Xena', provider: 'Anthropic', via: 'global', access: 'edit', sessions: 'all', managedBy: 'owner', excluded: true, foreign: false }
   ])
   // A reader who doesn't manage it never sees the excluded one.
   await t.call('PUT', `/v1/workspaces/${w.id}/members/person:lim`, { access: 'view' }, 'gm')
@@ -556,4 +556,89 @@ test('letAgentBackIn logs a failed clean-up instead of failing the grant', async
   await letAgentBackIn(store, 'room-x', 'agent:5983184b-937a-469c-9728-c2ec96030f93', true, (m) => logs.push(m))
   assert.equal(logs.length, 1)
   assert.match(logs[0], /table missing/)
+})
+
+test('someone else\'s agent added to a workspace: it may be added, but only its owner makes it join every session', async () => {
+  // Otto adds Mo's agent to his own workspace (allowed, as in phase 1, for access).
+  const w = await newWs('out', 'Otto summons')
+  const { agent } = await makeAgent(t, { name: 'Mos bot', ownerUserId: 'mem' })
+  const put = (body) => t.call('PUT', `/v1/workspaces/${w.id}/members/agent:${agent.id}`, body, 'out')
+  const all = await put({ access: 'edit', sessions: 'all' })
+  assert.deepEqual([all.status, all.body], [400, { error: 'Only its owner can make an agent join every session.' }])
+  assert.equal(await t.store.workspaceMember(w.id, `agent:${agent.id}`), null, 'nothing was written')
+  assert.equal((await put({ access: 'edit' })).status, 200, 'added for access, as before')
+  assert.equal((await put({ access: 'view', sessions: 'invited' })).status, 200)
+  assert.equal((await put({ access: 'view', sessions: 'all' })).status, 400, 'nor later')
+  // Its card says it never joins by itself here, and why.
+  const listed = (await t.call('GET', `/v1/workspaces/${w.id}`, null, 'out')).body.agents.find((a) => a.agentId === agent.id)
+  assert.deepEqual([listed.via, listed.sessions, listed.foreign], ['member', 'invited', true])
+  // The agent's owner may in her own workspace.
+  const mine = await newWs('mem', 'Mo summons')
+  assert.equal((await t.call('PUT', `/v1/workspaces/${mine.id}/members/agent:${agent.id}`, { access: 'edit', sessions: 'all' }, 'mem')).status, 200)
+  assert.equal((await t.call('GET', `/v1/workspaces/${mine.id}`, null, 'mem')).body.agents.find((a) => a.agentId === agent.id).foreign, false)
+  // In an org workspace only the org's own agents can be members (a person's agent is never in
+  // the org), and they may join every session.
+  const o = await makeOrg(t, 'Summon Co')
+  const ow = await newWs('admin', 'Org summons', o.slug)
+  const { agent: orgBot } = await makeAgent(t, { name: 'Org bot', orgId: o.org.id })
+  await t.store.addAgentMember({ orgId: o.org.id, agentId: orgBot.id })
+  assert.equal((await t.call('PUT', `/v1/workspaces/${ow.id}/members/agent:${orgBot.id}`, { access: 'edit', sessions: 'all' }, 'admin')).status, 200)
+  assert.equal((await t.call('PUT', `/v1/workspaces/${ow.id}/members/agent:${agent.id}`, { access: 'edit', sessions: 'all' }, 'admin')).status, 404, "a person's agent is not in the org")
+})
+
+test('session.started: a member row for someone else\'s agent with sessions all (written before this rule) sends it nothing', async () => {
+  const x = await handoffApi()
+  const { h } = x
+  try {
+    const w = (await h.call('POST', '/v1/workspaces', { name: 'Old row' }, 'out')).body.workspace
+    const { agent: foreign } = await makeAgent(h, { name: 'Mos bot', ownerUserId: 'mem' })
+    const { agent: own } = await makeAgent(h, { name: 'Ottos bot', ownerUserId: 'out' })
+    await h.store.putWorkspaceMember({ workspaceId: w.id, account: `agent:${foreign.id}`, access: 'edit', addedBy: 'person:out', sessions: 'all' })
+    await h.store.putWorkspaceMember({ workspaceId: w.id, account: `agent:${own.id}`, access: 'edit', addedBy: 'person:out', sessions: 'all' })
+    for (const a of [foreign, own]) await h.store.putAgentWebhook({ agentId: a.id, url: `https://hooks.example.com/${a.id}`, secret: `secret-${a.id}` })
+    await x.startedRoom(w, 'old-row-1', 'out')
+    const r = await h.call('POST', `/v1/workspaces/${w.id}/sessions/old-row-1/started`, { link: 'https://join.heyquilt.com/old-row-1#abc' }, 'out')
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.deepEqual([r.body.notified, r.body.withoutWebhook], [[own.id], []])
+    await h.api.flushWebhooks()
+    assert.deepEqual(x.deliveries.map((d) => d.url), [`https://hooks.example.com/${own.id}`])
+  } finally { x.close() }
+})
+
+test('org placement needs Workspaces: Update as well as Agents: Update', async () => {
+  const o = await makeOrg(t, 'Rights Co')
+  const { agent } = await makeAgent(t, { name: 'Placid', orgId: o.org.id })
+  await t.store.addAgentMember({ orgId: o.org.id, agentId: agent.id })
+  const path = `/v1/orgs/${o.slug}/agents/${agent.id}/placement`
+  const body = { reach: 'all', sessions: 'all', access: 'edit' }
+  const tender = await t.store.createRole({ orgId: o.org.id, name: 'Agent tender', grants: { agents: { r: true, u: true }, workspaces: { r: true } } })
+  await t.store.setMemberRole(o.mem.id, tender.id)
+  const refused = await t.call('PUT', path, body, 'mem')
+  assert.equal(refused.status, 403, JSON.stringify(refused.body))
+  assert.equal((await t.store.agentPlacement(agent.id)), null, 'nothing was placed')
+  const both = await t.store.createRole({ orgId: o.org.id, name: 'Placer', grants: { agents: { r: true, u: true }, workspaces: { r: true, u: true } } })
+  await t.store.setMemberRole(o.mem.id, both.id)
+  assert.equal((await t.call('PUT', path, body, 'mem')).status, 200)
+})
+
+test('session.started: the agent that started the session is not sent its own session', async () => {
+  const x = await handoffApi()
+  const { h } = x
+  try {
+    const w = (await h.call('POST', '/v1/workspaces', { name: 'Self' }, 'gm')).body.workspace
+    const { agent: starter, accessKey } = await makeAgent(h, { name: 'Starter', ownerUserId: 'gm' })
+    const { agent: other } = await makeAgent(h, { name: 'Other', ownerUserId: 'gm' })
+    for (const a of [starter, other]) {
+      await x.place(a, 'gm', { reach: 'all', sessions: 'all', access: 'edit' })
+      await h.store.putAgentWebhook({ agentId: a.id, url: `https://hooks.example.com/${a.id}`, secret: `secret-${a.id}` })
+    }
+    const room = 'self-1'
+    assert.equal((await h.call('POST', `/v1/workspaces/${w.id}/sessions`, { room }, null, asAgent(accessKey))).status, 200)
+    await h.store.ingestPresence([{ id: `${room}-s`, type: 'start', room, account: `agent:${starter.id}`, owner: true, name: '', at: Date.now() }], Date.now())
+    const r = await h.call('POST', `/v1/workspaces/${w.id}/sessions/${room}/started`, { link: `https://join.heyquilt.com/${room}#abc` }, null, asAgent(accessKey))
+    assert.equal(r.status, 200, JSON.stringify(r.body))
+    assert.deepEqual([r.body.notified, r.body.withoutWebhook], [[other.id], []])
+    await h.api.flushWebhooks()
+    assert.deepEqual(x.deliveries.map((d) => d.url), [`https://hooks.example.com/${other.id}`])
+  } finally { x.close() }
 })

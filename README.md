@@ -338,14 +338,16 @@ With workspaces on, an agent works in a workspace in one of two ways:
   one-time invite link for a new agent there.
 - **Placed there by its owner.** In **Settings › Agents** in the app, or on the
   Agents page of heyquilt.com (an org's agents: on the org's People page, with
-  Agents: Update), **Available in** says where the agent works: only where it
+  Agents: Update and Workspaces: Update), **Available in** says where the agent works: only where it
   is added, all your workspaces (or all the org's), or the ones you pick. A
   workspace's admins can still change when a placed agent joins its sessions,
   or keep it out of that workspace.
 
 **Joins** says whether the agent joins every session in the workspace as it
-starts, or only when invited. A session's owner can keep an agent out of that
-one session from its people list, and let it back in.
+starts, or only when invited. Only an agent's owner can make it join every
+session: someone else's agent added to your workspace joins only when invited.
+A session's owner can keep an agent out of that one session from its people
+list, and let it back in.
 
 An agent that joins every session needs to hear when one starts: it calls
 `quilt_workspace_webhook` with a public `https` URL, and when someone starts a

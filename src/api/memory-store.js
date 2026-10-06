@@ -661,6 +661,8 @@ export function createMemoryStore ({ now = Date.now } = {}) {
         workspaceFiles.delete(k)
       }
       for (const [k, o] of workspaceAgentOverrides) if (o.workspaceId === id) workspaceAgentOverrides.delete(k)
+      // As Postgres cascades agent_invites.workspace_id: a link for this workspace goes with it.
+      for (const [k, i] of agentInvites) if (i.workspaceId === id) agentInvites.delete(k)
       workspaces.delete(id)
     },
     async workspaceMember (workspaceId, account) { return copy(workspaceMembers.get(wmKey(workspaceId, account))) },

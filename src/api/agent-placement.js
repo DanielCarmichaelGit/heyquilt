@@ -29,8 +29,11 @@ export function cleanPlacement (body) {
   return { reach: b.reach, workspaceIds, sessions: b.sessions, access: b.access, scopes }
 }
 
-/** A live agent (not revoked) from the same owner as `ws`, or null. */
-async function sameOwnerAgent (store, ws, agentId) {
+/**
+ * A live agent (not revoked) from the same owner as `ws`, or null: for a personal workspace
+ * one of its owner's own agents, for an org's one of the org's agents still in it.
+ */
+export async function sameOwnerAgent (store, ws, agentId) {
   if (!UUID.test(String(agentId || ''))) return null
   const agent = await store.agentById(agentId)
   if (!agent || agent.revokedAt) return null
@@ -77,7 +80,9 @@ async function decide (store, session, ws, agentId) {
   if (!agent || agent.revokedAt) return no
   const account = `agent:${agentId}`
   const member = await store.workspaceMember(ws.id, account)
-  if (member && await stillInOrg(store, ws, account, null)) return { joins: member.sessions === 'all', via: 'member' }
+  // A member row decides, but it makes an agent join every session only when the agent is
+  // the workspace owner's own: anyone can add someone else's agent, never summon it.
+  if (member && await stillInOrg(store, ws, account, null)) return { joins: member.sessions === 'all' && !!(await sameOwnerAgent(store, ws, agentId)), via: 'member' }
   const r = await agentReach(store, ws, agentId)
   if (r) return { joins: r.sessions === 'all', via: r.via }
   return no
@@ -97,8 +102,8 @@ async function sessionAndWorkspace (store, room) {
 
 /**
  * Whether an agent joins the session in `room` by itself: kept out of this session, no;
- * a member row in the session's workspace decides next; then its placement (with the
- * workspace's override); otherwise no.
+ * a member row in the session's workspace decides next (yes only for the workspace owner's
+ * own agent); then its placement (with the workspace's override); otherwise no.
  */
 export async function agentJoinsSession (store, room, agentId) {
   const sw = await sessionAndWorkspace(store, room)

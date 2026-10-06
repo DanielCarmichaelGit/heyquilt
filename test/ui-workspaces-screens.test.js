@@ -197,6 +197,13 @@ test('workspace agent cards: why it is here, Joins for admins, and the right act
   const o = place.workspaceAgentCardHtml(out, { admin: true })
   assert.ok(o.includes('class="pc agent out"') && o.includes('<span>Not in this workspace</span>') && o.includes('data-agent-include="p"'))
   assert.ok(!o.includes('data-agent-joins'))
+
+  // Someone else's agent added here: an admin sets its access and removes it, but cannot make
+  // it join every session (only its owner can), and the card says so instead of offering it.
+  const foreign = { ...member, account: 'agent:f', agentId: 'f', name: 'Visitor', foreign: true }
+  const f = place.workspaceAgentCardHtml(foreign, { admin: true })
+  for (const bit of ['data-member-access="agent:f"', 'data-member-remove="agent:f"', '<span title="Only its owner can make an agent join every session.">Joins when invited</span>']) assert.ok(f.includes(bit), bit)
+  assert.ok(!f.includes('data-agent-joins'), 'no Joins choice the API would refuse')
 })
 
 test('the workspace page lists agents from the API\'s agents, with their cards wired', () => {
@@ -261,7 +268,9 @@ test('a session\'s people menu: agents kept out of it, each with Let back in, on
   for (const bit of ['Kept out of this session', 'Kip &lt;bot&gt; (agent)', 'data-let-in="k1"', 'Let back in', 'class="pm-member"']) assert.ok(html.includes(bit), bit)
   const s = ui('session.js')
   assert.ok(s.includes('if (sum().status.access?.owner) { loadGrants(); if (state.workspacesOn) loadKeptOut() }'))
-  assert.ok(s.includes("if (state.workspacesOn && f.dataset.key.startsWith('agent:')) setTimeout(loadKeptOut, 1000)"))
+  // The removal answers once the keep-out is written (or given up on), so the list is read then, not on a timer.
+  assert.ok(!s.includes('setTimeout(loadKeptOut'))
+  assert.ok(s.includes("if (state.workspacesOn && f.dataset.key.startsWith('agent:')) loadKeptOut()"))
   assert.ok(s.includes('if (state.workspacesOn && sum()?.workspace && sum().status.access?.owner)'))
   // With nothing kept out (always, with workspaces off) the owner's section ends exactly as before.
   assert.ok(s.includes('    $' + "{keptOut.id === current ? keptOutHtml(keptOut.agents) : ''}<div class=\"pm-foot\">"))

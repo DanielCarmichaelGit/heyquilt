@@ -427,7 +427,7 @@ export async function runMcp () {
         await setSessionWorkspace({ token: saved.accessKey, id: workspace, room: conn.room, api: saved.api })
         // Then hand its link to the agents that join it by themselves, in the background:
         // starting never waits for this, and a failure is only logged.
-        announceWhenReported(() => announceSessionStarted({ token: saved.accessKey, id: workspace, room: conn.room, link: run.invite, api: saved.api }), {
+        announceWhenReported(agentAnnouncer({ name: agentKey, workspace, room: conn.room, link: run.invite }), {
           alive: () => joined?.run === run,
           log: (line) => run.session.log(line)
         }).catch(() => {})
@@ -669,6 +669,18 @@ export async function runMcp () {
 }
 
 // How long the startup check of the API's features may take before the tools are left out.
+/**
+ * One try at handing a session's link to the agents that join it by themselves, as the agent
+ * `name` that started it. Its access key is read afresh on every try (agentAccess refreshes
+ * it when it has nearly run out), so a retry minutes later never sends an expired one.
+ */
+export function agentAnnouncer ({ name, workspace, room, link, access = agentAccess, announce = announceSessionStarted }) {
+  return async () => {
+    const saved = await access({ name })
+    return announce({ token: saved.accessKey, id: workspace, room, link, api: saved.api })
+  }
+}
+
 export const FEATURES_TIMEOUT_MS = 2000
 // Up to the library's largest file, to or from storage.
 const TRANSFER_TIMEOUT_MS = 10 * 60 * 1000

@@ -78,10 +78,10 @@ test('the Agents page shows placements only when workspaces are on', () => {
   assert.ok(a.includes("apiCall(user, 'PUT', `/v1/me/agents/${encodeURIComponent(id)}/placement`, placementFromForm(formData))"))
 })
 
-test('org People: agent rows get a placement form with Agents: Update, only when workspaces are on', () => {
+test('org People: agent rows get a placement form with Agents: Update and Workspaces: Update, only when workspaces are on', () => {
   const s = src('app/org/[slug]/people/page.js')
   assert.ok(s.includes("import { workspacesOn } from '@/lib/workspaces.js'"))
-  assert.match(s, /const placing = canSetAgentRole && await workspacesOn\(user\.accessToken\)/)
+  assert.match(s, /const placing = canSetAgentRole && allowed\(me, 'workspaces', 'u'\) && await workspacesOn\(user\.accessToken\)/)
   assert.match(s, /\{placing && placements\.has\(m\.agentId\) && <div style=\{\{ flexBasis: '100%' \}\}><AgentPlacement /)
   const a = src('app/org/[slug]/people/actions.js')
   assert.match(a, /export async function saveOrgAgentPlacement \(prev, formData\)/)
@@ -99,4 +99,12 @@ test('workspace pages list agents with why they are here, and admins set Joins',
   }
   const c = src('components/WorkspaceAgents.js')
   for (const bit of ['viaLabel(a, orgName)', "name='sessions'", 'Not in this workspace', 'Let back in', 'joinsText(a.sessions)']) assert.ok(c.includes(bit), bit)
+  // Someone else's agent: Joins is shown, disabled, with why (only its owner can make it join every session).
+  assert.ok(c.includes('disabled={a.foreign}'), 'disabled for a foreign agent')
+  assert.ok(c.includes('FOREIGN_JOINS'), 'with the reason')
+})
+
+test('the reason a foreign agent cannot be made to join every session', async () => {
+  const { FOREIGN_JOINS } = await import('../lib/agent-placement.js')
+  assert.equal(FOREIGN_JOINS, 'Only its owner can make an agent join every session.')
 })

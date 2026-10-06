@@ -5,7 +5,8 @@ import { orgAccess } from '../org-access.js'
 import { workspaceAccess, cleanColor, cleanDescription, cleanAccess, autoColor } from '../workspace-access.js'
 import { workspaceReach, canSeeFiles } from '../workspace-reach.js'
 import { listedFiles, usageView, removeObjects } from './workspace-files.js'
-import { workspaceAgents, cleanMemberSessions, placementCandidates } from './workspace-agents.js'
+import { workspaceAgents, cleanMemberSessions, placementCandidates, FOREIGN_JOINS } from './workspace-agents.js'
+import { sameOwnerAgent } from '../agent-placement.js'
 
 const ROOM = /^[A-Za-z0-9_-]{1,64}$/
 const ACCOUNT = /^(person|agent):[A-Za-z0-9_-]{1,64}$/
@@ -136,6 +137,8 @@ export function workspaceRoutes (ctx) {
       if (kind === 'agent' ? !(await store.agentById(who)) : !(await store.profile(who))) throw new HttpError(404, 'no such account')
       if (r.ws.orgId && kind === 'person' && !(await store.memberOf(r.ws.orgId, who))) throw new HttpError(404, 'that person is not in the org')
       if (r.ws.orgId && kind === 'agent' && !(await store.memberByAgent(r.ws.orgId, who))) throw new HttpError(404, 'that agent is not in the org')
+      // Someone else's agent can be added for access, but only its owner makes it join every session.
+      if (sessions === 'all' && !(await sameOwnerAgent(store, r.ws, who))) throw new HttpError(400, FOREIGN_JOINS)
       return { member: await store.putWorkspaceMember({ workspaceId: r.ws.id, account, access, addedBy: r.me.account, sessions }) }
     }],
 

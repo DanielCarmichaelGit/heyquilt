@@ -142,7 +142,7 @@ create table agent_placements (            -- account level: where an agent reac
   updated_at timestamptz not null default now()
 );
 -- The agent's owner (agents.owner_user_id or agents.org_id) sets the row: a person for their own agents, an
--- org admin (Agents: Update) for the org's.
+-- org admin (Agents: Update and Workspaces: Update) for the org's.
 
 create table workspace_agent_overrides (   -- workspace level: a workspace's say over a global agent
   workspace_id uuid not null references workspaces (id) on delete cascade,
@@ -213,7 +213,7 @@ Under `/v1`, authenticated as a person (device token) or an agent (`qa_` key):
 | `DELETE /workspaces/:id/files/:fileId` | editor | soft delete |
 | `POST /workspaces/:id/folders` `{ path }` | editor | an empty folder |
 | `POST /workspaces/:id/sessions` `{ room }` | editor who owns the room | moves a loose session in |
-| `PUT /me/agents/:id/placement`, `PUT /orgs/:slug/agents/:id/placement` | the agent's owner; org: Agents: Update | reach, sessions default, access, scopes |
+| `PUT /me/agents/:id/placement`, `PUT /orgs/:slug/agents/:id/placement` | the agent's owner; org: Agents: Update and Workspaces: Update | reach, sessions default, access, scopes |
 | `PUT /workspaces/:id/agents/:agentId` `{ sessions?, excluded? }` | admin | a workspace's override for a global agent |
 | `PUT/DELETE /sessions/:room/agents/:agentId/exclude` | session owner | keep an inherited agent out of one session |
 
@@ -339,8 +339,17 @@ What phase 3 changed from the design above, and why:
   managed from its card instead.
 - **Keep-out can be undone.** A session owner who keeps an agent out of one session can let it back in from the
   session's people list, and inviting the agent again clears the keep-out.
+- **Placing an org agent takes Workspaces: Update too,** since it puts the agent in the org's workspaces:
+  `PUT /v1/orgs/:slug/agents/:id/placement` needs Agents: Update and Workspaces: Update.
+- **Only an agent's owner makes it join every session.** Anyone may still add someone else's agent to a
+  workspace for access, but a member row joins its agent to every session only when the agent is the workspace
+  owner's own (a personal workspace: the owner's agent; an org's: the org's agent). The members `PUT` refuses
+  `sessions: 'all'` for anyone else's agent (400), and the join decision ignores such a row written earlier.
+  The workspace page marks it `foreign: true` with `sessions: 'invited'`; the app shows Joins as text and the
+  website disables it, each with the reason. A workspace agent invite always makes the owner's own agent.
+- **The starting agent isn't told about its own session.** When an agent starts a session, the hand-off skips it.
 - **Where the website shows it.** Available in and Joins are on the Agents page (personal) and on each agent row
-  of the org's People page (for members with Agents: Update), only while workspaces are on. A workspace's page
+  of the org's People page (for members with Agents: Update and Workspaces: Update), only while workspaces are on. A workspace's page
   lists its agents with why each is there (This workspace, Placed, Global, Added by <org>) and, for admins, Joins.
 - **Deferred to phase 4:** the session people menu's "why here" for each agent.
 

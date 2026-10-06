@@ -118,13 +118,21 @@ test('deleting an agent drops its placement, overrides, exclusions and webhook',
   assert.equal(await s.agentWebhook(a.id), null)
 })
 
-test('deleting a workspace drops its agent overrides', async () => {
+test('deleting a workspace drops its agent overrides and its agent invites (as Postgres cascades)', async () => {
   const s = setup()
   const ws = await s.createWorkspace({ ownerUserId: 'u1', name: 'W', createdBy: 'person:u1' })
+  const keep = await s.createWorkspace({ ownerUserId: 'u1', name: 'K', createdBy: 'person:u1' })
   const a = await agent(s)
   await s.putWorkspaceAgentOverride({ workspaceId: ws.id, agentId: a.id, excluded: true })
+  const gone = await s.createAgentInvite({ tokenHash: 'h-gone', ownerUserId: 'u1', createdBy: 'u1', expiresAt: 10_000, workspaceId: ws.id, workspaceAccess: 'edit', workspaceSessions: 'all' })
+  const kept = await s.createAgentInvite({ tokenHash: 'h-kept', ownerUserId: 'u1', createdBy: 'u1', expiresAt: 10_000, workspaceId: keep.id, workspaceAccess: 'edit', workspaceSessions: 'all' })
+  const plain = await s.createAgentInvite({ tokenHash: 'h-plain', ownerUserId: 'u1', createdBy: 'u1', expiresAt: 10_000 })
   await s.deleteWorkspace(ws.id)
   assert.equal(await s.workspaceAgentOverride(ws.id, a.id), null)
+  assert.equal(await s.agentInviteById(gone.id), null)
+  assert.equal(await s.agentInviteByToken('h-gone'), null)
+  assert.equal((await s.agentInviteById(kept.id)).workspaceId, keep.id)
+  assert.equal((await s.agentInviteById(plain.id)).id, plain.id)
 })
 
 test('ending a session drops its agent exclusions', async () => {

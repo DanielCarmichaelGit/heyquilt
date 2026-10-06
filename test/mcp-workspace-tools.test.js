@@ -14,6 +14,8 @@ import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/typ
 import { startTestApi, API_URL } from './api-helpers.js'
 import { agentJoin } from '../src/agent-join.js'
 import { WORKSPACE_GUIDE } from '../src/workspace-tools.js'
+import { agentAnnouncer } from '../src/mcp.js'
+import { announceWhenReported } from '../src/account.js'
 
 const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'quilt.js')
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-mcpws-${n}-`))
@@ -178,4 +180,20 @@ test('fromPath never sends ~/.quilt, even when the project is the home folder', 
   } finally {
     process.env.HOME = was
   }
+})
+
+test('an agent\'s session.started hand-off reads its access key afresh on every try, so a retry never sends one that ran out', async () => {
+  let n = 0
+  const access = async ({ name }) => ({ accessKey: `qa_key${++n}`, api: `https://api.example/${name}` })
+  const sent = []
+  const announce = async (o) => {
+    sent.push([o.token, o.api, o.id, o.room, o.link])
+    if (sent.length < 3) throw Object.assign(new Error('not yet'), { status: 409 })
+    return { notified: [], withoutWebhook: [] }
+  }
+  const fn = agentAnnouncer({ name: 'starter', workspace: 'w1', room: 'r1', link: 'https://join.heyquilt.com/r1#s', access, announce })
+  const r = await announceWhenReported(fn, { delays: [0, 0, 0], sleep: async () => {} })
+  assert.deepEqual(r, { notified: [], withoutWebhook: [] })
+  assert.deepEqual(sent.map((x) => x[0]), ['qa_key1', 'qa_key2', 'qa_key3'])
+  assert.deepEqual(sent[0].slice(1), ['https://api.example/starter', 'w1', 'r1', 'https://join.heyquilt.com/r1#s'])
 })

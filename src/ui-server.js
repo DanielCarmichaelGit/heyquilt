@@ -137,7 +137,7 @@ const CSP = [
 
 // preview: for development only (`quilt ui --preview`). Opening the bare address hands out the
 // link, so a dev preview pane can show the app. Any local page could then open it too.
-export async function startUi ({ port = 7420, onShutdown, preview = false, reporter, slowMs = 3000 } = {}) {
+export async function startUi ({ port = 7420, onShutdown, preview = false, reporter, slowMs = 3000, keepOutMs = 3000 } = {}) {
   // What this app tells Quilt about itself (see report.js). Off with the "report" setting.
   reporter = reporter || createReporter({ token: () => readAccount()?.token || null, enabled: () => getSettings().report !== false })
   // Body fields worth keeping with a route's outcome: which editor, which kind of start. Never free text.
@@ -524,6 +524,19 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
    */
   async function removeMember (id, key) {
     const s = owned(id)
+    // With workspaces on, an agent removed from a session in a workspace is also kept out of
+    // this session, so its workspace (or its placement) doesn't let it straight back in. Written
+    // first, so no pass is issued between the removal and the keep-out; never fatal, and given
+    // up after keepOutMs: the removal goes ahead either way, and a failure is only logged.
+    const agent = /^agent:([0-9a-f-]{36})$/i.exec(String(key))
+    const r = runs.get(id)
+    if (workspacesOn && agent && r && readConfig(r.run.dir)?.workspace) {
+      let timer
+      const late = new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error('Quilt took too long to answer')), keepOutMs) })
+      await Promise.race([asAccount((token) => excludeSessionAgent({ token, room: s.room, agentId: agent[1] })), late])
+        .catch((err) => r.log?.(`could not keep that agent out of this session: ${err.message}`))
+        .finally(() => clearTimeout(timer))
+    }
     let warning = ''
     if (ACCOUNT.test(String(key))) {
       try {
@@ -533,15 +546,6 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       }
     }
     await s.removeMember(key)
-    // With workspaces on, an agent removed from a session in a workspace is also kept out of
-    // this session, so its workspace (or its placement) doesn't let it straight back in. In the
-    // background, after the removal: it never delays or fails it, and a failure is only logged.
-    const agent = /^agent:([0-9a-f-]{36})$/i.exec(String(key))
-    const r = runs.get(id)
-    if (workspacesOn && agent && r && readConfig(r.run.dir)?.workspace) {
-      asAccount((token) => excludeSessionAgent({ token, room: s.room, agentId: agent[1] }))
-        .catch((err) => r.log?.(`could not keep that agent out of this session: ${err.message}`))
-    }
     return warning ? { ok: true, warning: `Removed, but their access is still saved on heyquilt.com, so they can get back in: ${warning}` } : { ok: true }
   }
 

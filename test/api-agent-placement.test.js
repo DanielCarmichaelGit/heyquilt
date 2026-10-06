@@ -128,6 +128,10 @@ test('agentJoinsSession: exclusion first, then the member row, then placement, e
   assert.equal(await agentJoinsSession(store, 'room-1', id), false, 'kept out of this session')
   await store.removeSessionAgentExclusion('room-1', id)
   assert.equal(await agentJoinsSession(store, 'room-1', id), true)
+  // Someone else's agent with a member row saying all: no.
+  const stranger = await store.createAgent({ name: 'Stranger', provider: 'Anthropic', type: 'coding agent', ownerUserId: 'u2' })
+  await store.putWorkspaceMember({ workspaceId: ws1.id, account: `agent:${stranger.id}`, access: 'edit', addedBy: 'person:u1', sessions: 'all' })
+  assert.equal(await agentJoinsSession(store, 'room-1', stranger.id), false, "someone else's agent")
   // Linked by someone other than the owner the relay reports: nobody joins, as roomAccess admits nobody.
   await store.ingestPresence([{ id: `e${++eventId}`, type: 'start', room: 'room-2', account: 'person:u1', owner: true, name: '', at: 1000 }], 1000)
   await store.setSessionWorkspace('room-2', ws1.id, { linkedBy: 'person:someone-else', at: 1000 })
@@ -158,9 +162,9 @@ test('agentsJoiningSession: members with all and placed agents with all, minus t
   const want = [
     { agentId: global.id, via: 'global' },
     { agentId: member.id, via: 'member' },
-    { agentId: placed.id, via: 'placed' },
-    // Someone else's agent added as a member of this workspace joins as a member.
-    { agentId: strangers.id, via: 'member' }
+    { agentId: placed.id, via: 'placed' }
+    // Someone else's agent added as a member here with sessions all never joins by itself:
+    // only an agent's owner makes it join every session.
   ].sort((a, b) => a.agentId.localeCompare(b.agentId))
   assert.deepEqual(got, want)
   assert.deepEqual(await agentsJoiningSession(store, 'nowhere'), [])

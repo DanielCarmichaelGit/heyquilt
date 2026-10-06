@@ -114,6 +114,9 @@ export function bindPlacement (el, a, place, workspaces) {
   boxes().forEach((b) => { b.onchange = () => { chosen = boxes().filter((x) => x.checked).map((x) => x.value); paint(); save() } })
 }
 
+/** Why someone else's agent in a workspace never joins every session there (the API's words). */
+export const FOREIGN_JOINS = 'Only its owner can make an agent join every session.'
+
 /** The pill on a workspace's agent card: why it is there. */
 export function viaLabel (a, orgName = '') {
   if (a.via === 'member') return 'This workspace'
@@ -130,11 +133,11 @@ export function workspaceAgentCardHtml (a, { admin = false, orgName = '' } = {})
   const name = a.name || 'Agent'
   const member = a.via === 'member'
   const pill = `<span class="pill ws-via${a.via === 'global' ? ' violet' : ''}">${esc(viaLabel(a, orgName))}</span>`
-  const joins = a.excluded
-    ? '<span>Not in this workspace</span>'
-    : admin
-      ? `<span>Joins</span><select class="input xs" data-agent-joins="${esc(a.agentId)}" aria-label="When ${esc(name)} joins sessions here">${options([['all', 'Every session'], ['invited', 'When invited']], a.sessions)}</select>`
-      : `<span>Joins ${a.sessions === 'all' ? 'every session' : 'when invited'}</span>`
+  // Someone else's agent added here joins only when invited: only its owner can change that.
+  let joins = `<span>Joins ${a.sessions === 'all' ? 'every session' : 'when invited'}</span>`
+  if (a.excluded) joins = '<span>Not in this workspace</span>'
+  else if (admin && a.foreign) joins = `<span title="${esc(FOREIGN_JOINS)}">Joins when invited</span>`
+  else if (admin) joins = `<span>Joins</span><select class="input xs" data-agent-joins="${esc(a.agentId)}" aria-label="When ${esc(name)} joins sessions here">${options([['all', 'Every session'], ['invited', 'When invited']], a.sessions)}</select>`
   const accessPill = `<span class="pill">${a.access === 'edit' ? 'Can edit' : 'View only'}</span>`
   // Access on the first line; why it is here and Joins on the second; Remove (or Not in this
   // workspace) in the corner, so the card never wraps around its buttons.

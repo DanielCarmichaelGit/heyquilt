@@ -1739,7 +1739,7 @@ export class Session extends EventEmitter {
   /** `texts` is { before, after } for text files, so the chronology keeps the diff. */
   recordActivity (rel, kind, detail, texts) {
     const now = Date.now()
-    this.tally(rel, kind, detail, now)
+    this.tally(rel, kind, detail, now, texts)
     this.history.record({ by: this.name, path: rel, kind, detail, before: texts?.before, after: texts?.after, task: this.currentTask(), ts: now })
     const last = this.lastActivityPush.get(rel)
     // Collapse bursts of edits to the same file into one entry.
@@ -1750,17 +1750,19 @@ export class Session extends EventEmitter {
   }
 
   /** Add one change of mine to the running count for rel (`detail` is "+a -r" for text). */
-  tally (rel, kind, detail, now) {
+  tally (rel, kind, detail, now, texts) {
     if (this.seeding) return
     const key = `${this.name}\0${rel}`
     const cur = this.tallies.get(key) || { added: 0, removed: 0, edits: 0, kind: 'edited' }
     const m = /^\+(\d+) -(\d+)$/.exec(detail || '')
+    // Deleting a text file removes all of its lines.
+    const gone = kind === 'deleted' && typeof texts?.before === 'string' ? lineCount(texts.before) : 0
     const state = kind === 'deleted' ? 'deleted' : kind === 'created' || cur.kind === 'created' ? 'created' : 'edited'
     this.tallies.set(key, {
       by: this.name,
       path: rel,
       added: cur.added + (m ? +m[1] : 0),
-      removed: cur.removed + (m ? +m[2] : 0),
+      removed: cur.removed + (m ? +m[2] : 0) + gone,
       edits: cur.edits + 1,
       kind: state,
       ts: now
@@ -3465,4 +3467,10 @@ function removeEmptyParents (root, dir) {
     try { fs.rmdirSync(dir) } catch { return }
     dir = path.dirname(dir)
   }
+}
+
+/** How many lines `text` has (a final newline does not start another). */
+function lineCount (text) {
+  if (!text) return 0
+  return text.split('\n').length - (text.endsWith('\n') ? 1 : 0)
 }

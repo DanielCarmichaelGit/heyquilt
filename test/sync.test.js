@@ -902,6 +902,7 @@ test('each person\'s changes are tallied per file, and everyone sees the same br
   assert.equal(bob.edits, 1)
   const notes = seenByBob.files.find((f) => f.path === 'notes.md')
   assert.equal(notes.kind, 'deleted')
+  assert.equal(notes.removed, 1, 'deleting a file removes its lines')
   assert.equal(app.kind, 'edited')
   assert.deepEqual(notes.by.map((p) => [p.name, p.kind]), [['alice', 'deleted']])
 

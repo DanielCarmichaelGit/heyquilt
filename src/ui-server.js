@@ -11,6 +11,7 @@ import { createRequire } from 'node:module'
 import { runSession, decodeInvite, newConn, readConfig, recentSessions, forgetRecent } from './runner.js'
 import { MAX_SHARED_FILE_BYTES } from './protocol.js'
 import { getSettings, saveSettings, unsupportedRelay, relayUrl } from './settings.js'
+import { PICKUP_MODES, pickupMode } from './tasks.js'
 import * as gitops from './git.js'
 import { installedEditors, openIn } from './editors.js'
 import { migrateDir } from './legacy.js'
@@ -45,7 +46,8 @@ function profile () {
     summarize: !!s.summarize,
     preferLocal: !!s.preferLocal,
     theme: THEMES.includes(s.theme) ? s.theme : 'light',
-    report: s.report !== false
+    report: s.report !== false,
+    aiTasks: pickupMode(s.aiTasks)
   }
 }
 
@@ -71,6 +73,10 @@ function updateProfile (b) {
     patch.theme = b.theme === 'light' ? undefined : b.theme
   }
   if ('report' in b) patch.report = b.report ? undefined : false
+  if ('aiTasks' in b) {
+    if (!PICKUP_MODES.includes(b.aiTasks)) throw httpError(400, 'Pick Off, Assigned to it, or Assigned and unassigned.')
+    patch.aiTasks = b.aiTasks === 'off' ? undefined : b.aiTasks
+  }
   saveSettings(patch) // undefined values clear a setting
   return profile()
 }

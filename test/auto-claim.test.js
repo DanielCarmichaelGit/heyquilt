@@ -205,3 +205,36 @@ test('the file queue: a file someone waits for is kept, its holder told on each 
   const ev = await waitFor(() => B.inbox().events.find((e) => e.queue === 'handoff'))
   assert.match(ev.text, /My context: Wired the route; the form is yours\./)
 })
+
+test('an AI that stops without handing on a file someone waits for: Quilt hands it on for it, with context', async (t) => {
+  const { A, B, dirA } = await pair(t, { 'src/app.js': 'a\n' }, { handoffGraceMs: 150, autoClaimQuietMs: 60_000 })
+  A.focus = 'adding the login form'
+  write(dirA, 'src/app.js', 'a\nb\n')
+  await waitFor(() => B.claimFor('src/app.js')?.by === 'alice')
+  await B.requestFile('src/app.js', { title: 'Working on sign-in' })
+  await waitFor(() => A.queued().length === 1)
+  // Still working: kept for her AI to hand on itself.
+  await settle(300)
+  assert.equal(await A.handOnForgotten(), 0)
+  // Her AI goes idle and doesn't hand it on: after the grace time, Quilt does.
+  A.setAgentState({ tool: 'cursor', status: 'idle' })
+  assert.equal(B.claimFor('src/app.js').by, 'alice', 'kept at idle: someone is waiting')
+  await settle(200)
+  assert.equal(await A.handOnForgotten(), 1)
+  await waitFor(() => B.claimFor('src/app.js')?.by === 'bob')
+  const ev = await waitFor(() => B.inbox().events.find((e) => e.queue === 'handoff'))
+  assert.match(ev.text, /Handed on by Quilt: alice's AI stopped working on src\/app\.js without handing it on\. It was working on: adding the login form\./)
+  assert.ok(A.notices.some((n) => /Quilt handed src\/app\.js to bob/.test(n)), 'her AI hears about it')
+})
+
+test('with no chat reader to say the AI stopped, the queue moves once the file has been quiet for the quiet time', async (t) => {
+  const { A, B, dirA } = await pair(t, { 'src/app.js': 'a\n' }, { handoffGraceMs: 10, autoClaimQuietMs: 400 })
+  A.setAgentState(null) // no reader sees this AI (Codex, say): only quiet time tells
+  A.work = { state: 'working', note: '', ts: Date.now() }
+  write(dirA, 'src/app.js', 'a\nb\n')
+  await waitFor(() => B.claimFor('src/app.js')?.by === 'alice')
+  await B.requestFile('src/app.js', { title: 'Working on sign-in' })
+  await waitFor(() => A.queued().length === 1)
+  assert.equal(await A.handOnForgotten(), 0, 'edited moments ago')
+  await waitFor(() => B.claimFor('src/app.js')?.by === 'bob', 3000) // the session's own timer
+})

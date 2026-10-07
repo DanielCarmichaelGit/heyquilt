@@ -269,6 +269,24 @@ test('without hooks, the MCP holds an agent to the rules: claims refuse files, c
   await waitFor(() => !human.claimFor('src/app.js'))
 })
 
+test('an AI whose person lets it pick up work is handed its next task as it finishes, in any MCP client', async () => {
+  const settings = path.join(home, '.quilt', 'settings.json')
+  const before = fs.existsSync(settings) ? fs.readFileSync(settings, 'utf8') : null
+  for (const t of human.taskList()) human.deleteTask(t.id) // earlier tests left helper a task In progress
+  const task = human.addTask({ title: 'Tidy the README', assignee: 'helper' })
+  try {
+    assert.doesNotMatch(text(await call('quilt_set_work', { state: 'done' })), /next task/, 'off by default')
+    fs.mkdirSync(path.dirname(settings), { recursive: true })
+    fs.writeFileSync(settings, JSON.stringify({ ...(before ? JSON.parse(before) : {}), aiTasks: 'mine' }))
+    await waitFor(async () => (await call('quilt_tasks')) && text(await call('quilt_tasks')).includes('Tidy the README'))
+    const done = text(await call('quilt_set_work', { state: 'done' }))
+    assert.match(done, new RegExp(`➡️ Your next task, from the board .*${task.id} "Tidy the README"\\. Start it now: quilt_move_task`))
+  } finally {
+    if (before == null) fs.rmSync(settings, { force: true }); else fs.writeFileSync(settings, before)
+    human.deleteTask(task.id)
+  }
+})
+
 test('nothing is Claude-only: any MCP client is pushed what arrives, and shares its work into the feed, the board and commit timing', async (t) => {
   // A second agent tool in the same folder, which is not Claude Code: it works through the same session.
   const codex = new Client({ name: 'codex-mcp-client', version: '1.0.0' })

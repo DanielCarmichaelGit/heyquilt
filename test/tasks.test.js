@@ -8,7 +8,7 @@ import path from 'node:path'
 import * as Y from 'yjs'
 import { Session } from '../src/session.js'
 import { renderStatus } from '../src/status.js'
-import { addTask, updateTask, deleteTask, readTasks, publicTask, formatTasks, MAX_TASKS } from '../src/tasks.js'
+import { addTask, updateTask, deleteTask, readTasks, publicTask, formatTasks, MAX_TASKS, nextTask, renderNextTask } from '../src/tasks.js'
 
 const dir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-tasks-'))
 
@@ -356,4 +356,23 @@ test('over-long verified / QA notes cut on a space still read back (task stays o
     assert.equal(clean(once), once, 'cleaning is idempotent')
     assert.ok(!/\s$/.test(once))
   }
+})
+
+test('an AI allowed to pick up work gets its own To do tasks first, unassigned ones only with "any", none while one is in progress', () => {
+  const doc = new Y.Doc()
+  const map = doc.getMap('tasks')
+  const free = addTask(doc, map, { title: 'Anyone', by: 'sam' })
+  const hers = addTask(doc, map, { title: 'For the person', by: 'sam', assignee: 'dana' })
+  const ai = addTask(doc, map, { title: 'For her AI', by: 'sam', assignee: 'dana', forAi: true })
+  const asAi = { name: 'dana', asAi: true }
+  assert.equal(nextTask(map, asAi, 'off'), null)
+  assert.equal(nextTask(map, asAi, undefined), null, 'off unless chosen')
+  assert.equal(nextTask(map, asAi, 'mine').id, ai.id)
+  assert.equal(nextTask(map, { name: 'dana', asAi: false }, 'mine').id, hers.id, 'an agent member takes what is assigned to it')
+  updateTask(doc, map, { id: ai.id, column: 'doing' })
+  assert.equal(nextTask(map, asAi, 'any'), null, 'finish the one in progress first')
+  updateTask(doc, map, { id: ai.id, column: 'done', verified: 'ran it' })
+  assert.equal(nextTask(map, asAi, 'mine'), null)
+  assert.equal(nextTask(map, asAi, 'any').id, free.id)
+  assert.match(renderNextTask(nextTask(map, asAi, 'any')), /unassigned: take it with quilt_assign_task/)
 })

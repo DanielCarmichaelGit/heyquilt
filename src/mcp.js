@@ -12,7 +12,7 @@ import crypto from 'node:crypto'
 import path from 'node:path'
 import { findDaemon, call } from './control.js'
 import { renderMessage, renderStatus } from './status.js'
-import { formatTasks, columnName, assigneeLabel } from './tasks.js'
+import { formatTasks, columnName, assigneeLabel, renderNextTask } from './tasks.js'
 import { runSession, decodeInvite, newConn, readConfig, runningElsewhere, personsFolder, agentCopyFolder } from './runner.js'
 import { INVALID_INVITE } from './ui/invite.js'
 import { toolLabel } from './agents/common.js'
@@ -59,7 +59,7 @@ export const MCP_INSTRUCTIONS =
   'and move a task with quilt_move_task when you start or finish it. ' +
   'quilt_history tells you who changed which file, when, with the diff: read it for the files you are about to touch. ' +
   'If git refuses to pull because untracked files would be overwritten, those files came from the session: quilt_status lists them under Pulling (and whether they match); make way and pull with rm <files> && git pull --autostash, and Quilt keeps them for everyone. ' +
-  'When you edit files for a request that is not already on the board, Quilt adds an In progress task from that chat: use it instead of adding a duplicate, and move it to Done when you finish. ' +
+  'If the person you work for lets their AI pick up work by itself (their Quilt settings), finishing (quilt_set_work done, a task to QA or Done) hands you your next task from the board: start it. ' +
   'Before you change files, call quilt_before_edit with their paths: it tells you whether each is yours to edit (claiming free ones for you, so partners are refused instead of overwriting you), ' +
   'and shows what people said about those files in chat, so you know what was asked or planned before you change them. ' +
   'Do not edit a file it refuses: ask for it in its file queue with quilt_request_file (a title like "Working on <what> for <task>" and up to 300 characters on your plan) and carry on with other work; you are woken when it is handed to you, with the holder\'s context. ' +
@@ -133,6 +133,8 @@ export async function runMcp () {
   // Files this agent holds that someone waits for in the file queue: said with every answer until it hands them off.
   const queuedNow = async (d) => { try { return (await call(d, 'GET', '/duties')).queued || [] } catch { return [] } }
   const queueGate = (then) => async (d) => renderQueued(await queuedNow(d), then)
+  // When this person lets their AI pick up work by itself: the next task, said as it finishes one.
+  const nextUp = async (d) => { try { const n = renderNextTask((await call(d, 'GET', '/duties')).next); return n ? `\n\n➡️ ${n}` : '' } catch { return '' } }
   const gates = (...list) => async (d) => { for (const g of list) { const r = g && await g(d); if (r) return r } return '' }
   const withDaemon = async (fn, { inbox = true, gate = null } = {}) => {
     const d = findDaemon(joined ? joined.dir : undefined)
@@ -210,8 +212,8 @@ export async function runMcp () {
     if (column === 'done') patch.verified = verified
     const { task } = await call(d, 'POST', '/tasks/update', patch)
     if (column === 'doing') return pickupBrief({ ...brief, task })
-    if (column === 'qa') return `Moved "${task.title}" to QA. Notes: ${qaNotesLine(task)}`
-    if (column === 'done') return `Moved "${task.title}" to Done. Verified: ${verifiedLine(task)}`
+    if (column === 'qa') return `Moved "${task.title}" to QA. Notes: ${qaNotesLine(task)}` + await nextUp(d)
+    if (column === 'done') return `Moved "${task.title}" to Done. Verified: ${verifiedLine(task)}` + await nextUp(d)
     return `Moved "${task.title}" to ${columnName(task.column)}.`
   }, { gate: gates(gateFor('quilt_move_task'), column === 'done' && queueGate('move the task again')) }))
 
@@ -660,7 +662,7 @@ export async function runMcp () {
     }
     const { released } = await call(d, 'POST', '/finish', {})
     await call(d, 'POST', '/work', { state, note })
-    return `Marked as done.${released ? ` Let go of ${released} file${released === 1 ? '' : 's'} claimed for you while you edited.` : ''}`
+    return `Marked as done.${released ? ` Let go of ${released} file${released === 1 ? '' : 's'} claimed for you while you edited.` : ''}` + await nextUp(d)
   }, { gate: gates(gateFor('quilt_set_work'), state === 'done' && queueGate('set done again')) }))
 
   server.registerTool('quilt_share', {

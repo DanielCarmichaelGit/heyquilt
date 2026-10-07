@@ -1,4 +1,7 @@
 // Wires Quilt into every AI tool on this computer, with nothing for the person to do.
+// Tools that run hooks from their user settings (Gemini CLI) get Quilt's hooks there too, so
+// its rules are applied by the tool itself (see hooks.js); Claude Code and Cursor get theirs
+// from each session folder's .claude/settings.local.json (setup.js installHooks).
 //
 // Each tool that reads MCP servers from a user-level config gets Quilt's server there,
 // pointed at this install by absolute path: GUI tools started from the Dock or Start menu
@@ -11,6 +14,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { geminiHookSettings, isQuiltHook } from './hooks.js'
 
 const BIN = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'quilt.js')
 
@@ -113,6 +117,26 @@ function upsertZed (file, entry) {
   return 'added'
 }
 
+/**
+ * Quilt's entries in a JSON settings file's `hooks` (Claude Code's shape, which Gemini CLI shares):
+ * earlier Quilt entries replaced, everyone else's left alone. Returns like upsertJsonKey.
+ */
+export function upsertHooks (file, ours) {
+  const { json } = readJson(file)
+  if (json === null) return 'skipped'
+  const hooks = json.hooks && typeof json.hooks === 'object' && !Array.isArray(json.hooks) ? { ...json.hooks } : {}
+  for (const [event, entries] of Object.entries(ours)) {
+    const kept = (Array.isArray(hooks[event]) ? hooks[event] : [])
+      .map((e) => (e && Array.isArray(e.hooks) ? { ...e, hooks: e.hooks.filter((h) => !isQuiltHook(h)) } : e))
+      .filter((e) => e && (!Array.isArray(e.hooks) || e.hooks.length))
+    hooks[event] = [...kept, ...entries]
+  }
+  return upsertJsonKey(file, ['hooks'], hooks)
+}
+
+/** Both of two writes: 'unchanged' only when both were, the first problem otherwise. */
+const both = (a, b) => ['skipped', 'busy', 'failed'].find((r) => r === a || r === b) || (a === 'unchanged' && b === 'unchanged' ? 'unchanged' : a === 'added' ? 'added' : 'updated')
+
 // ------------------------------------------------------------- tools --
 
 /**
@@ -139,7 +163,7 @@ export function knownTools ({ home = os.homedir(), platform = process.platform, 
     { name: 'Cursor', dir: path.join(home, '.cursor'), file: path.join(home, '.cursor', 'mcp.json'), write: json(['mcpServers', 'quilt']) },
     { name: 'Windsurf', dir: path.join(home, '.codeium', 'windsurf'), file: path.join(home, '.codeium', 'windsurf', 'mcp_config.json'), write: json(['mcpServers', 'quilt']) },
     { name: 'Codex', dir: codexHome, file: path.join(codexHome, 'config.toml'), write: upsertCodexToml },
-    { name: 'Gemini CLI', dir: path.join(home, '.gemini'), file: path.join(home, '.gemini', 'settings.json'), write: json(['mcpServers', 'quilt']) },
+    { name: 'Gemini CLI', dir: path.join(home, '.gemini'), file: path.join(home, '.gemini', 'settings.json'), write: (f, s, launch) => { const r = json(['mcpServers', 'quilt'])(f, s); return r === 'skipped' ? r : both(r, upsertHooks(f, geminiHookSettings(quiltShellCommand(['hook', 'gemini'], launch)))) } },
     { name: 'GitHub Copilot CLI', dir: path.join(home, '.copilot'), file: path.join(home, '.copilot', 'mcp-config.json'), write: json(['mcpServers', 'quilt'], (s) => ({ type: 'local', ...s, tools: ['*'] })) },
     { name: 'Zed', dir: platform === 'win32' ? path.join(appData, 'Zed') : path.join(xdg, 'zed'), file: platform === 'win32' ? path.join(appData, 'Zed', 'settings.json') : path.join(xdg, 'zed', 'settings.json'), write: (f, s) => upsertZed(f, { source: 'custom', command: s.command, args: s.args, env: s.env || {} }) },
     { name: 'opencode', dir: path.join(xdg, 'opencode'), file: path.join(xdg, 'opencode', 'opencode.json'), write: json(['mcp', 'quilt'], (s) => ({ type: 'local', command: [s.command, ...s.args], enabled: true, ...(s.env ? { environment: s.env } : {}) })) },
@@ -164,7 +188,7 @@ export function registerEverywhere ({ launch = quiltLaunch(), ...where } = {}) {
     if (!fs.existsSync(t.dir)) continue
     try {
       if (t.busy && t.busy(t.file)) { out.push({ name: t.name, file: t.file, result: 'busy' }); continue }
-      out.push({ name: t.name, file: t.file, result: t.write(t.file, server) })
+      out.push({ name: t.name, file: t.file, result: t.write(t.file, server, launch) })
     } catch (err) {
       out.push({ name: t.name, file: t.file, result: 'failed', error: err.message })
     }

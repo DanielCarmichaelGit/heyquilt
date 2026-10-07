@@ -406,6 +406,37 @@ function openTasks (list) {
   return list.filter((t) => t.column === 'todo' || t.column === 'doing')
 }
 
+// ------------------------------------------------------------ AI pickup --
+// Each person chooses whether their AI takes work from the board by itself (Settings): "off",
+// "mine" (To do tasks assigned to it) or "any" (those, then unassigned ones). When it finishes,
+// it is handed the next one, in whatever tool it runs in.
+
+export const PICKUP_MODES = ['off', 'mine', 'any']
+export const pickupMode = (v) => PICKUP_MODES.includes(v) ? v : 'off'
+
+/**
+ * The To do task this reader's AI should start next, or null: none while it still has one In
+ * progress. `reader` is { name, asAi }.
+ */
+export function nextTask (tasks, reader, mode) {
+  mode = pickupMode(mode)
+  if (mode === 'off' || !reader?.name) return null
+  const list = listed(tasks)
+  if (list.some((t) => t.column === 'doing' && assignedToReader(t, reader))) return null
+  const todo = list.filter((t) => t.column === 'todo')
+  return todo.find((t) => assignedToReader(t, reader)) || (mode === 'any' ? todo.find((t) => !t.assignee) : null) || null
+}
+
+/** What an AI is told when it finishes and the board has its next task; '' for none. */
+export function renderNextTask (task) {
+  if (!task) return ''
+  const take = task.assignee
+    ? `Start it now: quilt_move_task (id ${task.id}, column "doing") gives you the briefing.`
+    : `It is unassigned: take it with quilt_assign_task (id ${task.id}, assignee "me", to_ai true), then quilt_move_task (column "doing") for the briefing, and start.`
+  return `Your next task, from the board (this person lets their AI pick up work by itself): ${task.id} "${oneLine(task.title)}"${task.files?.length ? ` [${task.files.join(', ')}]` : ''}. ${take} ` +
+    'If you cannot take it on now, say why in chat (quilt_message) instead.'
+}
+
 /**
  * Markdown for people (STATUS.md, quilt_status). `me` is shown as "you".
  * `asAi` means the reader is that person's AI, so tasks assigned to the AI are theirs.

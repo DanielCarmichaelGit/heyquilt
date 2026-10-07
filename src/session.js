@@ -20,7 +20,8 @@ import {
 import { deriveWrapKey, newFileKey, wrapKey, unwrapKey, encryptBlob, decryptBlob, blobId } from './largefiles.js'
 import { applyTextDiff } from './textdiff.js'
 import { migrateDir } from './legacy.js'
-import { readTasks, addTask as putTask, updateTask as patchTask, deleteTask as dropTask, planAutoTask } from './tasks.js'
+import { readTasks, addTask as putTask, updateTask as patchTask, deleteTask as dropTask, planAutoTask, nextTask, pickupMode } from './tasks.js'
+import { getSettings } from './settings.js'
 import { HistoryLog, queryHistory, parseSince, currentTask } from './history.js'
 import { Inbox } from './inbox.js'
 import { chatAbout, waitingOn, queuedFor, renderQueueNotice, askForIt, answered, addressees, unaddressed, sentByAnother, renderRepeat } from './duties.js'
@@ -41,6 +42,9 @@ const COLORS = ['#b9432b', '#3b6a9a', '#4a7a45', '#855a9c', '#a8701c', '#2e7a80'
 const RECENT_MS = 2 * 60 * 1000
 const AGENT_FEED_CAP = 300
 const AUTO_CLAIM_QUIET_MS = 5 * 60 * 1000 // a file we stopped editing this long ago is let go of
+// Our AI stopped working (its chat reader says so) while someone waits for a file it held: this long
+// for it to hand the file on itself, then Quilt hands it on for it.
+const HANDOFF_GRACE_MS = 2 * 60 * 1000
 const NOTICE_CAP = 20
 // A file removed to make way for a pull is kept for everyone this long; with no pull by then, the removal was meant.
 const PULL_WAIT_MS = 60 * 1000
@@ -63,7 +67,7 @@ const GIT_FAILURES_TO_SAY = 30
 const FLUSH_MS = 40 // file changes are flushed this long after the first
 
 export class Session extends EventEmitter {
-  constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, summarize = null, identity = null, passes = null, startName = '', autoClaimQuietMs = AUTO_CLAIM_QUIET_MS, webhookTransport = null, pullWaitMs = PULL_WAIT_MS }) {
+  constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, summarize = null, identity = null, passes = null, startName = '', autoClaimQuietMs = AUTO_CLAIM_QUIET_MS, handoffGraceMs = HANDOFF_GRACE_MS, aiTasks = null, webhookTransport = null, pullWaitMs = PULL_WAIT_MS }) {
     super()
     this.pullWaitMs = pullWaitMs
     this.pull = null // { upstream, behind, adds: [{ path, same, waiting }] }: what a pull would bring over files the session put here
@@ -136,6 +140,9 @@ export class Session extends EventEmitter {
     this.autoClaims = new Map()
     this.queueNoticed = new Map() // claim pattern -> when our AI was last told someone waits for it
     this.autoClaimQuietMs = autoClaimQuietMs
+    this.handoffGraceMs = handoffGraceMs
+    // Whether our AI takes work from the board by itself (tasks.js PICKUP_MODES); null: this person's setting.
+    this.aiTasks = aiTasks
     this.autoClaimTimer = setInterval(() => this.releaseQuietAutoClaims(), Math.max(50, Math.min(60_000, Math.floor(autoClaimQuietMs / 3))))
     if (this.autoClaimTimer.unref) this.autoClaimTimer.unref()
     // What this person's AI should hear next time it talks to Quilt (an edit of its that was undone).
@@ -2838,6 +2845,7 @@ export class Session extends EventEmitter {
 
   releaseQuietAutoClaims () {
     if (!this.ready || this.stopped) return
+    this.handOnForgotten().catch(() => {})
     const cutoff = Date.now() - this.autoClaimQuietMs
     this.releaseAutoClaims((rel, ts) => ts <= cutoff).then(() => {
       // "Working" that only an edit check said lapses with its files, so a commit isn't held up by an agent that never said done.
@@ -2931,7 +2939,20 @@ export class Session extends EventEmitter {
    * and files they hold that someone is waiting for in the file queue (`queued`, see duties.js).
    */
   duties () {
-    return { me: this.name, waiting: waitingOn(this.chat.toArray().filter((m) => this.canSee(m)), this.name, { agent: this.kind === 'agent', settled: this.settledIds }), queued: this.queued() }
+    const pickup = this.pickupMode()
+    return {
+      me: this.name,
+      waiting: waitingOn(this.chat.toArray().filter((m) => this.canSee(m)), this.name, { agent: this.kind === 'agent', settled: this.settledIds }),
+      queued: this.queued(),
+      pickup,
+      next: nextTask(this.taskList(), { name: this.name, asAi: this.kind !== 'agent' }, pickup)
+    }
+  }
+
+  /** Whether our AI picks up tasks by itself: "off", "mine" or "any" (Settings, read fresh so a change applies at once). */
+  pickupMode () {
+    if (this.aiTasks != null) return pickupMode(this.aiTasks)
+    try { return pickupMode(getSettings().aiTasks) } catch { return 'off' }
   }
 
   // ------------------------------------------------------------ file queue --
@@ -2973,6 +2994,35 @@ export class Session extends EventEmitter {
     if (Date.now() - last < 60 * 1000) return
     this.queueNoticed.set(c.pattern, Date.now())
     this.notice(renderQueueNotice([{ pattern: c.pattern, queue: c.queue }]))
+  }
+
+  /**
+   * Files Quilt claimed for our AI that someone waits for, which our AI stopped working on without
+   * handing on: Quilt hands each to the first in its queue, with what it knows as context, so the
+   * queue moves whatever tool the AI runs in (and whether or not it called quilt_handoff).
+   * Stopped means: its chat reader says it is idle and the file has been quiet for handoffGraceMs,
+   * or (no reader can see it) quiet for autoClaimQuietMs.
+   */
+  async handOnForgotten (now = Date.now()) {
+    if (!this.conn || this.agentState?.status === 'working') return 0
+    const seen = this.agentState?.tool && this.agentState.status === 'idle'
+    const cutoff = now - (seen ? this.handoffGraceMs : this.autoClaimQuietMs)
+    let handed = 0
+    for (const [rel, ts] of [...this.autoClaims]) {
+      if (ts > cutoff) continue
+      const c = this.claims.get(rel)
+      if (!c || c.by !== this.name || !c.queue || !c.queue.length) continue
+      const ago = Math.max(1, Math.round((now - ts) / 60000))
+      const context = `Handed on by Quilt: ${this.name}'s AI stopped working on ${rel} without handing it on.` +
+        `${this.focus ? ` It was working on: ${this.focus}.` : ''} Its last change was ${ago} minute${ago === 1 ? '' : 's'} ago; quilt_history shows what changed.`
+      try {
+        const r = await this.handoff(rel, { context })
+        handed++
+        this.notice(`Quilt handed ${rel} to ${r.to}, who was waiting for it, because you had stopped working on it. Ask for it again with quilt_request_file if you still need it.`)
+        this.log(`🤝 handed ${rel} to ${r.to}: they were waiting and your AI had stopped`)
+      } catch {}
+    }
+    return handed
   }
 
   /** Done with a piece of work: lets go of the claims that followed our edits and says we're done. */

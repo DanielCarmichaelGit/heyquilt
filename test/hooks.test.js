@@ -11,7 +11,7 @@ import { startServer } from '../src/server.js'
 import { Session } from '../src/session.js'
 import { startControl } from '../src/control.js'
 import { installHooks } from '../src/setup.js'
-import { hookCommand, releaseLeftoverHookClaims, hookState } from '../src/hooks.js'
+import { hookCommand, releaseLeftoverHookClaims, hookState, editedFiles, dialectOf } from '../src/hooks.js'
 import { openMerge } from '../src/merges.js'
 
 const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'quilt.js')
@@ -24,10 +24,10 @@ async function waitFor (fn, ms = 8000) {
   throw new Error('timed out')
 }
 
-/** Runs the real `quilt hook` in dana's folder with one event on stdin. */
-function hook (event) {
+/** Runs the real `quilt hook` (or `quilt hook <dialect>`) in dana's folder with one event on stdin. */
+function hook (event, dialect = '') {
   return new Promise((resolve, reject) => {
-    const p = spawn(process.execPath, [BIN, 'hook'], { cwd: danaDir, env: { ...process.env, HOME: tmp('home') } })
+    const p = spawn(process.execPath, [BIN, 'hook', ...(dialect ? [dialect] : [])], { cwd: danaDir, env: { ...process.env, HOME: tmp('home') } })
     let out = ''; let err = ''
     p.stdout.on('data', (d) => { out += d })
     p.stderr.on('data', (d) => { err += d })
@@ -46,7 +46,7 @@ before(async () => {
   fs.writeFileSync(path.join(danaDir, 'src', 'app.js'), 'console.log("hi")\n')
   fs.writeFileSync(path.join(danaDir, 'src', 'auth.js'), 'export const auth = 1\n')
   fs.writeFileSync(path.join(danaDir, '.gitignore'), 'dist/\n')
-  dana = new Session({ dir: danaDir, server, room: 'pair', secret: 's3cret', name: 'dana' })
+  dana = new Session({ dir: danaDir, server, room: 'pair', secret: 's3cret', name: 'dana', aiTasks: 'off' })
   await dana.start({ waitTimeoutMs: 5000 })
   control = await startControl(dana, {})
   sam = new Session({ dir: samDir, server, room: 'pair', secret: 's3cret', name: 'sam' })
@@ -233,7 +233,8 @@ test('installHooks writes the hooks, keeps other hooks, and is idempotent', () =
   const file = path.join(dir, '.claude', 'settings.local.json')
   let json = JSON.parse(fs.readFileSync(file, 'utf8'))
   for (const ev of ['SessionStart', 'PreToolUse', 'PostToolUse', 'Stop', 'SessionEnd']) assert.ok(json.hooks[ev], ev)
-  assert.equal(json.hooks.PreToolUse[0].matcher, 'Edit|Write|MultiEdit|NotebookEdit')
+  // Claude Code's edit tools, and Cursor's: Cursor runs these hooks too.
+  assert.equal(json.hooks.PreToolUse[0].matcher, 'Edit|Write|MultiEdit|NotebookEdit|StrReplace|MultiStrReplace|ApplyPatch|Delete|EditNotebook')
   assert.equal(json.hooks.PreToolUse[0].hooks[0].command, hookCommand())
   assert.match(hookCommand(), /quilt\.js" hook$/, 'by absolute path: no PATH needed')
   assert.equal(installHooks(dir), false, 'nothing to change')
@@ -253,4 +254,94 @@ test('installHooks writes the hooks, keeps other hooks, and is idempotent', () =
   fs.writeFileSync(file, '{not json')
   assert.equal(installHooks(dir), true)
   assert.ok(JSON.parse(fs.readFileSync(file, 'utf8')).hooks.Stop)
+})
+
+// ---------------------------------------------------------- other tools --
+// The same rules, in each tool's own hook dialect: Cursor (which runs the project's Claude Code
+// hooks with its own event names and answers) and Gemini CLI (hooks in its user settings).
+
+/** Stops until nothing older holds the AI back (what earlier tests left for dana), returning the last answer. */
+async function drain (stopOnce) {
+  let r
+  for (let i = 0; i < 6; i++) { r = await stopOnce(); if (!r.json || !(r.json.decision === 'block' || r.json.followup_message)) return r }
+  return r
+}
+const cursor = (event) => hook({ cursor_version: '3.22.7', conversation_id: 'cursor-1', session_id: 'cursor-1', workspace_roots: [danaDir], ...event })
+
+test('which tool sent a hook, and which files an edit tool names', () => {
+  assert.equal(dialectOf({ hook_event_name: 'preToolUse', cursor_version: '3' }), 'cursor')
+  assert.equal(dialectOf({ hook_event_name: 'BeforeTool' }), 'gemini')
+  assert.equal(dialectOf({ hook_event_name: 'PreToolUse' }), 'claude')
+  assert.equal(dialectOf({ hook_event_name: 'SessionStart' }, 'gemini'), 'gemini')
+  assert.deepEqual(editedFiles({ path: 'src/a.js' }), ['src/a.js'])
+  assert.deepEqual(editedFiles({ patch: '*** Begin Patch\n*** Update File: src/a.js\n@@\n-x\n+y\n*** Add File: docs/b.md\n+hi\n*** End Patch' }), ['src/a.js', 'docs/b.md'])
+  assert.deepEqual(editedFiles('*** Delete File: old.js'), ['old.js'])
+})
+
+test('Cursor: an edit to a file someone else holds is refused in Cursor\'s words; a free one is claimed', async () => {
+  await sam.claim('src/cursor-held.js', 'refactoring')
+  await waitFor(() => dana.claimFor('src/cursor-held.js'))
+  const r = await cursor({ hook_event_name: 'preToolUse', tool_name: 'StrReplace', tool_input: { path: 'src/cursor-held.js' }, cwd: danaDir })
+  assert.equal(r.json.permission, 'deny')
+  assert.match(r.json.agent_message, /src\/cursor-held\.js is claimed by sam \(refactoring\)/)
+  assert.match(r.json.agent_message, /quilt_request_file/)
+  // A patch naming a free file claims it, and Cursor gets an answer it accepts.
+  fs.writeFileSync(path.join(danaDir, 'src', 'cursor-free.js'), 'x\n')
+  const ok = await cursor({ hook_event_name: 'preToolUse', tool_name: 'ApplyPatch', tool_input: { patch: '*** Begin Patch\n*** Update File: src/cursor-free.js\n@@\n-x\n+y\n*** End Patch' } })
+  assert.deepEqual(ok.json, {})
+  assert.equal((await waitFor(() => sam.claimFor('src/cursor-free.js'))).by, 'dana')
+  // Its stop releases what its hooks claimed.
+  const done = await drain(() => cursor({ hook_event_name: 'stop', status: 'completed', loop_count: 0 }))
+  assert.deepEqual(done.json, {})
+  await waitFor(() => !sam.claimFor('src/cursor-free.js'))
+  await sam.release('src/cursor-held.js')
+})
+
+test('Cursor: session start tells it the rules', async () => {
+  const r = await cursor({ hook_event_name: 'sessionStart' })
+  assert.match(r.json.additional_context, /claims each file for you/)
+})
+
+test('Gemini CLI: an edit to a held file is denied in its words', async () => {
+  await sam.claim('src/gemini-held.js', 'tests')
+  await waitFor(() => dana.claimFor('src/gemini-held.js'))
+  const r = await hook({ hook_event_name: 'BeforeTool', tool_name: 'write_file', tool_input: { file_path: path.join(danaDir, 'src', 'gemini-held.js') } }, 'gemini')
+  assert.equal(r.json.decision, 'deny')
+  assert.match(r.json.reason, /src\/gemini-held\.js is claimed by sam \(tests\)/)
+  await sam.release('src/gemini-held.js')
+})
+
+test('an AI allowed to pick up work is handed its next task as it stops, once, in every tool', async () => {
+  for (const t of dana.taskList()) dana.deleteTask(t.id) // what earlier tests handed dana's AI
+  const task = dana.addTask({ title: 'Write the changelog', assignee: 'dana', forAi: true })
+  dana.addTask({ title: 'Nobody\'s yet' })
+  // Off: nothing.
+  assert.equal(dana.duties().next, null)
+  assert.equal((await drain(() => hook({ hook_event_name: 'Stop', stop_hook_active: false }))).out, '')
+  await drain(() => hook({ hook_event_name: 'AfterAgent', session_id: 'gemini-1', stop_hook_active: false }, 'gemini'))
+  dana.aiTasks = 'mine'
+  try {
+    assert.equal(dana.duties().next.id, task.id)
+    const claude = await hook({ hook_event_name: 'Stop', stop_hook_active: false })
+    assert.equal(claude.json.decision, 'block')
+    assert.match(claude.json.reason, new RegExp(`Your next task.*${task.id} "Write the changelog"`))
+    assert.match(claude.json.reason, /quilt_move_task/)
+    assert.equal((await hook({ hook_event_name: 'Stop', stop_hook_active: false })).out, '', 'once per task')
+    const c = await cursor({ hook_event_name: 'stop', status: 'completed', loop_count: 0 })
+    assert.match(c.json.followup_message, /Write the changelog/)
+    const g = await hook({ hook_event_name: 'AfterAgent', session_id: 'gemini-1', stop_hook_active: false }, 'gemini')
+    assert.equal(g.json.decision, 'block')
+    assert.match(g.json.reason, /Write the changelog/)
+    // Once it is In progress, nothing more is handed over until it's finished.
+    dana.updateTask({ id: task.id, column: 'doing' })
+    assert.equal(dana.duties().next, null)
+    // "any" also hands over unassigned work once its own is done.
+    dana.updateTask({ id: task.id, column: 'done', verified: 'ran it' })
+    dana.aiTasks = 'any'
+    assert.equal(dana.duties().next.title, 'Nobody\'s yet')
+    const s = await hook({ hook_event_name: 'SessionStart', session_id: 'claude-2' })
+    assert.match(s.json.hookSpecificOutput.additionalContext, /pick up work from the task board by yourself \(tasks assigned to you, then unassigned ones\)/)
+  } finally {
+    dana.aiTasks = 'off'
+  }
 })

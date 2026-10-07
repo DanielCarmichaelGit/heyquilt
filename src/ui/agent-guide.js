@@ -58,7 +58,7 @@ export function agentGuide ({ apiUrl = 'https://api.heyquilt.com', via = 'both' 
     `- Add: ${call('quilt_add_task', { title: 'a few words', assignee: '<name> or me', files: ['src/app.js'] })}. Assign: ${call('quilt_assign_task', { id: '<task id>', assignee: '<name>', to_ai: true })}. to_ai: true gives it to that person's AI instead of the person; an agent is assigned by its own name, without to_ai.`,
     `- Move: ${call('quilt_move_task', { id: '<task id>', column: 'doing' })} when you start (you get a briefing: its files, recent changes, claims, the project's checks); "qa" when done and tested, with qaNotes (what changed, how you checked it); "done" after QA, with verified (what you ran and what you saw). A move without those is refused.`,
     '- A task handed to you wakes you like a direct message. Take it with quilt_move_task, or say in chat why not.',
-    '- If you change files for something not on the board, Quilt adds an In progress task for it: use that one rather than adding another, and move it on when you finish. `quilt_delete_task` removes a task.',
+    '- If you change files for something not on the board, add a task for it with `quilt_add_task` and move it on when you finish. `quilt_delete_task` removes a task.',
     '',
     '### Files',
     cliOnly('- Call `quilt_before_edit` with the paths before you change files: it tells you which are yours to edit, claims the free ones for you, and shows what people said about them in chat'),

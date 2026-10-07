@@ -177,7 +177,7 @@ test('removing an agent from a session in a workspace also keeps it out of that 
   const kept = await api('GET', `/api/sessions/${s.body.id}/agents/excluded`)
   assert.deepEqual([kept.status, kept.body], [200, { agents: [{ agentId: agent.id, name: 'Kip' }] }])
   assert.equal((await api('POST', `/api/sessions/${s.body.id}/agents/include`, { agentId: 'nope' })).status, 400)
-  assert.deepEqual((await api('POST', `/api/sessions/${s.body.id}/agents/include`, { agentId: agent.id })).body, { ok: true })
+  assert.deepEqual((await api('POST', `/api/sessions/${s.body.id}/agents/include`, { agentId: agent.id })).body, { ok: true, notified: false }, 'no webhook: nothing to send it')
   assert.equal(await accounts.store.sessionAgentExcluded(room, agent.id), false)
   assert.deepEqual((await api('GET', `/api/sessions/${s.body.id}/agents/excluded`)).body, { agents: [] })
   await api('POST', `/api/sessions/${s.body.id}/stop`)
@@ -250,4 +250,44 @@ test('an app that has not seen workspaces on (the flag off at launch) only remov
     assert.ok(!logs.some((l) => /keep that agent out/.test(l.line)), JSON.stringify(logs))
     await call('POST', `/api/sessions/${s.body.id}/stop`)
   } finally { await ui2.close() }
+})
+
+test('Invite an agent, Global agent: the invite places the agent in all your workspaces once it joins', async () => {
+  const id = await newWorkspace('Global kind')
+  const made = await api('POST', '/api/agent-invites', { global: true })
+  assert.equal(made.status, 200, JSON.stringify(made.body))
+  await agentJoin({ link: made.body.link.replace(API_URL, accounts.api.url), name: 'globe', dir: path.join(home, 'globe-home'), log: () => {} })
+  const a = (await agentsOf(id)).find((x) => x.name === 'globe')
+  assert.deepEqual([a?.via, a?.sessions, a?.access], ['global', 'all', 'edit'])
+  // A plain one (a session agent) is placed nowhere.
+  const plain = await api('POST', '/api/agent-invites', {})
+  await agentJoin({ link: plain.body.link.replace(API_URL, accounts.api.url), name: 'solo', dir: path.join(home, 'solo-home'), log: () => {} })
+  assert.equal((await agentsOf(id)).some((x) => x.name === 'solo'), false)
+})
+
+test('a session\'s People: the agents its workspace invites, Don\'t invite, and Invite again (which sends the link)', async () => {
+  const id = await newWorkspace('Session people')
+  const { agent, accessKey } = await makeAgent(accounts, { name: 'Hal', ownerUserId: 'mem' })
+  await api('POST', `/api/agents/${agent.id}/placement`, { reach: 'all', sessions: 'all', access: 'edit', scopes: [] })
+  const hook = await fetch(`${accounts.api.url}/v1/agents/me/webhook`, { method: 'PUT', headers: { authorization: `Bearer ${accessKey}`, 'content-type': 'application/json' }, body: JSON.stringify({ url: 'http://127.0.0.1:9/hal' }) })
+  assert.equal(hook.status, 200)
+  const s = await api('POST', '/api/sessions', { mode: 'create', dir: path.join(home, 'people'), workspace: id })
+  assert.equal(s.status, 200, JSON.stringify(s.body))
+  const listed = await api('GET', `/api/sessions/${s.body.id}/agents`)
+  assert.equal(listed.status, 200, JSON.stringify(listed.body))
+  assert.deepEqual(listed.body.agents.find((a) => a.agentId === agent.id), { agentId: agent.id, name: 'Hal', via: 'global', managedBy: 'owner', excluded: false })
+  assert.equal((await api('POST', `/api/sessions/${s.body.id}/agents/exclude`, { agentId: 'nope' })).status, 400)
+  assert.deepEqual((await api('POST', `/api/sessions/${s.body.id}/agents/exclude`, { agentId: agent.id })).body, { ok: true })
+  assert.equal((await api('GET', `/api/sessions/${s.body.id}/agents`)).body.agents.find((a) => a.agentId === agent.id).excluded, true)
+  // The relay has to have named the owner before the API hands the link on.
+  const until = Date.now() + 10_000
+  let again
+  while (Date.now() < until) {
+    again = await api('POST', `/api/sessions/${s.body.id}/agents/include`, { agentId: agent.id })
+    if (again.body.notified) break
+    await sleep(200)
+  }
+  assert.deepEqual(again.body, { ok: true, notified: true })
+  assert.equal(await accounts.store.sessionAgentExcluded(s.body.status.room, agent.id), false)
+  await api('POST', `/api/sessions/${s.body.id}/stop`)
 })

@@ -178,26 +178,27 @@ test('agentsJoiningSession in an org workspace finds the org\'s agents', async (
   assert.deepEqual(await agentsJoiningSession(store, 'room-o'), [{ agentId: agent.id, via: 'placed' }])
 })
 
-test('roomAccess: a placed agent gets in at its access; kept out of one session it does not; a session grant still wins', async () => {
+test('roomAccess: a workspace invites its agents but never lets them in; a session grant does', async () => {
   const { store, ws1, agent } = await setup()
-  await place(store, agent.id, { reach: 'all', access: 'view' })
+  await place(store, agent.id, { reach: 'all', access: 'view', sessions: 'all' })
   await ownedAndLinked(store, 'room-1', ws1.id, 'person:u1')
   const account = `agent:${agent.id}`
-  assert.deepEqual(await roomAccess(store, 'room-1', account), { files: 'view', folders: [], foldersExcept: [], talk: true })
+  // Placed (global): invited to the session, but it waits for the owner like anyone with a link.
+  assert.equal(await roomAccess(store, 'room-1', account), null)
+  // A member row is an invitation too, never admission.
+  await store.putWorkspaceMember({ workspaceId: ws1.id, account, access: 'edit', addedBy: 'person:u1', sessions: 'all' })
+  assert.equal(await roomAccess(store, 'room-1', account), null)
+  // The owner letting it in writes a grant: that is what admits it, kept out or not.
   await store.addSessionAgentExclusion({ room: 'room-1', agentId: agent.id, excludedBy: 'person:u1' })
-  assert.equal(await roomAccess(store, 'room-1', account), null)
-  // A member row is kept out too.
-  await store.putWorkspaceMember({ workspaceId: ws1.id, account, access: 'edit', addedBy: 'person:u1' })
-  assert.equal(await roomAccess(store, 'room-1', account), null)
   await store.putGrant({ room: 'room-1', account, typeId: 'builtin:edit', tighten: {}, grantedBy: 'person:u1' })
   assert.equal((await roomAccess(store, 'room-1', account)).files, 'edit', 'the session owner\'s own grant')
 })
 
-test('roomAccess: a placement\'s scopes become folder limits; members and owners are unchanged', async () => {
+test('roomAccess: people still get in through the workspace; owners are unchanged', async () => {
   const { store, ws1, agent } = await setup()
   await place(store, agent.id, { reach: 'all', access: 'edit', scopes: ['src', 'docs'] })
   await ownedAndLinked(store, 'room-1', ws1.id, 'person:u1')
-  assert.deepEqual(await roomAccess(store, 'room-1', `agent:${agent.id}`), { files: 'edit', folders: ['src', 'docs'], foldersExcept: [], talk: true })
+  assert.equal(await roomAccess(store, 'room-1', `agent:${agent.id}`), null)
   await store.putWorkspaceMember({ workspaceId: ws1.id, account: 'person:u2', access: 'edit', addedBy: 'person:u1' })
   assert.deepEqual(await roomAccess(store, 'room-1', 'person:u2'), { files: 'edit', folders: [], foldersExcept: [], talk: true })
 })

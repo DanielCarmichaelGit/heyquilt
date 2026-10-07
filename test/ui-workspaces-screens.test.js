@@ -146,11 +146,11 @@ test('Settings › Agents with workspaces off: every row is exactly as on main',
   assert.ok(!h.includes('function agentRow'), 'one agentRow, in agent-place.js')
 })
 
-test('Settings › Agents with workspaces on: a card per agent with Works in, the chosen workspaces and Joins', () => {
+test('Settings › Agents with workspaces on: a card per agent with Works in, the chosen workspaces and Invited to new sessions', () => {
   const chosen = place.agentRow(AGENTS[0], { reach: 'workspaces', workspaceIds: ['w2'], sessions: 'all', access: 'edit', scopes: [] }, MINE)
-  for (const bit of ['class="ag-card" data-agent-place="a1"', 'data-placement-reach', 'data-placement-sessions', 'data-placement-ws', 'Works in', 'Joins sessions', '>All<', 'Chosen', 'Where added', 'Every session', 'When invited']) assert.ok(chosen.includes(bit), bit)
+  for (const bit of ['class="ag-card" data-agent-place="a1"', 'data-placement-reach', 'data-placement-sessions', 'data-placement-ws', 'Works in', 'Invited to new sessions', '>All<', 'Chosen', 'Where added', 'Every session', 'Not automatically']) assert.ok(chosen.includes(bit), bit)
   assert.ok(chosen.includes('data-v="workspaces" aria-checked="true" class="on"'))
-  assert.ok(chosen.includes('data-v="all" aria-checked="true" class="on"'), 'Joins: every session')
+  assert.ok(chosen.includes('data-v="all" aria-checked="true" class="on"'), 'invited to every session')
   assert.ok(chosen.includes('value="w2" aria-pressed="true"') && chosen.includes('value="w1" aria-pressed="false"'), 'a chip per workspace, pressed when chosen')
   assert.ok(chosen.includes('data-ag-global hidden'), 'not global')
   assert.ok(chosen.includes('&lt;agent&gt;') && !chosen.includes('<agent>'), 'names are escaped')
@@ -158,9 +158,9 @@ test('Settings › Agents with workspaces on: a card per agent with Works in, th
   const global = place.agentRow(AGENTS[0], { reach: 'all', workspaceIds: [], sessions: 'all' }, MINE)
   assert.ok(global.includes('data-ag-global title') && global.includes('Global</span>'))
   assert.ok(global.includes(place.REACH_HINTS.all))
-  // Only where added: Joins is set per workspace, so its choice is off.
+  // Only where added: whether it is invited is set per workspace, so its choice is off.
   const manual = place.agentRow(AGENTS[1], { reach: 'manual', workspaceIds: [], sessions: 'invited', access: 'edit', scopes: [] }, MINE)
-  assert.ok(manual.includes('data-placement-sessions aria-label="When Editor joins sessions" aria-disabled="true"'))
+  assert.ok(manual.includes('data-placement-sessions aria-label="Whether Editor is invited to new sessions" aria-disabled="true"'))
   assert.ok(manual.includes('Set on each workspace it is added to.'))
   assert.ok(place.agentRow(AGENTS[1], { reach: 'workspaces', workspaceIds: [], sessions: 'invited' }, []).includes('Make a workspace first.'))
   // Only your own personal workspaces can be chosen.
@@ -173,7 +173,7 @@ test('a placement saves with its access and folder limits, and only workspaces y
   assert.deepEqual(place.placementBody(saved, { reach: 'all', sessions: 'all', workspaceIds: ['w1'] }, MINE).workspaceIds, [])
 })
 
-test('workspace agent cards: why it is here, Joins for admins, and the right action for each kind', () => {
+test('workspace agent cards: why it is here, Invite to new sessions for admins, and the right action for each kind', () => {
   const member = { account: 'agent:m', agentId: 'm', name: 'Editor', provider: 'xAI', via: 'member', access: 'edit', sessions: 'invited', managedBy: 'workspace', excluded: false }
   const global = { account: 'agent:g', agentId: 'g', name: 'Marketing', provider: 'Anthropic', via: 'global', access: 'edit', sessions: 'all', managedBy: 'owner', excluded: false }
   const placed = { ...global, account: 'agent:p', agentId: 'p', name: 'Reviewer', via: 'placed', access: 'view' }
@@ -181,29 +181,30 @@ test('workspace agent cards: why it is here, Joins for admins, and the right act
   const out = { ...placed, excluded: true }
 
   const m = place.workspaceAgentCardHtml(member, { admin: true })
-  for (const bit of ['>This workspace</span>', 'data-agent-joins="m"', '<option value="invited" selected>When invited</option>', 'data-member-access="agent:m"', 'data-member-remove="agent:m"']) assert.ok(m.includes(bit), bit)
+  for (const bit of ['>This workspace</span>', 'data-agent-joins="m"', 'title="Invite to new sessions"', '<option value="invited" selected>Not invited automatically</option>', 'data-member-access="agent:m"', 'data-member-remove="agent:m"']) assert.ok(m.includes(bit), bit)
   assert.ok(!m.includes('data-agent-exclude'))
 
   const g = place.workspaceAgentCardHtml(global, { admin: true })
-  for (const bit of ['Global</span>', 'pill ws-via violet" title="In every workspace its owner has.', 'data-agent-joins="g"', '<option value="all" selected>Every session</option>', 'data-agent-exclude="g"', 'title="Not in this workspace"', '<span class="pill">Can edit</span>']) assert.ok(g.includes(bit), bit)
+  for (const bit of ['Global</span>', 'pill ws-via violet" title="In every workspace its owner has.', 'data-agent-joins="g"', '<option value="all" selected>Invited to new sessions</option>', 'data-agent-exclude="g"', 'title="Not in this workspace"', '<span class="pill">Can edit</span>']) assert.ok(g.includes(bit), bit)
   assert.ok(!g.includes('data-member-access'), 'a placed agent\'s access is set where it was placed')
   assert.ok(place.workspaceAgentCardHtml(placed, { admin: true }).includes('>Placed</span>'))
   assert.ok(place.workspaceAgentCardHtml(fromOrg, { admin: true, orgName: 'Acme' }).includes('>Added by Acme</span>'))
 
   const viewer = place.workspaceAgentCardHtml(global, { admin: false })
-  assert.ok(viewer.includes('<span>Joins every session</span>'))
+  assert.ok(viewer.includes('<span>Invited to new sessions</span>'))
+  assert.ok(place.workspaceAgentCardHtml(member, { admin: false }).includes('<span>Not invited automatically</span>'))
   for (const bit of ['data-agent-joins', 'data-agent-exclude', 'data-member-access', 'data-member-remove']) assert.ok(!viewer.includes(bit), bit)
 
   const o = place.workspaceAgentCardHtml(out, { admin: true })
   assert.ok(o.includes('class="pc agent out"') && o.includes('<span>Not in this workspace</span>') && o.includes('data-agent-include="p"'))
   assert.ok(!o.includes('data-agent-joins'))
 
-  // Someone else's agent added here: an admin sets its access and removes it, but cannot make
-  // it join every session (only its owner can), and the card says so instead of offering it.
+  // Someone else's agent added here: an admin sets its access and removes it, but cannot have
+  // it invited to every session (only its owner can), and the card says so instead of offering it.
   const foreign = { ...member, account: 'agent:f', agentId: 'f', name: 'Visitor', foreign: true }
   const f = place.workspaceAgentCardHtml(foreign, { admin: true })
-  for (const bit of ['data-member-access="agent:f"', 'data-member-remove="agent:f"', '<span title="Only its owner can make an agent join every session.">Joins when invited</span>']) assert.ok(f.includes(bit), bit)
-  assert.ok(!f.includes('data-agent-joins'), 'no Joins choice the API would refuse')
+  for (const bit of ['data-member-access="agent:f"', 'data-member-remove="agent:f"', '<span title="Only its owner can have an agent invited to every session.">Not invited automatically</span>']) assert.ok(f.includes(bit), bit)
+  assert.ok(!f.includes('data-agent-joins'), 'no choice the API would refuse')
 })
 
 test('the workspace page lists agents from the API\'s agents, with their cards wired', () => {
@@ -212,10 +213,10 @@ test('the workspace page lists agents from the API\'s agents, with their cards w
   for (const bit of ['const agents = d.agents || []', 'agents.map((a) => workspaceAgentCardHtml(a, { admin, orgName }))', '<span class="count">$' + '{people.length + agents.length}</span>', '[data-agent-joins]', '[data-agent-exclude]', '[data-agent-include]', '{ excluded: true }', "'/remove'", '{ account: a.account, access: a.access, sessions: sel.value }']) assert.ok(w.includes(bit), bit)
 })
 
-test('the Add dialog: agents of the workspace\'s owner, the every-session switch, and Invite a new agent', () => {
+test('the Add dialog: agents of the workspace\'s owner, the every-session switch, and Invite a new agent (the kinds menu)', () => {
   const h = ui('home.js')
   const dlg = h.slice(h.indexOf('function workspaceInviteDialog'), h.indexOf('/** The GitHub side'))
-  for (const bit of ['Also join every session in this workspace as it starts', 'Invite a new agent', 'data-wi-invite-agent', '/api/orgs/$' + '{encodeURIComponent(org.slug)}/agents', "api('GET', '/api/agents')", '/agent-invites`', "account.startsWith('agent:') ? { sessions: ownAgents.has(account) || !ownKnown ? joins() : 'invited' } : {}", "agentInviteHtml(agentPaste({ link }), 'wi-paste')"]) assert.ok(dlg.includes(bit), bit)
+  for (const bit of ['Also invite to every new session in this workspace', 'Invite a new agent', 'openKindMenu(invite, {', 'workspaceId: id,', "workspaceBody: () => ({ access: $('#wi-access', back).value, sessions: joins() })", "agentInviteHtml(text, 'wi-paste', kindLineHtml(kind, where))", 'data-wi-invite-agent', '/api/orgs/$' + '{encodeURIComponent(org.slug)}/agents', "api('GET', '/api/agents')", '/agent-invites`', "account.startsWith('agent:') ? { sessions: ownAgents.has(account) || !ownKnown ? joins() : 'invited' } : {}", "agentInviteHtml(agentPaste({ link }), 'wi-paste')"]) assert.ok(dlg.includes(bit), bit)
 })
 
 test('agent-place.js is served, and has no em dashes', () => {
@@ -263,19 +264,26 @@ test('a card follows its choices, saves each change, and goes back when a save f
   } finally { globalThis.fetch = was; delete globalThis.document }
 })
 
-test('a session\'s people menu: agents kept out of it, each with Let back in, only with workspaces on', () => {
-  assert.equal(place.keptOutHtml([]), '')
-  const html = place.keptOutHtml([{ agentId: 'k1', name: 'Kip <bot>' }])
-  for (const bit of ['Kept out of this session', 'Kip &lt;bot&gt; (agent)', 'data-let-in="k1"', 'Let back in', 'class="pm-member"']) assert.ok(html.includes(bit), bit)
+test('a session\'s People: the agents its workspace invites, where each stands, Don\'t invite and Invite, only with workspaces on', () => {
+  assert.equal(place.sessionAgentsHtml([]), '')
+  const st = { members: [{ key: 'agent:in1', name: 'Inez' }], waiting: [{ key: 'agent:w1', name: 'Wade' }] }
+  const html = place.sessionAgentsHtml([
+    { agentId: 'g1', name: 'Gale <bot>', via: 'global', managedBy: 'owner', excluded: false },
+    { agentId: 'w1', name: 'Wade', via: 'member', managedBy: 'workspace', excluded: false },
+    { agentId: 'in1', name: 'Inez', via: 'placed', managedBy: 'owner', excluded: false },
+    { agentId: 'k1', name: 'Kurt', via: 'global', managedBy: 'org', excluded: true }
+  ], st)
+  for (const bit of ['Invited from the workspace', 'Gale &lt;bot&gt;', '<small>Global · Invited</small>', 'data-agent-uninvite="g1"', '<small>This workspace · Waiting for you to let it in</small>', 'data-agent-uninvite="w1"', '<small>Placed · In this session</small>', 'class="pm-member pm-inv out"', '<small>Added by the org · Not invited</small>', 'data-agent-invite="k1"', '>Invite</button>', ">Don't invite</button>"]) assert.ok(html.includes(bit), bit)
+  assert.ok(!html.includes('data-agent-uninvite="in1"'), 'an agent already in is managed under Who can get in')
+  assert.ok(!html.includes('<bot>'))
   const s = ui('session.js')
-  assert.ok(s.includes('if (sum().status.access?.owner) { loadGrants(); if (state.workspacesOn) loadKeptOut() }'))
-  // The removal answers once the keep-out is written (or given up on), so the list is read then, not on a timer.
-  assert.ok(!s.includes('setTimeout(loadKeptOut'))
-  assert.ok(s.includes("if (state.workspacesOn && f.dataset.key.startsWith('agent:')) loadKeptOut()"))
+  assert.ok(s.includes('if (sum().status.access?.owner) { loadGrants(); if (state.workspacesOn) loadSessionAgents() }'))
+  assert.ok(s.includes("if (state.workspacesOn && f.dataset.key.startsWith('agent:')) loadSessionAgents()"))
   assert.ok(s.includes('if (state.workspacesOn && sum()?.workspace && sum().status.access?.owner)'))
-  // With nothing kept out (always, with workspaces off) the owner's section ends exactly as before.
-  assert.ok(s.includes('    $' + "{keptOut.id === current ? keptOutHtml(keptOut.agents) : ''}<div class=\"pm-foot\">"))
-  assert.ok(s.includes('/agents/include') && s.includes('/agents/excluded'))
+  // With nothing listed (always, with workspaces off) the owner's section ends exactly as before.
+  assert.ok(s.includes('    $' + "{wsAgents.id === current ? sessionAgentsHtml(wsAgents.agents, st) : ''}<div class=\"pm-foot\">"))
+  for (const bit of ['`/api/sessions/$' + '{id}/agents`', 'agents/$' + "{invite ? 'include' : 'exclude'}"]) assert.ok(s.includes(bit), bit)
+  assert.ok(!s.includes('keptOut'), 'the kept-out block is gone')
 })
 
 test('the Add dialog: anchored at the top, a gap before the agent tag, and a hint when an org\'s agents can\'t be listed', () => {

@@ -1,13 +1,17 @@
-// Where agents work, in the app: an agent's row in Settings › Agents (with Available in and
-// Joins once workspaces are on) and an agent's card on a workspace's page. The markup is plain
-// functions, so tests can draw it; home.js and workspaces.js put it on the page.
+// Where agents work, in the app: an agent's row in Settings › Agents (with Works in and
+// Invited to new sessions once workspaces are on), an agent's card on a workspace's page, and
+// the agents a session's workspace invites, in its People. A workspace invites its agents to
+// a new session (sends them the link); the session's owner lets them in. The markup is plain
+// functions, so tests can draw it; home.js, workspaces.js and session.js put it on the page.
 import { I, esc, ago, avatar, colorFor, api, toast, COLORS } from './common.js'
 
 export const REACH_OPTIONS = [['all', 'All'], ['workspaces', 'Chosen'], ['manual', 'Where added']]
 /** What Works in means, under the choice (when no workspaces are picked by hand). */
 export const REACH_HINTS = { all: 'Global: in every workspace you own, and any you make later.', manual: 'Only in workspaces it is added to, from their page.' }
-export const JOINS_OPTIONS = [['all', 'Every session'], ['invited', 'When invited']]
-const JOINS_HINTS = { all: 'Joins each session in its workspaces as it starts.', invited: 'Joins a session only when someone invites it.', manual: 'Set on each workspace it is added to.' }
+export const JOINS_OPTIONS = [['all', 'Every session'], ['invited', 'Not automatically']]
+/** A workspace card's Invite to new sessions: each choice reads as the line a non-admin sees. */
+export const INVITE_OPTIONS = [['all', 'Invited to new sessions'], ['invited', 'Not invited automatically']]
+const JOINS_HINTS = { all: 'Gets each new session\'s link; the owner lets it in.', invited: 'Joins a session only when someone invites it.', manual: 'Set on each workspace it is added to.' }
 const options = (list, value) => list.map(([v, label]) => `<option value="${v}"${v === value ? ' selected' : ''}>${label}</option>`).join('')
 const segs = (list, value, attr, label, disabled = false) =>
   `<div class="segmented sm" role="radiogroup" ${attr} aria-label="${esc(label)}"${disabled ? ' aria-disabled="true"' : ''}>${list.map(([v, l]) =>
@@ -36,7 +40,7 @@ function chipsHtml (ids, workspaces) {
 
 /**
  * An agent's card: who it is (with a Global badge when it is in every workspace), Works in
- * (all workspaces, chosen ones as chips, or only where added) and Joins. The line under each
+ * (all workspaces, chosen ones as chips, or only where added) and Invited to new sessions. The line under each
  * choice has a fixed height, so changing a choice never moves the card.
  */
 export function agentCardHtml (a, place, workspaces, { state = '', when = '' } = {}) {
@@ -51,7 +55,7 @@ export function agentCardHtml (a, place, workspaces, { state = '', when = '' } =
     <div class="ag-set">
       <div class="ag-g"><span class="ag-l">Works in</span>${segs(REACH_OPTIONS, place.reach, 'data-placement-reach', `Where ${a.name} works`)}
         <div class="ag-detail" data-ag-detail>${place.reach === 'workspaces' ? chipsHtml(ids, workspaces) : `<span class="ag-why">${esc(REACH_HINTS[place.reach])}</span>`}</div></div>
-      <div class="ag-g"><span class="ag-l">Joins sessions</span>${segs(JOINS_OPTIONS, place.sessions, 'data-placement-sessions', `When ${a.name} joins sessions`, manual)}
+      <div class="ag-g"><span class="ag-l">Invited to new sessions</span>${segs(JOINS_OPTIONS, place.sessions, 'data-placement-sessions', `Whether ${a.name} is invited to new sessions`, manual)}
         <div class="ag-detail"><span class="ag-why" data-ag-joins-why>${esc(JOINS_HINTS[manual ? 'manual' : place.sessions])}</span></div></div>
     </div>
   </div>`
@@ -63,7 +67,7 @@ export function placementBody (saved, { reach, sessions, workspaceIds }, workspa
   return { reach, sessions, access: saved.access || 'edit', scopes: saved.scopes || [], workspaceIds: reach === 'workspaces' ? workspaceIds.filter((id) => mine.has(id)) : [] }
 }
 
-/** Saves each card's Works in, chosen workspaces and Joins as they change. */
+/** Saves each card's Works in, chosen workspaces and Invited to new sessions as they change. */
 export function bindPlacements (root, agents, places, workspaces) {
   root.querySelectorAll('[data-agent-place]').forEach((el) => {
     const i = agents.findIndex((a) => a.id === el.dataset.agentPlace)
@@ -110,8 +114,8 @@ export function bindPlacement (el, a, place, workspaces) {
   })
 }
 
-/** Why someone else's agent in a workspace never joins every session there (the API's words). */
-export const FOREIGN_JOINS = 'Only its owner can make an agent join every session.'
+/** Why someone else's agent in a workspace is never invited to every session there (the API's words). */
+export const FOREIGN_JOINS = 'Only its owner can have an agent invited to every session.'
 
 /** The pill on a workspace's agent card: why it is there. */
 export function viaLabel (a, orgName = '') {
@@ -121,8 +125,8 @@ export function viaLabel (a, orgName = '') {
 }
 
 /**
- * An agent on a workspace's page: why it is there, whether it joins every session, and its
- * access. Admins change Joins here (the member's own setting, or the workspace's say over a
+ * An agent on a workspace's page: why it is there, whether it is invited to new sessions, and
+ * its access. Admins change that here (the member's own setting, or the workspace's say over a
  * placed agent), remove an added agent, and keep a placed one out of this workspace.
  */
 export function workspaceAgentCardHtml (a, { admin = false, orgName = '' } = {}) {
@@ -130,11 +134,12 @@ export function workspaceAgentCardHtml (a, { admin = false, orgName = '' } = {})
   const member = a.via === 'member'
   const global = a.via === 'global'
   const pill = `<span class="pill ws-via${global ? ' violet' : ''}"${global ? ' title="In every workspace its owner has. Set in Settings › Agents."' : ''}>${global ? I.globe : ''}${esc(viaLabel(a, orgName))}</span>`
-  // Someone else's agent added here joins only when invited: only its owner can change that.
-  let joins = `<span>Joins ${a.sessions === 'all' ? 'every session' : 'when invited'}</span>`
+  // Someone else's agent added here is invited by hand only: only its owner can change that.
+  let joins = `<span>${a.sessions === 'all' ? 'Invited to new sessions' : 'Not invited automatically'}</span>`
   if (a.excluded) joins = '<span>Not in this workspace</span>'
-  else if (admin && a.foreign) joins = `<span title="${esc(FOREIGN_JOINS)}">Joins when invited</span>`
-  else if (admin) joins = `<span>Joins</span><select class="input xs" data-agent-joins="${esc(a.agentId)}" aria-label="When ${esc(name)} joins sessions here">${options([['all', 'Every session'], ['invited', 'When invited']], a.sessions)}</select>`
+  else if (admin && a.foreign) joins = `<span title="${esc(FOREIGN_JOINS)}">Not invited automatically</span>`
+  // Its choices say the whole thing (as the line does for everyone else), so the card stays one line wide enough.
+  else if (admin) joins = `<select class="input xs" data-agent-joins="${esc(a.agentId)}" aria-label="Invite ${esc(name)} to new sessions here" title="Invite to new sessions">${options(INVITE_OPTIONS, a.sessions)}</select>`
   const accessPill = `<span class="pill">${a.access === 'edit' ? 'Can edit' : 'View only'}</span>`
   // Access on the first line; why it is here and Joins on the second; Remove (or Not in this
   // workspace) in the corner, so the card never wraps around its buttons.
@@ -156,9 +161,30 @@ export function workspaceAgentCardHtml (a, { admin = false, orgName = '' } = {})
   </div>`
 }
 
-/** A session's people menu (owner, workspaces on): agents kept out of this session, each with Let back in. */
-export function keptOutHtml (agents) {
+/** Where a session's agent stands: in it, waiting for the owner, sent the link, or not invited. */
+export function sessionAgentState (a, st = {}) {
+  const key = `agent:${a.agentId}`
+  if (a.excluded) return 'Not invited'
+  if ((st.members || []).some((m) => m.key === key)) return 'In this session'
+  if ((st.waiting || []).some((p) => p.key === key)) return 'Waiting for you to let it in'
+  return 'Invited'
+}
+
+/**
+ * A session's People (owner, workspaces on, session in a workspace): the agents its workspace
+ * invites, each with why and where it stands, and Don't invite (unless it is in already); the
+ * ones its owner said Don't invite to, with Invite. Nothing at all when there are none.
+ */
+export function sessionAgentsHtml (agents, st = {}) {
   if (!agents?.length) return ''
-  return `<div class="pm-section pm-kept-out"><div class="pm-title">Kept out of this session</div>
-    ${agents.map((a) => `<div class="pm-member"><span class="nm">${esc(a.name || 'Agent')} (agent)</span><button type="button" class="btn sm" data-let-in="${esc(a.agentId)}">Let back in</button></div>`).join('')}</div>`
+  const row = (a) => {
+    const name = a.name || 'Agent'
+    const now = sessionAgentState(a, st)
+    const action = a.excluded
+      ? `<button type="button" class="btn sm" data-agent-invite="${esc(a.agentId)}" aria-label="Invite ${esc(name)} to this session">Invite</button>`
+      : now === 'In this session' ? '' : `<button type="button" class="btn sm ghost" data-agent-uninvite="${esc(a.agentId)}" aria-label="Don't invite ${esc(name)} to this session">Don't invite</button>`
+    return `<div class="pm-member pm-inv${a.excluded ? ' out' : ''}"><span class="nm"><b>${esc(name)}</b><small>${esc(viaLabel(a))} · ${esc(now)}</small></span>${action}</div>`
+  }
+  return `<div class="pm-section pm-invited"><div class="pm-title">Invited from the workspace</div>
+    ${agents.map(row).join('')}</div>`
 }

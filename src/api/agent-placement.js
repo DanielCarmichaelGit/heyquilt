@@ -72,9 +72,15 @@ export async function agentReach (store, ws, agentId) {
 
 /** Whether `agentId` joins `session` (in `ws`) when it starts: { joins, via } (via null when nothing decided yes). */
 async function decide (store, session, ws, agentId) {
+  if (!UUID.test(String(agentId || ''))) return { joins: false, via: null }
+  if (await store.sessionAgentExcluded(session.room, agentId)) return { joins: false, via: null }
+  return inviteFor(store, ws, agentId)
+}
+
+/** What the workspace says about inviting `agentId` to its sessions, before any keep-out: { joins, via }. */
+async function inviteFor (store, ws, agentId) {
   const no = { joins: false, via: null }
   if (!UUID.test(String(agentId || ''))) return no
-  if (await store.sessionAgentExcluded(session.room, agentId)) return no
   // A revoked agent never joins, whatever rows it left behind.
   const agent = await store.agentById(agentId)
   if (!agent || agent.revokedAt) return no
@@ -124,4 +130,28 @@ export async function agentsJoiningSession (store, room) {
     if (d.joins) out.push({ agentId, via: d.via })
   }
   return out
+}
+
+/**
+ * A session's agents as its owner manages them (the session's People): every agent its
+ * workspace invites to it, by name, with why (via 'member' | 'global' | 'placed'), who manages
+ * that ('workspace', 'owner' or 'org') and whether its owner said Don't invite (excluded: the
+ * keep-out). Sorted by name. A session outside a workspace invites nobody.
+ */
+export async function sessionAgents (store, room) {
+  const sw = await sessionAndWorkspace(store, room)
+  if (!sw) return []
+  const { ws } = sw
+  const excluded = new Set((await store.listSessionAgentExclusions(room)).map((e) => e.agentId))
+  const ids = new Set()
+  for (const m of await store.listWorkspaceMembers(ws.id)) if (m.account.startsWith('agent:')) ids.add(m.account.slice(6))
+  for (const a of ws.orgId ? await store.listOrgAgents(ws.orgId) : await store.listPersonalAgents(ws.ownerUserId)) ids.add(a.id)
+  const out = []
+  for (const agentId of ids) {
+    const d = await inviteFor(store, ws, agentId)
+    if (!d.joins) continue
+    const agent = await store.agentById(agentId)
+    out.push({ agentId, name: agent?.name || '', via: d.via, managedBy: d.via === 'member' ? 'workspace' : ws.orgId ? 'org' : 'owner', excluded: excluded.has(agentId) })
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name))
 }

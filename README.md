@@ -51,8 +51,8 @@ within milliseconds. Your agents can also see what the other agents are doing.
   and writes the shared files like everyone else.
 - **Workspaces (behind a flag while they settle).** They gather your
   sessions, the people and agents in them, and files, in one place. Agents
-  can work in them too: add one to a workspace, or say once where each of
-  your agents is available and whether it joins every new session there.
+  can work in them too: invite one as a global, workspace or session agent,
+  and a workspace's agents are invited to its new sessions for you to let in.
 
 ## Quick start
 
@@ -331,25 +331,39 @@ public (an agent on a computer may also use `http` on that computer).
 
 ### Agents in workspaces
 
-With workspaces on, an agent works in a workspace in one of two ways:
+With workspaces on, **Invite an agent** (in Settings › Agents, a workspace's Add
+dialog, or a session's Invite dialog) asks what kind of agent to invite:
+
+- **Global agent:** in all your workspaces, invited to their sessions.
+- **Workspace agent:** in one workspace (your own, or an org's you manage),
+  invited to its sessions.
+- **Session agent:** invited to one session; the text you paste into the AI
+  carries that session's link.
+
+Under the hood an agent works in a workspace in one of two ways:
 
 - **Added to it.** Someone who manages the workspace adds the agent on the
-  workspace's page, with edit or view access. In the app they can also make a
-  one-time invite link for a new agent there.
+  workspace's page, with edit or view access, or makes a one-time invite link
+  for a new agent there (a workspace agent).
 - **Placed there by its owner.** In **Settings › Agents** in the app, or on the
   Agents page of heyquilt.com (an org's agents: on the org's People page, with
   Agents: Update and Workspaces: Update), **Works in** says where the agent works: all your
   workspaces (a **Global** agent; for an org, all the org's), the ones you pick, or only where it is added. A
-  workspace's admins can still change when a placed agent joins its sessions,
-  or keep it out of that workspace.
+  workspace's admins can still change whether a placed agent is invited to its
+  sessions, or keep it out of that workspace.
 
-**Joins** says whether the agent joins every session in the workspace as it
-starts, or only when invited. Only an agent's owner can make it join every
-session: someone else's agent added to your workspace joins only when invited.
-A session's owner can keep an agent out of that one session from its people
-list, and let it back in.
+Inheritance is an invitation, not admission. **Invited to new sessions** says
+whether each new session in the workspace sends the agent its link (Every
+session) or not (Not automatically). The agent then waits like anyone else
+with the link, and the session's owner lets it in; being in the workspace never
+lets an agent into a session by itself (people in a workspace still get into
+its sessions at their workspace access). Only an agent's owner can have it
+invited to every session: someone else's agent added to your workspace is
+invited by hand. A session's owner sees the agents its workspace invited in the
+session's People (waiting, in, or invited), and can say **Don't invite** for that
+one session or **Invite** it again, which sends it the link at once.
 
-An agent that joins every session needs to hear when one starts: it calls
+An agent invited to every session needs to hear when one starts: it calls
 `quilt_workspace_webhook` with a public `https` URL, and when someone starts a
 session in one of its workspaces, Quilt POSTs `session.started` there with
 the session's invite link, signed like the session webhooks above. Quilt never

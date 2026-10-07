@@ -127,9 +127,13 @@ export async function signOut ({ token, api = apiUrl(), fetch: fetchImpl = globa
   await revokeToken({ token, api, fetch: fetchImpl, timeoutMs: revokeTimeoutMs })
 }
 
-/** A one-time agent invite link for this computer's account: { link, id, expiresAt }. Throws with .status 401 once the token is revoked. */
-export async function createAgentInvite ({ token, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
-  const r = await call(fetchImpl, api, 'POST', '/v1/agent-invites', {}, token)
+/**
+ * A one-time agent invite link for this computer's account: { link, id, expiresAt }. `global`
+ * (workspaces on) makes it a global agent's: in all your workspaces once it joins. Throws with
+ * .status 401 once the token is revoked.
+ */
+export async function createAgentInvite ({ token, global = false, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'POST', '/v1/agent-invites', global ? { global: true } : {}, token)
   if (!r.link || !r.invite) throw new Error(BAD_REPLY)
   return { link: r.link, id: r.invite.id, expiresAt: r.invite.expiresAt }
 }
@@ -249,8 +253,8 @@ export async function setSessionWorkspace ({ token, id, room, api = apiUrl(), fe
  * it. { notified, withoutWebhook } (agent ids); throws with .status (409: the relay has not
  * said who owns the session yet).
  */
-export async function announceSessionStarted ({ token, id, room, link, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
-  const r = await call(fetchImpl, api, 'POST', `${ws$(id)}/sessions/${encodeURIComponent(room)}/started`, { link }, token)
+export async function announceSessionStarted ({ token, id, room, link, agents, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'POST', `${ws$(id)}/sessions/${encodeURIComponent(room)}/started`, agents ? { link, agents } : { link }, token)
   if (!Array.isArray(r.notified)) throw new Error(BAD_REPLY)
   return r
 }
@@ -326,6 +330,13 @@ export async function createWorkspaceAgentInvite ({ token, id, access = 'edit', 
 /** The session owner keeps an agent out of one session, even when its workspace would let it in. */
 export async function excludeSessionAgent ({ token, room, agentId, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
   await call(fetchImpl, api, 'PUT', `${room$(room)}/agents/${encodeURIComponent(agentId)}/exclude`, {}, token)
+}
+
+/** A session's agents for its owner: the ones its workspace invites and the kept out, [{ agentId, name, via, managedBy, excluded }]. */
+export async function listSessionAgents ({ token, room, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'GET', `${room$(room)}/agents`, null, token)
+  if (!Array.isArray(r.agents)) throw new Error(BAD_REPLY)
+  return r.agents
 }
 
 /** The agents the owner keeps out of one session: [{ agentId, name }]. */

@@ -64,6 +64,11 @@ export function joinRoutes ({ store, now, apiUrl, limitJoin, agentAuth, log = ()
       if (invite.workspaceId) {
         await store.putWorkspaceMember({ workspaceId: invite.workspaceId, account: `agent:${agent.id}`, access: invite.workspaceAccess || 'edit', sessions: invite.workspaceSessions || 'invited', addedBy: invite.createdBy })
       }
+      // A global agent's invite (workspaces on when it was made) places it in all its owner's
+      // workspaces, invited to every session there. Deleting the agent below takes it too.
+      if (invite.global) {
+        await store.putAgentPlacement({ agentId: agent.id, reach: 'all', workspaceIds: [], sessions: 'all', access: 'edit', scopes: [], updatedBy: `person:${invite.createdBy}` })
+      }
       await store.setInviteAgent(invite.id, agent.id)
       const keys = await agentAuth.mintKeys(agent.id)
       return { ...keys, api: apiUrl, refresh: `${apiUrl}/v1/agents/token`, mcp: `${apiUrl}/mcp`, next: joinNext({ name: agent.name, apiUrl, hasKey: !!agent.publicKey }) }

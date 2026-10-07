@@ -163,10 +163,10 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     async deleteAgent (id) { dropAgent(id) },
     // Agent invites: only the token's hash is kept. Mirrors the one-home and
     // no-role-without-an-org checks and the composite (role_id, org_id) key.
-    async createAgentInvite ({ tokenHash, ownerUserId = null, orgId = null, createdBy = null, roleId = null, teams = [], expiresAt, workspaceId = null, workspaceAccess = null, workspaceSessions = null }) {
+    async createAgentInvite ({ tokenHash, ownerUserId = null, orgId = null, createdBy = null, roleId = null, teams = [], expiresAt, workspaceId = null, workspaceAccess = null, workspaceSessions = null, global = false }) {
       if ((ownerUserId == null) === (orgId == null) || (roleId && !orgId)) throw checkViolation('an invite is for one person or one org')
       if (!roleInOrg(roleId, orgId)) throw fkViolation('role', 'is not in this org')
-      const row = { id: uuid(), tokenHash, ownerUserId, orgId, createdBy, roleId, teams: copy(teams), expiresAt, workspaceId, workspaceAccess, workspaceSessions, usedAt: null, usedByAgentId: null, cancelledAt: null, createdAt: now() }
+      const row = { id: uuid(), tokenHash, ownerUserId, orgId, createdBy, roleId, teams: copy(teams), expiresAt, workspaceId, workspaceAccess, workspaceSessions, global: !!global, usedAt: null, usedByAgentId: null, cancelledAt: null, createdAt: now() }
       agentInvites.set(row.id, row); return copy(row)
     },
     async agentInviteByToken (h) { return copy(all(agentInvites, (i) => i.tokenHash === h)[0]) },

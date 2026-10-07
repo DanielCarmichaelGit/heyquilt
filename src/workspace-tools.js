@@ -15,7 +15,8 @@ import { cleanFilePath, isTextual } from './api/file-paths.js'
 export const WORKSPACE_GUIDE =
   'Files that are not code (images, video, documents, data) live in the workspace library: read them with ' +
   'quilt_workspace_read_file and put what you make there with quilt_workspace_write_file and a short note, not in chat. ' +
-  'Subscribe with quilt_workspace_webhook to be told when a session starts in your workspace; join it with the link the event carries.'
+  'Subscribe with quilt_workspace_webhook to be told when a session starts in your workspace; join it with the link the event carries, ' +
+  'and wait: the session\'s owner lets you in.'
 
 // The API's own limit on one file; fromPath may send up to this.
 const MAX_FROM_PATH = 500 * 1024 * 1024
@@ -299,7 +300,7 @@ export function registerWorkspaceTools (server, { call, fetchBytes, put, saveDir
   }))
 
   server.registerTool('quilt_workspace_webhook', {
-    description: 'Have Quilt POST workspace events to a URL of yours: session.started when a session starts in a workspace you join by yourself, with its join link. Answers the signing secret once. Setting it again replaces the URL and the secret.',
+    description: 'Have Quilt POST workspace events to a URL of yours: session.started when a session starts in a workspace that invites you to its sessions, with its join link. Answers the signing secret once. Setting it again replaces the URL and the secret.',
     inputSchema: {
       url: z.string().describe('An https URL that takes POSTs')
     }
@@ -309,7 +310,7 @@ export function registerWorkspaceTools (server, { call, fetchBytes, put, saveDir
       `Workspace events (${(r.events || []).join(', ')}) now go to ${r.url}.`,
       `Secret (shown once; check x-quilt-signature with it): ${r.secret}`,
       'Each POST is JSON ({ event, id, ts, workspace, room, name, link, by, via }) with x-quilt-event, x-quilt-delivery, x-quilt-timestamp and ' +
-        'x-quilt-signature: sha256=HMAC-SHA256(secret, "<timestamp>.<body>"). On session.started, join with quilt_join_session and the link.'
+        'x-quilt-signature: sha256=HMAC-SHA256(secret, "<timestamp>.<body>"). On session.started, join with quilt_join_session and the link; you wait until the session\'s owner lets you in.'
     ].join('\n')
   }))
 

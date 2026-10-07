@@ -7,7 +7,7 @@ import { newToken, hashToken } from '../tokens.js'
 import { orgAccess } from '../org-access.js'
 import { cleanAccess, stillInOrg } from '../workspace-access.js'
 import { workspaceReach } from '../workspace-reach.js'
-import { cleanPlacement, placementIn, agentsJoiningSession, sameOwnerAgent, SESSIONS } from '../agent-placement.js'
+import { cleanPlacement, placementIn, agentsJoiningSession, sessionAgents, sameOwnerAgent, SESSIONS } from '../agent-placement.js'
 import { AGENT_INVITE_TTL_MS, inviteStatus } from './agent-invites.js'
 import crypto from 'node:crypto'
 import { parseWebhookUrl, newSecret, publicWebhookHost, deliverWebhook } from '../../webhooks.js'
@@ -16,8 +16,8 @@ import { isHostedRelay, HOSTED_RELAY } from '../../settings.js'
 
 const ROOM = /^[A-Za-z0-9_-]{1,64}$/
 export const AGENT_WEBHOOK_EVENTS = ['session.started']
-/** Why someone else's agent in a workspace never joins every session there. */
-export const FOREIGN_JOINS = 'Only its owner can make an agent join every session.'
+/** Why someone else's agent in a workspace is never invited to every session there. */
+export const FOREIGN_JOINS = 'Only its owner can have an agent invited to every session.'
 
 /** A placement as the routes answer it; an agent with none is 'manual' (it works only where it is added). */
 export function placementView (agentId, p) {
@@ -245,6 +245,13 @@ export function workspaceAgentRoutes (ctx) {
       }
     }],
 
+    // The session's agents for its People: the ones its workspace invites (and why), and the
+    // ones its owner keeps out (Don't invite), so the owner can change either.
+    ['GET', /^\/v1\/sessions\/([^/]+)\/agents$/, async (req, body, [room]) => {
+      await ownRoom(req, room)
+      return { agents: await sessionAgents(store, room) }
+    }],
+
     // The agents its owner keeps out of this session, so the app can offer to let them back in.
     ['GET', /^\/v1\/sessions\/([^/]+)\/agents\/excluded$/, async (req, body, [room]) => {
       await ownRoom(req, room)
@@ -280,6 +287,9 @@ export function workspaceAgentRoutes (ctx) {
       let invite
       try { invite = parseInvite(String(body.link || ''), { allowRelay: (s) => isHostedRelay(s) || relayForm(s) === ownRelay }) } catch { throw new HttpError(400, 'link must be this session\'s Quilt invite link') }
       if (invite.room !== room || !invite.secret) throw new HttpError(400, 'link must be this session\'s Quilt invite link')
+      // `agents` (optional): only these of the agents it invites, e.g. one invited again.
+      const only = body.agents === undefined ? null : body.agents
+      if (only !== null && (!Array.isArray(only) || only.length > 100 || only.some((x) => typeof x !== 'string'))) throw new HttpError(400, 'agents must be a list of agent ids.')
       limitAnnounce(room)
       // Sent as Quilt writes it, whatever surrounded it in the request.
       const link = buildInvite({ server: invite.relay || HOSTED_RELAY, room, secret: invite.secret }, isHostedRelay)
@@ -289,7 +299,7 @@ export function workspaceAgentRoutes (ctx) {
       // An agent that started the session is in it already: it isn't sent its own link.
       const starter = session.ownerAccount.startsWith('agent:') ? session.ownerAccount.slice(6) : null
       for (const { agentId, via } of await agentsJoiningSession(store, room)) {
-        if (agentId === starter) continue
+        if (agentId === starter || (only && !only.includes(agentId))) continue
         const hook = await store.agentWebhook(agentId)
         if (!hook) { withoutWebhook.push(agentId); continue }
         notified.push(agentId)

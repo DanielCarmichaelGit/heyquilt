@@ -129,3 +129,17 @@ test('agent invites select and insert carry the workspace fields', async () => {
   const sel = client.calls[0].ops.find(([op]) => op === 'select')[1][0]
   assert.ok(sel.includes('workspace_id') && sel.includes('workspace_access') && sel.includes('workspace_sessions'))
 })
+
+test('agent invites select global, and a global invite inserts it', async () => {
+  const row = { id: 'i2', token_hash: 'h', owner_user_id: 'u1', org_id: null, created_by: 'u1', role_id: null, teams: [], expires_at: '2026-10-08T00:00:00.000Z', used_at: null, used_by_agent_id: null, cancelled_at: null, created_at: '2026-10-08T00:00:00.000Z', workspace_id: null, workspace_access: null, workspace_sessions: null, global: true }
+  const client = fakeClient({ agent_invites: { data: row, error: null } })
+  const store = createSupabaseStore({ client })
+  const out = await store.createAgentInvite({ tokenHash: 'h', ownerUserId: 'u1', createdBy: 'u1', expiresAt: Date.parse(row.expires_at), global: true })
+  assert.equal(client.calls[0].ops.find(([op]) => op === 'insert')[1][0].global, true)
+  assert.equal(out.global, true)
+  assert.ok(client.calls[0].ops.find(([op]) => op === 'select')[1][0].split(', ').includes('global'))
+  // A plain invite sends no global at all (the column's default), as before.
+  const plain = fakeClient({ agent_invites: { data: { ...row, global: false }, error: null } })
+  await createSupabaseStore({ client: plain }).createAgentInvite({ tokenHash: 'h', ownerUserId: 'u1', createdBy: 'u1', expiresAt: Date.parse(row.expires_at) })
+  assert.equal('global' in plain.calls[0].ops.find(([op]) => op === 'insert')[1][0], false)
+})

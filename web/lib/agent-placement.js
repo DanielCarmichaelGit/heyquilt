@@ -1,6 +1,6 @@
-// Where an agent works, on the website: its placement form (Works in and Joins) and why
-// an agent is on a workspace's page. Pure, so it's unit-tested directly. The words match
-// the app's (src/ui/agent-place.js).
+// Where an agent works, on the website: its placement form (Works in and Invited to new
+// sessions) and why an agent is on a workspace's page. Pure, so it's unit-tested directly.
+// The words match the app's (src/ui/agent-place.js).
 
 export const REACH = ['manual', 'all', 'workspaces']
 export const JOINS = ['invited', 'all']
@@ -13,7 +13,8 @@ export function reachOptions (allLabel = 'All workspaces (global)') {
 /** What Works in means, under the choices. */
 export const REACH_HINTS = { manual: 'Only in workspaces it is added to, from their page.', all: 'Global: in every workspace, and any made later.', workspaces: 'Only the workspaces ticked here.' }
 
-export const JOINS_OPTIONS = [['invited', 'When invited'], ['all', 'Every session']]
+// A workspace invites its agents to a new session (sends them the link); the session's owner lets them in.
+export const JOINS_OPTIONS = [['invited', 'Not automatically'], ['all', 'Every session']]
 
 /** A placement as the API answers it, with the defaults of an agent that has none. */
 export function placementOf (p) {
@@ -66,11 +67,11 @@ export function viaLabel (a, orgName = '') {
   return a?.via === 'global' ? 'Global' : 'Placed'
 }
 
-/** Why someone else's agent in a workspace never joins every session there (the API's words). */
-export const FOREIGN_JOINS = 'Only its owner can make an agent join every session.'
+/** Why someone else's agent in a workspace is never invited to every session there (the API's words). */
+export const FOREIGN_JOINS = 'Only its owner can have an agent invited to every session.'
 
-/** Joins, said in words (for someone who can't change it). */
-export const joinsText = (sessions) => sessions === 'all' ? 'Joins every session' : 'Joins when invited'
+/** Whether it is invited to new sessions, said in words (for someone who can't change it). */
+export const joinsText = (sessions) => sessions === 'all' ? 'Invited to new sessions' : 'Not invited automatically'
 
 /** A workspace page's member list without the agents shown with their own rows. */
 export function peopleOnly (members, agents) {

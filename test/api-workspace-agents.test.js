@@ -564,7 +564,7 @@ test('someone else\'s agent added to a workspace: it may be added, but only its 
   const { agent } = await makeAgent(t, { name: 'Mos bot', ownerUserId: 'mem' })
   const put = (body) => t.call('PUT', `/v1/workspaces/${w.id}/members/agent:${agent.id}`, body, 'out')
   const all = await put({ access: 'edit', sessions: 'all' })
-  assert.deepEqual([all.status, all.body], [400, { error: 'Only its owner can make an agent join every session.' }])
+  assert.deepEqual([all.status, all.body], [400, { error: 'Only its owner can have an agent invited to every session.' }])
   assert.equal(await t.store.workspaceMember(w.id, `agent:${agent.id}`), null, 'nothing was written')
   assert.equal((await put({ access: 'edit' })).status, 200, 'added for access, as before')
   assert.equal((await put({ access: 'view', sessions: 'invited' })).status, 200)

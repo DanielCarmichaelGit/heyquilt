@@ -4,7 +4,7 @@ import { reachOptions, REACH_HINTS, JOINS_OPTIONS, placementOf, placementChoices
 
 /**
  * Where an agent works: Works in (every workspace, the ones ticked, or only where it is
- * added) and Joins (when invited, or every session as it starts). `agent.placement` is what
+ * added) and Invited to new sessions (not automatically, or every new session: sent its link). `agent.placement` is what
  * the API has; `workspaces` are the ones it can be placed in. Access and folder limits aren't
  * shown here and go back as they were, as do ticked workspaces this person can't see.
  */
@@ -42,10 +42,10 @@ export default function AgentPlacement ({ agent, workspaces, action, slug, allLa
           </fieldset>)
         : <span className='muted'>{REACH_HINTS[reach]}</span>}
       <div className='row'>
-        <label htmlFor={`${key}-joins`} className='muted'>Joins</label>
-        {/* Joins means nothing for an agent that is only where it is added: kept as it was. */}
+        <label htmlFor={`${key}-joins`} className='muted'>Invited to new sessions</label>
+        {/* Means nothing for an agent that is only where it is added: kept as it was. */}
         {reach === 'manual' && <input type='hidden' name='sessions' value={place.sessions} />}
-        <select id={`${key}-joins`} className='input' name='sessions' defaultValue={place.sessions} disabled={reach === 'manual'} aria-label={`When ${agent.name} joins sessions`}>
+        <select id={`${key}-joins`} className='input' name='sessions' defaultValue={place.sessions} disabled={reach === 'manual'} aria-label={`Whether ${agent.name} is invited to new sessions`}>
           {JOINS_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
         <button className='btn ghost' disabled={pending}>{pending ? 'Saving…' : 'Save'}</button>

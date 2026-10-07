@@ -351,7 +351,31 @@ What phase 3 changed from the design above, and why:
 - **Where the website shows it.** Works in and Joins are on the Agents page (personal) and on each agent row
   of the org's People page (for members with Agents: Update and Workspaces: Update), only while workspaces are on. A workspace's page
   lists its agents with why each is there (This workspace, Placed, Global, Added by <org>) and, for admins, Joins.
-- **Deferred to phase 4:** the session people menu's "why here" for each agent.
+- **Agent kinds (2026-10-07, at the user's request).** With workspaces on, every Invite an agent button in the
+  app (Settings › Agents, a workspace's Add dialog, a session's Invite dialog) opens a small menu, anchored to
+  the button: **Global agent** (in all your workspaces, invited to their sessions), **Workspace agent** (in one
+  workspace you own or an org's you admin, the current one first; the Add dialog's access and every-session
+  choice apply) and **Session agent** (invited to one running session, the current one first; the paste text
+  carries its link), with **How agent kinds work** linking to heyquilt.com/docs/agents. A global invite is
+  `POST /v1/agent-invites` with `{ global: true }` (ignored with the flag off), stored as
+  `agent_invites.global` (migration `20261008000000_agent_invite_global`, which the API selects with the flag
+  off too); joining it places the agent with reach all, sessions all, edit access, inside the join's rollback.
+  With workspaces off every button behaves as before.
+- **Inheritance is an invitation, not admission.** `roomAccess` no longer lets an agent into a session through
+  its workspace (member row or placement): a workspace's agents are invited (sent the link by the
+  `session.started` hand-off) and wait like anyone with the link until the session's owner lets them in, which
+  writes a grant; a grant (by hand or from letting it in) still wins. People in a workspace still get in at
+  their workspace access. So placement scopes no longer limit an agent's session folders: the access type the
+  owner lets it in as does. "Joins" is now **Invited to new sessions** (Every session / Not automatically) in
+  Settings › Agents, on a workspace's agent cards and on the website, with the same data (member and override
+  `sessions`, placement `sessions`).
+- **A session's People lists its invited agents.** `GET /v1/sessions/:room/agents` (owner only, flag-gated)
+  answers `{ agents: [{ agentId, name, via, managedBy, excluded }] }`: every agent the workspace invites, with
+  why (This workspace, Global, Placed, Added by the org) and whether its owner said Don't invite (the per-session
+  keep-out, which now means "don't invite"). The people menu shows each with where it stands (invited, waiting,
+  in), **Don't invite**, and for a kept-out one **Invite**, which ends the keep-out and hands that agent the
+  session's link at once (the hand-off takes an optional `agents` list). This replaces the "Kept out of this
+  session" block and the phase 4 "why here".
 
 ### Example: marketing agent and editor agent
 

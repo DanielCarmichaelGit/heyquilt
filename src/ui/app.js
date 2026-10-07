@@ -9,6 +9,7 @@ import { checkRelease, openReleaseNotes } from './releases.js'
 import { loadWorkspaces, openWorkspace, wsIdOf } from './workspaces.js'
 import { previewBusy } from './files.js'
 import { agentPaste } from './invite.js'
+import { openKindMenu, kindLineHtml } from './agent-kinds.js'
 
 // ---------------------------------------------------------------- boot --
 const SIGNED_OUT = 'This computer was signed out. Sign in again.'
@@ -387,7 +388,7 @@ export function openInvite (id) {
     <div class="label inv-agent-label">Your AI</div>
     <div id="inv-agent" class="inv-agent">
       <p class="hint">An AI that already has the Quilt command just needs the link above: tell it "Join my Quilt session: &lt;link&gt;". To add an AI that isn't registered with Quilt yet, make it an agent invite and paste the text into it. It joins as your own agent, listed in Settings.</p>
-      <button class="btn" type="button" id="inv-agent-make">${I.bot}<span>Invite an AI agent</span></button>
+      <button class="btn" type="button" id="inv-agent-make"${state.workspacesOn ? ' aria-haspopup="menu" aria-expanded="false"' : ''}>${I.bot}<span>Invite an AI agent</span></button>
       <p class="error" id="inv-agent-error"></p>
     </div>
     <div class="actions"><button class="btn primary" id="inv-done">Done</button></div>
@@ -405,6 +406,14 @@ export function openInvite (id) {
   })
   $('#inv-agent-make', back).onclick = async () => {
     const btn = $('#inv-agent-make', back)
+    // With workspaces on: pick a global, workspace or session agent (this session first).
+    if (state.workspacesOn) {
+      return openKindMenu(btn, {
+        sessionId: id,
+        workspaceId: s.workspace || '',
+        onInvite: ({ kind, text, where }) => { $('#inv-agent', back).innerHTML = agentInviteHtml(text, 'inv-agent-text', kindLineHtml(kind, where)) }
+      })
+    }
     btn.disabled = true
     try {
       const inv = await api('POST', '/api/agent-invites')
@@ -472,9 +481,9 @@ function bindInviteAs (id, back) {
   }
 }
 
-/** A fresh agent invite, as the text to paste into an AI, with Copy. */
-export function agentInviteHtml (text, id) {
-  return `<p class="hint"><b>Paste this into your AI.</b> It works once, within an hour. Anyone with it can join as your agent, so only give it to your own AI.</p>
+/** A fresh agent invite, as the text to paste into an AI, with Copy; `kind` (workspaces on) says which kind of agent it makes. */
+export function agentInviteHtml (text, id, kind = '') {
+  return `${kind}<p class="hint"><b>Paste this into your AI.</b> It works once, within an hour. Anyone with it can join as your agent, so only give it to your own AI.</p>
     <div class="codebox"><code id="${id}" class="paste">${esc(text)}</code><button class="btn icon" data-copy="${id}" title="Copy" aria-label="Copy agent invite">${I.copy}</button></div>`
 }
 

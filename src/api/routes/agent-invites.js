@@ -2,7 +2,8 @@
 // that their AI uses to join, as their personal agent or as an org's agent with
 // the role, teams and folders chosen here. Only the link's hash is stored.
 // Personal invites can be made from the website or from the Quilt app (`person`);
-// org invites only from the website (`user`).
+// org invites only from the website (`user`). With workspaces on, a personal invite can be
+// for a global agent (`global: true`): it joins placed in all its owner's workspaces.
 import { HttpError, needId } from '../http.js'
 import { newToken, hashToken } from '../tokens.js'
 import { orgAccess } from '../org-access.js'
@@ -13,7 +14,7 @@ const MAX_TEAMS = 50
 
 export const inviteStatus = (i, at) => (i.cancelledAt ? 'cancelled' : i.usedAt ? 'used' : i.expiresAt <= at ? 'expired' : 'waiting')
 
-export function agentInviteRoutes ({ store, user, person, now, apiUrl, limitSend }) {
+export function agentInviteRoutes ({ store, user, person, now, apiUrl, limitSend, workspaces = false }) {
   const orgFor = async (req, slug) => { const u = await user(req); return { u, ...(await orgAccess(store, u.userId, slug)) } }
   const teamNames = async (orgId) => new Map((await store.listTeams(orgId)).map((x) => [x.id, x.name]))
 
@@ -24,6 +25,7 @@ export function agentInviteRoutes ({ store, user, person, now, apiUrl, limitSend
       kind: i.orgId ? 'org' : 'personal',
       status: inviteStatus(i, now()),
       usedBy: agent ? { id: agent.id, name: agent.name, provider: agent.provider } : null,
+      ...(i.global ? { global: true } : {}),
       role: roleName,
       teams: i.teams.map((x) => ({ id: x.teamId, name: names.get(x.teamId) || '', access: x.access, scopes: x.scopes })),
       createdAt: i.createdAt,
@@ -62,10 +64,12 @@ export function agentInviteRoutes ({ store, user, person, now, apiUrl, limitSend
   }
 
   return [
-    ['POST', /^\/v1\/agent-invites$/, async (req) => {
+    ['POST', /^\/v1\/agent-invites$/, async (req, body) => {
       const u = await person(req)
       limitSend(u.userId)
-      const { invite, link } = await make(u.userId, { ownerUserId: u.userId })
+      // Only with workspaces on, and only a real true: anything else is the invite as it always was.
+      const global = workspaces && body?.global === true
+      const { invite, link } = await make(u.userId, { ownerUserId: u.userId, ...(global ? { global: true } : {}) })
       return { invite: await view(invite), link }
     }],
 

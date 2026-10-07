@@ -3,6 +3,7 @@
 import { I, state, $, esc, basename, ago, toast, api, ask, decodeInvite, avatar, PALETTE } from './common.js'
 import { go, pickFolder, signedOutNow, agentInviteHtml } from './app.js'
 import { agentPaste } from './invite.js'
+import { openKindMenu, kindLineHtml } from './agent-kinds.js'
 import { quiltMark } from './mark.js'
 import { updateControl } from './releases.js'
 import { workspacesHtml, bindWorkspaces, workspacePageHtml, bindWorkspacePage, loadWorkspaces, openWorkspace, COLORS } from './workspaces.js'
@@ -335,10 +336,10 @@ function workspaceInviteDialog (id) {
     <p class="lead">They get into every session in this workspace once they sign in.</p>
     <div class="field"><label for="wi-access">Access</label>
       <select class="input" id="wi-access"><option value="edit">Can edit</option><option value="view">View only</option></select></div>
-    ${toggle('wiEvery', false, 'Also join every session in this workspace as it starts', 'For your own agents. Off: the agent is in the workspace, sees its files, and joins a session only when invited there.')}
+    ${toggle('wiEvery', false, 'Also invite to every new session in this workspace', 'For your own agents. Each new session sends them its link, and its owner lets them in. Off: the agent is in the workspace and sees its files, and joins a session only when someone invites it there.')}
     <div class="label inv-sub">People you've worked with, and ${isOrg ? `${esc(orgName)}'s agents` : 'your agents'}</div>
     <div class="inv-list" id="wi-people"><p class="hint">Loading…</p></div>
-    <div class="inv-agent wi-new-agent" id="wi-new-agent"><button class="btn sm" type="button" data-wi-invite-agent>${I.bot}<span>Invite a new agent</span></button><span class="hint">You'll get a link to paste into your AI.</span></div>
+    <div class="inv-agent wi-new-agent" id="wi-new-agent"><button class="btn sm" type="button" data-wi-invite-agent aria-haspopup="menu" aria-expanded="false">${I.bot}<span>Invite a new agent</span></button><span class="hint">You'll get a link to paste into your AI.</span></div>
     <p class="error" id="wi-error"></p>
     <div class="actions"><button type="button" class="btn primary" data-cancel>Done</button></div>`)
   // Anchored at the top: it grows downward as the list and an agent invite come in, never jumps.
@@ -391,6 +392,15 @@ function workspaceInviteDialog (id) {
   })
   const invite = $('[data-wi-invite-agent]', back)
   invite.onclick = async () => {
+    // Workspaces are on here: pick a global, workspace (this one first) or session agent. A
+    // workspace agent gets the access and every-session choice above.
+    if (state.workspacesOn) {
+      return openKindMenu(invite, {
+        workspaceId: id,
+        workspaceBody: () => ({ access: $('#wi-access', back).value, sessions: joins() }),
+        onInvite: ({ kind, text, where }) => { $('#wi-new-agent', back).innerHTML = agentInviteHtml(text, 'wi-paste', kindLineHtml(kind, where)) }
+      })
+    }
     invite.disabled = true
     $('#wi-error', back).textContent = ''
     try {
@@ -621,7 +631,7 @@ function settingsHtml ({ head = true } = {}) {
         <p class="hint">Make a one-time invite and paste the text into your AI (Claude Code, Cursor, Codex and others). It registers as your agent; from then on it can join any session you send it. Revoke agents on <a href="https://heyquilt.com/dashboard/agents" target="_blank" rel="noopener">heyquilt.com</a>.</p>
         <p class="error" id="agents-error"></p>
       </div>
-      <div class="sec-actions"><span class="hint">Inside a session, Invite also offers this with the session's link filled in.</span><button class="btn primary" type="button" id="agents-make">${I.bot}<span>Invite an agent</span></button></div>
+      <div class="sec-actions"><span class="hint">Inside a session, Invite also offers this with the session's link filled in.</span><button class="btn primary" type="button" id="agents-make"${state.workspacesOn ? ' aria-haspopup="menu" aria-expanded="false"' : ''}>${I.bot}<span>Invite an agent</span></button></div>
     </div>
   </section>
 
@@ -722,6 +732,15 @@ function bindAgents (root) {
   })
   const btn = $('#agents-make', root)
   btn.onclick = async () => {
+    // With workspaces on: pick a global, workspace or session agent first.
+    if (state.workspacesOn) {
+      return openKindMenu(btn, {
+        onInvite: ({ kind, text, where }) => {
+          $('#agents-invite', root).innerHTML = agentInviteHtml(text, 'agents-paste', kindLineHtml(kind, where))
+          btn.innerHTML = `${I.bot}<span>Invite another</span>`
+        }
+      })
+    }
     btn.disabled = true
     try {
       const inv = await api('POST', '/api/agent-invites')

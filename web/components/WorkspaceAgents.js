@@ -11,11 +11,11 @@ function Hidden ({ id, slug, children }) {
   )
 }
 
-// Someone else's agent added here: Joins shows, disabled, with why (a disabled select isn't
-// sent, so a save keeps its access change and leaves Joins alone).
+// Someone else's agent added here: Invite to new sessions shows, disabled, with why (a disabled
+// select isn't sent, so a save keeps its access change and leaves it alone).
 function JoinsSelect ({ a }) {
   return (
-    <select className='input' name='sessions' defaultValue={a.sessions} disabled={a.foreign} title={a.foreign ? FOREIGN_JOINS : undefined} aria-label={`When ${a.name} joins sessions here`}>
+    <select className='input' name='sessions' defaultValue={a.sessions} disabled={a.foreign} title={a.foreign ? FOREIGN_JOINS : undefined} aria-label={`Whether ${a.name} is invited to new sessions here`}>
       {JOINS_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
     </select>
   )
@@ -23,7 +23,7 @@ function JoinsSelect ({ a }) {
 
 /**
  * A workspace's agents with why each is here: added to this workspace, or placed here by its
- * owner (or the org). Admins set Joins: an added agent's own setting (with its access), or the
+ * owner (or the org). Admins set Invite to new sessions: an added agent's own setting (with its access), or the
  * workspace's say over a placed one, which they can also keep out of this workspace and let
  * back in. `actions` are the page's server actions.
  */

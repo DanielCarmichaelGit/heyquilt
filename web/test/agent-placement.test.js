@@ -55,8 +55,8 @@ test('words: Works in, why an agent is here, Joins', () => {
   assert.equal(viaLabel({ via: 'global', managedBy: 'owner' }), 'Global')
   assert.equal(viaLabel({ via: 'placed', managedBy: 'owner' }), 'Placed')
   assert.equal(viaLabel({ via: 'global', managedBy: 'org' }, 'Acme'), 'Added by Acme')
-  assert.equal(joinsText('all'), 'Joins every session')
-  assert.equal(joinsText('invited'), 'Joins when invited')
+  assert.equal(joinsText('all'), 'Invited to new sessions')
+  assert.equal(joinsText('invited'), 'Not invited automatically')
   assert.deepEqual(peopleOnly([{ account: 'person:1' }, { account: 'agent:a' }, { account: 'agent:gone' }], [{ account: 'agent:a' }]).map((m) => m.account), ['person:1', 'agent:gone'])
 })
 
@@ -64,7 +64,7 @@ test('AgentPlacement: a client form with Works in (radios and checkboxes) and Jo
   const s = src('components/AgentPlacement.js')
   assert.ok(s.startsWith("'use client'"))
   assert.match(s, /export default function AgentPlacement \(\{ agent, workspaces, action/)
-  for (const bit of ["type='radio'", "name='reach'", "type='checkbox'", "name='workspaceId'", "name='sessions'", "name='access'", "name='scope'", 'useActionState(action', 'Works in', 'Joins']) assert.ok(s.includes(bit), bit)
+  for (const bit of ["type='radio'", "name='reach'", "type='checkbox'", "name='workspaceId'", "name='sessions'", "name='access'", "name='scope'", 'useActionState(action', 'Works in', 'Invited to new sessions']) assert.ok(s.includes(bit), bit)
 })
 
 test('the Agents page shows placements only when workspaces are on', () => {
@@ -106,5 +106,5 @@ test('workspace pages list agents with why they are here, and admins set Joins',
 
 test('the reason a foreign agent cannot be made to join every session', async () => {
   const { FOREIGN_JOINS } = await import('../lib/agent-placement.js')
-  assert.equal(FOREIGN_JOINS, 'Only its owner can make an agent join every session.')
+  assert.equal(FOREIGN_JOINS, 'Only its owner can have an agent invited to every session.')
 })

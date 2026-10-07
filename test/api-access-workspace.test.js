@@ -30,7 +30,7 @@ test('owner, members and outsiders of a personal workspace', async () => {
   const { store } = await setup()
   assert.deepEqual(await roomAccess(store, 'room-1', 'person:u1'), OWNER_ACCESS)
   assert.equal((await roomAccess(store, 'room-1', 'person:u2')).files, 'view')
-  assert.equal((await roomAccess(store, 'room-1', 'agent:a1')).files, 'edit')
+  assert.equal(await roomAccess(store, 'room-1', 'agent:a1'), null, 'an agent member is invited, then let in by the owner')
   assert.equal(await roomAccess(store, 'room-1', 'person:u3'), null)
 })
 
@@ -88,7 +88,7 @@ test('(c) a room linked by its creator before the relay reports it admits member
   await ownerStarts(store, 'room-c', 'person:u1')
   assert.deepEqual(await roomAccess(store, 'room-c', 'person:u1'), OWNER_ACCESS)
   assert.equal((await roomAccess(store, 'room-c', 'person:u2')).files, 'view')
-  assert.equal((await roomAccess(store, 'room-c', 'agent:a1')).files, 'edit')
+  assert.equal(await roomAccess(store, 'room-c', 'agent:a1'), null, 'agents wait for the owner')
 })
 
 test('removed from the org: no way into its workspaces\' sessions, for a person or an agent', async () => {
@@ -102,7 +102,7 @@ test('removed from the org: no way into its workspaces\' sessions, for a person 
   for (const account of ['person:u2', `agent:${agent.id}`]) await store.putWorkspaceMember({ workspaceId: ws.id, account, access: 'edit', addedBy: 'person:u1' })
   await ownedAndLinked(store, 'room-o', ws.id, 'person:u1')
   assert.equal((await roomAccess(store, 'room-o', 'person:u2')).files, 'edit')
-  assert.equal((await roomAccess(store, 'room-o', `agent:${agent.id}`)).files, 'edit')
+  assert.equal(await roomAccess(store, 'room-o', `agent:${agent.id}`), null, 'an agent waits for the owner either way')
   await store.removeMember(member.id)
   await store.removeMember(agentRow.id)
   assert.equal(await roomAccess(store, 'room-o', 'person:u2'), null)

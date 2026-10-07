@@ -14,12 +14,12 @@ import { renderBoard } from './board.js'
 import { accessFormValues, accessSaveBody, grantsLoading, grantsLoaded, grantsFailed } from './access-form.js'
 import { renderMergeBar, bindMerges, renderMergeView } from './merges.js'
 import { workspaceFilePicker } from './files.js'
-import { keptOutHtml } from './agent-place.js'
+import { sessionAgentsHtml } from './agent-place.js'
 
 let current = null // session id being shown
 let timers = []
 let grantLoad = grantsLoading() // this session's grants (the owner's view, from the API), for the Access sections
-let keptOut = { id: null, agents: [] } // agents the owner keeps out of this session (workspaces on), with Let back in
+let wsAgents = { id: null, agents: [] } // the agents this session's workspace invites (workspaces on), for its People
 let mounted = null // AbortController for document-level listeners of this mount
 
 // ------------------------------------------------------------ layout state --
@@ -324,7 +324,7 @@ function bindTop () {
     clearTimeout(hoverTimer)
     if (!menu.hidden) return
     menu.hidden = false; openedAt = Date.now(); btn.setAttribute('aria-expanded', 'true'); renderPeopleMenu()
-    if (sum().status.access?.owner) { loadGrants(); if (state.workspacesOn) loadKeptOut() }
+    if (sum().status.access?.owner) { loadGrants(); if (state.workspacesOn) loadSessionAgents() }
   }
   const close = () => { clearTimeout(hoverTimer); menu.hidden = true; btn.setAttribute('aria-expanded', 'false') }
   // A click also focuses (and may hover) the button, which already opened the menu; don't toggle it shut.
@@ -398,15 +398,20 @@ function bindTop () {
     const f = b.closest('.pm-member')
     if (!await ask({ title: `Remove ${f.querySelector('.nm').textContent.trim()}?`, message: 'They\'ll need a new invite and your approval to come back.', ok: 'Remove', danger: true })) return
     try { const r = await api('POST', `/api/sessions/${current}/members/remove`, { key: f.dataset.key }); toast(r.warning || 'Removed') } catch (err) { toast(err.message) }
-    // In a workspace, a removed agent is kept out of this session before the removal answers: list it now.
-    if (state.workspacesOn && f.dataset.key.startsWith('agent:')) loadKeptOut()
+    // In a workspace, a removed agent is no longer invited here (the removal answers once that is written): list it now.
+    if (state.workspacesOn && f.dataset.key.startsWith('agent:')) loadSessionAgents()
   })
+  // Invited from the workspace: Don't invite (a keep-out) and Invite (which sends it the link now).
   menu.addEventListener('click', async (e) => {
-    const b = e.target.closest('[data-let-in]')
+    const b = e.target.closest('[data-agent-uninvite],[data-agent-invite]')
     if (!b) return
+    const invite = 'agentInvite' in b.dataset
     b.disabled = true
-    try { await api('POST', `/api/sessions/${current}/agents/include`, { agentId: b.dataset.letIn }); toast('Let back in') } catch (err) { toast(err.message); b.disabled = false }
-    loadKeptOut()
+    try {
+      const r = await api('POST', `/api/sessions/${current}/agents/${invite ? 'include' : 'exclude'}`, { agentId: b.dataset.agentInvite || b.dataset.agentUninvite })
+      toast(!invite ? 'Not invited to this session' : r.notified ? 'Invited: it was sent this session\'s link' : 'Invited. It has no webhook, so send it this session\'s link')
+    } catch (err) { toast(err.message); b.disabled = false }
+    loadSessionAgents()
   })
   menu.addEventListener('click', async (e) => {
     if (e.target.closest('[data-end-session]')) {
@@ -658,18 +663,18 @@ function membersHtml (st) {
         <button type="button" class="btn sm ghost icon" data-remove title="Remove ${esc(m.name)}" aria-label="Remove ${esc(m.name)}">${I.x}</button>
       </form>`).join('') : '<div class="pm-empty">Only you so far. People you let in show up here.</div>'}
     </div>
-    ${keptOut.id === current ? keptOutHtml(keptOut.agents) : ''}<div class="pm-foot"><button type="button" class="btn sm ghost danger" data-end-session>End session for everyone</button></div>`
+    ${wsAgents.id === current ? sessionAgentsHtml(wsAgents.agents, st) : ''}<div class="pm-foot"><button type="button" class="btn sm ghost danger" data-end-session>End session for everyone</button></div>`
 }
 
-/** With workspaces on, the agents the owner keeps out of this session (in a workspace), for Let back in. */
-async function loadKeptOut () {
+/** With workspaces on, the agents this session's workspace invites (and the ones not invited), for its People. */
+async function loadSessionAgents () {
   const id = current
   let agents = []
   if (state.workspacesOn && sum()?.workspace && sum().status.access?.owner) {
-    try { agents = (await api('GET', `/api/sessions/${id}/agents/excluded`)).agents } catch { agents = [] }
+    try { agents = (await api('GET', `/api/sessions/${id}/agents`)).agents } catch { agents = [] }
   }
   if (id !== current) return
-  keptOut = { id, agents }
+  wsAgents = { id, agents }
   if (!$('#people-menu').hidden) renderPeopleMenu({ force: true })
 }
 

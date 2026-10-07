@@ -270,6 +270,37 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 .wi-new-agent { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
 .wi-new-agent .hint { margin: 0; }
 .wi-new-agent > p, .wi-new-agent .codebox { width: 100%; margin-bottom: 0; }
+/* Invite an agent (workspaces on): a small menu at the button with the three kinds, then
+   where it goes. Fixed to the window, so it never moves the page or a dialog under it. */
+.popover.kind-menu { width: 340px; max-width: calc(100vw - 16px); padding: 6px; z-index: 45; max-height: min(420px, calc(100vh - 16px)); overflow-y: auto; animation: dd-in .12s ease-out; }
+.kind-menu .km-item { align-items: flex-start; gap: 10px; padding: 8px; }
+.kind-menu .km-item:disabled, .kind-menu .km-pick:disabled { cursor: progress; opacity: .6; }
+.km-ic { flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 6px; color: var(--violet); background: color-mix(in srgb, var(--violet) 12%, var(--panel)); }
+.km-ic svg { width: 15px; height: 15px; }
+.km-t { display: flex; flex-direction: column; gap: 1px; min-width: 0; line-height: 1.35; }
+.km-t b { font-weight: 600; font-size: 13.5px; }
+.km-t span { font-size: 12px; font-weight: 400; color: var(--muted); }
+.kind-menu .km-docs { font-size: 12.5px; color: var(--muted); text-decoration: none; padding: 7px 8px; }
+.kind-menu .km-docs:hover, .kind-menu .km-docs:focus-visible { color: var(--text); }
+.kind-menu .km-docs svg { width: 12px; height: 12px; margin-left: auto; }
+.km-head { display: flex; align-items: center; gap: 6px; padding: 0 2px 2px; }
+.km-head b { font-weight: 600; font-size: 13.5px; }
+.km-head .btn.icon { width: 28px; height: 28px; }
+.kind-menu .pop-label { padding: 6px 8px 4px; }
+.km-pick .km-dot { flex: none; width: 10px; height: 10px; border-radius: 3px; box-shadow: 0 0 0 1px var(--border-strong); }
+.km-pick .hint { flex: none; margin: 0; }
+.km-empty { margin: 0; padding: 6px 8px 8px; }
+.kind-menu .km-error { margin: 6px 8px 2px; font-size: 12.5px; }
+.kind-menu .km-error:empty { display: none; }
+.km-kind { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.pill.km-pill { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; color: var(--violet); background: color-mix(in srgb, var(--violet) 12%, var(--panel)); }
+.pill.km-pill svg { width: 11px; height: 11px; }
+/* A session's People: the agents its workspace invites, two lines each, the action at the end. */
+.pm-member.pm-inv .nm { flex-direction: column; align-items: flex-start; justify-content: center; gap: 1px; white-space: normal; }
+.pm-member.pm-inv .nm b { max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; }
+.pm-member.pm-inv .nm small { max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; color: var(--muted); }
+.pm-inv .btn { flex: none; }
+.pm-inv.out b { color: var(--muted); }
 .dirlist { border: 1px solid var(--border); border-radius: 4px; max-height: 320px; overflow-y: auto; margin: 10px 0; }
 .dirlist button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 12px; border: 0; border-bottom: 1px solid var(--border); background: transparent; cursor: pointer; text-align: left; }
 .dirlist button:last-child { border-bottom: 0; }
@@ -1179,7 +1210,8 @@ body.has-update #app { padding-top: var(--update-bar); } /* padding, not margin:
 .sc.add, .pc.add { align-items: center; justify-content: center; gap: 6px; border-style: dashed; box-shadow: none; background: transparent; color: var(--muted); font: inherit; font-weight: 500; cursor: pointer; }
 .sc.add svg, .pc.add svg { width: 18px; height: 18px; color: var(--accent); }
 /* A person or agent on a workspace's page: avatar, name, access on one line (a grid, so access
-   never wraps under the name); an agent's why-here and Joins on a second line across the card;
+   never wraps under the name); an agent's why-here and Invite to new sessions on a second line
+   across the card (the choice wraps under the pill as a whole when the card is narrow);
    Remove in the corner, with room kept for it. */
 .pc { position: relative; display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; align-items: center; align-content: start; column-gap: 12px; row-gap: 12px; padding: 14px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow); }
 .pc.add { display: flex; }
@@ -1195,7 +1227,7 @@ body.has-update #app { padding-top: var(--update-bar); } /* padding, not margin:
 .pc .ws-scope > .pill { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 9px; font-size: 11px; color: var(--muted); }
 .pc .ws-scope > .pill svg { width: 11px; height: 11px; }
 .pc .ws-scope > .pill.violet { color: var(--violet); background: color-mix(in srgb, var(--violet) 12%, var(--panel)); }
-.pc .input.xs { height: 26px; width: 128px; padding: 0 8px; font-size: 12px; }
+.pc .input.xs { height: 26px; width: auto; max-width: 100%; padding: 0 8px; font-size: 12px; }
 .pc.agent.out { opacity: .7; }
 .pc.agent.out .avatar { filter: grayscale(1); }
 @media (max-width: 900px) {

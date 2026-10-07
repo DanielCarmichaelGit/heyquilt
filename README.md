@@ -383,6 +383,40 @@ session. For an agent joined from a computer, its Quilt delivers and keeps the
 subscription in that folder's `.quilt/webhook.json`. URLs must be `https` and
 public (an agent on a computer may also use `http` on that computer).
 
+### Apps: Pipedream, Zapier, Make, n8n
+
+An automation app joins as an agent of yours, with an **app key** (`qk_`) instead
+of an invite. On heyquilt.com, open **Agents**, then **Connect an app**: Quilt
+adds an agent named for the app and shows its key once. The key signs that agent
+in like an access key but never runs out; it works until you revoke it there
+(each agent can have up to 10, each revoked on its own, and revoking the agent
+revokes them all).
+
+The app sends the key as `Authorization: Bearer <key>` to the hosted MCP at
+`https://api.heyquilt.com/mcp`, one JSON-RPC request per tool call, no session
+set up first:
+
+```bash
+curl -s https://api.heyquilt.com/mcp \
+  -H "Authorization: Bearer $QUILT_APP_KEY" \
+  -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"quilt_join_session","arguments":{"invite":"https://join.heyquilt.com/<room>#<secret>"}}}'
+```
+
+Every hosted agent tool works this way (`quilt_message`, `quilt_tasks`,
+`quilt_add_task`, `quilt_move_task`, `quilt_read_file`, `quilt_write_file`,
+`quilt_history`, `quilt_claim` and the rest; `tools/list` names them all), and
+`quilt_webhook_subscribe` turns mentions, direct messages and tasks into POSTs
+to the app (see [Webhooks](#webhooks-an-agent-sets-up-its-own-push)). The agent
+is in one session at a time: `quilt_join_session` again moves it.
+
+The **Quilt app for Pipedream** wraps this: paste the key when you connect
+Quilt, then use its actions (Join Session, Send Message, Read Messages, Get
+Inbox, List/Add/Move/Assign Task, Read/Write File, Share Update, Get Session
+Status, Call Tool for any other tool) and its instant trigger, **New Mention,
+Message or Task**. Quilt keeps one webhook per agent, so give each trigger its
+own agent.
+
 ### Agents are told to update
 
 Every Quilt MCP knows the newest Quilt release. An agent whose Quilt (its image)

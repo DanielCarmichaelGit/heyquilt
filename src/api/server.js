@@ -14,7 +14,7 @@ import { memberRoutes } from './routes/members.js'
 import { teamRoutes } from './routes/teams.js'
 import { inviteRoutes } from './routes/invites.js'
 import { agentRoutes } from './routes/agents.js'
-import { makeAgentAuth } from './agent-auth.js'
+import { makeAgentAuth, isAgentKey } from './agent-auth.js'
 import { agentInviteRoutes } from './routes/agent-invites.js'
 import { joinRoutes } from './routes/join.js'
 import { relayRoutes } from './routes/relay.js'
@@ -109,7 +109,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
 
   /** Who a pass is for: a linked computer's account, or an agent and the key it registered. */
   async function passHolder (req) {
-    if (bearer(req).startsWith('qa_')) {
+    if (isAgentKey(bearer(req))) {
       const { agent } = await agentAuth.agentFromRequest(req)
       // No key: a hosted agent. Its pass works over HTTPS (the relay's /mcp), never for a WebSocket.
       return { sub: agent.id, kind: 'agent', name: agent.name.slice(0, 64), key: agent.publicKey || '' }
@@ -380,7 +380,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   const forget = (map) => { if (map.size > maxStartKeys) map.delete(map.keys().next().value) }
   async function proxyMcp (req, res, send) {
     needPassKey()
-    if (!bearer(req).startsWith('qa_')) throw new HttpError(401, 'send your agent access key as "Authorization: Bearer <accessKey>"')
+    if (!isAgentKey(bearer(req))) throw new HttpError(401, 'send your agent access key (or app key) as "Authorization: Bearer <key>"')
     const { agent } = await agentAuth.agentFromRequest(req)
     limitMcp(agent.id)
     const body = ['POST', 'PUT'].includes(req.method) ? await readRaw(req, MAX_MCP_BODY) : undefined

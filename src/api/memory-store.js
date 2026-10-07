@@ -26,7 +26,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
   const links = new Map(); const devices = new Map(); const profiles = new Map(); const agents = new Map(); const resumeHashes = new Map() // resume key hash -> agent id
   const users = new Map(); const orgs = new Map(); const roles = new Map(); const members = new Map()
   const teams = new Map(); const teamMembers = new Map(); const invites = new Map(); const requests = new Map()
-  const agentInvites = new Map(); const keyRows = new Map()
+  const agentInvites = new Map(); const keyRows = new Map(); const appKeys = new Map()
   const events = new Map(); const issues = new Map()
   const relaySessions = new Map(); const visits = new Map(); const seenEvents = new Map()
   const accessTypes = new Map(); const grants = new Map(); const sessionInvites = new Map()
@@ -53,6 +53,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     agents.delete(id)
     for (const [h, a] of resumeHashes) if (a === id) resumeHashes.delete(h)
     for (const [k, key] of keyRows) if (key.agentId === id) keyRows.delete(k)
+    for (const [k, key] of appKeys) if (key.agentId === id) appKeys.delete(k)
     for (const [k, m] of members) if (m.agentId === id) dropMember(k)
     for (const i of agentInvites.values()) if (i.usedByAgentId === id) i.usedByAgentId = null
   }
@@ -147,6 +148,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       if (!a || a.revokedAt) return false
       a.revokedAt = now()
       for (const k of keyRows.values()) if (k.agentId === id && !k.revokedAt) k.revokedAt = now()
+      for (const k of appKeys.values()) if (k.agentId === id && !k.revokedAt) k.revokedAt = now()
       return true
     },
     // An agent coming back with a new invite: its new profile and resume key, and back
@@ -190,6 +192,24 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       const i = agentInvites.get(id)
       if (!i || i.usedAt || i.cancelledAt || i.expiresAt <= now()) return false
       i.cancelledAt = now(); return true
+    },
+
+    // App keys (qk_): hashes only, and they don't run out.
+    async createAgentAppKey ({ agentId, name, keyHash }) {
+      if (!agents.has(agentId)) throw fkViolation('agent', 'does not exist')
+      const row = { id: uuid(), agentId, name, keyHash, createdAt: now(), lastUsedAt: null, revokedAt: null }
+      appKeys.set(row.id, row); return copy(row)
+    },
+    async agentAppKeyByHash (h) { return copy(all(appKeys, (k) => k.keyHash === h)[0]) },
+    async listAgentAppKeys (agentId) {
+      return all(appKeys, (k) => k.agentId === agentId && !k.revokedAt).sort((a, b) => a.createdAt - b.createdAt).map(copy)
+    },
+    async touchAgentAppKey (id) { const k = appKeys.get(id); if (k) k.lastUsedAt = now() },
+    // Only a key of this agent, and only once.
+    async revokeAgentAppKey (agentId, id) {
+      const k = appKeys.get(id)
+      if (!k || k.agentId !== agentId || k.revokedAt) return false
+      k.revokedAt = now(); return true
     },
 
     // Agent keys: hashes only.

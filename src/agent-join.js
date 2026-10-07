@@ -95,7 +95,7 @@ export async function agentJoin ({ link, name, provider = DEFAULTS.provider, typ
   const identity = generateIdentity()
   const r = await send(fetchImpl, api, 'POST', `/v1/join/${token}`, { name, provider, type, description, publicKey: identity.publicKey })
   if (!r.ok) throw new Error(r.body?.error || `Couldn't join Quilt (${r.status}).`)
-  const saved = { name, api, agentId: r.body.agentId, accessKey: r.body.accessKey, accessExpiresAt: r.body.accessExpiresAt, refreshKey: r.body.refreshKey, refreshExpiresAt: r.body.refreshExpiresAt, identity }
+  const saved = { name, api, agentId: r.body.agentId, accessKey: r.body.accessKey, accessExpiresAt: r.body.accessExpiresAt, refreshKey: r.body.refreshKey, refreshExpiresAt: r.body.refreshExpiresAt, resumeKey: r.body.resumeKey, identity }
   save(file, saved)
   log(`Joined Quilt as ${name}. Keys saved in ${file}`)
   return saved
@@ -103,7 +103,7 @@ export async function agentJoin ({ link, name, provider = DEFAULTS.provider, typ
 
 async function refresh (saved, file, fetchImpl) {
   const r = await send(fetchImpl, saved.api, 'POST', '/v1/agents/token', { refreshKey: saved.refreshKey }, null, { signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS) })
-  if (r.status === 401 && saved.identity) return resume(saved, file, fetchImpl, r)
+  if (r.status === 401 && canResume(saved)) return resume(saved, file, fetchImpl, r)
   if (!r.ok) throw refused(r, `Couldn't refresh the agent's keys (${r.status}).`)
   return keep(saved, file, r.body)
 }
@@ -115,9 +115,11 @@ async function refresh (saved, file, fetchImpl) {
  * new ones. `turnedAway` is the refresh's reply, the error to give if this fails too.
  */
 async function resume (saved, file, fetchImpl, turnedAway) {
-  // The API's clock, not a test's: the signature has to be close to it.
+  // The resume key every agent gets when it joins; agents saved before resume keys sign
+  // with their own key instead (the API's clock, not a test's: it has to be close to it).
   const at = Date.now()
-  const r = await send(fetchImpl, saved.api, 'POST', '/v1/agents/resume', { agentId: saved.agentId, at, signature: signAgentResume(saved.identity, saved.agentId, at) }, null, { signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS) })
+  const body = saved.resumeKey ? { resumeKey: saved.resumeKey } : { agentId: saved.agentId, at, signature: signAgentResume(saved.identity, saved.agentId, at) }
+  const r = await send(fetchImpl, saved.api, 'POST', '/v1/agents/resume', body, null, { signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS) })
   if (r.ok) return keep(saved, file, r.body)
   // An API without resume, or that doesn't know the agent: the refresh's answer says what happened.
   if (r.status === 404) throw refused(turnedAway, `Couldn't refresh the agent's keys (${turnedAway.status}).`)
@@ -125,6 +127,8 @@ async function resume (saved, file, fetchImpl, turnedAway) {
   if (r.status === 400 || r.status === 401) throw Object.assign(refused(r, `Couldn't sign the agent back in (${r.status}).`), { status: 401 })
   throw refused(r, `Couldn't sign the agent back in (${r.status}).`)
 }
+
+const canResume = (saved) => !!(saved.resumeKey || saved.identity)
 
 const refused = (r, fallback) => Object.assign(new Error(r.body?.error || fallback), { status: r.status })
 
@@ -135,7 +139,7 @@ function keep (saved, file, body) {
   return next
 }
 
-/** A saved agent's file: { name, api, agentId, accessKey, refreshKey, …, identity }. */
+/** A saved agent's file: { name, api, agentId, accessKey, refreshKey, …, resumeKey, identity }. */
 export function readAgent ({ name, dir }) {
   return load(agentFile(name, dir), name)
 }
@@ -224,14 +228,14 @@ export async function agentAccess ({ name, dir, fetch: fetchImpl = globalThis.fe
 /**
  * The API turned `accessKey` away before it ran out (its keys were revoked): signs back in
  * with the agent's key. Resolves to the saved agent with new keys, the keys another process
- * already got, or null for an agent without a key of its own.
+ * already got, or null for an agent saved with neither a resume key nor a key of its own.
  */
 export async function agentResume ({ name, dir, accessKey, fetch: fetchImpl = globalThis.fetch }) {
   const file = agentFile(name, dir)
   return withLock(file, () => {
     const latest = load(file, name)
     if (latest.accessKey !== accessKey) return latest
-    if (!latest.identity) return null
+    if (!canResume(latest)) return null
     return resume(latest, file, fetchImpl, { status: 401, body: { error: "This agent's keys were revoked. Invite it again." } })
   })
 }

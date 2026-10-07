@@ -11,7 +11,7 @@ const me = (key) => t.call('GET', '/v1/agents/me', null, null, { authorization: 
 const refresh = (refreshKey) => t.call('POST', '/v1/agents/token', { refreshKey })
 
 test('keyStatus: active while a key can refresh, reused after a family revoke, otherwise expired', () => {
-  assert.equal(REUSED, "This key was already used, so this agent's keys were revoked. Invite it again.")
+  assert.match(REUSED, /keys were revoked\. Get new ones with your resume key: POST \/v1\/agents\/resume/)
   assert.equal(keyStatus([{ revokedAt: null, refreshExpiresAt: 2000 }], 1000), 'active')
   assert.equal(keyStatus([{ revokedAt: 500, refreshExpiresAt: 2000 }], 1000), 'reused')
   assert.equal(keyStatus([{ revokedAt: null, refreshExpiresAt: 900 }], 1000), 'expired')
@@ -221,6 +221,48 @@ test('resume: refused for a bad clock, a hosted agent, an unknown one, and one a
   assert.equal((await resume(crypto.randomUUID())).status, 404)
   await t.store.revokeAgent(agent.id)
   const r = await resume(agent.id)
+  assert.equal(r.status, 401)
+  assert.match(r.body.error, /revoked/)
+})
+
+test('resume key: an HTTP agent whose copied refresh key was reused gets new keys, like any agent', async () => {
+  // Joined over HTTP with no key of its own, then kept its keys in two places (Sriram's box and Mac).
+  const inv = (await t.call('POST', '/v1/agent-invites', {}, 'mem')).body.link.split('/v1/join/')[1]
+  const joined = await t.call('POST', `/v1/join/${inv}`, { name: 'Sriram', provider: 'OpenAI', type: 'coding agent' })
+  assert.equal(joined.status, 200)
+  assert.match(joined.body.resumeKey, /^qs_[A-Za-z0-9_-]{43}$/)
+  assert.equal(joined.body.resume, 'https://api.quilt.test/v1/agents/resume')
+  const agentId = joined.body.agentId
+  assert.equal((await t.store.agentById(agentId)).publicKey, null, 'hosted: no key of its own')
+  assert.equal(JSON.stringify(await t.store.agentById(agentId)).includes('resume'), false, 'the agent row never carries the resume key')
+
+  // One copy refreshes; the other copy's stale refresh key revokes the family.
+  const box = await refresh(joined.body.refreshKey)
+  assert.equal(box.status, 200)
+  const mac = await refresh(joined.body.refreshKey)
+  assert.deepEqual([mac.status, mac.body.error], [401, REUSED])
+  assert.equal((await me(box.body.accessKey)).status, 401)
+  assert.equal((await refresh(box.body.refreshKey)).status, 401)
+
+  // The resume key gets a working pair, in a new family; nothing else keeps working.
+  const back = await t.call('POST', '/v1/agents/resume', { resumeKey: joined.body.resumeKey })
+  assert.equal(back.status, 200)
+  assert.equal(back.body.agentId, agentId)
+  assert.equal((await me(back.body.accessKey)).status, 200)
+  assert.equal((await t.store.listAgentKeys(agentId)).filter((k) => !k.revokedAt).length, 1)
+  assert.equal((await refresh(back.body.refreshKey)).status, 200, 'its refresh key works in turn')
+
+  // It keeps working: a later lockout recovers the same way.
+  assert.equal((await t.call('POST', '/v1/agents/resume', { resumeKey: joined.body.resumeKey })).status, 200)
+})
+
+test('resume key: refused when unknown, malformed, or the agent was revoked by a person', async () => {
+  const resume = (resumeKey) => t.call('POST', '/v1/agents/resume', { resumeKey })
+  for (const bad of ['qs_nope', 'qr_x', '', 42, null]) assert.equal((await resume(bad)).status, 401, String(bad))
+  const inv = (await t.call('POST', '/v1/agent-invites', {}, 'mem')).body.link.split('/v1/join/')[1]
+  const joined = await t.call('POST', `/v1/join/${inv}`, { name: 'Gone', provider: 'OpenAI', type: 'coding agent' })
+  await t.store.revokeAgent(joined.body.agentId)
+  const r = await resume(joined.body.resumeKey)
   assert.equal(r.status, 401)
   assert.match(r.body.error, /revoked/)
 })

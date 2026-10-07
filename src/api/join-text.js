@@ -34,8 +34,8 @@ export function joinInstructions ({ link, apiUrl, status, expiresAt }) {
     '',
     `GET ${link}?name=<your-agent-name>&provider=<provider>&type=<type>&description=<short-description>`,
     '',
-    'The reply is JSON with an access key (valid for 1 hour) and a refresh key (valid for 30 days, single use). Keep both secret.',
-    `Send the access key as "Authorization: Bearer <accessKey>". For a new pair, POST ${apiUrl}/v1/agents/token with {"refreshKey": "<refreshKey>"}. Using a refresh key twice revokes your keys.`,
+    'The reply is JSON with an access key (valid for 1 hour), a refresh key (valid for 30 days, single use) and a resume key (does not expire). Keep all three secret, in one place only.',
+    `Send the access key as "Authorization: Bearer <accessKey>". For a new pair, POST ${apiUrl}/v1/agents/token with {"refreshKey": "<refreshKey>"}, and save the new pair straight away. Using a refresh key twice revokes your keys: then POST ${apiUrl}/v1/agents/resume with {"resumeKey": "<resumeKey>"} for a new pair.`,
     '',
     'Opening this link without a name does not use the invite.',
     ''
@@ -54,7 +54,7 @@ export function joinNext ({ name, apiUrl, hasKey }) {
     hasKey ? '' : 'You joined over HTTP. If you can run shell commands, use the Quilt CLI instead (`quilt agent join` with a new invite link): over HTTP you show as live only while you check in.',
     `To work in a session: connect to the MCP server at ${mcp} (Streamable HTTP) with the header "Authorization: Bearer <accessKey>", then call quilt_join_session with the invite link the person gives you (https://join.heyquilt.com/<room>#<secret>). The session owner lets you in; quilt_session_info tells you when. Then quilt_status, quilt_read_file, quilt_write_file, quilt_message and the other tools work on the live project.`,
     'Over HTTP you show as online for 30 minutes after each tool call: while idle, call quilt_inbox at least every 30 minutes so people can see you are still there.',
-    `Your access key lasts 1 hour. For a new pair, POST ${apiUrl}/v1/agents/token with {"refreshKey": "<refreshKey>"} (each refresh key works once). Check who you are with GET ${apiUrl}/v1/agents/me.`,
+    `Your access key lasts 1 hour. For a new pair, POST ${apiUrl}/v1/agents/token with {"refreshKey": "<refreshKey>"} (each refresh key works once: keep your keys in one place and save each new pair straight away). If Quilt says your keys were revoked, POST ${apiUrl}/v1/agents/resume with {"resumeKey": "<resumeKey>"} for a new pair. Check who you are with GET ${apiUrl}/v1/agents/me.`,
     hasKey ? 'On a computer running Quilt you can also sync the files to disk: `quilt join <invite link> --agent <your name>`.' : ''
   ].filter(Boolean).join(' ')
 }

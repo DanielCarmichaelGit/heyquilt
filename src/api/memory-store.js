@@ -23,7 +23,7 @@ const checkViolation = (what) => Object.assign(new Error(what), { code: '23514' 
 const tooManyFolders = (scopes) => { if (scopes.length > 20) throw checkViolation('at most 20 folders') }
 
 export function createMemoryStore ({ now = Date.now } = {}) {
-  const links = new Map(); const devices = new Map(); const profiles = new Map(); const agents = new Map()
+  const links = new Map(); const devices = new Map(); const profiles = new Map(); const agents = new Map(); const resumeHashes = new Map() // resume key hash -> agent id
   const users = new Map(); const orgs = new Map(); const roles = new Map(); const members = new Map()
   const teams = new Map(); const teamMembers = new Map(); const invites = new Map(); const requests = new Map()
   const agentInvites = new Map(); const keyRows = new Map()
@@ -51,6 +51,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
   // Postgres; an invite it used only forgets it (on delete set null).
   const dropAgent = (id) => {
     agents.delete(id)
+    for (const [h, a] of resumeHashes) if (a === id) resumeHashes.delete(h)
     for (const [k, key] of keyRows) if (key.agentId === id) keyRows.delete(k)
     for (const [k, m] of members) if (m.agentId === id) dropMember(k)
     for (const i of agentInvites.values()) if (i.usedByAgentId === id) i.usedByAgentId = null
@@ -124,13 +125,17 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     },
     // Agents hold their own keys; at most a public key is kept here. Mirrors
     // agents_one_home (a person's or an org's, never both) and the unique public_key.
-    async createAgent ({ name, provider, type, description = '', publicKey = null, ownerUserId = null, orgId = null, invitedBy = null }) {
+    async createAgent ({ name, provider, type, description = '', publicKey = null, resumeHash = null, ownerUserId = null, orgId = null, invitedBy = null }) {
       if ((ownerUserId == null) === (orgId == null)) throw Object.assign(new Error('an agent belongs to one person or one org'), { code: '23514' })
       if (publicKey && all(agents, (a) => a.publicKey === publicKey).length) throw duplicatePublicKey()
       const row = { id: uuid(), name, provider, type, description, publicKey, ownerUserId, orgId, invitedBy, createdAt: now(), lastUsedAt: null, revokedAt: null }
-      agents.set(row.id, row); return copy(row)
+      agents.set(row.id, row)
+      // Kept apart from the row, like the database never selecting it with the agent.
+      if (resumeHash) resumeHashes.set(resumeHash, row.id)
+      return copy(row)
     },
     async agentById (id) { return copy(agents.get(id)) },
+    async agentByResume (hash) { return copy(agents.get(resumeHashes.get(hash))) },
     async agentByPublicKey (publicKey) { return publicKey ? copy(all(agents, (a) => a.publicKey === publicKey)[0]) : null },
     async listPersonalAgents (userId) {
       return all(agents, (a) => a.ownerUserId === userId && !a.revokedAt).sort((a, b) => a.createdAt - b.createdAt).map(copy)

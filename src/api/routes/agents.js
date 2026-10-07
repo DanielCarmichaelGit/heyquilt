@@ -14,11 +14,13 @@ export function agentRoutes ({ store, user, person, now, limitTokens, limitStart
       return agentAuth.refresh(body.refreshKey)
     }],
 
-    // An agent on a computer whose refresh key stopped working signs for the key it joined
-    // with, and gets new keys. A stolen refresh key alone can't do this. Hosted agents
-    // (no key) and agents a person revoked can't either: they're invited again.
+    // An agent whose refresh key stopped working gets new keys with its resume key (every
+    // agent gets one when it joins), or by signing for the key it joined with (agents on a
+    // computer that joined before resume keys). A stolen refresh key alone can't do this,
+    // and an agent a person revoked can't either: it's invited again.
     ['POST', /^\/v1\/agents\/resume$/, async (req, body) => {
       limitStarts(req)
+      if (body.resumeKey !== undefined) return agentAuth.resumeByKey(body.resumeKey)
       const at = Number(body.at)
       if (!Number.isFinite(at) || Math.abs(now() - at) > resumeWindowMs) throw new HttpError(400, "this computer's clock is off; check its date and time")
       const agent = await store.agentById(needId(body.agentId, 'agent'))

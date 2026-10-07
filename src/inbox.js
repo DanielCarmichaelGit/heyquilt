@@ -28,11 +28,23 @@ export function mentioned (text, names) {
   return out
 }
 
+/** Typing @Agents in chat mentions every agent in the session at once. */
+export const ALL_AGENTS = 'Agents'
+
+/**
+ * Whether `text` mentions `me`: @me, or @Agents when `agent` (the reader joined as an agent).
+ * A member actually named "Agents" is still mentioned by name, like anyone else.
+ */
+export function mentionsMe (text, me, { agent = false } = {}) {
+  return mentioned(text, agent ? [me, ALL_AGENTS] : [me]).length > 0
+}
+
 /**
  * Events for `reader` that `state` has not seen. Pure: returns { events, state }.
  * - messages: chat the reader can see, oldest first ({ id, by, to, text, ts }).
  * - tasks: the board ({ id, title, column, by, assignee, forAi, tool, files }).
- * - reader: { name, asAi }: asAi means the reader is that person's AI, so tasks
+ * - reader: { name, asAi, agent }: agent means the reader joined as an agent, so
+ *   @Agents mentions it too. asAi means the reader is that person's AI, so tasks
  *   for "their AI" are the reader's and tasks for the person are not.
  * The first scan (no state) only takes stock: nothing that is already there
  * wakes anyone. A task fires once when it becomes the reader's while open;
@@ -54,7 +66,7 @@ export function scanInbox ({ messages = [], tasks = [], reader, now = Date.now()
     // them like a direct message, but ask for a handoff rather than a reply (duties.js).
     const queue = m.kind === 'queue' || m.kind === 'handoff' ? { queue: m.kind, file: typeof m.path === 'string' ? m.path : '' } : {}
     if (m.to === me) events.push({ id: m.id, kind: 'dm', by: m.by, text, ts: m.ts, ...queue })
-    else if (!m.to && mentioned(text, [me]).length) events.push({ id: m.id, kind: 'mention', by: m.by, text, ts: m.ts })
+    else if (!m.to && mentionsMe(text, me, { agent: !!reader.agent })) events.push({ id: m.id, kind: 'mention', by: m.by, text, ts: m.ts })
   }
   const mine = []
   for (const t of tasks) {

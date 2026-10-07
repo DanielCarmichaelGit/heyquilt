@@ -244,11 +244,26 @@ async function join () {
   console.log(`quilt: syncing ${dir}`)
   let run
   try {
+    let tool = values.tool || saved.tool
+    if (!tool && auth.kind === 'agent') {
+      try {
+        const { agentWhoami } = await import('../src/agent-join.js')
+        const { toolLabel } = await import('../src/agents/common.js')
+        const me = await agentWhoami({ name: auth.name })
+        const provider = me?.agent?.provider
+        if (provider) {
+          const labeled = toolLabel(provider)
+          const known = new Set(['Claude Code', 'Cursor', 'Codex', 'xAI', 'Windsurf', 'Zed', 'GitHub Copilot', 'Aider'])
+          if (known.has(labeled)) tool = labeled
+          else tool = labeled || tool
+        }
+      } catch {}
+    }
     run = await runSession({
       dir,
       conn,
       name: auth.name,
-      tool: values.tool || saved.tool,
+      tool,
       prefer: values.prefer === 'local' ? 'local' : 'remote',
       kind: auth.kind,
       passes: auth.passes,

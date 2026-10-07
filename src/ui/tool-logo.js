@@ -20,7 +20,8 @@ const DOMAINS = {
   Windsurf: 'windsurf.com',
   'GitHub Copilot': 'github.com',
   Zed: 'zed.dev',
-  Aider: 'aider.chat/docs'  // root returns Google's empty globe; /docs has the real icon
+  Aider: 'aider.chat/docs',  // root returns Google's empty globe; /docs has the real icon
+  xAI: 'x.ai'
   // Other → generic sparkle below
 }
 
@@ -51,6 +52,9 @@ const ALIASES = {
   vscode: 'GitHub Copilot',
   zed: 'Zed',
   aider: 'Aider',
+  xai: 'xAI',
+  'x.ai': 'xAI',
+  grok: 'xAI',
   other: 'Other'
 }
 

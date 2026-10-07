@@ -23,7 +23,7 @@ import { loadIdentity } from './identity.js'
 import { currentVersion, localReleases, latestRelease, compareVersions, downloadUrl, seenVersion, markSeen } from './releases.js'
 import { createReporter } from './report.js'
 
-const TOOL_NAMES = ['Claude Code', 'Cursor', 'Codex', 'Windsurf', 'GitHub Copilot', 'Zed', 'Aider', 'Other']
+const TOOL_NAMES = ['Claude Code', 'Cursor', 'Codex', 'xAI', 'Windsurf', 'GitHub Copilot', 'Zed', 'Aider', 'Other']
 const COLOR_RE = /^#[0-9a-f]{6}$/i
 const THEMES = ['light', 'dark', 'system']
 const SAVE_FAILED = "Quilt couldn't save your sign-in on this computer."
@@ -107,18 +107,20 @@ export const STATIC = {
   '/changes.js': ['changes.js', 'text/javascript; charset=utf-8'],
   '/releases.js': ['releases.js', 'text/javascript; charset=utf-8'],
   '/feed-convs.js': ['feed-convs.js', 'text/javascript; charset=utf-8'],
-  '/board.js': ['board.js', 'text/javascript; charset=utf-8']
+  '/board.js': ['board.js', 'text/javascript; charset=utf-8'],
+  '/schedule.js': ['schedule.js', 'text/javascript; charset=utf-8']
 }
 
 // The page's Content-Security-Policy: scripts only from our own files (no inline script or
 // event handlers, the second line of defence against injected markup), fonts and the event
 // stream from this server, inline style attributes allowed since the UI sets them, and
-// Google's favicon service (plus its gstatic.com redirect hosts) for provider logos.
+// Google's favicon service (plus its gstatic.com redirect hosts) for provider logos,
+// and https images so ticket notes can show linked screenshots.
 const CSP = [
   "default-src 'self'",
   "script-src 'self'",
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: https://www.google.com https://*.gstatic.com",
+  "img-src 'self' data: https: https://www.google.com https://*.gstatic.com",
   "font-src 'self'",
   "connect-src 'self'",
   "object-src 'none'",
@@ -807,7 +809,10 @@ function listDir (p) {
 /** The AI coding tool this person most likely uses, from what it has left in their home folder. */
 function detectTool () {
   const home = os.homedir()
-  const found = [['.claude', 'Claude Code'], ['.cursor', 'Cursor'], ['.codex', 'Codex'], ['.codeium/windsurf', 'Windsurf']]
+  // Prefer real usage markers. ~/.claude alone is not enough: Quilt's hooks write
+  // settings there for every session, which made Cursor / xAI / Grok users look like
+  // Claude Code. Transcripts live under .claude/projects.
+  const found = [['.claude/projects', 'Claude Code'], ['.cursor', 'Cursor'], ['.codex', 'Codex'], ['.codeium/windsurf', 'Windsurf']]
     .map(([dir, tool]) => {
       try { return { tool, used: fs.statSync(path.join(home, dir)).mtimeMs } } catch { return null }
     })

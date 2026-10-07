@@ -13,7 +13,7 @@ import { deliverEvents, makeSubscription } from './webhooks.js'
 /** The chat `me` can see: public messages, and direct ones to or from them. */
 const chatFor = (doc, me) => doc.getArray('chat').toArray().filter((m) => m && m.id && (!m.to || m.to === me || m.by === me))
 
-const scan = (doc, name, state) => scanInbox({ messages: chatFor(doc, name), tasks: readTasks(doc.getMap('tasks')), reader: { name, asAi: false } }, state)
+const scan = (doc, name, state) => scanInbox({ messages: chatFor(doc, name), tasks: readTasks(doc.getMap('tasks')), reader: { name, asAi: false, agent: true } }, state)
 
 /**
  * `hosted` is the relay's map of hosted agents (account id -> { room, ..., webhook? });

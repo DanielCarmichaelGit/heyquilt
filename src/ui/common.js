@@ -49,11 +49,13 @@ export const I = {
   link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>',
   board: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="7.5"/><path d="m8.4 12.1 2.4 2.4 4.8-5"/></svg>',
   pencil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+  eye: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
+  repeat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9 9 0 0 0-8 5"/><path d="M3 4v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9 9 0 0 0 8-5"/><path d="M21 20v-5h-5"/></svg>',
   arrowRight: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>',
   arrowLeft: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m11 18-6-6 6-6"/></svg>'
 }
 
-export const TOOLS = ['Claude Code', 'Cursor', 'Codex', 'Windsurf', 'GitHub Copilot', 'Zed', 'Aider', 'Other']
+export const TOOLS = ['Claude Code', 'Cursor', 'Codex', 'xAI', 'Windsurf', 'GitHub Copilot', 'Zed', 'Aider', 'Other']
 
 // ---------------------------------------------------------------- state --
 export const state = {
@@ -112,7 +114,7 @@ export function toast (msg) {
 export function ask ({ title, message = '', ok = 'OK', danger = false, input = null }) {
   return new Promise((resolve) => {
     const back = document.createElement('div')
-    back.className = 'modal-back'
+    back.className = 'modal-back ask-back' // above the Settings pop-up, which can ask too
     back.innerHTML = `<form class="card modal" role="dialog" aria-modal="true" aria-labelledby="ask-title" autocomplete="off">
       <h3 id="ask-title">${esc(title)}</h3>
       ${message ? `<p class="lead">${esc(message)}</p>` : ''}

@@ -39,6 +39,7 @@ export function renderStatus (st, { asAi = false, mentionYours = false } = {}) {
   out.push(`# Quilt pair session: room \`${st.room}\``)
   out.push('')
   out.push(`Relay: ${st.connected ? 'connected' : '**disconnected** (edits are kept and will sync on reconnect)'} · ${st.fileCount} shared files`)
+  if (!st.connected && st.problem) out.push(`⚠️ ${st.problem}`)
   out.push(`You: **${st.me.name}** (${st.me.tool})${st.me.focus ? ` · focus: ${st.me.focus}` : ''}`)
   out.push('')
 

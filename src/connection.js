@@ -110,6 +110,7 @@ export class Connection extends EventEmitter {
         return this.close()
       }
       this.emit('pass', this.passes.payload)
+      this.emit('problem', null)
       this.open({ ...this.headers, 'x-quilt-pass': pass })
     }, (err) => {
       if (this.closed) return
@@ -118,6 +119,8 @@ export class Connection extends EventEmitter {
         return this.close()
       }
       this.emit('warn', `couldn't get a session pass: ${err.message}; retrying`)
+      // Without a pass nothing connects, so say why where people can see it (not only in debug).
+      this.emit('problem', `Couldn't get a session pass: ${err.message}`)
       setTimeout(() => this.connect(), this.backoff)
       this.backoff = Math.min(this.backoff * 2, 10000)
     })
@@ -371,7 +374,7 @@ export class Connection extends EventEmitter {
   /** Asks the relay to claim or release; resolves with its reply. Claims need a live connection. */
   claimRequest (req) { return this.request(MSG_CLAIM, req, 'claims') }
 
-  /** Owner only: approve, deny, change or remove someone. */
+  /** Approve / deny / change / remove someone, or set who may admit (relay enforces who may). */
   adminRequest (req) { return this.request(MSG_ADMIN, req, 'changes to who is in the session') }
 
   send (msg) {

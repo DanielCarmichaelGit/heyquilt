@@ -23,3 +23,22 @@ test('open cards and Done cards without evidence show nothing', () => {
   assert.doesNotMatch(renderBoard([task({ column: 'doing', verified: 'stale' })], 'Dana'), /task-verified/)
   assert.doesNotMatch(renderBoard([task()], 'Dana'), /task-verified/)
 })
+
+test('a QA card shows qaNotes; other columns never do, and the text is escaped', () => {
+  const html = renderBoard([task({ column: 'qa', qaNotes: 'added <QA> column; npm test passed' })], 'Dana')
+  const m = html.match(/<p class="task-qa-notes"[^>]*>([^<]*)<\/p>/)
+  assert.ok(m, 'qa notes paragraph present')
+  assert.match(m[1], /added &lt;QA&gt; column/)
+  assert.doesNotMatch(renderBoard([task({ column: 'doing', qaNotes: 'stale' })], 'Dana'), /task-qa-notes/)
+  assert.doesNotMatch(renderBoard([task({ column: 'done', verified: 'ok', qaNotes: 'stale' })], 'Dana'), /task-qa-notes/)
+  assert.match(renderBoard([task({ column: 'qa' })], 'Dana'), /data-column="qa"/)
+  assert.doesNotMatch(renderBoard([task({ column: 'qa' })], 'Dana'), /task-qa-notes/)
+})
+
+test('the board renders four columns including QA', () => {
+  const html = renderBoard([], 'Dana')
+  assert.match(html, /data-column="todo"/)
+  assert.match(html, /data-column="doing"/)
+  assert.match(html, /data-column="qa"/)
+  assert.match(html, /data-column="done"/)
+})

@@ -20,7 +20,7 @@ import { applyTextDiff } from './textdiff.js'
 import { parseInvite } from './ui/invite.js'
 import { scanInbox, renderInbox } from './inbox.js'
 import { UpdateCheck } from './update-check.js'
-import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, pickChecklist, MAX_VERIFIED } from './agent-task-workflow.js'
+import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, qaRefusal, qaNotesEnough, qaNotesLine, pickChecklist, MAX_VERIFIED } from './agent-task-workflow.js'
 import { HistoryLog, queryHistory, parseSince, formatHistory, currentTask } from './history.js'
 import { changeRefusal, TALK_REFUSED } from './session-access.js'
 import { chatAbout, renderChatAbout, waitingOn, renderUnanswered, heldRefusal, queuedFor, renderQueueNotice, renderQueued } from './duties.js'
@@ -82,7 +82,7 @@ const chatFor = (doc, me) => doc.getArray('chat').toArray().filter((m) => m && m
 
 /** Takes stock of a room for `me`'s inbox: what is already there wakes nobody. */
 function takeStock (doc, me) {
-  return { state: scanInbox({ messages: chatFor(doc, me), tasks: readTasks(doc.getMap('tasks')), reader: { name: me, asAi: false } }).state }
+  return { state: scanInbox({ messages: chatFor(doc, me), tasks: readTasks(doc.getMap('tasks')), reader: { name: me, asAi: false, agent: true } }).state }
 }
 
 // The link-based server is made anew for every request; a link's inbox lives here between them.
@@ -142,7 +142,7 @@ function sessionTools (server, ctx) {
   const claimsOf = (room) => room.claimList ? room.claimList() : []
   // The rules every agent is held to (duties.js), enforced here because hosted agents work through these tools.
   const seen = (doc) => doc.getArray('chat').toArray().filter(visible)
-  const waitRefusal = (doc, name) => renderUnanswered(waitingOn(seen(doc), me), `call ${name} again`)
+  const waitRefusal = (doc, name) => renderUnanswered(waitingOn(seen(doc), me, { agent: true }), `call ${name} again`)
   // Chat about a file this agent was already shown, by message id: kept with its inbox, since each
   // request to the hosted MCP gets fresh tools.
   const toldAbout = () => {
@@ -226,7 +226,7 @@ function sessionTools (server, ctx) {
 
   const taskMap = (doc) => doc.getMap('tasks')
 
-  const reader = () => ({ name: me, tool: ctx.tool(), asAi: false })
+  const reader = () => ({ name: me, tool: ctx.tool(), asAi: false, agent: true })
   const taskFields = ({ assignee, to_ai, files }, room) => {
     const spec = { me, peers: peers(room) }
     if (assignee != null) spec.assignee = assignee
@@ -244,7 +244,7 @@ function sessionTools (server, ctx) {
   }
 
   tool('quilt_tasks', {
-    description: 'List the shared task board (To do, In progress, Done), with an id on each task. Open tasks assigned to you are listed first.',
+    description: 'List the shared task board (To do, In progress, QA, Done), with an id on each task. Open tasks assigned to you are listed first.',
     inputSchema: {}
   }, (_, { doc }) => text(formatTasks(readTasks(taskMap(doc)), reader())))
 
@@ -269,22 +269,28 @@ function sessionTools (server, ctx) {
   const checklistOf = (files) => pickChecklist(files.get('AGENTS.md')?.toString(), files.get('CLAUDE.md')?.toString())
   tool('quilt_move_task', {
     description: 'Move a task on the shared board. "doing" when you start it: you get a briefing (its files, recent changes to them, claims, the project\'s checks). ' +
-      '"done" when you finish: requires `verified`, what you ran and what you saw; without it the move is refused.',
+      '"qa" when you finish implementing and testing: requires `qaNotes` (what changed and how you self-validated); without it the move is refused. ' +
+      '"done" after QA: requires `verified`, what you ran and what you saw; without it the move is refused.',
     inputSchema: {
       id: z.string().describe('Task id from quilt_tasks'),
-      column: z.enum(['todo', 'doing', 'done']).describe('todo, doing, or done'),
+      column: z.enum(['todo', 'doing', 'qa', 'done']).describe('todo, doing, qa, or done'),
+      qaNotes: z.string().max(MAX_VERIFIED).optional().describe('For "qa": describe the changes you made and how you self-validated them.'),
       verified: z.string().max(MAX_VERIFIED).optional().describe('For "done": what you ran and what you saw, concretely (commands, results, what you exercised in the app).')
     }
-  }, ({ id, column, verified }, { room, doc, files }) => {
+  }, ({ id, column, qaNotes, verified }, { room, doc, files }) => {
     { const w = waitRefusal(doc, 'quilt_move_task'); if (w) return fail(w) }
     const err = writable(room)
     if (err) return fail(err)
     try {
       const cur = readTasks(taskMap(doc)).find((t) => t.id === id)
       if (!cur) return fail('no such task')
+      if (column === 'qa' && !qaNotesEnough(qaNotes)) return fail(qaRefusal({ task: cur, checklist: checklistOf(files) }))
       if (column === 'done' && !verifiedEnough(verified)) return fail(doneRefusal({ task: cur, checklist: checklistOf(files) }))
-      { const q = column === 'done' && renderQueued(queuedFor(claimsOf(room), me), 'move the task again'); if (q) return fail(q) }
-      const task = updateTask(doc, taskMap(doc), { id, column, ...(column === 'done' ? { verified } : {}) }, AGENT)
+      { const q = (column === 'done' || column === 'qa') && renderQueued(queuedFor(claimsOf(room), me), 'move the task again'); if (q) return fail(q) }
+      const patch = { id, column }
+      if (column === 'qa') patch.qaNotes = qaNotes
+      if (column === 'done') patch.verified = verified
+      const task = updateTask(doc, taskMap(doc), patch, AGENT)
       if (column === 'doing') {
         const tf = task.files || []
         const all = historyOf(room).entries()
@@ -292,6 +298,7 @@ function sessionTools (server, ctx) {
         const claims = claimsOf(room).filter((c) => !tf.length || tf.some((f) => globMatcher(c.pattern)(f)))
         return text(pickupBrief({ task, history, claims, checklist: checklistOf(files), me }))
       }
+      if (column === 'qa') return text(`Moved "${task.title}" to QA. Notes: ${qaNotesLine(task)}`)
       if (column === 'done') return text(`Moved "${task.title}" to Done. Verified: ${verifiedLine(task)}`)
       return text(`Moved "${task.title}" to ${columnName(task.column)}.`)
     } catch (e) { return fail(e.message) }

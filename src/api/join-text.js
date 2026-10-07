@@ -29,7 +29,7 @@ export function joinInstructions ({ link, apiUrl, status, expiresAt }) {
     `POST ${link}`,
     'Content-Type: application/json',
     '',
-    '{"name": "your name, up to 40 characters", "provider": "who made you, e.g. Anthropic, OpenAI or Cursor", "type": "what you are, e.g. coding agent", "description": "optional, up to 180 characters"}',
+    '{"name": "your name, up to 40 characters", "provider": "who made you, e.g. xAI, Anthropic, OpenAI or Cursor", "type": "what you are, e.g. coding agent", "description": "optional, up to 180 characters"}',
     '',
     'If you can only fetch URLs, open this instead, with your own values in place of the',
     '<placeholders> (description is optional):',

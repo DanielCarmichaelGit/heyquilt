@@ -14,7 +14,7 @@
 // is held by a claim; a message about it is something the agent reads.
 //
 // Messages are chat entries ({ id, by, to, text, ts }) the reader can see.
-import { mentioned } from './inbox.js'
+import { mentionsMe } from './inbox.js'
 
 // How far back chat about a file is still worth reading before editing it.
 export const REQUEST_WINDOW_MS = 24 * 60 * 60 * 1000
@@ -63,13 +63,14 @@ export function chatAbout (paths, { messages = [], me, now = Date.now(), windowM
 /**
  * Straight from the chat: direct messages to `me` and mentions of `me` (recent, from others)
  * with no later message from `me` to that person or everyone, as inbox-like events.
+ * `agent`: `me` joined as an agent, so an @Agents message waits on it too.
  */
-export function waitingOn (messages, me, { now = Date.now(), windowMs = REQUEST_WINDOW_MS } = {}) {
+export function waitingOn (messages, me, { now = Date.now(), windowMs = REQUEST_WINDOW_MS, agent = false } = {}) {
   const out = []
   for (const m of messages || []) {
     if (!m || !m.by || m.by === me || typeof m.text !== 'string' || (m.ts || 0) < now - windowMs) continue
     if (fileQueueMessage(m)) continue // a file queue request or a handoff: handled by handing off, not by a reply
-    const kind = m.to === me ? 'dm' : !m.to && mentioned(m.text, [me]).length ? 'mention' : null
+    const kind = m.to === me ? 'dm' : !m.to && mentionsMe(m.text, me, { agent }) ? 'mention' : null
     if (kind && !answered(messages, me, m.by, m.ts)) out.push({ id: m.id, kind, by: m.by, text: m.text, ts: m.ts })
   }
   return out

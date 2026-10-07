@@ -9,8 +9,8 @@ import { renderFileView } from './fileview.js'
 import { changesMarkup, bindChanges, unbindChanges, changesChanged } from './changes.js'
 import { quiltMark } from './mark.js'
 import { openSettings } from './home.js'
-import { fileCardHref, renderable, textHtml, mentionAt, mentionCandidates, completeMention } from './chat.js'
-import { renderBoard } from './board.js'
+import { fileCardHref, renderable, textHtml, mentionAt, mentionCandidates, completeMention, ALL_AGENTS } from './chat.js'
+import { renderBoard, taskNotesModalHtml } from './board.js'
 import { accessFormValues, accessSaveBody, grantsLoading, grantsLoaded, grantsFailed } from './access-form.js'
 import { renderMergeBar, bindMerges, renderMergeView } from './merges.js'
 
@@ -72,6 +72,7 @@ export function mountSession (id) {
       <button class="brand" data-go="home" aria-label="Home">${quiltMark({ sew: 'first' })}</button>
       <nav class="tabs" id="tabs" aria-label="Sessions"></nav>
       <span class="spacer"></span>
+      <span class="relay-problem" id="relay-problem" role="status" hidden></span>
       <span class="access-pill" id="access-pill" hidden></span>
       <div class="commit-wrap" id="commit-wrap">
         <button class="commit-chip" id="commit-chip" aria-haspopup="true" aria-expanded="false" aria-controls="commit-panel" hidden></button>
@@ -101,7 +102,10 @@ export function mountSession (id) {
     </header>
     <div class="ws-body" id="ws-body">
       <aside class="ws-tree" aria-label="Project files">
-        <div class="pane-head"><span>Files</span><span class="hint" id="file-count"></span></div>
+        <div class="pane-head">
+          <button type="button" class="tree-collapse wide-tree" id="collapse-tree" title="Collapse files" aria-expanded="true" aria-controls="tree">${I.arrowLeft}</button>
+          <span class="pane-title">Files</span><span class="hint" id="file-count"></span>
+        </div>
         <div class="tree-scroll" id="tree"></div>
       </aside>
       <main class="ws-main">
@@ -138,6 +142,7 @@ export function mountSession (id) {
   bindChanges(id, mounted.signal, { onOpen: openFile })
   bindMain()
   bindTreeEvents()
+  applyTreeCollapsed()
   bindChat()
   bindBoard()
   renderTop()
@@ -509,8 +514,15 @@ function renderTop () {
   const people = [st.me, ...st.peers]
   const shown = people.slice(0, 4)
   $('#people-btn').innerHTML = `<span class="stack">${shown.map((p, i) => `<span style="z-index:${10 - i}">${avatar(p.name, p.color)}</span>`).join('')}</span>
-    <span class="count">${people.length}</span><span class="conn ${st.connected ? 'ok' : 'warn'}" title="${st.connected ? 'Connected' : 'Reconnecting…'}"></span>`
+    <span class="count">${people.length}</span><span class="conn ${st.connected ? 'ok' : 'warn'}" title="${st.connected ? 'Connected' : esc(st.problem || 'Reconnecting…')}"></span>`
   $('#people-btn').setAttribute('aria-label', `${people.length} ${people.length === 1 ? 'person' : 'people'} in this session${st.connected ? '' : ', reconnecting'}`)
+  // Why we're offline, when we know: otherwise "Reconnecting…" can go on silently forever.
+  const problem = $('#relay-problem')
+  if (problem) {
+    problem.hidden = st.connected || !st.problem
+    problem.textContent = st.connected ? '' : (st.problem || '')
+    problem.title = problem.textContent ? `${problem.textContent}. Quilt keeps retrying.` : ''
+  }
   if (!$('#people-menu').hidden) renderPeopleMenu()
   renderAccess()
   renderMerges()
@@ -1029,7 +1041,7 @@ function renderTaskButton () {
 function editingTask () {
   const el = document.activeElement
   if (!el?.closest) return false
-  return !!el.closest('.task-edit, .task-assign, .task-file, .task-file-form, .task-add-assign')
+  return !!el.closest('.task-edit, .task-assign, .task-file, .task-file-form, .task-cron, .task-cron-form, .task-add-assign')
 }
 
 function taskPeople (st) {
@@ -1048,6 +1060,51 @@ function assignmentFromValue (value, st) {
   const saved = (st.tasks || []).find((t) => t.assignee === assignee && !!t.forAi === forAi)
   const live = person?.tool && person.tool !== 'unknown' ? person.tool : ''
   return { assignee, forAi, tool: forAi ? (live || saved?.tool || '') : '' }
+}
+
+// Board scroll survives a repaint: the column row's horizontal position and
+// each column's own vertical position, keyed by column id.
+let lastBoard = { html: '', el: null }
+function boardScroll (root) {
+  const cols = root?.querySelector('.board-cols')
+  if (!cols) return null
+  const lists = {}
+  for (const col of cols.querySelectorAll('.board-col')) {
+    const list = col.querySelector('.board-list')
+    if (list) lists[col.dataset.column] = list.scrollTop
+  }
+  return { left: cols.scrollLeft, top: cols.scrollTop, lists }
+}
+
+function restoreBoardScroll (root, scroll) {
+  if (!scroll) return
+  const cols = root?.querySelector('.board-cols')
+  if (!cols) return
+  cols.scrollLeft = scroll.left
+  cols.scrollTop = scroll.top
+  for (const col of cols.querySelectorAll('.board-col')) {
+    const list = col.querySelector('.board-list')
+    const top = scroll.lists[col.dataset.column]
+    if (list && typeof top === 'number') list.scrollTop = top
+  }
+}
+
+// A plain mouse wheel only scrolls up and down. Over the board's headers,
+// gaps or a column too short to scroll, turn that into sideways movement so
+// the column row can be reached without a trackpad or the scrollbar.
+function boardWheel (e) {
+  if (e.ctrlKey || e.defaultPrevented) return
+  const cols = e.target.closest?.('.board-cols')
+  if (!cols || cols.scrollWidth <= cols.clientWidth + 1) return
+  if (getComputedStyle(cols).overflowX === 'visible') return
+  const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY
+  if (!dy || Math.abs(e.deltaX) >= Math.abs(dy) || e.shiftKey) return
+  const list = e.target.closest('.board-list')
+  if (list && list.scrollHeight > list.clientHeight + 1) return
+  // Stacked phone layout scrolls vertically; leave it alone.
+  if (cols.scrollHeight > cols.clientHeight + 1) return
+  e.preventDefault()
+  cols.scrollLeft += dy
 }
 
 function paintBoard ({ force = false } = {}) {
@@ -1109,6 +1166,7 @@ function beginEdit (btn) {
 
 function bindBoard () {
   const el = $('#main')
+  el.addEventListener('wheel', boardWheel, { passive: false })
   el.addEventListener('focusout', () => {
     setTimeout(() => { if (!editingTask() && boardDirty) paintBoard() }, 0)
   })
@@ -1123,6 +1181,15 @@ function bindBoard () {
     catch (err) { toast(err.message); paintBoard({ force: true }) }
   })
   el.addEventListener('submit', async (e) => {
+    if (e.target.classList.contains('task-cron-form')) {
+      e.preventDefault()
+      const input = e.target.querySelector('input')
+      const id = e.target.closest('.task')?.dataset.task
+      if (!id || !input) return
+      try { await changeTasks('/update', { id, cron: input.value }) }
+      catch (err) { toast(err.message) }
+      return
+    }
     if (e.target.classList.contains('task-file-form')) {
       e.preventDefault()
       const input = e.target.querySelector('input')
@@ -1168,6 +1235,22 @@ function bindBoard () {
       catch (err) { toast(err.message) }
       return
     }
+    const notes = e.target.closest('[data-task-notes]')
+    if (notes) {
+      const id = notes.closest('.task')?.dataset.task
+      const task = (sum()?.status.tasks || []).find((t) => t.id === id)
+      if (task) openTaskNotes(task)
+      return
+    }
+    const recur = e.target.closest('[data-task-recur]')
+    if (recur) {
+      const id = recur.closest('.task')?.dataset.task
+      const task = (sum()?.status.tasks || []).find((t) => t.id === id)
+      if (!id || !task) return
+      try { await changeTasks('/update', { id, recurring: !task.recurring }) }
+      catch (err) { toast(err.message) }
+      return
+    }
     if (e.target.closest('[data-task-delete]')) {
       const id = e.target.closest('.task')?.dataset.task
       if (!id) return
@@ -1181,7 +1264,7 @@ function bindBoard () {
   })
   el.addEventListener('dragstart', (e) => {
     const card = e.target.closest?.('.task')
-    if (!card || e.target.closest('.task-icon, .task-move, .task-assign, .task-files, .task-file-form, .task-file-x, input, select')) { e.preventDefault(); return }
+    if (!card || e.target.closest('.task-icon, .task-move, .task-assign, .task-files, .task-file-form, .task-cron-form, .task-file-x, input, select')) { e.preventDefault(); return }
     draggingTask = true
     e.dataTransfer.setData('text/plain', card.dataset.task)
     e.dataTransfer.effectAllowed = 'move'
@@ -1220,9 +1303,17 @@ function renderMain () {
   const w = ws(current)
   const st = sum().status
   if (w.mode === 'tasks') {
-    el.innerHTML = renderBoard(st.tasks || [], me(), taskPeople(st), pendingAssign)
+    const html = renderBoard(st.tasks || [], me(), taskPeople(st), pendingAssign)
+    // Status ticks arrive every few seconds. Re-rendering an unchanged board
+    // would throw away hover, selection and scroll for nothing.
+    if (html === lastBoard.html && lastBoard.el && el.firstElementChild === lastBoard.el) return
+    const scroll = boardScroll(el)
+    el.innerHTML = html
+    lastBoard = { html, el: el.firstElementChild }
+    restoreBoardScroll(el, scroll)
     return
   }
+  lastBoard = { html: '', el: null }
   if (st.access && st.access.state === 'pending') {
     el.innerHTML = `<div class="main-empty">
       <div class="ill">${I.lock}</div>
@@ -1369,7 +1460,60 @@ function renderTreePane () {
   $('#file-count').textContent = tree ? `${tree.files.length}` : ''
 }
 
+function openTaskNotes (task) {
+  document.querySelector('.task-notes-back')?.remove()
+  const back = document.createElement('div')
+  back.className = 'modal-back task-notes-back'
+  back.innerHTML = taskNotesModalHtml(task)
+  document.body.appendChild(back)
+  const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+  const close = () => {
+    if (back.dataset.closing) return
+    back.dataset.closing = '1'
+    back.classList.remove('is-open')
+    if (reduce) { back.remove(); return }
+    let finished = false
+    const finish = () => { if (finished) return; finished = true; back.remove() }
+    back.addEventListener('transitionend', (e) => { if (e.target === back) finish() })
+    setTimeout(finish, 280)
+  }
+  back.addEventListener('mousedown', (e) => { if (e.target === back) close() })
+  back.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); close() } })
+  back.querySelector('[data-close-notes]').onclick = close
+  back.querySelector('[data-close-notes]').focus()
+  if (reduce) back.classList.add('is-open')
+  else requestAnimationFrame(() => requestAnimationFrame(() => back.classList.add('is-open')))
+}
+
+function applyTreeCollapsed () {
+  const body = $('#ws-body')
+  const btn = $('#collapse-tree')
+  if (!body || !current) return
+  const collapsed = !!ws(current).treeCollapsed
+  body.classList.toggle('tree-collapsed', collapsed)
+  const scroll = $('#tree')
+  if (scroll) {
+    scroll.toggleAttribute('inert', collapsed)
+    scroll.setAttribute('aria-hidden', collapsed ? 'true' : 'false')
+  }
+  if (!btn) return
+  btn.setAttribute('aria-expanded', String(!collapsed))
+  btn.title = collapsed ? 'Expand files' : 'Collapse files'
+  btn.setAttribute('aria-label', collapsed ? 'Expand files' : 'Collapse files')
+  btn.innerHTML = collapsed ? I.arrowRight : I.arrowLeft
+}
+
+function toggleTreeCollapsed () {
+  if (!current) return
+  const w = ws(current)
+  w.treeCollapsed = !w.treeCollapsed
+  saveWs(current)
+  applyTreeCollapsed()
+}
+
 function bindTreeEvents () {
+  const collapse = $('#collapse-tree')
+  if (collapse) collapse.onclick = () => toggleTreeCollapsed()
   const el = $('#tree')
   el.addEventListener('click', (e) => {
     const more = e.target.closest('[data-more]')
@@ -1593,13 +1737,17 @@ function renderRecipients () {
   updatePlaceholder()
 }
 
-/** Everyone who can be mentioned in this session: members, people online, and whoever has written. */
+/**
+ * Everyone who can be mentioned in this session: members, people online, and whoever has written,
+ * and @Agents (every agent at once) while an agent other than me is connected.
+ */
 function mentionNames (s) {
   const names = new Set()
   if (s.status.me?.name) names.add(s.status.me.name)
   for (const p of s.status.peers || []) if (p.name) names.add(p.name)
   for (const m of s.status.members || []) if (m.name) names.add(m.name)
   for (const m of renderable(state.messages.get(current))) { if (m.by) names.add(m.by); if (m.to) names.add(m.to) }
+  if ((s.status.peers || []).some((p) => p.kind === 'agent' && p.name !== s.status.me?.name)) names.add(ALL_AGENTS)
   return [...names]
 }
 
@@ -1668,7 +1816,7 @@ function renderMessages (incoming = false, force = false) {
           <span class="fi">${I.file}</span><span style="min-width:0"><div class="fn">${esc(m.file.name)}</div><div class="fs">${bytes(m.file.size)} · ${mine ? 'sent' : 'download'}</div></span></a>` : ''
       return `<div class="msg${mine ? ' mine' : ''}">${mine ? '' : avatar(m.by, colors.get(m.by))}
         <div style="min-width:0"><div class="head"><b>${mine ? 'You' : esc(m.by)}</b>${dm}<span>${esc(clock(m.ts))}</span></div>
-        <div class="bubble">${m.text ? `<div class="text">${textHtml(m.text, names, name)}</div>` : ''}${file}</div></div></div>`
+        <div class="bubble">${m.text ? `<div class="text">${textHtml(m.text, names, name, { meAgent: s.status.me.kind === 'agent' })}</div>` : ''}${file}</div></div></div>`
     }).join('')
     : '<div class="day-empty"><div><b>Say hi.</b></div><div class="hint">Messages, direct messages and files you share appear here. Drop a file on this panel to send it.</div></div>'
   if (force || nearBottom || (incoming && list[list.length - 1]?.by === name)) el.scrollTop = el.scrollHeight

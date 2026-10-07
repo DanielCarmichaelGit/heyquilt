@@ -1,5 +1,5 @@
 // Required workflow every agent must follow when it picks up a ticket, the
-// briefing it gets when it does, and the evidence it owes before Done.
+// briefing it gets when it does, and the notes it owes before QA (then Done).
 // Included in MCP server instructions (local + relay) and in the project
 // agent guides written by `quilt setup` (AGENTS.md / CLAUDE.md).
 
@@ -12,7 +12,7 @@ export const MIN_VERIFIED = 12
 export const MAX_VERIFIED = 1000
 
 /**
- * One short paragraph: grok → plan → build → test → verified.
+ * One short paragraph: grok → plan → build → test → QA with qaNotes.
  * Keep this the single source of truth so every briefing path says the same thing.
  */
 export const TASK_WORKFLOW =
@@ -20,7 +20,8 @@ export const TASK_WORKFLOW =
   'first grok the codebase and workspace (explore the relevant files, how they fit together, and quilt_history for recent changes to them), ' +
   'then implement a plan, then build the change, then test it (confirm the tests you touch pass) ' +
   'and run the project\'s own checks under "Verifying a change" in AGENTS.md. ' +
-  'Moving the ticket to Done requires `verified`: what you ran and what you saw. Unit tests passing is not enough when the app itself was not exercised.'
+  'When finished, move the ticket to QA (not straight to Done) with `qaNotes`: describe the changes you made and how you self-validated them. ' +
+  'Moving to Done still requires `verified` (what you ran and what you saw). Unit tests passing is not enough when the app itself was not exercised.'
 
 /** Markdown bullets for AGENTS.md / CLAUDE.md (same steps as TASK_WORKFLOW). */
 export const TASK_WORKFLOW_MD =
@@ -29,13 +30,14 @@ export const TASK_WORKFLOW_MD =
   '  2. **Plan** the change.\n' +
   '  3. **Build** it.\n' +
   '  4. **Test** it: confirm the tests you touch pass, then run the project\'s own checks under "Verifying a change" below.\n' +
-  '  5. **Verify** before Done: `quilt_move_task` to `done` needs `verified`, what you ran and what you saw. Unit tests passing is not enough when the app itself was not exercised.'
+  '  5. **QA**: move to `qa` (not straight to Done) with `qaNotes` describing the changes and how you self-validated them.\n' +
+  '  6. **Done** (after QA): `quilt_move_task` to `done` needs `verified`, what you ran and what you saw. Unit tests passing is not enough when the app itself was not exercised.'
 
 /** Scaffolded into AGENTS.md by `quilt setup` when the project has no checklist yet. Owners edit it in place. */
 export const CHECKLIST_SCAFFOLD = `${CHECKLIST_HEADING}
 
 Every agent reads this when it picks up a ticket and must run these checks before moving
-it to Done. Replace the examples with what proves a change works in this project.
+it to QA. Replace the examples with what proves a change works in this project.
 
 - Run the test suite and make sure it passes.
 - Start the app and exercise the part you changed; confirm it loads and behaves.
@@ -138,6 +140,27 @@ export function doneRefusal ({ task, checklist = '' } = {}) {
 /** The line shown on the board for a finished ticket's evidence. */
 export function verifiedLine (task) {
   const v = String(task?.verified || '').replace(/\s+/g, ' ').trim()
+  if (!v) return ''
+  return v.length > 160 ? `${v.slice(0, 157)}…` : v
+}
+
+/** True when `qaNotes` is enough to move a ticket to QA. */
+export function qaNotesEnough (qaNotes) {
+  return String(qaNotes || '').trim().length >= MIN_VERIFIED
+}
+
+/** Why a move to QA was refused, and what to do instead. */
+export function qaRefusal ({ task, checklist = '' } = {}) {
+  const title = task?.title ? `"${task.title}"` : 'this ticket'
+  return `Not moved: ${title} needs \`qaNotes\` before it can go to QA. ` +
+    'Describe the changes you made and how you self-validated them ' +
+    '(for example: "Added QA column and qaNotes field; npm test passed; board shows four columns"). ' +
+    'Vague words like "done" are not enough.\n\n' + checklistBlock(checklist)
+}
+
+/** The line shown for a QA ticket's change description. */
+export function qaNotesLine (task) {
+  const v = String(task?.qaNotes || '').replace(/\s+/g, ' ').trim()
   if (!v) return ''
   return v.length > 160 ? `${v.slice(0, 157)}…` : v
 }

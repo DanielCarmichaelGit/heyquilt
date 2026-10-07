@@ -115,13 +115,14 @@ export class Session extends EventEmitter {
     this.tallies = this.doc.getMap('changes')
     this.agentFeed = this.doc.getArray('agentFeed') // { id, by, tool, conv, kind, text, ts }
     this.commitRequests = this.doc.getMap('commitRequests') // id -> { id, by, message, ts, state: 'open'|'done', doneBy, hash }
-    this.tasks = this.doc.getMap('tasks') // id -> { id, title, column, by, assignee, forAi, tool, files, conv, order, ts }
+    this.tasks = this.doc.getMap('tasks') // id -> { id, title, column, by, assignee, forAi, tool, files, conv, verified, qaNotes, recurring, cron, order, ts }
     // Mentions, direct messages and tasks handed to this member (or their AI), for agents to wake on.
     this.inboxTracker = new Inbox()
     // The agent's webhook subscription (webhooks.js), kept in .quilt/webhook.json: inbox events are POSTed there.
     this.webhook = null
     this.webhookTransport = webhookTransport // { fetch, delays } for tests
     this.webhookSending = Promise.resolve()
+    this.relayProblem = null // why the relay can't be reached, when we know (setRelayProblem)
     this.agentPrompts = new Map() // conv -> latest prompt line, so an edit can be titled after the question that started it
     this.merges = this.doc.getMap('merges') // id -> merge record (see merges.js)
     this.merging = new Set() // paths held out of normal sync until their offline merge has run
@@ -278,6 +279,7 @@ export class Session extends EventEmitter {
     this.conn.on('warn', (m) => this.emit('debug', m))
     this.conn.on('fatal', (err) => this.emit('fatal', err))
     this.conn.on('pass', (p) => this.adoptPass(p))
+    this.conn.on('problem', (msg) => this.setRelayProblem(msg))
     this.conn.on('claims', (list) => this.setClaims(list))
     this.conn.on('access', (a) => this.setAccess(a))
     this.conn.on('members', (m) => this.setMembers(m))
@@ -2333,7 +2335,7 @@ export class Session extends EventEmitter {
 
   // ------------------------------------------------------------- tasks --
 
-  /** The shared board: To do, In progress, Done. Everyone in the room sees the same list. */
+  /** The shared board: To do, In progress, QA, Done. Everyone in the room sees the same list. */
   taskList () { return readTasks(this.tasks) }
 
   /**
@@ -2419,7 +2421,7 @@ export class Session extends EventEmitter {
   // ------------------------------------------------------------- inbox --
 
   /** Who the inbox is for: this agent, or this person's AI (tasks for "their AI" are its). */
-  inboxReader () { return { name: this.name, asAi: this.kind !== 'agent' } }
+  inboxReader () { return { name: this.name, asAi: this.kind !== 'agent', agent: this.kind === 'agent' } }
 
   /**
    * Looks for new mentions, direct messages and handed-over tasks. `quiet` takes
@@ -2833,7 +2835,7 @@ export class Session extends EventEmitter {
    * and files they hold that someone is waiting for in the file queue (`queued`, see duties.js).
    */
   duties () {
-    return { me: this.name, waiting: waitingOn(this.chat.toArray().filter((m) => this.canSee(m)), this.name), queued: this.queued() }
+    return { me: this.name, waiting: waitingOn(this.chat.toArray().filter((m) => this.canSee(m)), this.name, { agent: this.kind === 'agent' }), queued: this.queued() }
   }
 
   // ------------------------------------------------------------ file queue --
@@ -2895,6 +2897,18 @@ export class Session extends EventEmitter {
   async clearInactiveClaims () {
     const r = await this.conn.claimRequest({ op: 'clear-inactive' })
     return r.released || 0
+  }
+
+  /**
+   * Why we can't reach the relay (e.g. no session pass), or null once that's fixed.
+   * Logged once per new reason, not on every retry, and shown in status.
+   */
+  setRelayProblem (msg) {
+    msg = msg || null
+    if (msg === this.relayProblem) return
+    this.relayProblem = msg
+    if (msg) this.log(`⚠️ ${msg}. Retrying…`)
+    this.emit('status-changed')
   }
 
   /** Takes the relay's claim list, logging what changed. */
@@ -3346,6 +3360,7 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
       room: this.room,
       server: this.server,
       connected: !!(this.conn && this.conn.connected),
+      ...(this.relayProblem ? { problem: this.relayProblem } : {}),
       access: this.access,
       sessionName: this.sessionName,
       members: this.members,

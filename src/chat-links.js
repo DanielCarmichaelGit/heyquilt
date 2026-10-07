@@ -340,7 +340,7 @@ class ChatPage {
   fmt (m) { return `- ${m.by}${m.to ? ` → ${m.to} (direct)` : ''} (${ago(m.ts)}): ${m.text}${m.file ? ` [file: ${m.file.name}]` : ''}` }
 
   waitingLine () {
-    const w = waitingOn(this.visible(), this.me)
+    const w = waitingOn(this.visible(), this.me, { agent: true })
     return w.length ? `\nWaiting for your answer: ${w.map((e) => e.by).join(', ')}. Reply with the "say" link.` : null
   }
 
@@ -373,7 +373,7 @@ class ChatPage {
 
   /** Work moves on once nobody waits for an answer (duties.js), as for every agent. */
   held (what) {
-    const w = renderUnanswered(waitingOn(this.visible(), this.me), what)
+    const w = renderUnanswered(waitingOn(this.visible(), this.me, { agent: true }), what)
     return w ? { code: 409, body: `${w.replace(/quilt_message \(to: their name\)/, 'the "say" link (with &to=<their name>)')}${this.menu()}` } : null
   }
 

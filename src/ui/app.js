@@ -186,14 +186,20 @@ export async function go (view) {
 }
 
 // --------------------------------------------------------------- render --
+let shuttingDown = false // one "Shut down Quilt?" at a time, however often the button is clicked
 export async function shutdown () {
-  if (!await ask({ title: 'Shut down Quilt?', message: 'This stops every session and this app. Your files stay where they are.', ok: 'Shut down', danger: true })) return
+  if (shuttingDown) return
+  shuttingDown = true
   try {
+    if (!await ask({ title: 'Shut down Quilt?', message: 'This stops every session and this app. Your files stay where they are.', ok: 'Shut down', danger: true })) return
+    $('#settings-back')?.remove()
     await api('POST', '/api/shutdown')
     state.events?.close() // don't re-render or reconnect as sessions stop
     renderLocked('quilt is shut down. You can close this tab.')
   } catch (err) {
     toast(err.message)
+  } finally {
+    shuttingDown = false
   }
 }
 

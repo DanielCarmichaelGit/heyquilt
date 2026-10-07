@@ -38,7 +38,7 @@ async function boot () {
     await loadWorkspaces()
     clearTimeout(waiting)
     const last = recall('view')
-    state.view = state.sessions.has(last) || last === 'settings' || isWorkspace(last) ? last : (state.sessions.size ? [...state.sessions.keys()][0] : 'home')
+    state.view = state.sessions.has(last) || last === 'settings' || (last === 'agents' && state.workspacesOn) || isWorkspace(last) ? last : (state.sessions.size ? [...state.sessions.keys()][0] : 'home')
     if (isWorkspace(state.view)) await openWorkspace(wsIdOf(state.view)).catch(() => { state.view = 'home' })
     if (isSession(state.view)) await loadMessages(state.view)
     if (!state.events) connectEvents()
@@ -164,7 +164,7 @@ function pollWorkspace () {
     if (state.view === view && JSON.stringify(state.workspace) !== before && !previewBusy()) render()
   }, 20000)
 }
-const isSession = (view) => view !== 'home' && view !== 'settings' && !isWorkspace(view)
+const isSession = (view) => view !== 'home' && view !== 'settings' && view !== 'agents' && !isWorkspace(view)
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {

@@ -89,7 +89,8 @@ test('with workspaces off, every Invite an agent button does exactly what it did
   assert.ok(bind.includes('if (state.workspacesOn) {\n      return openKindMenu(btn, {'))
   assert.ok(bind.indexOf('openKindMenu(btn') < bind.indexOf("const inv = await api('POST', '/api/agent-invites')"))
   assert.ok(bind.includes("$('#agents-invite', root).innerHTML = agentInviteHtml(agentPaste({ link: inv.link }), 'agents-paste')"), 'flag off: as before')
-  assert.ok(home.includes('id="agents-make"$' + "{state.workspacesOn ? ' aria-haspopup=\"menu\" aria-expanded=\"false\"' : ''}>"), 'flag off: the same button')
+  assert.ok(home.includes('<button class="btn primary" type="button" id="agents-make">$' + '{I.bot}<span>Invite an agent</span></button></div>\n    </div>\n  </section>`}'), 'flag off: the same button, in Settings')
+  assert.ok(home.includes('id="agents-make" aria-haspopup="menu" aria-expanded="false"'), 'flag on: on the Agents page, opening the menu')
   // A session's Invite dialog.
   const inv = app.slice(app.indexOf("$('#inv-agent-make', back).onclick"), app.indexOf("$('#inv-done', back).onclick"))
   assert.ok(inv.includes('if (state.workspacesOn) {\n      return openKindMenu(btn, {\n        sessionId: id,'))
@@ -110,4 +111,19 @@ test('the menu is a fixed popover at its button: no layout shift, closes on Esca
   assert.ok(!k.includes(EM_DASH))
   const served = fs.readFileSync(new URL('../src/ui-server.js', import.meta.url), 'utf8')
   assert.ok(served.includes("'/agent-kinds.js': ['agent-kinds.js', 'text/javascript; charset=utf-8']"))
+})
+
+test('with workspaces on: an Agents page in the sidebar, and Join a session instead of the Sessions menu', () => {
+  const home = ui('home.js')
+  const app = ui('app.js')
+  assert.ok(home.includes("$" + "{state.workspacesOn ? `<button data-view=\"agents\""), 'Agents only with workspaces on')
+  assert.ok(home.includes("view === 'agents' ? agentsPageHtml()") && home.includes("else if (view === 'agents') bindAgents($('#page'))"))
+  assert.ok(home.includes('https://heyquilt.com/docs/agents'))
+  assert.ok(app.includes("view !== 'agents' && !isWorkspace(view)"), 'the Agents view is not a session')
+  // The Sessions menu is still there with workspaces off; with them on, one Join a session button.
+  assert.ok(home.includes("? `<button class=\"btn primary full sessions-btn\" type=\"button\" data-join-session>$" + "{I.link}<span>Join a session</span></button>`\n    : `<div class=\"menu-wrap\" id=\"sessions-menu-wrap\">"))
+  assert.ok(home.includes('if (btn && menu) {'), 'the menu binds only when it is there')
+  // Settings points to the Agents page with workspaces on, and keeps its own section off.
+  assert.ok(home.includes('data-view="agents">$' + '{I.bot}<span>Open Agents</span></button>'))
+  assert.ok(home.includes("if ($('#agents-sec', root)) bindAgents(root)"))
 })

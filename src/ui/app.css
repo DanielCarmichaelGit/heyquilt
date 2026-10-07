@@ -239,6 +239,14 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 /* Your agents in Settings › Agents with workspaces on: one card each, who it is on top, then
    Works in and Joins as segmented choices. The line under each choice keeps one height, so
    switching never moves the card. */
+/* The Agents page: title and Invite an agent on one line, the invite text, then the cards. */
+.ag-page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.ag-page-head p { max-width: 560px; }
+.ag-page-head .btn { flex: none; margin-top: 6px; }
+#agents-sec > #agents-invite { margin-bottom: 16px; }
+#agents-sec > #agents-invite .error:empty { display: none; }
+.ag-foot { margin-top: 16px; }
+@media (max-width: 560px) { .ag-page-head { flex-direction: column; } }
 .ag-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; min-width: 0; }
 .ag-card { min-width: 0; padding: 14px 16px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
 .ag-head { display: flex; align-items: center; gap: 12px; }

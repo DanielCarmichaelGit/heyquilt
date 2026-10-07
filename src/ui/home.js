@@ -28,12 +28,13 @@ export function renderShell (view) {
       ${mobileBarHtml(view)}
       <div class="side-scrim" data-side-close></div>
       ${sidebarHtml(view)}
-      <main class="page" id="page">${view === 'settings' ? settingsHtml() : view.startsWith('wsfiles:') ? allFilesHtml(state.workspace) : view.startsWith('ws:') ? workspacePageHtml() : homeHtml()}</main>
+      <main class="page" id="page">${view === 'settings' ? settingsHtml() : view === 'agents' ? agentsPageHtml() : view.startsWith('wsfiles:') ? allFilesHtml(state.workspace) : view.startsWith('ws:') ? workspacePageHtml() : homeHtml()}</main>
     </div>`
   if (page && view === state.shellView) $('#page').scrollTop = scroll
   state.shellView = view
   bindSidebar()
   if (view === 'settings') bindSettings($('#page'), () => renderShell('settings'))
+  else if (view === 'agents') bindAgents($('#page'))
   else if (view.startsWith('wsfiles:')) {
     const id = view.slice('wsfiles:'.length)
     const rerender = () => { if (state.view === view) renderShell(view) }
@@ -48,6 +49,7 @@ export function renderShell (view) {
  * button; the full sidebar slides in from the left as a drawer. Hidden on wide windows. */
 function placeName (view) {
   if (view === 'settings') return 'Settings'
+  if (view === 'agents') return 'Agents'
   const id = view.startsWith('wsfiles:') ? view.slice(8) : view.startsWith('ws:') ? view.slice(3) : ''
   if (!id) return 'Home'
   const name = (state.workspaces || []).find((w) => w.id === id)?.name || state.workspace?.workspace?.name || 'Workspace'
@@ -79,7 +81,9 @@ function sidebarHtml (view) {
       <span class="me-edit">Edit</span>
     </button>
 
-    <div class="menu-wrap" id="sessions-menu-wrap">
+    ${state.workspacesOn
+    ? `<button class="btn primary full sessions-btn" type="button" data-join-session>${I.link}<span>Join a session</span></button>`
+    : `<div class="menu-wrap" id="sessions-menu-wrap">
       <button class="btn primary full sessions-btn" id="sessions-btn" aria-haspopup="true" aria-expanded="false">${I.folder}<span>Sessions</span>${running.length ? `<span class="badge-count">${running.length}</span>` : ''}<span class="caret">${I.caret}</span></button>
       <div class="popover menu" id="sessions-menu" role="menu" hidden>
         <button class="pop-item" role="menuitem" data-new-session>${I.plus}<span>New session…</span></button>
@@ -89,10 +93,11 @@ function sidebarHtml (view) {
         ${reopenable.length ? `<div class="pop-sep"></div><div class="pop-label">Recent</div>${reopenable.slice(0, 5).map((r) => `
         <button class="pop-item" role="menuitem" data-rejoin="${esc(r.dir)}"><span class="dot"></span><span class="grow">${esc(basename(r.dir))}</span><span class="hint">${esc(ago(r.lastUsed))}</span></button>`).join('')}` : ''}
       </div>
-    </div>
+    </div>`}
 
     <nav class="side-nav" aria-label="Main">
       <button data-view="home" class="${view === 'home' ? 'on' : ''}">${I.home}<span>Home</span></button>
+      ${state.workspacesOn ? `<button data-view="agents" class="${view === 'agents' ? 'on' : ''}">${I.bot}<span>Agents</span></button>` : ''}
     </nav>
     ${sideWorkspacesHtml(view)}
 
@@ -127,10 +132,13 @@ function bindSidebar () {
   shell.addEventListener('keydown', (e) => { if (e.key === 'Escape' && shell.classList.contains('side-open')) { setDrawer(false); toggle?.focus() } })
   const btn = $('#sessions-btn')
   const menu = $('#sessions-menu')
-  const setOpen = (open) => { menu.hidden = !open; btn.setAttribute('aria-expanded', String(open)) }
-  btn.onclick = () => setOpen(menu.hidden)
-  menu.addEventListener('click', () => setOpen(false))
-  menu.addEventListener('keydown', (e) => { if (e.key === 'Escape') { setOpen(false); btn.focus() } })
+  // With workspaces on there is no Sessions menu (sessions live in their workspaces), only Join a session.
+  if (btn && menu) {
+    const setOpen = (open) => { menu.hidden = !open; btn.setAttribute('aria-expanded', String(open)) }
+    btn.onclick = () => setOpen(menu.hidden)
+    menu.addEventListener('click', () => setOpen(false))
+    menu.addEventListener('keydown', (e) => { if (e.key === 'Escape') { setOpen(false); btn.focus() } })
+  }
   if (!bindSidebar.listening) {
     bindSidebar.listening = true
     document.addEventListener('mousedown', (e) => {
@@ -605,6 +613,20 @@ function toggle (name, checked, label, hint) {
     <span class="tg-text"><b>${label}</b><span class="hint">${hint}</span></span></label>`
 }
 
+/** The Agents page (workspaces on): your agents, where each works, and Invite an agent. */
+function agentsPageHtml () {
+  return `
+  <div id="agents-sec">
+    <header class="page-head ag-page-head">
+      <div><h1>Agents</h1><p>AIs that work with you as their own members. Global agents are in all your workspaces; workspace and session agents in one.</p></div>
+      <button class="btn primary" type="button" id="agents-make" aria-haspopup="menu" aria-expanded="false">${I.bot}<span>Invite an agent</span></button>
+    </header>
+    <div id="agents-invite"><p class="error" id="agents-error"></p></div>
+    <div id="agents-list"><p class="hint">Loading…</p></div>
+    <p class="hint ag-foot"><a href="https://heyquilt.com/docs/agents" target="_blank" rel="noopener">How agent kinds work</a> · Revoke agents on <a href="https://heyquilt.com/dashboard/agents" target="_blank" rel="noopener">heyquilt.com</a></p>
+  </div>`
+}
+
 function settingsHtml ({ head = true } = {}) {
   const p = state.profile
   const a = state.account || { name: p.name, email: '' }
@@ -623,7 +645,12 @@ function settingsHtml ({ head = true } = {}) {
     </div>
   </section>
 
-  <section class="card settings-sec" id="agents-sec">
+  ${state.workspacesOn
+    ? `<section class="card settings-sec">
+    <div class="sec-intro"><h2>Agents</h2><p>AIs that join your sessions as their own members, under your account.</p></div>
+    <div class="sec-body"><div class="sec-actions"><span class="hint">Invite agents and choose where they work on the Agents page.</span><button class="btn" type="button" data-view="agents">${I.bot}<span>Open Agents</span></button></div></div>
+  </section>`
+    : `<section class="card settings-sec" id="agents-sec">
     <div class="sec-intro"><h2>Agents</h2><p>AIs that join your sessions as their own members, under your account.</p></div>
     <div class="sec-body">
       <div id="agents-list"><p class="hint">Loading…</p></div>
@@ -631,9 +658,9 @@ function settingsHtml ({ head = true } = {}) {
         <p class="hint">Make a one-time invite and paste the text into your AI (Claude Code, Cursor, Codex and others). It registers as your agent; from then on it can join any session you send it. Revoke agents on <a href="https://heyquilt.com/dashboard/agents" target="_blank" rel="noopener">heyquilt.com</a>.</p>
         <p class="error" id="agents-error"></p>
       </div>
-      <div class="sec-actions"><span class="hint">Inside a session, Invite also offers this with the session's link filled in.</span><button class="btn primary" type="button" id="agents-make"${state.workspacesOn ? ' aria-haspopup="menu" aria-expanded="false"' : ''}>${I.bot}<span>Invite an agent</span></button></div>
+      <div class="sec-actions"><span class="hint">Inside a session, Invite also offers this with the session's link filled in.</span><button class="btn primary" type="button" id="agents-make">${I.bot}<span>Invite an agent</span></button></div>
     </div>
-  </section>
+  </section>`}
 
   <form class="card settings-sec" id="profile-sec" autocomplete="off">
     <div class="sec-intro"><h2>Profile</h2><p>How you show up to the people you code with.</p></div>
@@ -721,7 +748,7 @@ function bindAgents (root) {
     const mine = placeableWorkspaces(state.workspaces)
     list.innerHTML = agents.length
       ? (on && places.some(Boolean) ? `<div class="ag-list">${agents.map((a, i) => agentRow(a, places[i], mine)).join('')}</div>` : agents.map((a, i) => agentRow(a, places[i], mine)).join(''))
-      : '<p class="hint">No agents yet. Invite one below.</p>'
+      : `<p class="hint">No agents yet. ${state.workspacesOn ? 'Invite one above.' : 'Invite one below.'}</p>`
     if (on) bindPlacements(list, agents, places, mine)
   }).catch((err) => { list.innerHTML = `<p class="hint warn">${esc(err.message)}</p>` })
   const sec = $('#agents-sec', root)
@@ -802,7 +829,7 @@ function bindSettings (root, refresh) {
     }
   })
 
-  bindAgents(root)
+  if ($('#agents-sec', root)) bindAgents(root)
 
   $('#sign-out', root).onclick = async () => {
     if (!await ask({ title: 'Sign out of Quilt?', message: 'This stops your sessions on this computer. Your files stay where they are.', ok: 'Sign out', danger: true })) return

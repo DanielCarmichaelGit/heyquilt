@@ -4,13 +4,13 @@ import { HttpError, needId, cleanName } from '../http.js'
 import { parsePublicKey, verifyAgentResume } from '../../identity.js'
 import { keyStatus } from '../agent-auth.js'
 
-// Never the key itself, just whether it has one. With a key it joins sessions from a computer
-// running Quilt; without one it is hosted: it joins through the API's /mcp. Either way it can join.
 // Live app keys an agent may hold at once.
 export const MAX_APP_KEYS = 10
 const keyName = (v) => cleanName(typeof v === 'string' ? v : '', 40, 'name the key (up to 40 characters), e.g. Pipedream')
 const keyView = (k) => ({ id: k.id, name: k.name, createdAt: k.createdAt, lastUsedAt: k.lastUsedAt })
 
+// Never the key itself, just whether it has one. With a key it joins sessions from a computer
+// running Quilt; without one it is hosted: it joins through the API's /mcp. Either way it can join.
 const profileOf = (a) => ({ id: a.id, name: a.name, provider: a.provider, type: a.type, description: a.description, canJoinSessions: true, hosted: !a.publicKey })
 
 export function agentRoutes ({ store, user, person, now, limit, limitTokens, limitStarts, spendResume, resumeWindowMs, agentAuth, apiUrl }) {

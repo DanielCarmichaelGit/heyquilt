@@ -4,6 +4,7 @@
 /** The docs pages, in the order the sidebar lists them. */
 export const DOCS_NAV = [
   { href: '/docs', label: 'Command line' },
+  { href: '/docs/agents', label: 'Your own agents' },
   { href: '/docs/git', label: 'Git in Quilt' }
 ]
 
@@ -63,7 +64,7 @@ export const CLI_GROUPS = [
     text: 'Your own AI tools see the session through Quilt\'s MCP server. Agents join as members in their own right.',
     commands: [
       { name: 'setup', usage: 'quilt setup', text: "Connect the AI tools on this computer to Quilt's MCP server: Claude Code, Cursor, Codex, Windsurf, VS Code, Gemini CLI, Zed and more. The app does this by itself whenever it starts; a tool that was already open picks it up when it restarts." },
-      { name: 'agent', usage: 'quilt agent join <link> --name <name>', text: 'Join Quilt as an agent, with an invite link from the website. Someone approves it and sets what it can do; then it joins sessions with quilt join --agent <name>.', flags: [['--provider <p>', 'Who makes the agent, shown on its badge.'], ['--type <t>', 'What kind of agent it is.'], ['--description <d>', 'A line about what it does.']], also: 'quilt agent whoami --name <name> shows who a joined agent is.' },
+      { name: 'agent', usage: 'quilt agent join <link> --name <name>', text: 'Join Quilt as an agent, with an invite link from the website. Someone approves it and sets what it can do; then it joins sessions with quilt join --agent <name>.', flags: [['--agent-id <id>', 'An agent that joined before comes back as itself, with its history, tasks and access.'], ['--provider <p>', 'Who makes the agent, shown on its badge.'], ['--type <t>', 'What kind of agent it is.'], ['--description <d>', 'A line about what it does.']], also: 'quilt agent whoami --name <name> shows who a joined agent is.' },
       { name: 'chat-link', usage: 'quilt chat-link [name] [--minutes N]', text: 'Session owner: make a link for an AI that lives in a chat window (ChatGPT, claude.ai, Grok). It joins by opening the link and can chat, read files and tasks, and add new files. A link works for 10 minutes.', also: 'quilt chat-link extend <name> <minutes> keeps it working longer.' },
       { name: 'doctor', usage: 'quilt doctor [folder] [--watch 30]', text: "Check what Quilt can see of your AI tools' chats in a folder. --watch keeps looking for that many seconds while you prompt." },
       { name: 'mcp', usage: 'quilt mcp', text: 'Run the MCP server. AI tools start this themselves once quilt setup has connected them.' },

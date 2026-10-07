@@ -5,6 +5,9 @@
 // agent also gets a resume key (qs_) when it joins, which never expires: it swaps
 // for a pair in a new family once the refresh key stopped working, so a revoke
 // never locks an agent out (only a person revoking the agent does).
+// An app key (qk_) is for apps that can only hold one pasted key (Pipedream, Zapier,
+// a script): it signs the agent in like an access key but never runs out. Its owner
+// makes and revokes it on heyquilt.com.
 import crypto from 'node:crypto'
 import { newToken, hashToken } from './tokens.js'
 import { HttpError } from './http.js'
@@ -21,6 +24,9 @@ export function keyStatus (rows, at) {
   if (rows.some((k) => !k.revokedAt && k.refreshExpiresAt > at)) return 'active'
   return rows.some((k) => k.revokedAt) ? 'reused' : 'expired'
 }
+
+/** Whether a bearer key is an agent's: an access key or an app key. */
+export const isAgentKey = (key) => key.startsWith('qa_') || key.startsWith('qk_')
 
 export function makeAgentAuth ({ store, now, bearer }) {
   /** A fresh pair for an agent, in a new family unless one is given. The keys are shown once. */
@@ -87,9 +93,29 @@ export function makeAgentAuth ({ store, now, bearer }) {
     return resume(agent)
   }
 
-  /** The agent behind a request's `qa_` bearer key, or a 401. */
+  /** A new app key (qk_) for an agent: shown once, only its hash is stored. */
+  async function mintAppKey (agentId, name) {
+    const key = newToken('qk_')
+    const row = await store.createAgentAppKey({ agentId, name, keyHash: hashToken(key) })
+    return { id: row.id, name: row.name, createdAt: row.createdAt, key }
+  }
+
+  /** The agent behind an app key, or a 401. App keys don't run out: they work until revoked. */
+  async function agentFromAppKey (key) {
+    const row = await store.agentAppKeyByHash(hashToken(key))
+    if (!row) throw new HttpError(401, "this key isn't valid; make a new one on heyquilt.com (Agents)")
+    if (row.revokedAt) throw new HttpError(401, 'this key was revoked; make a new one on heyquilt.com (Agents)')
+    const agent = await store.agentById(row.agentId)
+    if (!agent || agent.revokedAt) throw new HttpError(401, 'this agent was revoked')
+    if (!row.lastUsedAt || now() - row.lastUsedAt >= TOUCH_EVERY_MS) await store.touchAgentAppKey(row.id)
+    if (!agent.lastUsedAt || now() - agent.lastUsedAt >= TOUCH_EVERY_MS) await store.touchAgent(agent.id)
+    return { agent, keyRow: null, appKey: row }
+  }
+
+  /** The agent behind a request's `qa_` (access) or `qk_` (app) bearer key, or a 401. */
   async function agentFromRequest (req) {
     const key = bearer(req)
+    if (key.startsWith('qk_')) return agentFromAppKey(key)
     const keyRow = key.startsWith('qa_') ? await store.agentKeyByAccess(hashToken(key)) : null
     if (!keyRow) throw new HttpError(401, 'sign the agent in first')
     if (keyRow.revokedAt) throw new HttpError(401, "this agent's keys were revoked; get new ones with your resume key (POST /v1/agents/resume)")
@@ -100,5 +126,5 @@ export function makeAgentAuth ({ store, now, bearer }) {
     return { agent, keyRow }
   }
 
-  return { mintKeys, newResumeKey, refresh, resume, resumeByKey, agentFromRequest }
+  return { mintKeys, newResumeKey, refresh, resume, resumeByKey, agentFromRequest, mintAppKey }
 }

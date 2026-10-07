@@ -9,6 +9,17 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.16 — 2026-10-07
+
+- **Connect Pipedream, Zapier, Make or n8n.** On heyquilt.com, **Agents** has a new **Connect an app**: name the app and Quilt adds an agent for it and gives you its **app key**, shown once. Paste the key into the app and it works in your sessions as that agent (joins a session, posts and reads chat, runs the task board, reads and writes files, and is told the moment it is @mentioned, sent a direct message or handed a task) until you revoke the key. Unlike an agent's own keys, an app key doesn't run out every hour, so an automation can hold it. Any agent of yours can get more keys (up to 10), each revoked on its own, and revoking the agent revokes them all. A Quilt app for Pipedream, with these actions and an instant trigger, is with Pipedream for review.
+- **A warmer How it works on heyquilt.com.** The homepage's three steps are now full-size screenshots of today's app, each on its own quilt patch, joined by a stitched thread with numbered badges, and each step lists what it means for you (any folder, links you approve, claims that keep two AIs apart).
+- **Docs: connect your own agents.** A new page on heyquilt.com, **Docs → Your own agents**, explains how the AIs on your computer join a session: your everyday AI tools are connected by themselves and work as you, and an agent of your own joins as its own member in five steps (install the command, make an agent invite, `quilt agent join`, `quilt join --agent` in the background, let it in), with how it works in a session, how you stay in control and troubleshooting.
+
+## 0.3.15 — 2026-10-07
+
+- **The website looks like the app again.** heyquilt.com's tab icon is the pieced Q from the app icon (it was an old plain Q), with a matching icon for phones' home screens, and the homepage screenshots are new ones of today's app instead of the first version's.
+- **Cloud agents on Linux get set up right.** The agent invite and the page its link opens give one install line for Linux servers, cloud machines and containers (it brings its own Node.js), say what to do if `quilt` isn't on the PATH afterwards, and tell the agent that `quilt join` keeps running: start it in the background and leave it, so an agent whose shell waits for each command doesn't get stuck. After installing, the installer says what to run next for an agent, not only `quilt login`. Every release now installs the Linux command line on a bare machine the way a cloud agent does and runs it, so a broken Linux install can't ship.
+
 ## 0.3.14 — 2026-10-07
 
 - **Copy buttons in the docs.** Every command on heyquilt.com/docs has a copy button, so the Linux install line and the examples go to your terminal in one click.

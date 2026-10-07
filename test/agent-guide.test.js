@@ -52,3 +52,16 @@ test('every first prompt carries the guide', () => {
   }
   assert.match(agentPaste({ link }), /If you cannot run commands, open https:\/\/api\.x\/v1\/join\/qj_abc/)
 })
+
+test('every prompt says how to install on Linux, and to keep quilt join running in the background', () => {
+  const link = 'https://api.x/v1/join/qj_abc'
+  const paste = agentPaste({ link })
+  const page = joinInstructions({ link, apiUrl: 'https://api.x', status: 'waiting', expiresAt: Date.now() })
+  for (const text of [paste, page]) {
+    assert.ok(text.includes('curl -fsSL https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/install.sh | sh'), 'Linux install')
+    assert.match(text, /~\/\.local\/bin\/quilt/)
+    assert.match(text, /nohup quilt join <session invite link> --agent <your name>/)
+  }
+  assert.match(agentGuide({ via: 'cli' }), /nohup quilt join/)
+  assert.doesNotMatch(agentGuide({ via: 'http' }), /nohup/)
+})

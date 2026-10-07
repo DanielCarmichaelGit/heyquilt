@@ -54,6 +54,7 @@ ln -sf "$home/quilt" "$bin/quilt"
 
 say "Installed $("$home/quilt" --version) at $home"
 case ":$PATH:" in
-  *":$bin:"*) say "Run: quilt login" ;;
-  *) say "Add $bin to your PATH (or run $bin/quilt), then: quilt login" ;;
+  *":$bin:"*) next=quilt ;;
+  *) say "$bin is not on your PATH: add it, or run $bin/quilt"; next="$bin/quilt" ;;
 esac
+say "Next: $next login (a person), or $next agent join <agent invite link> --name <name> (an AI agent)"

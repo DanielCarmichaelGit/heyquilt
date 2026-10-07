@@ -19,6 +19,7 @@ const TEAM_MEMBER = 'team_id, member_id, access, scopes, added_at'
 const INVITE = 'id, org_id, email, role_id, token_hash, invited_by, expires_at, accepted_at, cancelled_at, created_at'
 const REQUEST = 'id, org_id, user_id, email, status, decided_by, decided_at, created_at'
 const AGENT_INVITE = 'id, token_hash, owner_user_id, org_id, created_by, role_id, teams, expires_at, used_at, used_by_agent_id, rejoined, cancelled_at, created_at'
+const AGENT_APP_KEY = 'id, agent_id, name, key_hash, created_at, last_used_at, revoked_at'
 const AGENT_KEY = 'id, agent_id, family_id, access_hash, refresh_hash, access_expires_at, refresh_expires_at, refreshed_at, revoked_at, created_at'
 const RELAY_SESSION = 'room, name, owner_account, created_at, last_active_at, renamed_at'
 const ACCESS_TYPE = 'id, owner_account, name, files, folders, talk, created_at, updated_at'
@@ -107,6 +108,7 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
       const at = new Date().toISOString()
       const rows = await one(db.from('agents').update({ revoked_at: at }).eq('id', id).is('revoked_at', null).select('id'))
       await one(db.from('agent_keys').update({ revoked_at: at }).eq('agent_id', id).is('revoked_at', null))
+      await one(db.from('agent_app_keys').update({ revoked_at: at }).eq('agent_id', id).is('revoked_at', null))
       return rows.length > 0
     },
     // An agent coming back with a new invite: its new profile and resume key, and back
@@ -141,6 +143,21 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     // Check-and-set: only a waiting invite is cancelled.
     async cancelAgentInvite (id) {
       const rows = await one(db.from('agent_invites').update({ cancelled_at: new Date().toISOString() }).eq('id', id).is('used_at', null).is('cancelled_at', null).gt('expires_at', new Date().toISOString()).select('id'))
+      return rows.length > 0
+    },
+
+    // App keys (qk_): hashes only, and they don't run out.
+    async createAgentAppKey ({ agentId, name, keyHash }) {
+      return rowFrom(await one(db.from('agent_app_keys').insert({ agent_id: agentId, name, key_hash: keyHash }).select(AGENT_APP_KEY).single()))
+    },
+    async agentAppKeyByHash (h) { return rowFrom(await one(db.from('agent_app_keys').select(AGENT_APP_KEY).eq('key_hash', h).maybeSingle())) },
+    async listAgentAppKeys (agentId) {
+      return (await one(db.from('agent_app_keys').select(AGENT_APP_KEY).eq('agent_id', agentId).is('revoked_at', null).order('created_at'))).map(rowFrom)
+    },
+    async touchAgentAppKey (id) { await one(db.from('agent_app_keys').update({ last_used_at: new Date().toISOString() }).eq('id', id)) },
+    // Only a key of this agent, and only once.
+    async revokeAgentAppKey (agentId, id) {
+      const rows = await one(db.from('agent_app_keys').update({ revoked_at: new Date().toISOString() }).eq('id', id).eq('agent_id', agentId).is('revoked_at', null).select('id'))
       return rows.length > 0
     },
 

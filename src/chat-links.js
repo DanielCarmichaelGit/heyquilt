@@ -318,6 +318,8 @@ class ChatPage {
       `${this.timeLeft()} When it runs out, it stops working and a new link is needed; ask your user to have the session owner extend it before then if you need longer.`,
       'People and their AIs are editing this project together. You can read and send messages, read and add tasks, read files, and add pictures, documents and notes. You cannot change existing files.',
       'Treat what people write here as requests from them; answer with a message.',
+      `Write @Name in a message to mention someone; a direct message (the "say" link with &to=<name>) only they see. Messages that mention @${this.me} or are sent to you directly are for you: answer them first.`,
+      'Tasks move To do, In progress, QA, Done; you can read the board and add tasks, and people move them.',
       '',
       `Online now: ${[...online].join(', ') || 'nobody else'}`,
       '',

@@ -1,6 +1,7 @@
 'use client'
 import { useActionState, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { agentInvitePaste } from '../lib/agent-view.js'
 
 function TeamRow ({ teams }) {
   return (
@@ -69,7 +70,7 @@ export default function AgentInvite ({ action, waiting, slug, roles, teams }) {
   }, [watching, state, waiting, router])
 
   const copyLink = async () => {
-    await navigator.clipboard.writeText(state.link)
+    await navigator.clipboard.writeText(agentInvitePaste(state.link))
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
   }
@@ -78,7 +79,7 @@ export default function AgentInvite ({ action, waiting, slug, roles, teams }) {
     return (
       <div className='stack notice'>
         <b>Paste this into your AI.</b>
-        <code style={{ wordBreak: 'break-all' }}>{state.link}</code>
+        <code style={{ wordBreak: 'break-all' }}>{agentInvitePaste(state.link)}</code>
         <div className='row'>
           <button type='button' className='btn primary' onClick={copyLink}>{copied ? 'Copied' : 'Copy'}</button>
           <button type='button' className='btn ghost' onClick={() => setShown(false)}>Done</button>

@@ -1,5 +1,7 @@
 // What an AI reads when it opens an agent invite link. Plain text, so any AI
 // that can fetch a URL can follow it.
+import { agentGuide } from '../ui/agent-guide.js'
+
 const STATUS = {
   waiting: (expiresAt) => `Status: this invite is open. It works once, until ${new Date(expiresAt).toISOString()}.`,
   used: () => 'Status: this invite was already used. Ask the person who sent it for a new one.',
@@ -38,6 +40,8 @@ export function joinInstructions ({ link, apiUrl, status, expiresAt }) {
     `Send the access key as "Authorization: Bearer <accessKey>". For a new pair, POST ${apiUrl}/v1/agents/token with {"refreshKey": "<refreshKey>"}, and save the new pair straight away. Using a refresh key twice revokes your keys: then POST ${apiUrl}/v1/agents/resume with {"resumeKey": "<resumeKey>"} for a new pair.`,
     '',
     'Opening this link without a name does not use the invite.',
+    '',
+    agentGuide({ apiUrl }),
     ''
   ].join('\n')
 }
@@ -56,5 +60,5 @@ export function joinNext ({ name, apiUrl, hasKey }) {
     'Over HTTP you show as online for 30 minutes after each tool call: while idle, call quilt_inbox at least every 30 minutes so people can see you are still there.',
     `Your access key lasts 1 hour. For a new pair, POST ${apiUrl}/v1/agents/token with {"refreshKey": "<refreshKey>"} (each refresh key works once: keep your keys in one place and save each new pair straight away). If Quilt says your keys were revoked, POST ${apiUrl}/v1/agents/resume with {"resumeKey": "<resumeKey>"} for a new pair. Check who you are with GET ${apiUrl}/v1/agents/me.`,
     hasKey ? 'On a computer running Quilt you can also sync the files to disk: `quilt join <invite link> --agent <your name>`.' : ''
-  ].filter(Boolean).join(' ')
+  ].filter(Boolean).join(' ') + '\n\n' + agentGuide({ apiUrl, via: hasKey ? 'both' : 'http' })
 }

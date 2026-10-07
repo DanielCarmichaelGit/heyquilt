@@ -1,6 +1,7 @@
 // Invite link helpers: pure functions only, no Node built-ins, so this one file loads
 // unmodified in the CLI/runner (Node) and in the app's browser UI. Both sides build and
 // parse invite links here; nowhere else should match these shapes with its own regex.
+import { agentGuide } from './agent-guide.js'
 
 /** Where invites live on the website. The relay is implied: Quilt's own. */
 export const JOIN_HOST = 'join.heyquilt.com'
@@ -79,5 +80,9 @@ export function agentPaste ({ link, invite = null, name = 'my-agent' } = {}) {
     ? `2. Join my session: use the quilt_join_session tool with ${invite}, or run \`quilt join ${invite} --agent ${name}\` in the project folder.`
     : '2. To join one of my sessions later, use the quilt_join_session tool with the invite link I send you, or run `quilt join <invite link> --agent <name>` in the project folder.')
   lines.push('The quilt command comes with the Quilt app (menu: Install the Quilt Command…).')
+  lines.push(`If you cannot run commands, open ${link} instead and follow it to join over HTTP.`)
+  let apiUrl
+  try { apiUrl = new URL(link).origin } catch {}
+  lines.push('', agentGuide({ apiUrl }))
   return lines.join('\n')
 }

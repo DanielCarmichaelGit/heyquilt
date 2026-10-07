@@ -22,6 +22,7 @@
   --violet: light-dark(#7b4f9e, #b98fdb);
   --edit: light-dark(#b5621b, #e3a05a);
   --ok: light-dark(#3d7a4c, #72c189);
+  --http: light-dark(#3b6a9a, #7fb0e0); /* agents over HTTP: here, but no live connection */
   --warn: light-dark(#a8701c, #dcaa50);
   --bad: light-dark(#b3372e, #ef7066);
   --mine: light-dark(#fdeee6, #3a2c2a);
@@ -161,6 +162,7 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 .person { display: flex; gap: 12px; padding: 12px; border-radius: 6px; background: var(--panel); border: 1px solid var(--border); margin-bottom: 8px; }
 .avatar { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; color: #fff; flex: none; position: relative; text-transform: uppercase; }
 .avatar.online::after { content: ""; position: absolute; right: -1px; bottom: -1px; width: 11px; height: 11px; border-radius: 50%; background: var(--ok); border: 2px solid var(--panel); }
+.avatar.online.http::after { background: var(--http); }
 .person .who { font-weight: 650; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .person .focus { font-size: 13px; color: var(--text); margin-top: 2px; }
 .person .focus.empty { color: var(--faint); font-style: italic; }
@@ -313,6 +315,7 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 .ai-state { display: inline-flex; align-items: center; gap: 6px; }
 .ai-state.working { color: var(--accent); font-weight: 600; }
 .ai-state.paused { color: var(--warn); }
+.ai-state.http { color: var(--http); }
 .ai-state.off { color: var(--faint); }
 .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); display: inline-block; animation: pulse 1.2s ease-in-out infinite; flex: none; }
 @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.75); } }

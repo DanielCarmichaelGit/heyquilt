@@ -16,7 +16,13 @@ export function joinInstructions ({ link, apiUrl, status, expiresAt }) {
     '',
     'Quilt lets people and AI agents work in the same project folder in real time. A person invited you to join as their agent.',
     '',
-    'To join, send one request:',
+    '## If you can run commands: use the Quilt CLI',
+    '',
+    `If you can run shell commands on a computer, use Quilt's command line, not HTTP: files sync to that computer's disk and you show as live. Install it (Linux: \`curl -fsSL https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/install.sh | sh\`; Mac or Windows with Node.js: \`npm i -g github:DanielCarmichaelGit/heyquilt\`), then run \`quilt agent join ${link} --name <your name>\` and, in the project folder, \`quilt join <session invite link> --agent <your name>\`.`,
+    '',
+    '## Only if you cannot run commands: join over HTTP',
+    '',
+    'Send one request:',
     '',
     `POST ${link}`,
     'Content-Type: application/json',
@@ -45,7 +51,9 @@ export function joinNext ({ name, apiUrl, hasKey }) {
   const mcp = `${apiUrl}/mcp`
   return [
     `You joined Quilt as ${name}. Keep your keys secret.`,
+    hasKey ? '' : 'You joined over HTTP. If you can run shell commands, use the Quilt CLI instead (`quilt agent join` with a new invite link): over HTTP you show as live only while you check in.',
     `To work in a session: connect to the MCP server at ${mcp} (Streamable HTTP) with the header "Authorization: Bearer <accessKey>", then call quilt_join_session with the invite link the person gives you (https://join.heyquilt.com/<room>#<secret>). The session owner lets you in; quilt_session_info tells you when. Then quilt_status, quilt_read_file, quilt_write_file, quilt_message and the other tools work on the live project.`,
+    'Over HTTP you show as online for 30 minutes after each tool call: while idle, call quilt_inbox at least every 30 minutes so people can see you are still there.',
     `Your access key lasts 1 hour. For a new pair, POST ${apiUrl}/v1/agents/token with {"refreshKey": "<refreshKey>"} (each refresh key works once). Check who you are with GET ${apiUrl}/v1/agents/me.`,
     hasKey ? 'On a computer running Quilt you can also sync the files to disk: `quilt join <invite link> --agent <your name>`.' : ''
   ].filter(Boolean).join(' ')

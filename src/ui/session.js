@@ -1,6 +1,6 @@
 // The session workspace: file tree on the left, a partner's live AI chat, a
 // shared file, or the task board in the middle, and the team chat on the right.
-import { TOKEN, I, state, $, esc, basename, bytes, clock, avatar, toast, api, ask, remember, recall, toolsOf, busyPeople, NO_POSTING, ACCOUNT_KEY, loadAccessTypes, typeOptions, accessLine } from './common.js'
+import { TOKEN, I, state, $, esc, basename, bytes, clock, ago, avatar, toast, api, ask, remember, recall, toolsOf, busyPeople, NO_POSTING, ACCOUNT_KEY, loadAccessTypes, typeOptions, accessLine } from './common.js'
 import { openInvite, renderTabs, markRead } from './app.js'
 import { renderFeed } from './feed.js'
 import { conversations } from './feed-convs.js'
@@ -57,7 +57,7 @@ function personInfo (name) {
   const st = sum().status
   if (name === st.me.name) return { ...st.me, online: st.connected, isMe: true }
   const p = st.peers.find((x) => x.name === name)
-  return p ? { ...p, online: true } : { name, online: false, agent: null }
+  return p ? { ...p, online: p.hosted ? 'http' : true } : { name, online: false, agent: null }
 }
 
 // ------------------------------------------------------------------ mount --
@@ -471,7 +471,14 @@ function openDrawer (which) {
   $('#ws-body').dataset.drawer = which || ''
 }
 
+/** The title and dot before a member's name: green when connected, blue when an agent over HTTP checked in lately. */
+function memberDot (m) {
+  const [title, color] = m.http ? ['Online over HTTP (checked in within 30 minutes)', 'var(--http)'] : m.online ? ['Online', 'var(--ok)'] : ['Offline', 'var(--faint)']
+  return `title="${title}"><span class="dot" style="background:${color}"></span>`
+}
+
 function agentLine (p) {
+  if (p.hosted) return `<span class="ai-state http" title="Connected over HTTP: shown as here for 30 minutes after each check-in">Over HTTP · ${p.lastSeen ? `checked in ${ago(p.lastSeen) === 'now' ? 'just now' : `${ago(p.lastSeen)} ago`}` : 'checked in lately'}</span>`
   const a = p.agent
   if (!a || (!a.tool && a.status !== 'unavailable' && a.sharing !== false)) return p.online ? 'No AI activity found yet' : ''
   if (a.sharing === false) return `<span class="ai-state paused">${p.isMe ? 'You paused sharing' : 'Paused sharing'}</span>`
@@ -731,7 +738,7 @@ function membersHtml (st) {
     </label>
     ${list.length ? list.map((m) => m.chat ? chatMemberRow(m) : state.accessTypes && ACCOUNT_KEY.test(m.key) ? accessForm(m) : `
       <form class="pm-member edit" data-key="${esc(m.key)}">
-        <span class="nm" title="${m.online ? 'Online' : 'Offline'}"><span class="dot" style="background:${m.online ? 'var(--ok)' : 'var(--faint)'}"></span>${esc(m.name)}${m.kind === 'agent' ? ' (agent)' : ''}</span>
+        <span class="nm" ${memberDot(m)}${esc(m.name)}${m.kind === 'agent' ? ' (agent)' : ''}</span>
         <select class="input" name="role" aria-label="Role for ${esc(m.name)}">
           <option value="editor" ${m.role === 'editor' ? 'selected' : ''}>Can edit</option>
           <option value="viewer" ${m.role === 'viewer' ? 'selected' : ''}>View only</option>
@@ -759,7 +766,7 @@ function chatMemberRow (m, { remove = true } = {}) {
   const live = (m.expiresAt || 0) > Date.now()
   return `
       <form class="pm-member edit pm-chat" data-key="${esc(m.key)}">
-        <span class="nm" title="${m.online ? 'Online' : 'Offline'}"><span class="dot" style="background:${m.online ? 'var(--ok)' : 'var(--faint)'}"></span>${name} (chat link)</span>
+        <span class="nm" ${memberDot(m)}${name} (chat link)</span>
         <span class="hint pm-now">${esc(chatTimeLeft(m.expiresAt))}</span>
         ${live ? `<select class="input" name="minutes" aria-label="Keep ${name}'s link working for">
           <option value="10">10 more minutes</option>
@@ -785,7 +792,7 @@ function accessForm (m) {
   const name = esc(m.name)
   return `
       <form class="pm-member edit pm-access" data-key="${esc(m.key)}">
-        <span class="nm" title="${m.online ? 'Online' : 'Offline'}"><span class="dot" style="background:${m.online ? 'var(--ok)' : 'var(--faint)'}"></span>${name}${m.kind === 'agent' ? ' (agent)' : ''}</span>
+        <span class="nm" ${memberDot(m)}${name}${m.kind === 'agent' ? ' (agent)' : ''}</span>
         <span class="hint pm-now">${esc(accessLine(m))}</span>
         ${ready ? '' : `<span class="hint pm-load ${v.state === 'error' ? 'warn' : ''}" role="status">${esc(v.message)}</span>`}
         <select class="input" name="typeId" aria-label="Access type for ${name}" ${off}>${typeOptions(ready ? v.typeId : '')}</select>

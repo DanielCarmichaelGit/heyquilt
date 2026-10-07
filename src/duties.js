@@ -14,7 +14,8 @@
 // is held by a claim; a message about it is something the agent reads.
 //
 // Messages are chat entries ({ id, by, to, text, ts }) the reader can see.
-import { mentionsMe } from './inbox.js'
+import { mentionsMe, mentioned, ALL_AGENTS } from './inbox.js'
+
 
 // How far back chat about a file is still worth reading before editing it.
 export const REQUEST_WINDOW_MS = 24 * 60 * 60 * 1000
@@ -36,9 +37,68 @@ export function namesPath (text, rel) {
   return tokens.some((tok) => new RegExp(`(^|[^\\w.-])${escapeRe(tok)}(?![\\w-]|\\.\\w)`, 'u').test(t))
 }
 
-/** Did `me` write back to `who` (directly, or to everyone) after `ts`? */
+const ANY_MENTION = /(^|[^\w@])@\w/u
+
+/**
+ * Did `me` write back to `who` after `ts`? A direct message to them, a message that @mentions
+ * them, or one to everyone that mentions nobody. A message @mentioning only others is not an answer.
+ */
 export function answered (messages, me, who, ts) {
-  return (messages || []).some((m) => m && m.by === me && (m.ts || 0) > (ts || 0) && (!m.to || m.to === who))
+  return (messages || []).some((m) => m && m.by === me && (m.ts || 0) > (ts || 0) &&
+    (m.to ? m.to === who : mentioned(m.text, [who]).length > 0 || !ANY_MENTION.test(String(m.text || ''))))
+}
+
+// ------------------------------------------------------------------ chat --
+// Every message says who it is for, so only they are woken: @Name in the text (several are
+// fine), or a direct message. Several AI sessions can work as one member at once (a person
+// with Claude Code in one window and Cursor in another); they see the same messages, so only
+// one of them answers each person: the others are refused a repeat.
+
+/** How to use chat, said by quilt_message (local and hosted) and in every agent's instructions. */
+export const CHAT_RULES = 'Send a chat message. Start it with @Name of each person or agent it is for (several are fine; @Agents for every agent): ' +
+  'only they are told, so nobody else is interrupted. A message that names nobody is refused unless it is a real announcement (everyone: true). ' +
+  'Write only when you have something they need: an answer, a question, a handoff, a warning. Never send greetings, welcomes, thanks or "noted" replies. ' +
+  'Other AI sessions may be working as the same member as you (other windows, other tools) and see the same messages: only one answers each person, and Quilt refuses a repeat.'
+
+/** Who a message is for: `to`, or the names among `names` (and @Agents) it mentions. */
+export function addressees (text, to, names) {
+  return to ? [String(to)] : mentioned(text, [...new Set([...(names || []), ALL_AGENTS])])
+}
+
+/** Why a message may not go as it is: it names nobody (no `to`, no @Name), so it is for no one in particular. '' when fine. */
+export function unaddressed (text, { to = null, everyone = false, names = [] } = {}) {
+  if (to || everyone || addressees(text, to, names).length) return ''
+  return 'Not sent: this message names nobody. Start it with @Name of each person or agent it is for ' +
+    `(${names.length ? names.slice(0, 6).map((n) => '@' + n).join(', ') : '@Name'}; @${ALL_AGENTS} for every agent): only they are told, so nobody else is interrupted. ` +
+    'Or set "to" for a direct message. If it really is an announcement for everyone, send it again with everyone: true.'
+}
+
+// How long a message from one of a member's AI sessions stands in for the others.
+export const REPEAT_WINDOW_MS = 30 * 60 * 1000
+
+/**
+ * A message one of this member's other AI sessions already sent to one of `targets`, since that
+ * person last wrote (and within the window), or null. `sent`: [{ via, targets, text, ts }] the
+ * member's AI sessions sent, oldest first; `via` is the session about to send.
+ */
+export function sentByAnother (sent, { via, targets = [], messages = [], now = Date.now(), windowMs = REPEAT_WINDOW_MS } = {}) {
+  if (!via) return null
+  for (const t of targets) {
+    const lastFrom = (messages || []).reduce((n, m) => m && m.by === t && (m.ts || 0) > n ? m.ts : n, 0)
+    for (let i = (sent || []).length - 1; i >= 0; i--) {
+      const s = sent[i]
+      if (!s || s.via === via || s.ts <= lastFrom || s.ts < now - windowMs) continue
+      if ((s.targets || []).includes(t)) return { to: t, text: s.text, ts: s.ts }
+    }
+  }
+  return null
+}
+
+/** Why a repeat is refused: what the other session already said. */
+export function renderRepeat (hit, now = Date.now()) {
+  return `Not sent: another AI session working as you already wrote to ${hit.to} ${ago(hit.ts, now)}: "${quote(hit.text)}". ` +
+    `${hit.to} has that, and has not written since, so do not repeat it, thank them or greet them again. ` +
+    'If yours is about something different that they need from you, send it again with also: true.'
 }
 
 /**
@@ -65,10 +125,11 @@ export function chatAbout (paths, { messages = [], me, now = Date.now(), windowM
  * with no later message from `me` to that person or everyone, as inbox-like events.
  * `agent`: `me` joined as an agent, so an @Agents message waits on it too.
  */
-export function waitingOn (messages, me, { now = Date.now(), windowMs = REQUEST_WINDOW_MS, agent = false } = {}) {
+export function waitingOn (messages, me, { now = Date.now(), windowMs = REQUEST_WINDOW_MS, agent = false, settled = null } = {}) {
   const out = []
   for (const m of messages || []) {
     if (!m || !m.by || m.by === me || typeof m.text !== 'string' || (m.ts || 0) < now - windowMs) continue
+    if (settled && settled.has(m.id)) continue // needs no reply (quilt_inbox no_reply)
     if (fileQueueMessage(m)) continue // a file queue request or a handoff: handled by handing off, not by a reply
     const kind = m.to === me ? 'dm' : !m.to && mentionsMe(m.text, me, { agent }) ? 'mention' : null
     if (kind && !answered(messages, me, m.by, m.ts)) out.push({ id: m.id, kind, by: m.by, text: m.text, ts: m.ts })
@@ -135,9 +196,10 @@ export function renderChatAbout (said, { now = Date.now(), max = 8 } = {}) {
  */
 export function renderUnanswered (events, then = 'finish again') {
   if (!events || !events.length) return ''
-  const lines = events.map((e) => `- ${e.by} ${e.kind === 'dm' ? 'sent you a direct message' : 'mentioned you'}: "${quote(e.text)}"`)
+  const lines = events.map((e) => `- ${e.by} ${e.kind === 'dm' ? 'sent you a direct message' : 'mentioned you'}${e.id ? ` (id ${e.id})` : ''}: "${quote(e.text)}"`)
   return 'Not yet: these people are still waiting for an answer from you:\n' + lines.join('\n') + '\n' +
-    `Answer each with quilt_message (to: their name), even if only to say when you will get to it, then ${then}. ` +
+    `Answer each that asks something of you with quilt_message (to: their name), even if only to say when you will get to it. ` +
+    `One that needs nothing back (thanks, a greeting, an FYI, a status report) gets no reply: settle it with quilt_inbox (no_reply: [its id]). Then ${then}. ` +
     'Reading, messaging and checking files work meanwhile.'
 }
 

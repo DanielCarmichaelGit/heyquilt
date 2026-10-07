@@ -140,19 +140,19 @@ test('mentions, direct messages and handed-over tasks reach the agent: pushed as
   const task = human.addTask({ title: 'Fix login', assignee: 'helper', files: ['src/app.js'] })
   await waitFor(() => pushed.length >= 3)
   assert.deepEqual(pushed.map((p) => [p.meta.kind, p.meta.from]), [['mention', 'dana'], ['dm', 'dana'], ['task', 'dana']])
-  assert.match(pushed[0].content, /^dana mentioned you in chat: hello everyone, @helper please take the login bug\n.*quilt_message/)
-  assert.match(pushed[1].content, /^dana sent you a direct message: and privately: when will you be done\?/)
+  assert.match(pushed[0].content, /^dana mentioned you in chat \(id \w+\): hello everyone, @helper please take the login bug\n.*quilt_message/)
+  assert.match(pushed[1].content, /^dana sent you a direct message \(id \w+\): and privately: when will you be done\?/)
   assert.match(pushed[2].content, new RegExp(`^dana handed you a task: "Fix login" \\(id ${task.id}\\)\\. Files: src/app\\.js\\. Pick it up with quilt_move_task`))
   assert.equal(pushed[2].meta.id, task.id)
   // The tool lists the same events (its own cursor), then nothing new.
   const inbox = text(await call('quilt_inbox'))
-  assert.match(inbox, /^Waiting for you:\n- dana mentioned you in chat: hello everyone, @helper please take the login bug\n- dana sent you a direct message: and privately/)
+  assert.match(inbox, /^Waiting for you:\n- dana mentioned you in chat \(id \w+\): hello everyone, @helper please take the login bug\n- dana sent you a direct message \(id \w+\): and privately/)
   assert.match(inbox, /- dana handed you a task: "Fix login"/)
   assert.doesNotMatch(inbox, /unrelated note/)
   assert.equal(text(await call('quilt_inbox')), 'Nothing new for you.')
   assert.match(text(await call('quilt_inbox', { all: true })), /Fix login/)
   // The agent's own messages and tasks, and tasks moved along, wake nobody.
-  await call('quilt_message', { text: '@helper noted, on it' })
+  await call('quilt_message', { text: '@dana noted, on it' })
   await call('quilt_move_task', { id: task.id, column: 'doing' })
   await new Promise((r) => setTimeout(r, 2500))
   assert.equal(pushed.length, 3)
@@ -217,7 +217,7 @@ test('an agent whose Quilt is behind the newest release is told to update in eve
 })
 
 test('merges are listed and settled through the MCP tools', async () => {
-  await call('quilt_message', { text: 'Thanks dana, got your messages.' }) // answered: work may move on
+  await call('quilt_message', { text: '@dana got your messages.' }) // answered: work may move on
   // Two tool calls on an empty list, then a record made directly in the shared doc.
   assert.match(text(await call('quilt_merges')), /nothing to merge/i)
   const { openMerge } = await import('../src/merges.js')
@@ -251,14 +251,14 @@ test('without hooks, the MCP holds an agent to the rules: claims refuse files, c
   // Every step that moves work on waits for an answer to dana.
   const held = text(await call('quilt_claim', { pattern: 'docs/**' }))
   assert.match(held, /Not yet: these people are still waiting for an answer from you:\n/)
-  assert.match(held, /- dana sent you a direct message: "helper, please do not touch src\/app\.js/)
-  assert.match(held, /then call quilt_claim again/)
+  assert.match(held, /- dana sent you a direct message \(id \w+\): "helper, please do not touch src\/app\.js/)
+  assert.match(held, /Then call quilt_claim again/)
   assert.match(text(await call('quilt_set_work', { state: 'done' })), /^Not yet:/)
   assert.equal(human.claimFor('docs/x.md'), null)
   // What arrives while the agent works is put in front of its next answer, once.
   human.say('also @helper, ping me when you are done')
   const news = await waitFor(async () => { const t = text(await call('quilt_status')); return t.includes('📬') && t })
-  assert.match(news, /^📬 Waiting for you:\n- dana mentioned you in chat: also @helper, ping me when you are done/)
+  assert.match(news, /^📬 Waiting for you:\n- dana mentioned you in chat \(id \w+\): also @helper, ping me when you are done/)
   assert.doesNotMatch(text(await call('quilt_status')), /📬/)
   // Answering lets work move on; the chat stays as context, now marked answered; finishing lets go of the file.
   await call('quilt_message', { to: 'dana', text: 'Understood, leaving src/app.js to you.' })
@@ -284,7 +284,7 @@ test('nothing is Claude-only: any MCP client is pushed what arrives, and shares 
   await waitFor(() => updates.length)
   assert.equal(updates[0], 'quilt://inbox')
   const inbox = (await codex.readResource({ uri: 'quilt://inbox' })).contents[0].text
-  assert.match(inbox, /dana mentioned you in chat: @helper the build is red, can you look\?/)
+  assert.match(inbox, /dana mentioned you in chat \(id \w+\): @helper the build is red, can you look\?/)
   // Sharing the work: it reaches dana's feed as Codex, and the host now waits before committing.
   assert.equal(await say('quilt_share', { request: 'Fix the red build', summary: 'Looking at the failing test first.' }), 'Shared with the session.')
   const feed = await waitFor(() => { const f = human.agentFeedFor('helper'); return f.some((e) => e.text === 'Fix the red build') && f })
@@ -302,6 +302,40 @@ test('nothing is Claude-only: any MCP client is pushed what arrives, and shares 
   assert.match(await say('quilt_set_work', { state: 'done' }), /^Marked as done/)
   await waitFor(() => !human.commitStatus().busy.some((b) => b.name === 'helper'))
   human.deleteTask(task.id)
+})
+
+test('two AI sessions working as one member (say Claude Code and Cursor) answer each person once, and every message says who it is for', async (t) => {
+  const cursor = new Client({ name: 'cursor', version: '1.0.0' })
+  await cursor.connect(new StdioClientTransport({ command: process.execPath, args: [BIN, 'mcp'], cwd: agentCwd, env: { ...process.env, HOME: home, QUILT_SERVER: `ws://127.0.0.1:${relay.port}` }, stderr: 'ignore' }))
+  t.after(() => cursor.close().catch(() => {}))
+  const other = async (name, args = {}) => cursor.callTool({ name, arguments: args })
+  // A message to no one in particular is refused, with who could be named.
+  const bare = await call('quilt_message', { text: 'Thanks, noted.' })
+  assert.equal(bare.isError, true)
+  assert.match(text(bare), /names nobody.*@dana/)
+  assert.match(text(await call('quilt_message', { text: 'Release is out', everyone: true })), /^Sent/, 'an announcement')
+  // dana writes to helper; both sessions see it; the first answer stands for both.
+  await text(await other('quilt_inbox'))
+  human.say('helper, are you there?', { to: 'helper' })
+  await waitFor(async () => /are you there/.test(text(await call('quilt_inbox', { all: true }))))
+  assert.match(text(await call('quilt_message', { to: 'dana', text: 'Yes, here.' })), /^Sent/)
+  const repeat = await other('quilt_message', { text: '@dana Hi dana, welcome! Here too.' })
+  assert.equal(repeat.isError, true)
+  assert.match(text(repeat), /another AI session working as you already wrote to dana .*"Yes, here\."/)
+  assert.doesNotMatch(text(await other('quilt_inbox')), /are you there/, 'answered by the other session: not shown again')
+  assert.match(text(await other('quilt_message', { text: '@dana separately: the build is green', also: true })), /^Sent/, 'something different goes with also')
+  // dana writes again: an answer is due, from either session.
+  human.say('@helper great, one more question?')
+  await waitFor(() => human.chat.toArray().some((m) => m.text === '@helper great, one more question?'))
+  await new Promise((r) => setTimeout(r, 200))
+  assert.match(text(await other('quilt_message', { text: '@dana ask away' })), /^Sent/)
+  // A message that needs nothing back is settled, for every session, without a reply.
+  human.say('helper, thanks!', { to: 'helper' })
+  const thanks = await waitFor(() => human.chat.toArray().find((m) => m.text === 'helper, thanks!'))
+  await waitFor(async () => /helper, thanks!/.test(text(await call('quilt_claim', { pattern: 'docs/**' }))))
+  assert.match(text(await other('quilt_inbox', { no_reply: [thanks.id] })), new RegExp(`Settled as needing no reply: ${thanks.id}`))
+  assert.match(text(await call('quilt_claim', { pattern: 'docs/**' })), /^Claimed/, 'no longer held up by it')
+  await call('quilt_release', { pattern: 'docs/**' })
 })
 
 test('agent edits sync back to people, and leaving removes the agent', async () => {

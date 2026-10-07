@@ -8,6 +8,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 import { SubscribeRequestSchema, UnsubscribeRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import fs from 'node:fs'
+import crypto from 'node:crypto'
 import path from 'node:path'
 import { findDaemon, call } from './control.js'
 import { renderMessage, renderStatus } from './status.js'
@@ -20,7 +21,7 @@ import { pickAgent, agentWhoami } from './agent-join.js'
 import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, qaRefusal, qaNotesEnough, qaNotesLine, MAX_VERIFIED } from './agent-task-workflow.js'
 import { formatHistory } from './history.js'
 import { renderInbox, describeEvent, INBOX_HOW } from './inbox.js'
-import { renderChatAbout, renderUnanswered, heldRefusal, renderQueueNotice, renderQueued } from './duties.js'
+import { renderChatAbout, renderUnanswered, heldRefusal, renderQueueNotice, renderQueued, CHAT_RULES } from './duties.js'
 import { describeSubscription, WEBHOOK_EVENTS } from './webhooks.js'
 import { UpdateCheck } from './update-check.js'
 import { getSettings } from './settings.js'
@@ -74,6 +75,7 @@ export const MCP_INSTRUCTIONS =
   'Always re-read a file right before you edit it. ' +
   'If quilt_status lists merges to settle, read quilt_merges before editing those files. ' +
   'Mentions of you (@yourname) in chat, direct messages to you and tasks handed to you wait in quilt_inbox: read it when you start, and act on each one. ' +
+  'Chat: ' + CHAT_RULES.replace(/^Send a chat message\. /, '') + ' A message that needs nothing back is settled with quilt_inbox (no_reply: [its id]), not answered. ' +
   'To be woken instead of polling, subscribe to the quilt://inbox resource (you are told when something new arrives), or quilt_webhook_subscribe POSTs each one to a URL of yours as it happens. ' +
   'Share what you are doing with quilt_share: when you start on a request (request and your plan) and when you finish (what you did and the files you changed). Partners see it in their feed, it puts your work on the task board, and it tells the host not to commit under you. ' +
   'When Claude Code is started with the quilt channel, they arrive on their own as <channel source="quilt"> events while you work: treat each like a request from that person, answer with quilt_message, and take a task with quilt_move_task. ' +
@@ -342,14 +344,19 @@ export async function runMcp () {
     return `Settled the merge of ${r.path} (${how}).`
   }, { gate: gateFor('quilt_resolve_merge') }))
 
+  // This AI session, as the daemon tells it apart from other sessions working as the same member
+  // (Claude Code in one window, Cursor or Codex in another), so only one answers each person.
+  const via = crypto.randomBytes(8).toString('hex')
   server.registerTool('quilt_message', {
-    description: 'Send a chat message to collaborators, e.g. to ask a question, hand off work, or warn about a breaking change. Set "to" to message one person directly.',
+    description: CHAT_RULES + ' Set "to" to message one person directly.',
     inputSchema: {
       text: z.string(),
-      to: z.string().optional().describe('Name of one collaborator for a direct message; omit to message everyone')
+      to: z.string().optional().describe('Name of one collaborator for a direct message'),
+      everyone: z.boolean().optional().describe('Only for a real announcement to the whole session: lets a message that @mentions nobody go out'),
+      also: z.boolean().optional().describe('Only when another of your AI sessions already wrote to them and yours is about something different they need')
     }
-  }, ({ text, to }) => withDaemon(async (d) => {
-    const r = await call(d, 'POST', '/say', { text, to })
+  }, ({ text, to, everyone, also }) => withDaemon(async (d) => {
+    const r = await call(d, 'POST', '/say', { text, to, via, everyone: !!everyone, also: !!also })
     return to && !r.recipientOnline ? `Sent. (${to} is offline and will see it when they reconnect.)` : 'Sent.'
   }))
 
@@ -371,12 +378,20 @@ export async function runMcp () {
 
   server.registerTool('quilt_inbox', {
     description: 'What is waiting for you: mentions of you in chat (@yourname), direct messages to you, and tasks handed to you since you last looked. Act on each one: answer with quilt_message, take a task with quilt_move_task.',
-    inputSchema: { all: z.boolean().optional().describe('Include what you already looked at (the last 100 events)') }
-  }, ({ all }) => withDaemon(async (d) => {
+    inputSchema: {
+      all: z.boolean().optional().describe('Include what you already looked at (the last 100 events)'),
+      no_reply: z.array(z.string().max(40)).max(50).optional().describe('Ids of messages that need nothing back from you (thanks, a greeting, an FYI, a status report): settled without a reply, for all your sessions')
+    }
+  }, ({ all, no_reply }) => withDaemon(async (d) => {
     const c = at(toolCursor, d)
-    const r = await call(d, 'POST', '/inbox', { after: all ? 0 : c.seq })
+    const settled = no_reply && no_reply.length ? (await call(d, 'POST', '/inbox/settle', { ids: no_reply })).settled : []
+    const r = await call(d, 'POST', '/inbox', { after: all ? 0 : c.seq, all: !!all })
     c.seq = r.seq
     const s = await track(d)
+    if (no_reply && no_reply.length) {
+      const note = `Settled as needing no reply: ${settled.length ? settled.join(', ') : 'none (unknown ids)'}.`
+      return [note, renderInbox(r.events)].filter(Boolean).join('\n\n')
+    }
     s.seq = Math.max(s.seq, r.seq) // shown here, so not again in front of the next answer
     return renderInbox(r.events) || (all ? 'Nothing has been waiting for you.' : 'Nothing new for you.')
   }, { inbox: false }))

@@ -58,7 +58,7 @@ test('the owner makes a chat link in the app; the chat AI reads and talks throug
   assert.equal(page.status, 200)
   assert.match(await page.text(), /You are Chat AI/)
   assert.equal((await (await fetch(`${made.body.url}/file?path=README.md`)).text()), '# Site\n')
-  assert.match(await (await fetch(`${made.body.url}/say?text=hello%20from%20the%20chat`)).text(), /^Sent to everyone\./)
+  assert.match(await (await fetch(`${made.body.url}/say?text=hello%20from%20the%20chat&everyone=1`)).text(), /^Sent to everyone\./)
   const msgs = await waitFor(async () => {
     const r = await api('GET', `/api/sessions/${id}/messages`)
     return r.status === 200 && (r.body.messages || []).some((m) => m.by === 'Chat AI') && r.body.messages

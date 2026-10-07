@@ -54,7 +54,7 @@ test('unanswered: direct messages and mentions with no later reply to that perso
     { id: 't', kind: 'task', by: 'kim', text: 'Fix it', ts: now - 3000 }
   ]
   assert.deepEqual(unanswered(events, { messages: msgs, me: 'helper' }).map((e) => e.id), ['1'], 'kim was answered; tasks are not messages')
-  assert.match(renderUnanswered(unanswered(events, { messages: msgs, me: 'helper' })), /^Not yet:.*\n- sam sent you a direct message: "when\?"/)
+  assert.match(renderUnanswered(unanswered(events, { messages: msgs, me: 'helper' })), /^Not yet:.*\n- sam sent you a direct message \(id 1\): "when\?"/)
   assert.equal(renderUnanswered([]), '')
 })
 

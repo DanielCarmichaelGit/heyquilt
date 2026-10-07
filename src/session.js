@@ -23,7 +23,7 @@ import { migrateDir } from './legacy.js'
 import { readTasks, addTask as putTask, updateTask as patchTask, deleteTask as dropTask, planAutoTask } from './tasks.js'
 import { HistoryLog, queryHistory, parseSince, currentTask } from './history.js'
 import { Inbox } from './inbox.js'
-import { chatAbout, waitingOn, queuedFor, renderQueueNotice, askForIt } from './duties.js'
+import { chatAbout, waitingOn, queuedFor, renderQueueNotice, askForIt, answered, addressees, unaddressed, sentByAnother, renderRepeat } from './duties.js'
 import { makeSubscription, deliverEvents } from './webhooks.js'
 import { pickChecklist } from './agent-task-workflow.js'
 import { changeRefusal, TALK_REFUSED } from './session-access.js'
@@ -118,6 +118,10 @@ export class Session extends EventEmitter {
     this.tasks = this.doc.getMap('tasks') // id -> { id, title, column, by, assignee, forAi, tool, files, conv, verified, qaNotes, recurring, cron, order, ts }
     // Mentions, direct messages and tasks handed to this member (or their AI), for agents to wake on.
     this.inboxTracker = new Inbox()
+    // Shared by every AI session working as this member (each runs its own `quilt mcp`): messages
+    // marked as needing no reply, and what each session sent lately, so only one answers each person.
+    this.settledIds = new Set()
+    this.aiSent = [] // [{ via, targets, text, ts }]
     // The agent's webhook subscription (webhooks.js), kept in .quilt/webhook.json: inbox events are POSTed there.
     this.webhook = null
     this.webhookTransport = webhookTransport // { fetch, delays } for tests
@@ -2491,8 +2495,36 @@ export class Session extends EventEmitter {
     if (this.webhook) this.sendWebhook(events)
   }
 
-  /** Inbox events after sequence number `after` (0 for all kept), and the latest number. */
-  inbox ({ after = 0 } = {}) { return this.inboxTracker.since(after) }
+  /**
+   * Inbox events after sequence number `after` (0 for all kept), and the latest number. A message
+   * already answered (by any AI session working as this member, or the person) or settled as
+   * needing no reply is left out, so a second session doesn't answer it again; `all` keeps them.
+   */
+  inbox ({ after = 0, all = false } = {}) {
+    const r = this.inboxTracker.since(after)
+    if (all) return r
+    const msgs = this.chat.toArray().filter((m) => this.canSee(m))
+    const open = (e) => (e.kind !== 'dm' && e.kind !== 'mention') || e.queue ||
+      (!this.settledIds.has(e.id) && !answered(msgs, this.name, e.by, e.ts))
+    return { ...r, events: r.events.filter(open) }
+  }
+
+  /** Marks direct messages and mentions as needing no reply, for every AI session working as this member. */
+  settle (ids) {
+    const known = new Set(this.chat.toArray().map((m) => m && m.id))
+    const done = (Array.isArray(ids) ? ids : []).map(String).filter((id) => known.has(id))
+    for (const id of done) this.settledIds.add(id)
+    if (this.settledIds.size > 1000) this.settledIds = new Set([...this.settledIds].slice(-500))
+    return { settled: done }
+  }
+
+  /** Everyone this member could address: who is here and who has been in the chat. */
+  memberNames () {
+    const names = new Set(this.peerNames())
+    for (const m of this.chat.toArray()) if (m && this.canSee(m)) { if (m.by) names.add(m.by); if (m.to) names.add(m.to) }
+    names.delete(this.name)
+    return [...names].filter((n) => typeof n === 'string' && n)
+  }
 
   // ---------------------------------------------------------- webhook --
 
@@ -2588,12 +2620,27 @@ export class Session extends EventEmitter {
    * that person (it still travels through the shared room, so it isn't secret
    * from the relay or a modified client).
    */
-  say (text, { to = null, file = null } = {}) {
+  /**
+   * Posts a chat message. From an AI (`agent`: the MCP server or the CLI), it must say who it is
+   * for (@Name or `to`, or `everyone`), and `via` (one AI session) may not repeat what another
+   * session working as this member already sent the same person since they last wrote, unless `also`.
+   */
+  say (text, { to = null, file = null, agent = false, via = null, everyone = false, also = false } = {}) {
     if (!this.mayTalk()) throw new Error(TALK_REFUSED)
     text = String(text || '').slice(0, 4000)
     if (!text && !file) throw new Error('message is empty')
     to = to ? String(to).trim() : null
     if (to === this.name) throw new Error('that is you')
+    const names = agent ? this.memberNames() : []
+    const targets = agent ? addressees(text, to, names) : []
+    if (agent && !file) {
+      const why = unaddressed(text, { to, everyone, names })
+      if (why) throw new Error(why)
+      const now = Date.now()
+      this.aiSent = this.aiSent.filter((x) => x.ts > now - 60 * 60 * 1000)
+      const hit = !also && sentByAnother(this.aiSent, { via, targets, messages: this.chat.toArray().filter((m) => this.canSee(m)), now })
+      if (hit) throw new Error(renderRepeat(hit, now))
+    }
     const msg = { id: crypto.randomBytes(8).toString('hex'), by: this.name, to, text, ts: Date.now() }
     if (file) msg.file = file
     this.doc.transact(() => {
@@ -2601,6 +2648,7 @@ export class Session extends EventEmitter {
       if (this.chat.length > 500) this.chat.delete(0, this.chat.length - 500)
     }, LOCAL)
     this.markRead([msg.id])
+    if (via) this.aiSent.push({ via: String(via), targets, text, ts: msg.ts })
     this.scheduleStatusWrite()
     const online = !to || this.peerNames().includes(to)
     return { ...this.describeMessage(msg), recipientOnline: online }
@@ -2882,7 +2930,7 @@ export class Session extends EventEmitter {
    * and files they hold that someone is waiting for in the file queue (`queued`, see duties.js).
    */
   duties () {
-    return { me: this.name, waiting: waitingOn(this.chat.toArray().filter((m) => this.canSee(m)), this.name, { agent: this.kind === 'agent' }), queued: this.queued() }
+    return { me: this.name, waiting: waitingOn(this.chat.toArray().filter((m) => this.canSee(m)), this.name, { agent: this.kind === 'agent', settled: this.settledIds }), queued: this.queued() }
   }
 
   // ------------------------------------------------------------ file queue --

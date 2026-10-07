@@ -139,7 +139,7 @@ async function stop (event, api, state) {
     for (const e of owed) if (!events.some((x) => x.id === e.id)) events.push(e)
     if (events.length) {
       state.update((s) => { for (const e of events) s.seen.push(e.id); for (const e of owed) s.seen.push(`owed:${e.id}`) })
-      return { exitCode: 0, output: { decision: 'block', reason: `${renderAsks(events)}\nReply with quilt_message, and take or decline a task you were handed, before you finish (and release files you no longer need with quilt_release), then finish.` } }
+      return { exitCode: 0, output: { decision: 'block', reason: `${renderAsks(events)}\nBefore you finish, reply with quilt_message to what asks something of you (settle what needs nothing back with quilt_inbox no_reply), and take or decline a task you were handed (and release files you no longer need with quilt_release), then finish.` } }
     }
     // Files someone waits for in the file queue: Claude hands them off with its context before it stops (once per request).
     const queued = ((await api('GET', '/duties').catch(() => ({}))).queued || [])
@@ -179,7 +179,7 @@ async function unseenEvents (api, state) {
 function renderAsks (events) {
   const lines = events.map((e) => `- ${describeEvent(e)}`)
   return `Quilt: collaborators wrote to you, or handed you work, while you were working:\n${lines.join('\n')}\n` +
-    'Someone asking for a file you hold in its file queue gets it from you with quilt_handoff and your context once your change is done; answer other messages with quilt_message (to: their name). ' +
+    'Someone asking for a file you hold in its file queue gets it from you with quilt_handoff and your context once your change is done; answer other messages that ask something of you with quilt_message (to: their name); one that needs nothing back (thanks, a greeting, an FYI) gets no reply, settle it with quilt_inbox (no_reply: [its id]). ' +
     'Take a task you were handed with quilt_move_task when you are free, or say in chat why not.'
 }
 

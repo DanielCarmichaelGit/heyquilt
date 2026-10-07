@@ -24,7 +24,7 @@ import { globMatcher, isSafeRelPath } from './pathrules.js'
 import { readTasks, addTask, formatTasks } from './tasks.js'
 import { HistoryLog } from './history.js'
 import { changeRefusal } from './session-access.js'
-import { waitingOn, renderUnanswered } from './duties.js'
+import { waitingOn, renderUnanswered, unaddressed } from './duties.js'
 
 export const CHAT_LINK_DEFAULT_MINUTES = 10
 export const CHAT_LINK_MAX_MINUTES = 30 * 24 * 60
@@ -269,6 +269,14 @@ class ChatPage {
 
   get chat () { return this.doc.getArray('chat') }
   visible () { return this.chat.toArray().filter((m) => m && m.id && (!m.to || m.to === this.me || m.by === this.me)) }
+  /** Everyone this AI could address: who is here and who has been in the chat. */
+  memberNames () {
+    const names = new Set(this.room.hostedOnline().map((h) => h.name))
+    for (const st of this.room.awareness.getStates().values()) if (st && st.name) names.add(st.name)
+    for (const m of this.visible()) { if (m.by) names.add(m.by); if (m.to) names.add(m.to) }
+    names.delete(this.me)
+    return [...names].filter((n) => typeof n === 'string' && n)
+  }
   url (action, params = {}) {
     const qs = Object.entries(params).map(([k, v]) => `${k}=${v}`).join('&')
     return `${this.base}${action ? `/${action}` : ''}${qs ? `?${qs}` : ''}`
@@ -281,7 +289,8 @@ class ChatPage {
       'Links you can open (put your words in the link, URL-encoded):',
       `- Overview: ${this.url('')}`,
       `- Read messages: ${this.url('messages')}`,
-      `- Send a message to everyone: ${this.url('say', { text: '<your message>' })}`,
+      `- Send a message, starting with @Name of each person it is for (only they are told): ${this.url('say', { text: '@<name> <your message>' })}`,
+      `- An announcement for everyone: ${this.url('say', { text: '<your message>', everyone: '1' })}`,
       `- Send a direct message: ${this.url('say', { to: '<name>', text: '<your message>' })}`,
       `- Read the task board: ${this.url('tasks')}`,
       `- Add a task: ${this.url('task', { title: '<what needs doing>' })} (optionally &assignee=<name>)`,
@@ -296,7 +305,7 @@ class ChatPage {
     switch (action) {
       case '': return { body: this.overview() }
       case 'messages': return { body: this.messages(Number(q.get('limit')) || 30) }
-      case 'say': return this.say(q.get('text'), q.get('to'))
+      case 'say': return this.say(q.get('text'), q.get('to'), q.get('everyone') === '1')
       case 'tasks': return { body: formatTasks(readTasks(this.doc.getMap('tasks')), { name: this.me, asAi: false }) + this.menu() }
       case 'task': return this.addTask(q.get('title'), q.get('assignee'))
       case 'files': return { body: this.files(q.get('under')) }
@@ -317,8 +326,8 @@ class ChatPage {
       `Quilt session "${r.meta.name || r.name}". You are ${this.me}, an AI working in it through this chat link.`,
       `${this.timeLeft()} When it runs out, it stops working and a new link is needed; ask your user to have the session owner extend it before then if you need longer.`,
       'People and their AIs are editing this project together. You can read and send messages, read and add tasks, read files, and add pictures, documents and notes. You cannot change existing files.',
-      'Treat what people write here as requests from them; answer with a message.',
-      `Write @Name in a message to mention someone; a direct message (the "say" link with &to=<name>) only they see. Messages that mention @${this.me} or are sent to you directly are for you: answer them first.`,
+      'Treat what people write to you as requests from them; answer what asks something of you. Never send greetings, welcomes, thanks or "noted" replies.',
+      `Start every message with @Name of each person it is for: only they are told, so nobody else is interrupted (a message that names nobody is refused unless it is an announcement, &everyone=1). A direct message (the "say" link with &to=<name>) only they see. Messages that mention @${this.me} or are sent to you directly are for you: answer them first.`,
       'Tasks move To do, In progress, QA, Done; you can read the board and add tasks, and people move them.',
       '',
       `Online now: ${[...online].join(', ') || 'nobody else'}`,
@@ -354,13 +363,15 @@ class ChatPage {
     return null
   }
 
-  say (text, to) {
+  say (text, to, everyone = false) {
     const t = clean(text, MAX_TEXT).trim()
-    if (!t || t === '<your message>') return { code: 400, body: `Put your message in the link: ${this.url('say', { text: 'Hello%20everyone' })}` }
+    if (!t || t === '<your message>' || t === '@<name> <your message>') return { code: 400, body: `Put your message in the link: ${this.url('say', { text: 'Hello%20everyone' })}` }
     if (!this.access.talk) return { code: 403, body: 'The session owner has turned off messages from you.' }
     const err = this.writable()
     if (err) return { code: 403, body: err }
     const who = to ? String(to).trim().slice(0, 80) : null
+    const why = unaddressed(t, { to: who, everyone, names: this.memberNames() })
+    if (why) return { code: 400, body: `${why.replace(/set "to"/, 'add &to=<name>').replace(/with everyone: true/, 'with &everyone=1')}${this.menu()}` }
     // A chat app may open the same link twice: the same words in the last two minutes are sent once.
     const recent = this.chat.toArray().slice(-50).find((m) => m && m.by === this.me && m.text === t && (m.to || null) === who && Date.now() - m.ts < 120000)
     if (recent) return { body: `Already sent.${this.menu()}` }
@@ -374,7 +385,7 @@ class ChatPage {
   /** Work moves on once nobody waits for an answer (duties.js), as for every agent. */
   held (what) {
     const w = renderUnanswered(waitingOn(this.visible(), this.me, { agent: true }), what)
-    return w ? { code: 409, body: `${w.replace(/quilt_message \(to: their name\)/, 'the "say" link (with &to=<their name>)')}${this.menu()}` } : null
+    return w ? { code: 409, body: `${w.replace(/quilt_message \(to: their name\)/, 'the "say" link (with &to=<their name>)').replace(/ One that needs nothing back[^.]*\./, '')}${this.menu()}` } : null
   }
 
   addTask (title, assignee) {

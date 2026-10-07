@@ -11,7 +11,9 @@ export async function startControl (session, extras = {}) {
   const token = crypto.randomBytes(16).toString('hex')
   const routes = {
     'GET /status': () => ({ ...session.status(), markdown: renderStatus(session.status()) }),
-    'POST /say': (b) => session.say(b.text, { to: b.to }),
+    // The CLI and the MCP server: what an AI sends, held to the chat rules (duties.js). A person typing in `quilt join` sends with everyone.
+    'POST /say': (b) => session.say(b.text, { to: b.to, agent: true, via: b.via ? String(b.via) : null, everyone: !!b.everyone, also: !!b.also }),
+    'POST /inbox/settle': (b) => session.settle(b.ids),
     'POST /send': (b) => session.sendFile(b.path, { to: b.to, text: b.text }),
     'POST /messages': (b) => ({ messages: session.messages({ limit: b.limit || 50, unreadOnly: !!b.unreadOnly, markRead: b.markRead !== false, withName: b.with || null }) }),
     'POST /get': async (b) => ({ path: await session.fetchFile(b.id, b.dest) }),
@@ -56,7 +58,7 @@ export async function startControl (session, extras = {}) {
     'POST /work': (b) => ({ work: session.setWork(b.state, b.note) }),
     'GET /tasks': () => ({ tasks: session.taskList() }),
     // Mentions, direct messages and tasks handed to this member since sequence number `after` (agents wake on these).
-    'POST /inbox': (b) => session.inbox({ after: b.after }),
+    'POST /inbox': (b) => session.inbox({ after: b.after, all: !!b.all }),
     // The agent's webhook: inbox events POSTed to a URL of its own (see webhooks.js).
     'GET /webhook': () => ({ webhook: session.webhookInfo() }),
     'POST /webhook': (b) => ({ webhook: session.setWebhook({ url: b.url, secret: b.secret, events: b.events, bearer: b.bearer }) }),

@@ -50,8 +50,8 @@ test('an agent owes an answer to @Agents until it replies; a person does not', (
   assert.deepEqual(waitingOn(asked, 'Duncan', { agent: true, now }).map((e) => e.kind), ['mention'])
   assert.deepEqual(waitingOn(asked, 'Duncan', { now }), [], 'without agent, only its name counts')
   assert.deepEqual(waitingOn(asked, 'Dana', { agent: true, now }), [], 'not its own message')
-  const answered = [...asked, msg('m2', 'Duncan', 'On the @Agents ticket', null, now - 500)]
-  assert.deepEqual(waitingOn(answered, 'Duncan', { agent: true, now }), [], 'a reply to everyone answers it')
+  const answered = [...asked, msg('m2', 'Duncan', '@Dana on the @Agents ticket', null, now - 500)]
+  assert.deepEqual(waitingOn(answered, 'Duncan', { agent: true, now }), [], 'a reply that @mentions them answers it')
 })
 
 test('the app marks @Agents as a mention, and as mine only for an agent', () => {

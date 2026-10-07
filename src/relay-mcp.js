@@ -23,7 +23,7 @@ import { UpdateCheck } from './update-check.js'
 import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, qaRefusal, qaNotesEnough, qaNotesLine, pickChecklist, MAX_VERIFIED } from './agent-task-workflow.js'
 import { HistoryLog, queryHistory, parseSince, formatHistory, currentTask } from './history.js'
 import { changeRefusal, TALK_REFUSED } from './session-access.js'
-import { chatAbout, renderChatAbout, waitingOn, renderUnanswered, heldRefusal, queuedFor, renderQueueNotice, renderQueued } from './duties.js'
+import { chatAbout, renderChatAbout, waitingOn, renderUnanswered, heldRefusal, queuedFor, renderQueueNotice, renderQueued, answered, unaddressed, CHAT_RULES } from './duties.js'
 import { describeSubscription, WEBHOOK_EVENTS } from './webhooks.js'
 
 const FEED_CAP = 300
@@ -59,6 +59,7 @@ export const HOSTED_INSTRUCTIONS =
   'Read what people said about a file before you change it: quilt_read_messages, and each write tells you what was said about that file. ' +
   'This rule is enforced: while someone who messaged or mentioned you waits for an answer, writes, claims and task changes are refused until you answer with quilt_message. ' +
   'Everyone sees your changes on their own disk within moments. ' +
+  'Chat: ' + CHAT_RULES.replace(/^Send a chat message\. /, '') + ' A message that needs nothing back is settled with quilt_inbox (no_reply: [its id]), not answered. ' +
   'Mentions of you (@yourname), direct messages and tasks handed to you wait in quilt_inbox. To be woken instead of polling, ' +
   'call quilt_webhook_subscribe with a URL of yours: Quilt POSTs each one there as it happens. ' +
   'You are connected over HTTP, so you show as online for 30 minutes after each tool call: while idle, call quilt_inbox at least every 30 minutes so people can see you are still there. ' +
@@ -142,7 +143,20 @@ function sessionTools (server, ctx) {
   const claimsOf = (room) => room.claimList ? room.claimList() : []
   // The rules every agent is held to (duties.js), enforced here because hosted agents work through these tools.
   const seen = (doc) => doc.getArray('chat').toArray().filter(visible)
-  const waitRefusal = (doc, name) => renderUnanswered(waitingOn(seen(doc), me, { agent: true }), `call ${name} again`)
+  // Messages this agent settled as needing no reply (quilt_inbox no_reply), kept with its inbox.
+  const settledSet = () => {
+    const box = ctx.inbox ? ctx.inbox() : {}
+    if (!Array.isArray(box.settled)) box.settled = []
+    return new Set(box.settled)
+  }
+  const waitRefusal = (doc, name) => renderUnanswered(waitingOn(seen(doc), me, { agent: true, settled: settledSet() }), `call ${name} again`)
+  // Everyone this agent could address: who is here and who has been in the chat.
+  const memberNames = (room, doc) => {
+    const names = new Set(peers(room).map((p) => p.name))
+    for (const m of seen(doc)) { if (m.by) names.add(m.by); if (m.to) names.add(m.to) }
+    names.delete(me)
+    return [...names].filter((n) => typeof n === 'string' && n)
+  }
   // Chat about a file this agent was already shown, by message id: kept with its inbox, since each
   // request to the hosted MCP gets fresh tools.
   const toldAbout = () => {
@@ -393,13 +407,25 @@ function sessionTools (server, ctx) {
 
   tool('quilt_inbox', {
     description: 'What is waiting for you: mentions of you in chat (@yourname), direct messages to you, and tasks handed to you since you last looked. Act on each one: answer with quilt_message, take a task with quilt_move_task.',
-    inputSchema: {}
-  }, (_, { doc, chat }) => {
+    inputSchema: {
+      no_reply: z.array(z.string().max(40)).max(50).optional().describe('Ids of messages that need nothing back from you (thanks, a greeting, an FYI, a status report): settled without a reply')
+    }
+  }, ({ no_reply }, { doc, chat }) => {
     const box = ctx.inbox ? ctx.inbox() : { state: null }
-    const r = scanInbox({ messages: chat.toArray().filter(visible), tasks: readTasks(taskMap(doc)), reader: reader() }, box.state)
+    const msgs = chat.toArray().filter(visible)
+    let note = ''
+    if (no_reply && no_reply.length) {
+      const known = new Set(msgs.map((m) => m.id))
+      const ok = no_reply.map(String).filter((x) => known.has(x))
+      box.settled = [...new Set([...(Array.isArray(box.settled) ? box.settled : []), ...ok])].slice(-500)
+      note = `Settled as needing no reply: ${ok.length ? ok.join(', ') : 'none (unknown ids)'}.`
+    }
+    const r = scanInbox({ messages: msgs, tasks: readTasks(taskMap(doc)), reader: reader() }, box.state)
     box.state = r.state
     if (ctx.saveInbox) ctx.saveInbox()
-    return text(renderInbox(r.events) || 'Nothing new for you.')
+    const settled = new Set(box.settled || [])
+    const open = r.events.filter((e) => (e.kind !== 'dm' && e.kind !== 'mention') || e.queue || (!settled.has(e.id) && !answered(msgs, me, e.by, e.ts)))
+    return text([note, renderInbox(open)].filter(Boolean).join('\n\n') || 'Nothing new for you.')
   })
 
   if (ctx.webhook) {
@@ -427,15 +453,18 @@ function sessionTools (server, ctx) {
   }
 
   tool('quilt_message', {
-    description: 'Send a chat message to everyone in the session, or to one person with `to`.',
+    description: CHAT_RULES + ' Set `to` to message one person directly.',
     inputSchema: {
       text: z.string().min(1).max(4000),
-      to: z.string().optional().describe('Name of one person, for a direct message')
+      to: z.string().optional().describe('Name of one person, for a direct message'),
+      everyone: z.boolean().optional().describe('Only for a real announcement to the whole session: lets a message that @mentions nobody go out')
     }
-  }, ({ text: t, to }, { room, doc, chat }) => {
+  }, ({ text: t, to, everyone }, { room, doc, chat }) => {
     const err = writable(room)
     if (err) return fail(err)
     if (ctx.access(room)?.talk === false) return fail(TALK_REFUSED)
+    const why = unaddressed(t, { to, everyone: !!everyone, names: memberNames(room, doc) })
+    if (why) return fail(why)
     const msg = { id: id(), by: me, to: to || null, text: t, ts: Date.now() }
     doc.transact(() => {
       chat.push([msg])

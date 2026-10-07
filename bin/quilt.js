@@ -407,9 +407,12 @@ function splitRecipient (args) {
 }
 
 async function say () {
+  const flag = (f) => { const i = argv.indexOf(f); if (i === -1) return false; argv.splice(i, 1); return true }
+  const everyone = flag('--everyone')
+  const also = flag('--also')
   const { to, rest } = splitRecipient(argv)
-  if (!rest.length) fail('usage: quilt say [@name] <message>')
-  await simple('/say', { text: rest.join(' '), to }, (r) =>
+  if (!rest.length) fail('usage: quilt say [@name] <message>  (a message to everyone names who it is for with @Name, or add --everyone)')
+  await simple('/say', { text: rest.join(' '), to, everyone, also }, (r) =>
     to ? `sent to ${to}${r.recipientOnline ? '' : ' (offline, they will see it when they reconnect)'}` : 'sent')
 }
 
@@ -510,7 +513,8 @@ async function chat () {
         print('  unknown command')
       } else {
         const { to, rest } = splitRecipient(line.split(' '))
-        const r = await call(d, 'POST', '/say', { text: rest.join(' '), to })
+        // A person typing here, not an AI: what they send needs no @Name.
+        const r = await call(d, 'POST', '/say', { text: rest.join(' '), to, everyone: true })
         if (to && !r.recipientOnline) print(`  (${to} is offline; they'll see it when they reconnect)`)
       }
     } catch (err) {

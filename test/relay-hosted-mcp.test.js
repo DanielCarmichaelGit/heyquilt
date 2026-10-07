@@ -182,8 +182,8 @@ test('the agent reads what the owner has, and what it writes lands on the owner\
   // An unanswered direct message holds up writes and claims until the agent answers.
   carl.say('Grok-Bot, are you around?', { to: 'Grok-Bot' })
   const held = await waitFor(async () => { const t = out(await call('quilt_claim', { pattern: 'docs/**' })); return /^Not yet/.test(t) && t })
-  assert.match(held, /Carl sent you a direct message: "Grok-Bot, are you around\?"/)
-  assert.match(held, /then call quilt_claim again/)
+  assert.match(held, /Carl sent you a direct message \(id \w+\): "Grok-Bot, are you around\?"/)
+  assert.match(held, /Then call quilt_claim again/)
   assert.ok(!carl.claimFor('docs/x.md'), 'nothing claimed')
   await call('quilt_message', { to: 'Carl', text: 'Here. Sorry, I will leave brief.md to you.' })
   assert.match(out(await call('quilt_write_file', { path: 'brief.md', content: 'brief\n' })), /Updated brief\.md/)
@@ -225,8 +225,11 @@ test('the chronology records hosted and local changes with diffs, and is queryab
 })
 
 test('messages, shares and claims reach the owner, and claims are respected', async () => {
-  await call('quilt_message', { text: 'hello from the cloud' })
-  await waitFor(() => carl.chat.toArray().some((m) => m.by === 'Grok-Bot' && m.text === 'hello from the cloud'))
+  const bare = await call('quilt_message', { text: 'hello from the cloud' })
+  assert.equal(bare.isError, true, 'a message that names nobody is refused')
+  assert.match(out(bare), /^Not sent: this message names nobody.*@Carl/)
+  await call('quilt_message', { text: '@Carl hello from the cloud' })
+  await waitFor(() => carl.chat.toArray().some((m) => m.by === 'Grok-Bot' && m.text === '@Carl hello from the cloud'))
   await call('quilt_share', { request: 'Write the docs', summary: 'Plan: a README section.' })
   await waitFor(() => carl.agentFeedFor('Grok-Bot').length === 2)
 
@@ -250,8 +253,8 @@ test('quilt_inbox shows mentions, direct messages and tasks handed to the hosted
   const task = carl.addTask({ title: 'Write the usage section', assignee: 'Grok-Bot', files: ['README.md'] })
   await waitFor(async () => /Write the usage section/.test(out(await call('quilt_tasks'))))
   const inbox = out(await call('quilt_inbox'))
-  assert.match(inbox, /- Carl mentioned you in chat: @Grok-Bot the README needs a usage section/)
-  assert.match(inbox, /- Carl sent you a direct message: between us: keep it short/)
+  assert.match(inbox, /- Carl mentioned you in chat \(id \w+\): @Grok-Bot the README needs a usage section/)
+  assert.match(inbox, /- Carl sent you a direct message \(id \w+\): between us: keep it short/)
   assert.match(inbox, new RegExp(`- Carl handed you a task: "Write the usage section" \\(id ${task.id}\\)\\. Files: README\\.md`))
   assert.doesNotMatch(inbox, /nothing for the bot here/)
   assert.doesNotMatch(inbox, /hello from the cloud/, 'its own messages')
@@ -286,7 +289,7 @@ test('a hosted agent subscribes a webhook and is POSTed mentions, direct message
 
   carl.say('between us, via webhook', { to: 'Grok-Bot' })
   carl.say('nothing for the bot')
-  await call('quilt_message', { text: '@Grok-Bot talking to myself' })
+  await call('quilt_message', { text: '@Grok-Bot talking to myself', everyone: true })
   const task = carl.addTask({ title: 'Webhook task', assignee: 'Grok-Bot', files: ['README.md'] })
   await waitFor(() => posts.length === 3)
   await sleep(50)
@@ -294,8 +297,8 @@ test('a hosted agent subscribes a webhook and is POSTed mentions, direct message
   assert.deepEqual(bodies()[2].task, { id: task.id, title: 'Webhook task', column: 'todo', assignee: 'Grok-Bot', forAi: false, tool: '', files: ['README.md'] })
   // quilt_inbox still has everything the webhook carried.
   const inbox = out(await call('quilt_inbox'))
-  assert.match(inbox, /mentioned you in chat: @Grok-Bot now via webhook/)
-  assert.match(inbox, /direct message: between us, via webhook/)
+  assert.match(inbox, /mentioned you in chat \(id \w+\): @Grok-Bot now via webhook/)
+  assert.match(inbox, /direct message \(id \w+\): between us, via webhook/)
   assert.match(inbox, /handed you a task: "Webhook task"/)
 
   // A receiver that is down for a moment gets the POST again.
@@ -348,7 +351,7 @@ test('an agent that sends an old image is told to update in every answer; quilt_
 })
 
 test('the owner can limit the agent to folders, make it a viewer, or remove it', async () => {
-  await call('quilt_message', { text: 'Got all your messages, Carl, thanks.' }) // answered, so writes are not held for that
+  await call('quilt_message', { text: '@Carl got all your messages.' }) // answered, so writes are not held for that
   await carl.setMember(GROK, { scopes: ['docs'] })
   await waitFor(async () => /only change files in docs/.test(out(await call('quilt_write_file', { path: 'src/x.js', content: 'x' }))))
   assert.match(out(await call('quilt_write_file', { path: 'docs/guide.md', content: 'guide' })), /Created docs\/guide.md/)

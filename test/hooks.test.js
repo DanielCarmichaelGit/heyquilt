@@ -139,7 +139,7 @@ test('a direct message from a collaborator is shown once, after an edit', async 
   await waitFor(() => dana.messages({ markRead: false }).some((m) => m.to === 'dana'))
   const r = await hook({ hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/app.js' } })
   const ctx = r.json.hookSpecificOutput.additionalContext
-  assert.match(ctx, /sam sent you a direct message: I wanted to change the auth flow/)
+  assert.match(ctx, /sam sent you a direct message \(id \w+\): I wanted to change the auth flow/)
   assert.doesNotMatch(ctx, /hello everyone/)
   assert.match(ctx, /quilt_message \(to: their name\)/)
   // Shown once per Claude session, and the person still sees it as unread in the app.
@@ -152,8 +152,8 @@ test('stopping with an unanswered message asks Claude to reply first; then relea
   await waitFor(() => dana.messages({ markRead: false }).some((m) => m.text.startsWith('when will')))
   const blocked = await hook({ hook_event_name: 'Stop', stop_hook_active: false })
   assert.equal(blocked.json.decision, 'block')
-  assert.match(blocked.json.reason, /sam sent you a direct message: when will src\/app\.js be free\?/)
-  assert.match(blocked.json.reason, /Reply with quilt_message, and take or decline a task you were handed, before you finish/)
+  assert.match(blocked.json.reason, /sam sent you a direct message \(id \w+\): when will src\/app\.js be free\?/)
+  assert.match(blocked.json.reason, /Before you finish, reply with quilt_message to what asks something of you \(settle what needs nothing back with quilt_inbox no_reply\), and take or decline a task you were handed/)
   assert.ok(sam.claimFor('src/app.js'), 'still claimed while Claude answers')
   // Claude answered and stops again (stop_hook_active): hook claims are released.
   const done = await hook({ hook_event_name: 'Stop', stop_hook_active: true })
@@ -202,7 +202,7 @@ test('a mention in public chat and a task handed to my AI are shown too', async 
   await waitFor(() => dana.taskList().length >= 2 && dana.messages({ markRead: false }).some((m) => m.text.startsWith('hey @dana')))
   const r = await hook({ hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/app.js' } })
   const ctx = r.json.hookSpecificOutput.additionalContext
-  assert.match(ctx, /sam mentioned you in chat: hey @dana, can your AI pick up the pricing page\?/)
+  assert.match(ctx, /sam mentioned you in chat \(id \w+\): hey @dana, can your AI pick up the pricing page\?/)
   assert.match(ctx, new RegExp(`sam handed you a task: "Pricing page" \\(id ${task.id}\\)`))
   assert.doesNotMatch(ctx, /For dana herself/)
   assert.match(ctx, /Take a task you were handed with quilt_move_task/)

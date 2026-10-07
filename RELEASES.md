@@ -9,6 +9,12 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.18 — 2026-10-07
+
+- **Your AI can pick up tasks by itself.** Settings has a new **Let my AI pick up tasks by itself**: Off (as before), **Tasks assigned to it**, or **Assigned to it, then unassigned ones**. When your AI finishes a piece of work, Quilt hands it the next To do task from the board and it starts, whether you use Claude Code, Cursor, Gemini CLI, Codex or another MCP tool. It never takes a new one while one is still In progress, and a change applies at once.
+- **Quilt's rules in Cursor and Gemini CLI, not just Claude Code.** Before your AI edits a file someone else holds, the edit is refused and your AI is told to ask for it in the file's queue. Files it edits are claimed for you, and released when it finishes. When it tries to finish, it is held back until it has answered the people waiting on it and handed on files someone is queued for. Cursor gets this from the session folder Quilt already sets up, and Gemini CLI from its settings, which Quilt fills in when it starts, so there is nothing to set up.
+- **The file queue moves even when an AI forgets.** If your AI stops working while someone waits for a file it was editing, and it doesn't hand the file on, Quilt hands it on after two minutes, with a note on what your AI was doing. For tools Quilt can't see working, it waits until the file has been quiet for five minutes.
+
 ## 0.3.17 — 2026-10-07
 
 - **An audit trail for every session.** Session owners have a new **Audit trail** on the session's page at heyquilt.com. It lists every person and agent that joined: how they connected (the Quilt app or a hosted agent, and which AI tool, like Cursor or Codex), when they joined and left, and why they left (left, connection dropped, removed by you, access revoked, done working, session ended). Under each visit is what they did and when: files created, edited or deleted, files claimed, asked for or handed off, messages sent, tasks changed and the Quilt tools they used. Files are listed by path; file contents and message text are never recorded. Filter by agents or people, or **Download CSV** for your records. Visits are kept for 12 months.

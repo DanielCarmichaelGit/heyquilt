@@ -181,8 +181,9 @@ may skip:
   refuses with who is waiting, until the agent answers with `quilt_message`.
 - Hosted agents write through Quilt's tools, so their writes are refused outright.
 
-Claude Code also gets Quilt's hooks (in your own `.claude/settings.local.json`),
-which refuse such an edit before it happens instead of undoing it after.
+Claude Code and Cursor also get Quilt's hooks (in your own `.claude/settings.local.json`,
+which Cursor reads too), and Gemini CLI gets them in its user settings: they refuse such
+an edit before it happens instead of undoing it after.
 See [Claims](#claims).
 
 ## Commands
@@ -283,12 +284,22 @@ follow edits, so nobody has to remember:
   while someone who wrote to the agent is still waiting for a reply. An agent that
   never says it's done stops counting as working once its files have been quiet
   for five minutes, so commits aren't held up.
-- **Claude Code gets the same rules automatically** through hooks in your own
-  `.claude/settings.local.json`: an edit to a file someone else holds is refused
-  before it happens, chat about the file is shown before the edit, the holder's Claude sees new messages
-  after its next edit, and if it tries to finish with an unanswered one it is asked
-  to reply first. Hook claims end when Claude finishes its turn; a crashed Claude's
+- **Claude Code, Cursor and Gemini CLI get the same rules automatically** through
+  their own hooks (`quilt hook`, set up by Quilt: `.claude/settings.local.json` in the
+  session folder, which Cursor reads too, and `~/.gemini/settings.json`): an edit to a
+  file someone else holds is refused before it happens, chat about the file is shown
+  before the edit, the AI sees new messages after its next edit, and if it tries to
+  finish with an unanswered one, or a file someone is queued for, it is asked to deal
+  with that first. Hook claims end when the AI finishes its turn; a crashed one's
   leftovers are released by the next session.
+- **The file queue moves without the AI.** A file Quilt claimed for your AI that
+  someone waits for is handed on by Quilt, with what your AI was doing as context,
+  two minutes after your AI stops (or after five quiet minutes when Quilt can't see
+  it working), if your AI didn't hand it on itself.
+- **Picking up tasks.** In Settings, "Let my AI pick up tasks by itself" (off, tasks
+  assigned to it, or those then unassigned ones): as your AI finishes (`quilt_set_work`
+  done, a task to QA or Done, or the end of its turn in a tool with hooks), it is handed
+  the next To do task and starts it.
 - **Hosted agents** (on `api.heyquilt.com/mcp`) are told what people said about a
   file in chat when they write it.
 - **Hosted agents** (on `api.heyquilt.com/mcp`) are claimed for when they write a

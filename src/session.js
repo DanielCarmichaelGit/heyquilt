@@ -3185,12 +3185,15 @@ export class Session extends EventEmitter {
     for (const [rel, ts] of [...this.autoClaims]) {
       if (ts > cutoff) continue
       const c = this.claims.get(rel)
-      if (!c || c.by !== this.name || !c.queue || !c.queue.length) continue
+      if (!c || !this.ownClaim(c) || !c.queue || !c.queue.length) continue
+      const via = this.autoVia.get(rel) // claimed for one of our AI sessions
+      const who = this.persona(via) ? this.actorName(via) : `${this.name}'s AI`
+      const focus = (this.persona(via) && this.persona(via).focus) || this.focus
       const ago = Math.max(1, Math.round((now - ts) / 60000))
-      const context = `Handed on by Quilt: ${this.name}'s AI stopped working on ${rel} without handing it on.` +
-        `${this.focus ? ` It was working on: ${this.focus}.` : ''} Its last change was ${ago} minute${ago === 1 ? '' : 's'} ago; quilt_history shows what changed.`
+      const context = `Handed on by Quilt: ${who} stopped working on ${rel} without handing it on.` +
+        `${focus ? ` It was working on: ${focus}.` : ''} Its last change was ${ago} minute${ago === 1 ? '' : 's'} ago; quilt_history shows what changed.`
       try {
-        const r = await this.handoff(rel, { context })
+        const r = await this.handoff(rel, { context, via })
         handed++
         this.notice(`Quilt handed ${rel} to ${r.to}, who was waiting for it, because you had stopped working on it. Ask for it again with quilt_request_file if you still need it.`)
         this.log(`🤝 handed ${rel} to ${r.to}: they were waiting and your AI had stopped`)

@@ -9,9 +9,14 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
-## 0.3.18 — 2026-10-07
+## 0.3.19 — 2026-10-07
+
+Every AI session gets a name of its own, after its work.
 
 - **Each AI session is its own member, named after its work.** Two Claude Code chats and a Cursor window working through your app no longer all post as you. Each shows up in the session as its own member, like **Daniel · file-queue** or **Daniel · hosted costs**. The name comes from the git branch it works on, or from the first thing it says it's doing (its focus, what it shares, the task it takes), and the AI can rename itself with `quilt_name_session`. Partners see your AI sessions in the people menu, the chat and `quilt_status`, and can message or assign work to the right one. Each session's messages, inbox and claims are its own, so only the session someone wrote to answers, and a claim goes idle when that session stops working, not when you do. Your AI sessions can't edit each other's claimed files either: they ask in the file queue like anyone else.
+
+## 0.3.18 — 2026-10-07
+
 - **Your AI can pick up tasks by itself.** Settings has a new **Let my AI pick up tasks by itself**: Off (as before), **Tasks assigned to it**, or **Assigned to it, then unassigned ones**. When your AI finishes a piece of work, Quilt hands it the next To do task from the board and it starts, whether you use Claude Code, Cursor, Gemini CLI, Codex or another MCP tool. It never takes a new one while one is still In progress, and a change applies at once.
 - **Quilt's rules in Cursor and Gemini CLI, not just Claude Code.** Before your AI edits a file someone else holds, the edit is refused and your AI is told to ask for it in the file's queue. Files it edits are claimed for you, and released when it finishes. When it tries to finish, it is held back until it has answered the people waiting on it and handed on files someone is queued for. Cursor gets this from the session folder Quilt already sets up, and Gemini CLI from its settings, which Quilt fills in when it starts, so there is nothing to set up.
 - **The file queue moves even when an AI forgets.** If your AI stops working while someone waits for a file it was editing, and it doesn't hand the file on, Quilt hands it on after two minutes, with a note on what your AI was doing. For tools Quilt can't see working, it waits until the file has been quiet for five minutes.

@@ -13,6 +13,9 @@ alter table public.session_visits
 create table public.visit_actions (
   -- The relay's id for the "act" event: a replayed event can't make a second row.
   id uuid primary key,
+  -- Arrival order: the relay sends a visit's actions in the order they happened, and
+  -- several can share a millisecond.
+  n bigint generated always as identity,
   visit_start_id uuid not null references public.session_visits (event_start_id) on delete cascade,
   room text not null,
   account text not null check (account ~ '^(person|agent):[A-Za-z0-9_-]{1,64}$'),
@@ -88,7 +91,7 @@ set search_path = ''
 as $$
   select a.* from public.visit_actions a
   where a.room = p_room and a.at >= p_from and a.at < p_to
-  order by a.at, a.id
+  order by a.at, a.n
   limit p_limit;
 $$;
 

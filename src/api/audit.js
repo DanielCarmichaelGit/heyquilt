@@ -55,7 +55,7 @@ export function auditTrail ({ visits, actions, revoked = new Map() }) {
       startedAt: v.startedAt,
       endedAt: v.endedAt ?? null,
       endReason: endReasonOf(v, revoked.get(v.account) ?? null),
-      actions: (byVisit.get(v.eventStartId) || []).sort((a, b) => a.at - b.at)
+      actions: byVisit.get(v.eventStartId) || [] // already oldest first, in arrival order
     }))
 }
 

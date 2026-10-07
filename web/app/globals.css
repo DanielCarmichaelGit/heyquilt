@@ -34,6 +34,13 @@ code, .mono { font-family: var(--mono); font-size: 13px; }
 .pill { display: inline-block; align-self: flex-start; font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--panel-2); color: var(--muted); }
 .notice { padding: 12px 14px; border-radius: 8px; background: var(--panel-2); }
 .notice.bad { color: var(--bad); }
+a.pill { text-decoration: none; }
+.pill.active { background: var(--text); color: var(--bg); }
+.audit-actions { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; font-size: 14px; }
+.audit-actions code { word-break: break-all; }
+.audit-when { text-align: right; }
+@media (max-width: 600px) { .audit-when { text-align: left; } }
+details > summary { cursor: pointer; }
 .site-footer { border-top: 1px solid var(--border); margin-top: 80px; padding: 28px 0; color: var(--muted); font-size: 13px; }
 
 /* ---- Header: a floating rounded bar, sticky, that slides away on scroll down (StickyHeader.js) ---- */

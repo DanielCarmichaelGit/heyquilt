@@ -291,7 +291,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     // What was done in a session in [from, to), oldest first, at most `limit` (actions_in_room).
     async actionsInRoom (room, { from, to, limit }) {
       return all(actions, (a) => a.room === room && a.at >= from && a.at < to)
-        .sort((a, b) => a.at - b.at || a.id.localeCompare(b.id)).slice(0, limit).map(copy)
+        .sort((a, b) => a.at - b.at).slice(0, limit).map(copy) // stable: ties keep arrival order
     },
     async pruneActivity ({ before, seenBefore }) {
       for (const [id, v] of visits) if (v.endedAt != null && v.endedAt < before) visits.delete(id)

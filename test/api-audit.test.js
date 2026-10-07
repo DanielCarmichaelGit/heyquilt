@@ -163,3 +163,13 @@ test('the Supabase store reads actions through actions_in_room, with times as ep
   assert.deepEqual(calls[0].args, { p_room: 'r1', p_from: '1970-01-01T00:00:00.000Z', p_to: '2026-10-08T00:00:00.000Z', p_limit: 10 })
   assert.deepEqual(rows, [{ id: 'a1', visitStartId: 'v1', room: 'r1', account: 'agent:a', action: 'edited', target: 'x', at: Date.parse('2026-10-07T12:00:00Z') }])
 })
+
+test('actions in the same millisecond keep the order they happened in', async () => {
+  const r = room()
+  const owner = start(r, 'person:owner', 'Olive', ago(10), { owner: true })
+  const at = ago(5)
+  const names = ['tool', 'claimed', 'created', 'messaged', 'released']
+  await report([owner, ...names.map((a, i) => act(owner, at, a, `x${i}`))])
+  const v = (await t.call('GET', `/v1/me/sessions/${r}/audit`, null, 'owner')).body.visits
+  assert.deepEqual(v[0].actions.map((a) => a.action), names)
+})

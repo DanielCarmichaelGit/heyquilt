@@ -35,7 +35,10 @@ export default async function SessionPage ({ params }) {
             <>
               <h1 style={{ fontSize: 32 }}><SessionName room={s.room} name={s.name} canRename={s.mine} action={renameSession} /></h1>
               <section className='card stack'>
-                <p className='muted'>{ownerLine(s)}</p>
+                <div className='row' style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+                  <p className='muted'>{ownerLine(s)}</p>
+                  {s.mine && <Link className='btn' href={`/dashboard/sessions/${s.room}/audit`}>Audit trail</Link>}
+                </div>
                 <div className='summary-grid'>
                   <div><span className='muted'>Started</span><br /><b>{formatDate(s.createdAt, tz)}</b></div>
                   <div><span className='muted'>Last active</span><br /><b>{timeAgo(s.lastActiveAt, now, tz)}</b></div>

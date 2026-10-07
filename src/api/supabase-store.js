@@ -191,6 +191,10 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     async accountSessions (account, { since, limit }) {
       return (await pages(() => db.rpc('account_sessions', { p_account: account, p_since: ts(since), p_limit: limit }))).map(rowFrom)
     },
+    async actionsInRoom (room, { from, to, limit }) {
+      // `at` isn't a `*At` column, so it's turned into epoch ms here.
+      return (await pages(() => db.rpc('actions_in_room', { p_room: room, p_from: ts(from), p_to: ts(to), p_limit: limit }))).map((r) => ({ ...rowFrom(r), at: ms(r.at) }))
+    },
     async sessionByRoom (room) { return rowFrom(await one(db.from('relay_sessions').select(RELAY_SESSION).eq('room', room).maybeSingle())) },
     async visitsInRooms (rooms) {
       if (!rooms.length) return []

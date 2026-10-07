@@ -28,7 +28,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
   const teams = new Map(); const teamMembers = new Map(); const invites = new Map(); const requests = new Map()
   const agentInvites = new Map(); const keyRows = new Map()
   const events = new Map(); const issues = new Map()
-  const relaySessions = new Map(); const visits = new Map(); const seenEvents = new Map()
+  const relaySessions = new Map(); const visits = new Map(); const seenEvents = new Map(); const actions = new Map()
   const accessTypes = new Map(); const grants = new Map(); const sessionInvites = new Map()
   const grantKey = (room, account) => `${room}\n${account}`
   const inviteOpenAt = (i, at) => !i.usedAt && !i.cancelledAt && i.expiresAt > at
@@ -66,6 +66,9 @@ export function createMemoryStore ({ now = Date.now } = {}) {
   }
   // Grants and invites go with their session (on delete cascade).
   const dropOrphans = () => {
+    // What visits did goes with them (on delete cascade).
+    const live = new Set(all(visits, () => true).map((v) => v.eventStartId))
+    for (const [id, a] of actions) if (!live.has(a.visitStartId)) actions.delete(id)
     for (const [k, g] of grants) if (!relaySessions.has(g.room)) grants.delete(k)
     for (const [id, i] of sessionInvites) if (!relaySessions.has(i.room)) sessionInvites.delete(id)
   }
@@ -248,12 +251,16 @@ export function createMemoryStore ({ now = Date.now } = {}) {
             s.lastActiveAt = Math.max(s.lastActiveAt, e.at)
           }
           if (!all(visits, (v) => v.eventStartId === e.id).length) {
-            const v = { id: uuid(), eventStartId: e.id, room: e.room, account: e.account, accountName: e.name || '', kind: e.account.split(':')[0], startedAt: e.at, endedAt: null }
+            const v = { id: uuid(), eventStartId: e.id, room: e.room, account: e.account, accountName: e.name || '', kind: e.account.split(':')[0], startedAt: e.at, endedAt: null, via: e.via || null, tool: e.tool || null, endReason: null }
             visits.set(v.id, v)
           }
         } else if (e.type === 'end') {
-          for (const v of visits.values()) if (v.eventStartId === e.start && v.endedAt == null) v.endedAt = Math.max(v.startedAt, e.at)
+          for (const v of visits.values()) if (v.eventStartId === e.start && v.endedAt == null) Object.assign(v, { endedAt: Math.max(v.startedAt, e.at), endReason: e.reason || null })
           if (s) s.lastActiveAt = Math.max(s.lastActiveAt, e.at)
+        } else if (e.type === 'act') {
+          // An act whose visit never arrived (its start was dropped from a full queue) is skipped.
+          const v = all(visits, (x) => x.eventStartId === e.start)[0]
+          if (v && !actions.has(e.id)) actions.set(e.id, { id: e.id, visitStartId: v.eventStartId, room: v.room, account: v.account, action: e.action, target: e.target || '', at: e.at })
         } else if (e.type === 'name') {
           if (!s) relaySessions.set(e.room, { room: e.room, name: e.name, ownerAccount: null, createdAt: e.at, lastActiveAt: e.at, renamedAt: null })
           else if (s.renamedAt == null) s.name = e.name
@@ -281,6 +288,11 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       return copy(s)
     },
     // Mirrors prune_activity.
+    // What was done in a session in [from, to), oldest first, at most `limit` (actions_in_room).
+    async actionsInRoom (room, { from, to, limit }) {
+      return all(actions, (a) => a.room === room && a.at >= from && a.at < to)
+        .sort((a, b) => a.at - b.at || a.id.localeCompare(b.id)).slice(0, limit).map(copy)
+    },
     async pruneActivity ({ before, seenBefore }) {
       for (const [id, v] of visits) if (v.endedAt != null && v.endedAt < before) visits.delete(id)
       for (const [room, s] of relaySessions) if (s.lastActiveAt < before && !all(visits, (v) => v.room === room).length) relaySessions.delete(room)

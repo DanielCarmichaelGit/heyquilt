@@ -17,11 +17,6 @@ export function inviteStatusText (invite) {
   return Object.hasOwn(INVITE, invite.status) ? INVITE[invite.status] : 'Waiting'
 }
 
-/** What the website hands you to paste into an AI: the link's page has the whole guide (join, chat, tasks, webhooks). */
-export function agentInvitePaste (link) {
-  return `Join Quilt as my AI agent: open ${link} and follow it. It explains how to join (with the quilt command if you can run commands, over HTTP if not) and how to work in a session: chat, @mentions, direct messages, tasks and webhooks.`
-}
-
 export const AGENT_JOIN_COMMAND = 'quilt agent join <link> --name my-agent'
 
 /** Shown next to an agent with no key: it joins sessions through the hosted MCP, not from a computer running Quilt. */

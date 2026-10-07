@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { agentStatus, inviteStatusText, AGENT_JOIN_COMMAND, HOSTED_NOTE, agentInvitePaste } from '../lib/agent-view.js'
+import { agentStatus, inviteStatusText, AGENT_JOIN_COMMAND, HOSTED_NOTE } from '../lib/agent-view.js'
 
 test('agentStatus explains a signed-out agent and says nothing for an active one', () => {
   assert.equal(agentStatus('active'), null)
@@ -27,8 +27,3 @@ test('HOSTED_NOTE explains how an agent with no key joins sessions', () => {
   assert.equal(HOSTED_NOTE.includes('—'), false, 'no em dash')
 })
 
-test('the invite paste tells the AI to open the link, which has the whole guide', () => {
-  const t = agentInvitePaste('https://api.heyquilt.com/v1/join/qj_abc')
-  assert.ok(t.includes('open https://api.heyquilt.com/v1/join/qj_abc and follow it'))
-  assert.match(t, /webhooks/)
-})

@@ -40,6 +40,18 @@
 .cmd p { font-size: 14.5px; }
 .cmd-also { font-size: 13.5px !important; }
 .cmd-usage, .cmd-example { margin: 0; padding: 9px 12px; border-radius: 8px; overflow-x: auto; white-space: pre; }
+.code-copy { position: relative; }
+.code-copy pre { padding-right: 60px; }
+.code-copy-btn { position: absolute; top: 0; bottom: 0; right: 0; min-width: 40px; padding: 0 11px 0 26px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; border-radius: 0 8px 8px 0; border: 0; font: inherit; font-size: 12px; cursor: pointer; }
+.code-copy-btn svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.code-copy-label:empty { display: none; }
+.cmd-example-wrap .code-copy-btn { background: linear-gradient(90deg, transparent, var(--text) 18px); color: #b9b6c8; }
+.cmd-example-wrap .code-copy-btn:hover { color: #fff; }
+.cmd-usage-wrap .code-copy-btn { background: linear-gradient(90deg, transparent, var(--panel-2) 18px); color: var(--muted); }
+.cmd-usage-wrap .code-copy-btn:hover { color: var(--text); }
+.code-copy-btn.copied { color: var(--ok); }
+.cmd-example-wrap .code-copy-btn.copied { color: var(--qm-c); }
+.code-copy-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .cmd-usage { background: var(--panel-2); color: var(--text); }
 .cmd-example { background: var(--text); color: #f4efe9; }
 .cmd-example span { color: var(--qm-c); }

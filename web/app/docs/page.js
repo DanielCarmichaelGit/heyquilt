@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import DocHero from '@/components/DocHero.js'
 import Mark from '@/components/Mark.js'
+import CopyCode from '@/components/CopyCode.js'
 import { CLI_GROUPS, CLI_ENV } from '@/lib/docs.js'
 
 // Fully static: the CLI reference, from lib/docs.js (a test keeps it in step with `quilt --help`).
@@ -18,7 +19,7 @@ function Command ({ c }) {
         <h3><code>quilt {c.name}</code></h3>
         <a className='cmd-anchor' href={`#cmd-${c.name}`} aria-label={`Link to quilt ${c.name}`}>#</a>
       </div>
-      {c.usage !== `quilt ${c.name}` && <pre className='cmd-usage'><code>{c.usage}</code></pre>}
+      {c.usage !== `quilt ${c.name}` && <CopyCode text={c.usage} className='cmd-usage' prompt={false} />}
       <p>{c.text}</p>
       {c.flags && (
         <dl className='cmd-flags'>
@@ -27,7 +28,7 @@ function Command ({ c }) {
           ))}
         </dl>
       )}
-      {c.example && <pre className='cmd-example'><code><span aria-hidden='true'>$ </span>{c.example}</code></pre>}
+      {c.example && <CopyCode text={c.example} />}
       {c.also && <p className='muted cmd-also'>{c.also}</p>}
     </article>
   )
@@ -52,7 +53,7 @@ export default function CliDocs () {
             <div key={title} className='install-card'>
               <h3>{title}</h3>
               <p>{text}</p>
-              {cmd && <pre className='cmd-example'><code><span aria-hidden='true'>$ </span>{cmd}</code></pre>}
+              {cmd && <CopyCode text={cmd} />}
             </div>
           ))}
         </div>

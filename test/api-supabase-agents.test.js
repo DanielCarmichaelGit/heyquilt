@@ -23,8 +23,16 @@ test('supabase createAgent writes the profile and home, and selects no secrets',
   const { client, calls } = fakeDb(() => agentRow)
   const a = await createSupabaseStore({ client }).createAgent({ name: 'Larry', provider: 'Anthropic', type: 'coding agent', ownerUserId: 'u1', invitedBy: 'u1' })
   assert.deepEqual([a.id, a.provider, a.ownerUserId, a.orgId, a.createdAt], ['a1', 'Anthropic', 'u1', null, Date.parse(ISO)])
-  assert.deepEqual(calls[0].ops.find(([op]) => op === 'insert')[1], { name: 'Larry', provider: 'Anthropic', type: 'coding agent', description: '', public_key: null, owner_user_id: 'u1', org_id: null, invited_by: 'u1' })
+  assert.deepEqual(calls[0].ops.find(([op]) => op === 'insert')[1], { name: 'Larry', provider: 'Anthropic', type: 'coding agent', description: '', public_key: null, resume_hash: null, owner_user_id: 'u1', org_id: null, invited_by: 'u1' })
   assert.equal(calls[0].ops.find(([op]) => op === 'select')[1], 'id, name, provider, type, description, public_key, owner_user_id, org_id, invited_by, created_at, last_used_at, revoked_at')
+})
+
+test('supabase agentByResume looks the agent up by the hash and selects no secrets', async () => {
+  const { client, calls } = fakeDb(() => agentRow)
+  const a = await createSupabaseStore({ client }).agentByResume('h1')
+  assert.equal(a.id, 'a1')
+  assert.ok(has(calls[0], 'eq', 'resume_hash', 'h1'))
+  assert.equal(calls[0].ops.find(([op]) => op === 'select')[1].includes('resume'), false)
 })
 
 test("supabase listPersonalAgents reads only the person's live agents; agentByPublicKey skips empty keys", async () => {

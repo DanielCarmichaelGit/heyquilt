@@ -27,6 +27,7 @@ test('quilt agent join uses the link once and saves its keys privately', async (
   assert.equal(fs.statSync(file).mode & 0o777, 0o600)
   const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'))
   assert.deepEqual([onDisk.agentId, onDisk.api, !!onDisk.identity.privateKey, onDisk.refreshKey], [saved.agentId, t.api.url, true, saved.refreshKey])
+  assert.match(onDisk.resumeKey, /^qs_/, 'its resume key, like every agent')
   const agent = await t.store.agentById(saved.agentId)
   assert.deepEqual([agent.name, agent.provider, agent.type, agent.publicKey], ['larry', DEFAULTS.provider, DEFAULTS.type, onDisk.identity.publicKey])
 })
@@ -80,6 +81,15 @@ test('a revoked access key that has not run out yet signs back in too', async ()
   for (const k of await t.store.listAgentKeys(saved.agentId)) await t.store.revokeFamily(k.familyId)
   assert.equal((await agentWhoami({ name: 'early', dir })).agent.id, saved.agentId)
   assert.notEqual(JSON.parse(fs.readFileSync(agentFile('early', dir), 'utf8')).accessKey, saved.accessKey)
+})
+
+test('an agent saved before resume keys signs back in with its own key', async () => {
+  const dir = tmp()
+  const { resumeKey, ...saved } = await agentJoin({ link: await newLink(), name: 'older', dir, log: () => {} })
+  assert.ok(resumeKey)
+  fs.writeFileSync(agentFile('older', dir), JSON.stringify(saved))
+  for (const k of await t.store.listAgentKeys(saved.agentId)) await t.store.revokeFamily(k.familyId)
+  assert.equal((await agentWhoami({ name: 'older', dir })).agent.id, saved.agentId)
 })
 
 test('an agent a person revoked stays signed out', async () => {

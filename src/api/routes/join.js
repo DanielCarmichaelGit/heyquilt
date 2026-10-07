@@ -51,8 +51,9 @@ export function joinRoutes ({ store, now, apiUrl, limitJoin, agentAuth, log = ()
     // Claim first, so two joins racing on one link can't both make an agent.
     if (!await store.claimAgentInvite(invite.id)) throw new HttpError(410, GONE.used)
     let agent
+    const { resumeKey, resumeHash } = agentAuth.newResumeKey()
     try {
-      agent = await store.createAgent({ ...p, ownerUserId: invite.ownerUserId, orgId: invite.orgId, invitedBy: invite.createdBy })
+      agent = await store.createAgent({ ...p, resumeHash, ownerUserId: invite.ownerUserId, orgId: invite.orgId, invitedBy: invite.createdBy })
       if (invite.orgId) {
         const m = await store.addAgentMember({ orgId: invite.orgId, agentId: agent.id, roleId: invite.roleId })
         for (const x of invite.teams) {
@@ -62,7 +63,7 @@ export function joinRoutes ({ store, now, apiUrl, limitJoin, agentAuth, log = ()
       }
       await store.setInviteAgent(invite.id, agent.id)
       const keys = await agentAuth.mintKeys(agent.id)
-      return { ...keys, api: apiUrl, refresh: `${apiUrl}/v1/agents/token`, mcp: `${apiUrl}/mcp`, next: joinNext({ name: agent.name, apiUrl, hasKey: !!agent.publicKey }) }
+      return { ...keys, resumeKey, api: apiUrl, refresh: `${apiUrl}/v1/agents/token`, resume: `${apiUrl}/v1/agents/resume`, mcp: `${apiUrl}/mcp`, next: joinNext({ name: agent.name, apiUrl, hasKey: !!agent.publicKey }) }
     } catch (err) {
       // Undo the half-made agent and reopen the link, so the AI can simply try again.
       // But if the agent couldn't be deleted, it may still be half-wired into the org

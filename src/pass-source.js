@@ -145,7 +145,7 @@ export function agentPasses ({ name, dir, fetch: fetchImpl = globalThis.fetch, n
         return await requestPass(fetchImpl, saved.api, saved.accessKey, AGENT_SIGNED_OUT, room)
       } catch (err) {
         if (!err.signedOut) throw err
-        // Keys revoked before the access key ran out: an agent with its own key signs back in.
+        // Keys revoked before the access key ran out: the agent signs back in with its resume key.
         let back
         try {
           back = await agentResume({ name, dir, accessKey: saved.accessKey, fetch: fetchImpl })

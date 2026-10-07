@@ -65,12 +65,13 @@ test('the session view no longer calls itself a workspace in code', () => {
   assert.ok(ui('session.js').includes('<div class="sv-content" id="main">') && ui('app.css').includes('.sv-content {'))
 })
 
-test('the settings dialog focuses its name field so Escape closes it, and people cards wrap instead of squeezing the name', () => {
+test('the settings dialog focuses its name field so Escape closes it, and people cards keep access beside the name', () => {
   assert.ok(ui('workspaces.js').includes("form.querySelector('#wss-name').focus()"))
   const css = ui('app.css')
-  assert.ok(css.includes('.pc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));'))
-  assert.ok(css.includes('.pc { display: flex; flex-wrap: wrap;'))
-  assert.ok(css.includes('.pc .t { flex: 1 1 110px; min-width: 0;'))
+  assert.ok(css.includes('.pc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));'))
+  assert.ok(css.includes('.pc { position: relative; display: grid; grid-template-columns: 40px minmax(0, 1fr) auto;'))
+  assert.ok(css.includes('.pc .t { min-width: 0;'))
+  assert.ok(css.includes('.pc .ws-scope { grid-column: 1 / -1;'), 'an agent\'s second line runs across the card')
 })
 
 test('the add form asks only for a name and where; colour and about live in settings', () => {
@@ -145,24 +146,23 @@ test('Settings › Agents with workspaces off: every row is exactly as on main',
   assert.ok(!h.includes('function agentRow'), 'one agentRow, in agent-place.js')
 })
 
-test('Settings › Agents with workspaces on: Available in, the chosen workspaces and Joins, set from the placement', () => {
-  const html = place.agentRow(AGENTS[0], { reach: 'workspaces', workspaceIds: ['w2'], sessions: 'all', access: 'edit', scopes: [] }, MINE)
-  assert.ok(html.startsWith(mainAgentRow(AGENTS[0]).slice(0, -'</div>'.length)), 'the row as before, then the controls')
-  for (const bit of ['data-agent-place="a1"', 'data-placement-reach', 'data-placement-sessions', 'data-placement-ws', 'Available in', 'Joins', 'Only where I add it', 'All my workspaces', 'Chosen workspaces', 'When invited', 'Every session']) assert.ok(html.includes(bit), bit)
-  assert.ok(html.includes('<option value="workspaces" selected>Chosen workspaces</option>'))
-  assert.ok(html.includes('<option value="all" selected>Every session</option>'))
-  assert.ok(html.includes('value="w2" checked') && !html.includes('value="w1" checked'))
-  assert.ok(html.includes('data-placement-picked title="Which workspaces">Website</summary>'))
-  assert.ok(html.includes('&lt;agent&gt;') && !html.includes('<agent>'), 'names are escaped')
-  // Not chosen: the picker keeps its place, hidden; Joins means nothing for an agent only added by hand.
+test('Settings › Agents with workspaces on: a card per agent with Works in, the chosen workspaces and Joins', () => {
+  const chosen = place.agentRow(AGENTS[0], { reach: 'workspaces', workspaceIds: ['w2'], sessions: 'all', access: 'edit', scopes: [] }, MINE)
+  for (const bit of ['class="ag-card" data-agent-place="a1"', 'data-placement-reach', 'data-placement-sessions', 'data-placement-ws', 'Works in', 'Joins sessions', '>All<', 'Chosen', 'Where added', 'Every session', 'When invited']) assert.ok(chosen.includes(bit), bit)
+  assert.ok(chosen.includes('data-v="workspaces" aria-checked="true" class="on"'))
+  assert.ok(chosen.includes('data-v="all" aria-checked="true" class="on"'), 'Joins: every session')
+  assert.ok(chosen.includes('value="w2" aria-pressed="true"') && chosen.includes('value="w1" aria-pressed="false"'), 'a chip per workspace, pressed when chosen')
+  assert.ok(chosen.includes('data-ag-global hidden'), 'not global')
+  assert.ok(chosen.includes('&lt;agent&gt;') && !chosen.includes('<agent>'), 'names are escaped')
+  // Global: the badge shows, and the line under Works in says what it means.
+  const global = place.agentRow(AGENTS[0], { reach: 'all', workspaceIds: [], sessions: 'all' }, MINE)
+  assert.ok(global.includes('data-ag-global title') && global.includes('Global</span>'))
+  assert.ok(global.includes(place.REACH_HINTS.all))
+  // Only where added: Joins is set per workspace, so its choice is off.
   const manual = place.agentRow(AGENTS[1], { reach: 'manual', workspaceIds: [], sessions: 'invited', access: 'edit', scopes: [] }, MINE)
-  // Not chosen: the picker gives its fixed slot to a line saying what the reach means.
-  assert.ok(manual.includes('<details class="ap-pick" hidden>'))
-  assert.ok(manual.includes('<span class="ap-why">Add it from a workspace&#39;s page</span>'))
-  assert.ok(html.includes('<span class="ap-why" hidden>') && html.includes('<details class="ap-pick">'))
-  for (const bit of ['class="input sm ap-reach"', 'class="input sm ap-joins"', 'class="ap-slot"']) assert.ok(html.includes(bit), bit)
-  assert.ok(manual.includes('data-placement-sessions aria-label="When Editor joins sessions" disabled>'))
-  assert.ok(place.agentRow(AGENTS[1], { reach: 'all', workspaceIds: [], sessions: 'invited' }, []).includes('No workspaces yet'))
+  assert.ok(manual.includes('data-placement-sessions aria-label="When Editor joins sessions" aria-disabled="true"'))
+  assert.ok(manual.includes('Set on each workspace it is added to.'))
+  assert.ok(place.agentRow(AGENTS[1], { reach: 'workspaces', workspaceIds: [], sessions: 'invited' }, []).includes('Make a workspace first.'))
   // Only your own personal workspaces can be chosen.
   assert.deepEqual(place.placeableWorkspaces([{ id: 'p', space: { kind: 'personal' }, via: 'owner' }, { id: 'm', space: { kind: 'personal' }, via: 'member' }, { id: 'o', space: { kind: 'org', slug: 'acme' }, via: 'org' }]).map((w) => w.id), ['p'])
 })
@@ -185,7 +185,7 @@ test('workspace agent cards: why it is here, Joins for admins, and the right act
   assert.ok(!m.includes('data-agent-exclude'))
 
   const g = place.workspaceAgentCardHtml(global, { admin: true })
-  for (const bit of ['pill ws-via violet">Global</span>', 'data-agent-joins="g"', '<option value="all" selected>Every session</option>', 'data-agent-exclude="g"', 'title="Not in this workspace"', '<span class="pill">Can edit</span>']) assert.ok(g.includes(bit), bit)
+  for (const bit of ['Global</span>', 'pill ws-via violet" title="In every workspace its owner has.', 'data-agent-joins="g"', '<option value="all" selected>Every session</option>', 'data-agent-exclude="g"', 'title="Not in this workspace"', '<span class="pill">Can edit</span>']) assert.ok(g.includes(bit), bit)
   assert.ok(!g.includes('data-member-access'), 'a placed agent\'s access is set where it was placed')
   assert.ok(place.workspaceAgentCardHtml(placed, { admin: true }).includes('>Placed</span>'))
   assert.ok(place.workspaceAgentCardHtml(fromOrg, { admin: true, orgName: 'Acme' }).includes('>Added by Acme</span>'))
@@ -222,43 +222,44 @@ test('agent-place.js is served, and has no em dashes', () => {
   assert.ok(!ui('agent-place.js').includes(EM_DASH))
 })
 
-// A select the app has turned into a dropdown button (common.js): the button shows the chosen option.
-function fakeSelect (opts, value) {
-  const label = { textContent: opts.find(([v]) => v === value)[1] }
-  const btn = { classList: { contains: (c) => c === 'dd-btn' }, querySelector: () => label, disabled: false, label }
-  return {
-    value,
-    disabled: false,
-    dataset: { dd: '1' },
-    nextElementSibling: btn,
-    get options () { return opts.map(([v, t]) => ({ value: v, textContent: t })) },
-    get selectedIndex () { return opts.findIndex(([v]) => v === this.value) }
-  }
-}
-
-test('a placement that fails to save puts the controls back, dropdown buttons included', async () => {
+test('a card follows its choices, saves each change, and goes back when a save fails', async () => {
   const toastEl = { textContent: '', classList: { add () {}, remove () {} } }
   globalThis.document = { querySelector: (sel) => (sel === '#toast' ? toastEl : null), querySelectorAll: () => [], addEventListener () {} }
   const was = globalThis.fetch
-  globalThis.fetch = async () => ({ ok: false, status: 400, json: async () => ({ error: 'Quilt said no.' }) })
+  const sent = []
+  let fail = false
+  globalThis.fetch = async (url, opts) => {
+    sent.push(JSON.parse(opts.body))
+    return fail ? { ok: false, status: 400, json: async () => ({ error: 'Quilt said no.' }) } : { ok: true, status: 200, json: async () => ({ placement: JSON.parse(opts.body) }) }
+  }
   try {
-    const reach = fakeSelect(place.REACH_OPTIONS, 'manual')
-    const sessions = fakeSelect(place.JOINS_OPTIONS, 'invited')
-    const pick = { hidden: true, open: false }
-    const why = { hidden: false, textContent: '' }
-    const picked = { textContent: '' }
-    const parts = { '[data-placement-reach]': reach, '[data-placement-sessions]': sessions, '.ap-pick': pick, '.ap-why': why, '[data-placement-picked]': picked }
-    const el = { querySelector: (sel) => parts[sel], querySelectorAll: () => [] }
-    place.bindPlacement(el, AGENTS[0], { reach: 'manual', workspaceIds: [], sessions: 'invited', access: 'edit', scopes: [] }, MINE)
-    // The person picks Chosen workspaces: the dropdown already shows it, then the save fails.
-    reach.value = 'workspaces'
-    reach.nextElementSibling.label.textContent = 'Chosen workspaces'
-    await reach.onchange()
+    const mk = (list) => list.map(([v]) => ({ dataset: { v }, disabled: false, on: false, attrs: {}, classList: { toggle: function (c, on) { this.self.on = on } }, setAttribute (k, v2) { this.attrs[k] = v2 } }))
+    const reachBs = mk(place.REACH_OPTIONS)
+    const joinBs = mk(place.JOINS_OPTIONS)
+    for (const b of [...reachBs, ...joinBs]) b.classList.self = b
+    const group = (bs) => ({ attrs: {}, querySelectorAll: () => bs, setAttribute (k, v) { this.attrs[k] = v }, removeAttribute (k) { delete this.attrs[k] } })
+    const reach = group(reachBs)
+    const joins = group(joinBs)
+    const badge = { hidden: true }
+    const detail = { innerHTML: '' }
+    const joinsWhy = { textContent: '' }
+    const parts = { '[data-placement-reach]': reach, '[data-placement-sessions]': joins, '[data-ag-global]': badge, '[data-ag-detail]': detail, '[data-ag-joins-why]': joinsWhy }
+    let onClick
+    const el = { querySelector: (sel) => parts[sel], addEventListener: (type, fn) => { onClick = fn } }
+    place.bindPlacement(el, AGENTS[0], { reach: 'manual', workspaceIds: [], sessions: 'invited', access: 'view', scopes: ['docs'] }, MINE)
+    const click = (target) => onClick({ target: { closest: (sel) => (sel === '[data-placement-reach] [data-v]' && reachBs.includes(target)) || (sel === '[data-placement-sessions] [data-v]' && joinBs.includes(target)) ? target : null } })
+    // All workspaces: global, saved with its access and folders as they were.
+    await click(reachBs.find((b) => b.dataset.v === 'all'))
+    assert.deepEqual(sent.at(-1), { reach: 'all', sessions: 'invited', access: 'view', scopes: ['docs'], workspaceIds: [] })
+    assert.equal(badge.hidden, false, 'the Global badge shows')
+    assert.ok(detail.innerHTML.includes(place.REACH_HINTS.all))
+    assert.equal(joins.attrs['aria-disabled'], undefined, 'Joins can be chosen again')
+    // A failed save: the card goes back to what was saved.
+    fail = true
+    await click(reachBs.find((b) => b.dataset.v === 'manual'))
     assert.equal(toastEl.textContent, 'Quilt said no.')
-    assert.equal(reach.value, 'manual')
-    assert.equal(reach.nextElementSibling.label.textContent, 'Only where I add it', 'the button is redrawn, not left saying Chosen workspaces')
-    assert.equal(sessions.nextElementSibling.label.textContent, 'When invited')
-    assert.deepEqual([pick.hidden, why.hidden, why.textContent, sessions.disabled], [true, false, place.REACH_HINTS.manual, true])
+    assert.equal(badge.hidden, false, 'still global')
+    assert.deepEqual(reachBs.map((b) => b.on), [true, false, false], 'All workspaces is lit again')
   } finally { globalThis.fetch = was; delete globalThis.document }
 })
 
@@ -286,7 +287,7 @@ test('the Add dialog: anchored at the top, a gap before the agent tag, and a hin
   assert.ok(dlg.includes("agents can't be listed: $" + '{err.message}'))
   assert.ok(dlg.includes("people.filter((c) => c.kind !== 'agent' || !isOrg)"))
   const css = ui('app.css')
-  for (const bit of ['.modal-back.top { align-items: start; }', '#wi-people .tag.bot { margin-left: 6px; }', '.pc .btn.pc-x { position: absolute;', '.pc.has-x { position: relative; }', '.ap-slot {']) assert.ok(css.includes(bit), bit)
+  for (const bit of ['.modal-back.top { align-items: start; }', '#wi-people .tag.bot { margin-left: 6px; }', '.pc .btn.pc-x { position: absolute;', '.pc.has-x { padding-right: 44px; }', '.ag-detail {']) assert.ok(css.includes(bit), bit)
   assert.ok(!css.includes('.modal-back {') || css.includes('.modal-back { position: fixed; inset: 0; background: rgba(43, 42, 56, .4); backdrop-filter: blur(2px); display: grid; place-items: center;'), 'other dialogs stay centred')
   assert.ok(ui('workspaces.js').includes('class="btn sm ghost icon pc-x" data-member-remove='))
 })

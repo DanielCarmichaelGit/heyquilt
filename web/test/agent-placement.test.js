@@ -1,5 +1,5 @@
 /* eslint-disable no-template-curly-in-string */
-// Where agents work, on the website: the placement form (Available in and Joins) on the
+// Where agents work, on the website: the placement form (Works in and Joins) on the
 // Agents page and on org People agent rows, and agents with why they are there on a
 // workspace's page. With workspaces off, the Agents and People pages are as before.
 import { test } from 'node:test'
@@ -48,9 +48,9 @@ test('the workspaces an agent can be placed in: its owner\'s personal ones, or i
   assert.deepEqual(orgWorkspaces(list, 'acme').map((w) => w.id), ['3'])
 })
 
-test('words: Available in, why an agent is here, Joins', () => {
-  assert.deepEqual(reachOptions().map(([, l]) => l), ['Only where I add it', 'All my workspaces', 'Chosen workspaces'])
-  assert.equal(reachOptions('All Acme workspaces')[1][1], 'All Acme workspaces')
+test('words: Works in, why an agent is here, Joins', () => {
+  assert.deepEqual(reachOptions().map(([, l]) => l), ['All workspaces (global)', 'Chosen workspaces', 'Only where added'])
+  assert.equal(reachOptions('All Acme workspaces')[0][1], 'All Acme workspaces')
   assert.equal(viaLabel({ via: 'member' }), 'This workspace')
   assert.equal(viaLabel({ via: 'global', managedBy: 'owner' }), 'Global')
   assert.equal(viaLabel({ via: 'placed', managedBy: 'owner' }), 'Placed')
@@ -60,11 +60,11 @@ test('words: Available in, why an agent is here, Joins', () => {
   assert.deepEqual(peopleOnly([{ account: 'person:1' }, { account: 'agent:a' }, { account: 'agent:gone' }], [{ account: 'agent:a' }]).map((m) => m.account), ['person:1', 'agent:gone'])
 })
 
-test('AgentPlacement: a client form with Available in (radios and checkboxes) and Joins', () => {
+test('AgentPlacement: a client form with Works in (radios and checkboxes) and Joins', () => {
   const s = src('components/AgentPlacement.js')
   assert.ok(s.startsWith("'use client'"))
   assert.match(s, /export default function AgentPlacement \(\{ agent, workspaces, action/)
-  for (const bit of ["type='radio'", "name='reach'", "type='checkbox'", "name='workspaceId'", "name='sessions'", "name='access'", "name='scope'", 'useActionState(action', 'Available in', 'Joins']) assert.ok(s.includes(bit), bit)
+  for (const bit of ["type='radio'", "name='reach'", "type='checkbox'", "name='workspaceId'", "name='sessions'", "name='access'", "name='scope'", 'useActionState(action', 'Works in', 'Joins']) assert.ok(s.includes(bit), bit)
 })
 
 test('the Agents page shows placements only when workspaces are on', () => {

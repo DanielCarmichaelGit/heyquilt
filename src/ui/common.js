@@ -102,6 +102,9 @@ export const ago = (ts) => {
 export const clock = (ts) => new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 export const PALETTE = ['#b9432b', '#3b6a9a', '#4a7a45', '#855a9c', '#a8701c', '#2e7a80', '#9c4f6b']
 export const colorFor = (name, given) => given || PALETTE[Math.abs([...String(name)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 0)) % PALETTE.length]
+/** A workspace's colours (its cover, its dot in the sidebar). */
+export const COLORS = { lilac: '#d9c6ea', mint: '#cfe6d4', peach: '#f6dcc0', rose: '#f3d3d0', periwinkle: '#e0dcf0', sky: '#cfe0ee' }
+
 export const avatar = (name, color, online = false) =>
   `<div class="avatar${online ? ' online' : ''}" style="background:${esc(colorFor(name, color))}">${esc(String(name || '?').slice(0, 1))}</div>`
 
@@ -257,12 +260,6 @@ function closeMenu (refocus) {
   menu.remove()
   btn.setAttribute('aria-expanded', 'false')
   if (refocus) btn.focus()
-}
-
-/** Redraws an enhanced select's button after its value was set from code (which fires no change). */
-export function syncSelect (sel) {
-  const btn = sel.nextElementSibling
-  if (sel.dataset.dd && btn?.classList.contains('dd-btn')) syncDropdown(sel, btn)
 }
 
 function syncDropdown (sel, btn) {

@@ -3,8 +3,8 @@ import { useActionState, useState } from 'react'
 import { reachOptions, REACH_HINTS, JOINS_OPTIONS, placementOf, placementChoices } from '@/lib/agent-placement.js'
 
 /**
- * Where an agent works: Available in (only where it is added, every workspace, or the ones
- * ticked) and Joins (when invited, or every session as it starts). `agent.placement` is what
+ * Where an agent works: Works in (every workspace, the ones ticked, or only where it is
+ * added) and Joins (when invited, or every session as it starts). `agent.placement` is what
  * the API has; `workspaces` are the ones it can be placed in. Access and folder limits aren't
  * shown here and go back as they were, as do ticked workspaces this person can't see.
  */
@@ -24,7 +24,7 @@ export default function AgentPlacement ({ agent, workspaces, action, slug, allLa
       {place.scopes.map((s) => <input key={s} type='hidden' name='scope' value={s} />)}
       {reach === 'workspaces' && hidden.map((id) => <input key={id} type='hidden' name='workspaceId' value={id} />)}
       <fieldset className='choice'>
-        <legend>Available in</legend>
+        <legend>Works in</legend>
         {reachOptions(allLabel).map(([value, label]) => (
           <label key={value}>
             <input type='radio' name='reach' value={value} checked={reach === value} onChange={() => setReach(value)} /> {label}

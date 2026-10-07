@@ -1,11 +1,11 @@
 // Workspaces: the home grid of cards, the Add workspace card, and a workspace's page
 // (Sessions, Files, People & agents, Settings). Sessions stay in session.js; the file library
 // (the Files section, All files and uploads) is files.js.
-import { I, state, $, esc, basename, toast, api, ask, avatar, colorFor, ago, bytes } from './common.js'
+import { I, state, $, esc, basename, toast, api, ask, avatar, colorFor, ago, bytes, COLORS } from './common.js'
 import { filesSectionHtml, bindFilesSection } from './files.js'
 import { workspaceAgentCardHtml } from './agent-place.js'
 
-export const COLORS = { lilac: '#d9c6ea', mint: '#cfe6d4', peach: '#f6dcc0', rose: '#f3d3d0', periwinkle: '#e0dcf0', sky: '#cfe0ee' }
+export { COLORS }
 const coverOf = (w) => COLORS[w.color] || COLORS.lilac
 const initial = (name) => [...String(name || '?')][0].toUpperCase()
 const spaceLabel = (w) => (w.space?.kind === 'org' ? w.space.name : 'Personal')

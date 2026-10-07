@@ -1,117 +1,113 @@
 // Where agents work, in the app: an agent's row in Settings › Agents (with Available in and
 // Joins once workspaces are on) and an agent's card on a workspace's page. The markup is plain
 // functions, so tests can draw it; home.js and workspaces.js put it on the page.
-import { I, esc, ago, avatar, colorFor, api, toast, syncSelect } from './common.js'
+import { I, esc, ago, avatar, colorFor, api, toast, COLORS } from './common.js'
 
-export const REACH_OPTIONS = [['manual', 'Only where I add it'], ['all', 'All my workspaces'], ['workspaces', 'Chosen workspaces']]
-/** What Available in means, in the picker's place when no workspaces are picked by hand. */
-export const REACH_HINTS = { manual: 'Add it from a workspace\'s page', all: 'Every workspace you own, and new ones' }
-export const JOINS_OPTIONS = [['invited', 'When invited'], ['all', 'Every session']]
+export const REACH_OPTIONS = [['all', 'All'], ['workspaces', 'Chosen'], ['manual', 'Where added']]
+/** What Works in means, under the choice (when no workspaces are picked by hand). */
+export const REACH_HINTS = { all: 'Global: in every workspace you own, and any you make later.', manual: 'Only in workspaces it is added to, from their page.' }
+export const JOINS_OPTIONS = [['all', 'Every session'], ['invited', 'When invited']]
+const JOINS_HINTS = { all: 'Joins each session in its workspaces as it starts.', invited: 'Joins a session only when someone invites it.', manual: 'Set on each workspace it is added to.' }
 const options = (list, value) => list.map(([v, label]) => `<option value="${v}"${v === value ? ' selected' : ''}>${label}</option>`).join('')
+const segs = (list, value, attr, label, disabled = false) =>
+  `<div class="segmented sm" role="radiogroup" ${attr} aria-label="${esc(label)}"${disabled ? ' aria-disabled="true"' : ''}>${list.map(([v, l]) =>
+    `<button type="button" role="radio" data-v="${v}" aria-checked="${v === value}" class="${v === value ? 'on' : ''}"${disabled ? ' disabled' : ''}>${l}</button>`).join('')}</div>`
 
 /** Your own personal workspaces: the only ones one of your agents can be placed in. */
 export const placeableWorkspaces = (list) => (list || []).filter((w) => w.space?.kind === 'personal' && w.via === 'owner')
 
-/** One of your agents in Settings › Agents. With a placement (workspaces on), its Available in and Joins too. */
+/**
+ * One of your agents in Settings › Agents. Without a placement (workspaces off) it is the row
+ * Quilt has always shown; with one, a card with where it works and when it joins sessions.
+ */
 export function agentRow (a, place = null, workspaces = []) {
   const signedOut = a.status === 'reused' || a.status === 'expired'
   const state = signedOut ? '<span class="pill warn">signed out</span>' : a.canJoinSessions ? '' : '<span class="pill">registered only</span>'
   const when = a.lastUsedAt ? `last used ${ago(a.lastUsedAt)}` : `added ${ago(a.createdAt)}`
-  return `<div class="kv agent-row"><span>${I.bot}</span><b>${esc(a.name)} ${state}</b><span class="hint">${esc(a.provider)} · ${esc(a.type)} · ${when}</span>${place ? placementHtml(a, place, workspaces) : ''}</div>`
+  if (place) return agentCardHtml(a, place, workspaces, { state, when })
+  return `<div class="kv agent-row"><span>${I.bot}</span><b>${esc(a.name)} ${state}</b><span class="hint">${esc(a.provider)} · ${esc(a.type)} · ${when}</span></div>`
 }
 
-/** What the workspace picker's button says: the chosen workspaces' names. */
-export function pickedLabel (ids, workspaces) {
-  const names = workspaces.filter((w) => ids.includes(w.id)).map((w) => w.name)
-  return names.length ? names.join(', ') : workspaces.length ? 'Pick workspaces' : 'No workspaces yet'
+/** The chosen-workspace chips: each of your workspaces, pressed when the agent is in it. */
+function chipsHtml (ids, workspaces) {
+  if (!workspaces.length) return '<span class="ag-why">Make a workspace first.</span>'
+  return workspaces.map((w) => `<button type="button" class="ag-chip" data-placement-ws value="${esc(w.id)}" aria-pressed="${ids.includes(w.id)}"><i style="background:${COLORS[w.color] || COLORS.lilac}"></i>${esc(w.name)}</button>`).join('')
 }
 
 /**
- * Available in, the chosen workspaces (a drop-down of checkboxes) and Joins, under the agent's
- * name. Each select is as wide as its longest choice and the row wraps on a narrow window. The
- * picker shares a fixed-size slot with a line saying what the reach means, so choosing never
- * moves the rows; it opens over the page.
+ * An agent's card: who it is (with a Global badge when it is in every workspace), Works in
+ * (all workspaces, chosen ones as chips, or only where added) and Joins. The line under each
+ * choice has a fixed height, so changing a choice never moves the card.
  */
-export function placementHtml (a, place, workspaces) {
+export function agentCardHtml (a, place, workspaces, { state = '', when = '' } = {}) {
   const ids = place.workspaceIds || []
-  const chosen = place.reach === 'workspaces'
+  const manual = place.reach === 'manual'
   return `
-    <div class="agent-place" data-agent-place="${esc(a.id)}">
-      <div class="ap-g"><span class="ap-l">Available in</span><select class="input sm ap-reach" data-placement-reach aria-label="Where ${esc(a.name)} is available">${options(REACH_OPTIONS, place.reach)}</select></div>
-      <div class="ap-slot">
-        <details class="ap-pick"${chosen ? '' : ' hidden'}>
-          <summary class="input sm" data-placement-picked title="Which workspaces">${esc(pickedLabel(ids, workspaces))}</summary>
-          <div class="ap-menu">${workspaces.length
-            ? workspaces.map((w) => `<label><input type="checkbox" data-placement-ws value="${esc(w.id)}"${ids.includes(w.id) ? ' checked' : ''}><span>${esc(w.name)}</span></label>`).join('')
-            : '<p class="hint">Make a workspace first.</p>'}</div>
-        </details>
-        <span class="ap-why"${chosen ? ' hidden' : ''}>${esc(REACH_HINTS[place.reach] || '')}</span>
-      </div>
-      <div class="ap-g"><span class="ap-l">Joins</span><select class="input sm ap-joins" data-placement-sessions aria-label="When ${esc(a.name)} joins sessions"${place.reach === 'manual' ? ' disabled' : ''}>${options(JOINS_OPTIONS, place.sessions)}</select></div>
-    </div>`
+  <div class="ag-card" data-agent-place="${esc(a.id)}">
+    <div class="ag-head">${avatar(a.name, colorFor(a.name), false)}
+      <div class="ag-t"><b>${esc(a.name)}</b>${state ? ` ${state}` : ''}<span class="hint">${esc(a.provider)} · ${esc(a.type)} · ${when}</span></div>
+      <span class="pill violet ag-global" data-ag-global${place.reach === 'all' ? '' : ' hidden'} title="In every workspace you own">${I.globe}Global</span>
+    </div>
+    <div class="ag-set">
+      <div class="ag-g"><span class="ag-l">Works in</span>${segs(REACH_OPTIONS, place.reach, 'data-placement-reach', `Where ${a.name} works`)}
+        <div class="ag-detail" data-ag-detail>${place.reach === 'workspaces' ? chipsHtml(ids, workspaces) : `<span class="ag-why">${esc(REACH_HINTS[place.reach])}</span>`}</div></div>
+      <div class="ag-g"><span class="ag-l">Joins sessions</span>${segs(JOINS_OPTIONS, place.sessions, 'data-placement-sessions', `When ${a.name} joins sessions`, manual)}
+        <div class="ag-detail"><span class="ag-why" data-ag-joins-why>${esc(JOINS_HINTS[manual ? 'manual' : place.sessions])}</span></div></div>
+    </div>
+  </div>`
 }
 
-/** The placement to save from what the row shows; access and folder limits stay as they were. */
+/** The placement to save from what the card shows; access and folder limits stay as they were. */
 export function placementBody (saved, { reach, sessions, workspaceIds }, workspaces) {
   const mine = new Set(workspaces.map((w) => w.id))
   return { reach, sessions, access: saved.access || 'edit', scopes: saved.scopes || [], workspaceIds: reach === 'workspaces' ? workspaceIds.filter((id) => mine.has(id)) : [] }
 }
 
-/** Saves each row's Available in, chosen workspaces and Joins as they change. */
+/** Saves each card's Works in, chosen workspaces and Joins as they change. */
 export function bindPlacements (root, agents, places, workspaces) {
   root.querySelectorAll('[data-agent-place]').forEach((el) => {
     const i = agents.findIndex((a) => a.id === el.dataset.agentPlace)
     if (i >= 0 && places[i]) bindPlacement(el, agents[i], places[i], workspaces)
   })
-  if (!bindPlacements.listening) {
-    // A click anywhere else, or Escape, closes an open workspace picker.
-    bindPlacements.listening = true
-    document.addEventListener('mousedown', (e) => document.querySelectorAll('.ap-pick[open]').forEach((d) => { if (!d.contains(e.target)) d.open = false }))
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') document.querySelectorAll('.ap-pick[open]').forEach((d) => { d.open = false }) })
-  }
 }
 
-/** One row: its saves, and putting the controls back when a save fails. */
+/** One card: what it shows follows the choices, each change saves, and a failed save puts the card back. */
 export function bindPlacement (el, a, place, workspaces) {
   let saved = place
-  let chosen = [...(place.workspaceIds || [])]
-  const reach = el.querySelector('[data-placement-reach]')
-  const sessions = el.querySelector('[data-placement-sessions]')
-  const pick = el.querySelector('.ap-pick')
-  const boxes = () => [...el.querySelectorAll('[data-placement-ws]')]
-  const why = el.querySelector('.ap-why')
+  let shown = { reach: place.reach, sessions: place.sessions, workspaceIds: [...(place.workspaceIds || [])] }
+  const reachEl = el.querySelector('[data-placement-reach]')
+  const joinsEl = el.querySelector('[data-placement-sessions]')
   const paint = () => {
-    const picking = reach.value === 'workspaces'
-    pick.hidden = !picking
-    why.hidden = picking
-    why.textContent = REACH_HINTS[reach.value] || ''
-    if (!picking) pick.open = false
-    sessions.disabled = reach.value === 'manual'
-    el.querySelector('[data-placement-picked]').textContent = pickedLabel(chosen, workspaces)
+    const manual = shown.reach === 'manual'
+    for (const b of reachEl.querySelectorAll('[data-v]')) { const on = b.dataset.v === shown.reach; b.classList.toggle('on', on); b.setAttribute('aria-checked', String(on)) }
+    for (const b of joinsEl.querySelectorAll('[data-v]')) { const on = b.dataset.v === shown.sessions; b.classList.toggle('on', on); b.setAttribute('aria-checked', String(on)); b.disabled = manual }
+    if (manual) joinsEl.setAttribute('aria-disabled', 'true'); else joinsEl.removeAttribute('aria-disabled')
+    el.querySelector('[data-ag-global]').hidden = shown.reach !== 'all'
+    el.querySelector('[data-ag-detail]').innerHTML = shown.reach === 'workspaces' ? chipsHtml(shown.workspaceIds, workspaces) : `<span class="ag-why">${esc(REACH_HINTS[shown.reach])}</span>`
+    el.querySelector('[data-ag-joins-why]').textContent = JOINS_HINTS[manual ? 'manual' : shown.sessions]
   }
   const save = async () => {
+    paint()
     try {
-      saved = (await api('POST', `/api/agents/${encodeURIComponent(a.id)}/placement`, placementBody(saved, { reach: reach.value, sessions: sessions.value, workspaceIds: chosen }, workspaces))).placement
+      saved = (await api('POST', `/api/agents/${encodeURIComponent(a.id)}/placement`, placementBody(saved, shown, workspaces))).placement
       toast('Saved')
     } catch (err) {
       toast(err.message)
-      // Back to what was saved; set from code, so the dropdown buttons are redrawn by hand.
-      reach.value = saved.reach
-      sessions.value = saved.sessions
-      syncSelect(reach)
-      syncSelect(sessions)
-      if (saved.reach === 'workspaces') chosen = [...saved.workspaceIds]
-      boxes().forEach((b) => { b.checked = chosen.includes(b.value) })
+      shown = { reach: saved.reach, sessions: saved.sessions, workspaceIds: [...(saved.workspaceIds || [])] }
+      paint()
     }
-    paint()
   }
-  reach.onchange = () => {
-    paint()
-    if (reach.value === 'workspaces' && !chosen.length) pick.open = true
-    return save()
-  }
-  sessions.onchange = save
-  boxes().forEach((b) => { b.onchange = () => { chosen = boxes().filter((x) => x.checked).map((x) => x.value); paint(); save() } })
+  el.addEventListener('click', (e) => {
+    const r = e.target.closest('[data-placement-reach] [data-v]')
+    const j = e.target.closest('[data-placement-sessions] [data-v]')
+    const c = e.target.closest('[data-placement-ws]')
+    if (r && r.dataset.v !== shown.reach) { shown.reach = r.dataset.v; return save() }
+    if (j && !j.disabled && j.dataset.v !== shown.sessions) { shown.sessions = j.dataset.v; return save() }
+    if (c) {
+      shown.workspaceIds = shown.workspaceIds.includes(c.value) ? shown.workspaceIds.filter((id) => id !== c.value) : [...shown.workspaceIds, c.value]
+      return save()
+    }
+  })
 }
 
 /** Why someone else's agent in a workspace never joins every session there (the API's words). */
@@ -132,7 +128,8 @@ export function viaLabel (a, orgName = '') {
 export function workspaceAgentCardHtml (a, { admin = false, orgName = '' } = {}) {
   const name = a.name || 'Agent'
   const member = a.via === 'member'
-  const pill = `<span class="pill ws-via${a.via === 'global' ? ' violet' : ''}">${esc(viaLabel(a, orgName))}</span>`
+  const global = a.via === 'global'
+  const pill = `<span class="pill ws-via${global ? ' violet' : ''}"${global ? ' title="In every workspace its owner has. Set in Settings › Agents."' : ''}>${global ? I.globe : ''}${esc(viaLabel(a, orgName))}</span>`
   // Someone else's agent added here joins only when invited: only its owner can change that.
   let joins = `<span>Joins ${a.sessions === 'all' ? 'every session' : 'when invited'}</span>`
   if (a.excluded) joins = '<span>Not in this workspace</span>'

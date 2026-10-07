@@ -710,7 +710,7 @@ function bindAgents (root) {
     const places = on ? await Promise.all(agents.map((a) => api('GET', `/api/agents/${encodeURIComponent(a.id)}/placement`).then((r) => r.placement, () => null))) : []
     const mine = placeableWorkspaces(state.workspaces)
     list.innerHTML = agents.length
-      ? agents.map((a, i) => agentRow(a, places[i], mine)).join('') + (on && places.some(Boolean) ? '<p class="hint ap-note"><b>Available in</b>: the workspaces it is in without being added. <b>Joins</b>: every session there as it starts, or only when invited.</p>' : '')
+      ? (on && places.some(Boolean) ? `<div class="ag-list">${agents.map((a, i) => agentRow(a, places[i], mine)).join('')}</div>` : agents.map((a, i) => agentRow(a, places[i], mine)).join(''))
       : '<p class="hint">No agents yet. Invite one below.</p>'
     if (on) bindPlacements(list, agents, places, mine)
   }).catch((err) => { list.innerHTML = `<p class="hint warn">${esc(err.message)}</p>` })

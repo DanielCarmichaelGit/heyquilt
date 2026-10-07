@@ -348,7 +348,7 @@ What phase 3 changed from the design above, and why:
   The workspace page marks it `foreign: true` with `sessions: 'invited'`; the app shows Joins as text and the
   website disables it, each with the reason. A workspace agent invite always makes the owner's own agent.
 - **The starting agent isn't told about its own session.** When an agent starts a session, the hand-off skips it.
-- **Where the website shows it.** Available in and Joins are on the Agents page (personal) and on each agent row
+- **Where the website shows it.** Works in and Joins are on the Agents page (personal) and on each agent row
   of the org's People page (for members with Agents: Update and Workspaces: Update), only while workspaces are on. A workspace's page
   lists its agents with why each is there (This workspace, Placed, Global, Added by <org>) and, for admins, Joins.
 - **Deferred to phase 4:** the session people menu's "why here" for each agent.

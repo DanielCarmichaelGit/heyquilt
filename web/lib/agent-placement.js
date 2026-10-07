@@ -1,17 +1,17 @@
-// Where an agent works, on the website: its placement form (Available in and Joins) and why
+// Where an agent works, on the website: its placement form (Works in and Joins) and why
 // an agent is on a workspace's page. Pure, so it's unit-tested directly. The words match
 // the app's (src/ui/agent-place.js).
 
 export const REACH = ['manual', 'all', 'workspaces']
 export const JOINS = ['invited', 'all']
 
-/** Available in's choices. `allLabel` names "all" for an org ("All Acme workspaces"). */
-export function reachOptions (allLabel = 'All my workspaces') {
-  return [['manual', 'Only where I add it'], ['all', allLabel], ['workspaces', 'Chosen workspaces']]
+/** Works in's choices. `allLabel` names "all" for an org ("All Acme workspaces"). */
+export function reachOptions (allLabel = 'All workspaces (global)') {
+  return [['all', allLabel], ['workspaces', 'Chosen workspaces'], ['manual', 'Only where added']]
 }
 
-/** What Available in means, under the choices. */
-export const REACH_HINTS = { manual: 'Add it from a workspace’s page.', all: 'Every workspace now, and new ones.', workspaces: 'Only the workspaces ticked here.' }
+/** What Works in means, under the choices. */
+export const REACH_HINTS = { manual: 'Only in workspaces it is added to, from their page.', all: 'Global: in every workspace, and any made later.', workspaces: 'Only the workspaces ticked here.' }
 
 export const JOINS_OPTIONS = [['invited', 'When invited'], ['all', 'Every session']]
 

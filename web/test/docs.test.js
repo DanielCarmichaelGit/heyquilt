@@ -26,6 +26,7 @@ test('every CLI command and group has what the page renders', () => {
 test('the docs nav starts with the CLI reference and has the git page', () => {
   assert.equal(DOCS_NAV[0].href, '/docs')
   assert.ok(DOCS_NAV.some((d) => d.href === '/docs/git'))
+  assert.ok(DOCS_NAV.some((d) => d.href === '/docs/agents'))
 })
 
 test('every git operation has commands, a known tag kind and text', () => {

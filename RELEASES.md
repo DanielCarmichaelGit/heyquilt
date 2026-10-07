@@ -9,6 +9,10 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.16 — 2026-10-07
+
+- **Docs: connect your own agents.** A new page on heyquilt.com, **Docs → Your own agents**, explains how the AIs on your computer join a session: your everyday AI tools are connected by themselves and work as you, and an agent of your own joins as its own member in five steps (install the command, make an agent invite, `quilt agent join`, `quilt join --agent` in the background, let it in), with how it works in a session, how you stay in control and troubleshooting.
+
 ## 0.3.15 — 2026-10-07
 
 - **The website looks like the app again.** heyquilt.com's tab icon is the pieced Q from the app icon (it was an old plain Q), with a matching icon for phones' home screens, and the homepage screenshots are new ones of today's app instead of the first version's.

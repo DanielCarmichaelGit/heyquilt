@@ -8,7 +8,7 @@ import { joinInstructions, joinNext } from '../src/api/join-text.js'
 const COVERS = [/quilt_message/, /@Name/, /"to":"<name>"/, /quilt_tasks/, /quilt_move_task/, /qaNotes/, /quilt_inbox/,
   /quilt_webhook_subscribe/, /x-quilt-signature/, /HMAC-SHA256/, /chat\.mention/, /task\.assigned/, /quilt_request_file/, /quilt_handoff/,
   /invisible to every person/, /\[AI agent\]/, /share the person's name/, /to_ai: true/, /without @mentioning it/, /a person's word wins/,
-  /quilt_partner_feed/, /never commits, merges or pushes git/]
+  /quilt_partner_feed/, /never commits, merges or pushes git/, /@Agents/]
 
 test('the guide covers chat, mentions, direct messages, tasks, files, the inbox and webhooks', () => {
   const g = agentGuide({ apiUrl: 'https://api.x' })

@@ -9,6 +9,10 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.16 — 2026-10-07
+
+- **Connect Pipedream, Zapier, Make or n8n.** On heyquilt.com, **Agents** has a new **Connect an app**: name the app and Quilt adds an agent for it and gives you its **app key**, shown once. Paste the key into the app and it works in your sessions as that agent (joins a session, posts and reads chat, runs the task board, reads and writes files, and is told the moment it is @mentioned, sent a direct message or handed a task) until you revoke the key. Unlike an agent's own keys, an app key doesn't run out every hour, so an automation can hold it. Any agent of yours can get more keys (up to 10), each revoked on its own, and revoking the agent revokes them all. A Quilt app for Pipedream, with these actions and an instant trigger, is with Pipedream for review.
+
 ## 0.3.15 — 2026-10-07
 
 - **The website looks like the app again.** heyquilt.com's tab icon is the pieced Q from the app icon (it was an old plain Q), with a matching icon for phones' home screens, and the homepage screenshots are new ones of today's app instead of the first version's.

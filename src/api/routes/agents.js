@@ -1,13 +1,32 @@
-// Agents: swapping a refresh key, who an agent is, and a person's personal agents.
-import { HttpError, needId } from '../http.js'
+// Agents: swapping a refresh key, who an agent is, and a person's personal agents,
+// with the app keys (qk_) that let an app like Pipedream sign one in.
+import { HttpError, needId, cleanName } from '../http.js'
 import { parsePublicKey, verifyAgentResume } from '../../identity.js'
 import { keyStatus } from '../agent-auth.js'
 
 // Never the key itself, just whether it has one. With a key it joins sessions from a computer
 // running Quilt; without one it is hosted: it joins through the API's /mcp. Either way it can join.
+// Live app keys an agent may hold at once.
+export const MAX_APP_KEYS = 10
+const keyName = (v) => cleanName(typeof v === 'string' ? v : '', 40, 'name the key (up to 40 characters), e.g. Pipedream')
+const keyView = (k) => ({ id: k.id, name: k.name, createdAt: k.createdAt, lastUsedAt: k.lastUsedAt })
+
 const profileOf = (a) => ({ id: a.id, name: a.name, provider: a.provider, type: a.type, description: a.description, canJoinSessions: true, hosted: !a.publicKey })
 
-export function agentRoutes ({ store, user, person, now, limitTokens, limitStarts, spendResume, resumeWindowMs, agentAuth, apiUrl }) {
+export function agentRoutes ({ store, user, person, now, limit, limitTokens, limitStarts, spendResume, resumeWindowMs, agentAuth, apiUrl }) {
+  // A personal agent of this person's that isn't revoked; anyone else's gets the same 404 as a missing one.
+  async function mine (req, id) {
+    const u = await user(req)
+    const agent = await store.agentById(needId(id, 'agent'))
+    if (!agent || agent.ownerUserId !== u.userId || agent.revokedAt) throw new HttpError(404, 'no such agent')
+    return agent
+  }
+  async function newAppKey (agent, name) {
+    if ((await store.listAgentAppKeys(agent.id)).length >= MAX_APP_KEYS) throw new HttpError(409, `an agent can have ${MAX_APP_KEYS} app keys; revoke one first`)
+    return agentAuth.mintAppKey(agent.id, name)
+  }
+  const connect = (agent, key) => ({ agent: profileOf(agent), key, mcp: `${apiUrl}/mcp` })
+
   return [
     ['POST', /^\/v1\/agents\/token$/, async (req, body) => {
       limitTokens(req)
@@ -56,9 +75,38 @@ export function agentRoutes ({ store, user, person, now, limitTokens, limitStart
           createdAt: a.createdAt,
           lastUsedAt: a.lastUsedAt,
           // Why an agent is signed out (reused or expired keys), so the dashboard can say so.
-          status: keyStatus(await store.listAgentKeys(a.id), now())
+          // A live app key keeps it signed in whatever its own keys did.
+          status: (await store.listAgentAppKeys(a.id)).length ? 'active' : keyStatus(await store.listAgentKeys(a.id), now())
         })))
       }
+    }],
+
+    // Connecting an app (Pipedream, Zapier, Make, n8n, a script): a new hosted agent of this
+    // person's, named for the app, and its first app key. The key is shown once.
+    ['POST', /^\/v1\/agents\/apps$/, async (req, body) => {
+      const u = await user(req)
+      limit(req)
+      const name = cleanName(typeof body.name === 'string' ? body.name : '', 40, 'give the agent a name (up to 40 characters), e.g. Pipedream')
+      const provider = body.provider == null || body.provider === '' ? name : cleanName(String(body.provider), 40, 'provider: up to 40 characters')
+      const agent = await store.createAgent({ name, provider, type: 'app', ownerUserId: u.userId, invitedBy: u.userId })
+      return connect(agent, await newAppKey(agent, provider))
+    }],
+
+    ['GET', /^\/v1\/agents\/([^/]+)\/keys$/, async (req, body, [id]) => {
+      const agent = await mine(req, id)
+      return { keys: (await store.listAgentAppKeys(agent.id)).map(keyView) }
+    }],
+
+    ['POST', /^\/v1\/agents\/([^/]+)\/keys$/, async (req, body, [id]) => {
+      const agent = await mine(req, id)
+      limit(req)
+      return connect(agent, await newAppKey(agent, keyName(body.name)))
+    }],
+
+    ['DELETE', /^\/v1\/agents\/([^/]+)\/keys\/([^/]+)$/, async (req, body, [id, keyId]) => {
+      const agent = await mine(req, id)
+      if (!await store.revokeAgentAppKey(agent.id, needId(keyId, 'key'))) throw new HttpError(404, 'no such key')
+      return { ok: true }
     }],
 
     ['DELETE', /^\/v1\/agents\/([^/]+)$/, async (req, body, [id]) => {

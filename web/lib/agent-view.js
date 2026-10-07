@@ -21,3 +21,6 @@ export const AGENT_JOIN_COMMAND = 'quilt agent join <link> --name my-agent'
 
 /** Shown next to an agent with no key: it joins sessions through the hosted MCP, not from a computer running Quilt. */
 export const HOSTED_NOTE = "Hosted: it joins sessions through Quilt's MCP server (api.heyquilt.com/mcp) with its access key, so it needs no computer running Quilt. Send it an invite link and let it in from the session."
+
+/** Shown next to an app's agent (made by Connect an app): it works with its app key, not an invite's keys. */
+export const APP_NOTE = "An app: it works in your sessions with its app key, through Quilt's MCP server (api.heyquilt.com/mcp). Give it a session's invite link (in Pipedream, the Join Session action) and let it in from the session."

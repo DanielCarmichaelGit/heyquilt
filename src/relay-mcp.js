@@ -120,9 +120,19 @@ function sessionTools (server, ctx) {
     return { ...r, content: [...r.content, { type: 'text', text: `📥 ${n}` }] }
   }
   const tool = (name, def, fn) => server.registerTool(name, def, async (args) => stale(await ctx.withSession((room) => {
+    // The audit trail: which tool, on what (a path, a pattern or a task id; never contents).
+    const who = ctx.who(room)
+    if (who && who.id && room.audit) {
+      const a = args || {}
+      const on = [a.path, a.pattern, a.id, a.under].find((x) => typeof x === 'string' && x)
+      room.audit(who.id, 'tool', on ? `${name} ${on}` : name)
+    }
     const doc = room.doc
     const parts = { room, doc, feed: doc.getArray('agentFeed'), chat: doc.getArray('chat'), activity: doc.getArray('activity'), files: doc.getMap('files'), blobs: doc.getMap('blobs') }
-    return queueNote(room, fn(args || {}, parts))
+    // Changes the tool makes to the session (files, chat, the board) go in this agent's audit trail.
+    const prev = room.auditAs
+    room.auditAs = who && who.id
+    try { return queueNote(room, fn(args || {}, parts)) } finally { room.auditAs = prev }
   })))
   if (ctx.updates) {
     server.registerTool('quilt_check_update', {
@@ -684,11 +694,11 @@ export async function handleHostedMcp ({ req, res, pass, relay }) {
   const current = () => {
     const h = relay.hosted.get(account)
     if (!h) return { error: NOT_JOINED }
-    if (relay.roomEnded(h.room)) { relay.hosted.delete(account); relay.saveHosted(); return { error: `${relay.endedMessage}. ${NOT_JOINED}` } }
+    if (relay.roomEnded(h.room)) { visitEnd('session_ended'); relay.hosted.delete(account); relay.saveHosted(); return { error: `${relay.endedMessage}. ${NOT_JOINED}` } }
     const room = relay.getRoom(h.room)
     if (!room) return { error: relay.refused(h.room)[1] }
     touched.add(room)
-    if (!room.exists) { relay.hosted.delete(account); relay.saveHosted(); return { error: REMOVED } }
+    if (!room.exists) { visitEnd('session_ended'); relay.hosted.delete(account); relay.saveHosted(); return { error: REMOVED } }
     if (h.denied) { relay.hosted.delete(account); relay.saveHosted(); tellRoom(); return { error: DENIED } }
     const access = room.hostedAccess(pass)
     if (access.needsRoomPass) {
@@ -698,13 +708,18 @@ export async function handleHostedMcp ({ req, res, pass, relay }) {
     if (access.state !== 'approved') {
       // Still waiting, but the relay restarted and forgot: back on the owner's list.
       if (h.pending && ![...room.pending].some(([k, p]) => k.hosted && p.id === account)) room.hostedRequest(pass, h.invitedAs || 'viewer')
+      if (!h.pending) visitEnd('removed')
       return { error: h.pending ? WAITING : REMOVED, room, access }
     }
     h.seenAt = Date.now()
     relay.saveHosted()
     room.hostedActive(account)
+    visitStart(room, access)
     return { room, access }
   }
+  // The audit trail (server.js keeps the visit with the agent's entry in relay.hosted).
+  const visitStart = (room, access) => { if (relay.visitStart) relay.visitStart(account, room, { name: me, tool: toolLabel(mcp.server.getClientVersion()?.name) || 'hosted', owner: !!(access && access.owner) }) }
+  const visitEnd = (reason) => { if (relay.visitEnd) relay.visitEnd(account, reason) }
   const ctx = {
     me,
     who: () => ({ name: me, id: account }),
@@ -746,11 +761,16 @@ export async function handleHostedMcp ({ req, res, pass, relay }) {
     const a = room.hostedRequest(pass, auth)
     // A webhook outlives the session it was set in: it carries over to the next one, with a fresh take of its room.
     const webhook = relay.webhooks ? relay.webhooks.rejoin(relay.hosted.get(account)?.webhook, { name: me, room }) : undefined
-    relay.hosted.set(account, { room: inv.room, since: Date.now(), seenAt: Date.now(), pending: a.state === 'pending', ...(a.state === 'pending' ? { invitedAs: auth, name: me, kind: pass.kind } : {}), inbox: takeStock(room.doc, me), ...(webhook ? { webhook } : {}) })
+    // Joining again in the same session carries its visit on; joining another ends it.
+    const before = relay.hosted.get(account)
+    const visit = before && before.room === inv.room ? before.visit : undefined
+    if (before && before.room !== inv.room) visitEnd('left')
+    relay.hosted.set(account, { room: inv.room, since: Date.now(), seenAt: Date.now(), pending: a.state === 'pending', ...(a.state === 'pending' ? { invitedAs: auth, name: me, kind: pass.kind } : {}), inbox: takeStock(room.doc, me), ...(webhook ? { webhook } : {}), ...(visit ? { visit } : {}) })
     relay.saveHosted()
     tellRoom()
     if (a.state === 'pending') return text(`Asked to join room ${inv.room} as ${auth === 'viewer' ? 'a viewer' : 'an editor'}. ${WAITING}`)
     room.hostedActive(account)
+    visitStart(room, a)
     return text(`Joined room ${inv.room} as ${me} (${a.owner ? 'owner' : a.role}${a.scopes && a.scopes.length ? `, folders ${a.scopes.join(', ')}` : ''}). Call quilt_status to see who is here.`)
   })
 
@@ -773,6 +793,7 @@ export async function handleHostedMcp ({ req, res, pass, relay }) {
   }, () => {
     const h = relay.hosted.get(account)
     if (!h) return text('You are not in a session.')
+    visitEnd('left')
     relay.hosted.delete(account)
     relay.saveHosted()
     tellRoom()

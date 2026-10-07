@@ -247,7 +247,7 @@ test('end to end: two accounts in one session see each other on their dashboards
   assert.ok(hers.people[0].togetherMs > 0)
 })
 
-test('a hosted agent (HTTP only, no connection) works with presence on, and records no visit yet', async (t) => {
+test('a hosted agent (HTTP only, no connection) has a visit from its first call once let in, with what it did, ended when it is removed', async (t) => {
   const api = collector()
   const srv = await relay(t, { presenceOptions: { fetch: api.fetch } })
   const r = room()
@@ -264,8 +264,20 @@ test('a hosted agent (HTTP only, no connection) works with presence on, and reco
     await admin(o, { op: 'remove', key: 'agent:agent-grok' })
     assert.match(await call('quilt_leave_session'), /Left room/)
     await srv.presence.flush()
-    // Only the owner's visit and the rename: hosted agents are not reported as visits (yet).
-    assert.deepEqual(api.events.map((e) => [e.type, e.account || e.name]), [['start', 'person:user-olive'], ['name', 'hosted']])
+    // Its visit starts with its first call once let in, lists what it did (never contents), and ends when it is removed.
+    const seen = api.events.map((e) => [e.type, e.account || e.name, e.via || e.action || e.reason || '', e.target || ''])
+    assert.deepEqual(seen, [
+      ['start', 'person:user-olive', 'app', ''],
+      ['start', 'agent:agent-grok', 'hosted', ''],
+      ['act', 'agent:agent-grok', 'tool', 'quilt_write_file a.txt'],
+      ['act', 'agent:agent-grok', 'claimed', 'a.txt'],
+      ['act', 'agent:agent-grok', 'created', 'a.txt'],
+      ['name', 'hosted', '', ''],
+      ['end', 'agent:agent-grok', 'removed', '']
+    ])
+    const grokStart = api.events.find((e) => e.type === 'start' && e.account === 'agent:agent-grok')
+    assert.ok(api.events.filter((e) => e.type === 'act').every((e) => e.start === grokStart.id), 'acts belong to its visit')
+    assert.ok(api.events.every((e) => !('content' in e)), 'no contents')
   } finally { await grok.close() }
 })
 

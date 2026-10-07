@@ -166,6 +166,14 @@ class Room {
     // What a tracked change added to the activity log, read before Yjs merges the new entries
     // into older ones (after which a change event can no longer tell them apart).
     this.activityAdded = new WeakMap()
+    this.tasks = this.doc.getMap('tasks')
+    // The audit trail: what a connection with a visit changed (files, chat, the board), by path or task id.
+    this.auditAs = null // a hosted agent whose tool is running now (relay-mcp.js): its changes are its
+    this.doc.on('afterTransaction', (tr) => {
+      if (!this.presence) return
+      const visit = tr.origin && tr.origin.visit ? tr.origin.visit : (this.auditAs && this.hostedVisit ? this.hostedVisit(this.auditAs) : null)
+      if (visit) this.auditChange(tr, visit)
+    })
     this.doc.on('afterTransaction', (tr) => {
       const events = tr.changedParentTypes.get(this.activity)
       if (!events || !this.guard.trackedOrigins.has(tr.origin)) return
@@ -451,6 +459,35 @@ class Room {
     return { state: 'pending', id }
   }
 
+  /** What a connection's change did, for the audit trail: files changed, messages posted, tasks touched. */
+  auditChange (tr, visit) {
+    const act = (action, target) => this.presence.act(visit, action, target)
+    for (const e of tr.changedParentTypes.get(this.activity) || []) {
+      for (const item of e.changes.added) {
+        for (const x of item.content.getContent()) if (x && ACTIVITY_KINDS.includes(x.kind) && x.path) act(x.kind, String(x.path))
+      }
+    }
+    for (const e of tr.changedParentTypes.get(this.chat) || []) {
+      for (const item of e.changes.added) for (const m of item.content.getContent()) if (m && typeof m === 'object') act('messaged', m.to ? `to ${m.to}` : '')
+    }
+    const tasks = new Set()
+    for (const e of tr.changedParentTypes.get(this.tasks) || []) {
+      if (e.target === this.tasks) for (const k of e.keysChanged || []) tasks.add(k)
+      else if (e.path.length) tasks.add(String(e.path[0]))
+    }
+    for (const id of tasks) act('task', id)
+  }
+
+  /** The audit trail, for a member by id: the visit of their connection here, or of the hosted agent. */
+  audit (id, action, target) {
+    if (!this.presence || !id) return
+    for (const ws of this.conns.keys()) {
+      if (ws.visit && ws.pass && `${ws.pass.kind}:${ws.pass.sub}` === id) return this.presence.act(ws.visit, action, target)
+    }
+    const v = this.hostedVisit && this.hostedVisit(id)
+    if (v) this.presence.act(v, action, target)
+  }
+
   /** A hosted agent just used a tool: it shows as online for a while, and stops waiting. */
   hostedActive (id) {
     const was = this.hostedSeen.get(id) || 0
@@ -609,7 +646,7 @@ class Room {
     if (this.meta.largeFiles) return
     this.meta.largeFiles = true
     for (const ws of [...this.conns.keys(), ...this.pending.keys()]) {
-      if (!ws.hosted && !this.supported(ws)) ws.close(CLOSE_NEEDS_UPDATE, NEEDS_UPDATE)
+      if (!ws.hosted && !this.supported(ws)) { ws.endReason = 'needs_update'; ws.close(CLOSE_NEEDS_UPDATE, NEEDS_UPDATE) }
     }
   }
 
@@ -796,8 +833,8 @@ class Room {
       const removed = Object.entries({ ...(this.meta.removed || {}), [key]: Date.now() }).filter(([, at]) => at > cutoff).sort((a, b) => a[1] - b[1])
       this.meta.removed = Object.fromEntries(removed.slice(-MAX_REMOVED))
       this.saveMeta()
-      for (const [cws, a] of this.access) if (gone.includes(a.id)) cws.close(CLOSE_DENIED, 'The session owner removed you')
-      for (const id of gone) this.hostedSeen.delete(id)
+      for (const [cws, a] of this.access) if (gone.includes(a.id)) { cws.endReason = 'removed'; cws.close(CLOSE_DENIED, 'The session owner removed you') }
+      for (const id of gone) { this.hostedSeen.delete(id); if (this.onHostedGone) this.onHostedGone(id, 'removed') }
       this.broadcastClaims()
       return { ok: true }
     }
@@ -841,7 +878,7 @@ class Room {
         // The same person over a new connection: they're back from a drop the relay hasn't
         // noticed yet (its heartbeat takes up to a minute). The old connection is dead; let
         // it go now, or they'd stay unseen until it does.
-        if (this.samePerson(other, ws)) { ids.delete(id); other.terminate(); continue }
+        if (this.samePerson(other, ws)) { ids.delete(id); other.endReason = 'replaced'; other.terminate(); continue }
         return false
       }
       if (state !== null && state.name !== name) return false
@@ -993,7 +1030,15 @@ class Room {
    * claims belong to a verified name; with it, { name, id, owner }, where they
    * belong to the account (id). Returns the reply fields.
    */
+  /** A claim request (claimRequestOp), and on success a line in the audit trail. */
   claimRequest (who, req) {
+    const r = this.claimRequestOp(who, req)
+    const action = CLAIM_ACTIONS[req && req.op]
+    if (action && who && who.id) this.audit(who.id, action, String(req.pattern || req.path || req.request || '').slice(0, 300))
+    return r
+  }
+
+  claimRequestOp (who, req) {
     const { name, id } = who
     // Whose claim is this? Older claims in a sign-in room have no account: they belong to their
     // name, as they did when made, and claiming one again adopts it under this account.
@@ -1184,9 +1229,9 @@ class Room {
       this.enter(ws, { key: publicKey, id: acc.id || account || publicKey, name, kind, role: acc.role, scopes: acc.scopes, scopesExcept: acc.scopesExcept || [], talk: acc.talk !== false, owner: acc.owner })
       onJoin()
     })
-    ws.on('close', () => {
+    ws.on('close', (code) => {
       if (this.pending.delete(ws)) this.broadcastMembers()
-      if (this.access.has(ws) || this.conns.has(ws)) this.leave(ws)
+      if (this.access.has(ws) || this.conns.has(ws)) this.leave(ws, code)
     })
     send(ws, bytesMessage(MSG_AUTH, nonce))
   }
@@ -1196,7 +1241,7 @@ class Room {
     this.setAccess(ws, a)
     // Presence: an account's visit starts once it's let in (never while it waits for the owner).
     if (ws.pass && this.presence && !ws.visit) {
-      ws.visit = this.presence.visitStart({ room: this.name, account: `${ws.pass.kind}:${ws.pass.sub}`, name: a.name, owner: !!a.owner })
+      ws.visit = this.presence.visitStart({ room: this.name, account: `${ws.pass.kind}:${ws.pass.sub}`, name: a.name, owner: !!a.owner, via: 'app', tool: ws.tool || '' })
       // The accounts API learns who owns a session from this report, and only the owner may
       // give people access there: tell it now rather than within the minute.
       if (a.owner) this.presence.tick().catch(() => {})
@@ -1218,8 +1263,8 @@ class Room {
     this.touch()
   }
 
-  leave (ws) {
-    if (ws.visit) { if (this.presence) this.presence.visitEnd(ws.visit); ws.visit = null }
+  leave (ws, code) {
+    if (ws.visit) { if (this.presence) this.presence.visitEnd(ws.visit, ws.endReason || endReasonFor(code)); ws.visit = null }
     const ids = this.conns.get(ws)
     this.conns.delete(ws)
     this.names.delete(ws)
@@ -1248,6 +1293,7 @@ class Room {
         // Over quota: still answer "what do you have?" so people can read, but refuse new data.
         const sub = decoding.readVarUint(decoding.createDecoder(buf.subarray(1)))
         if (sub !== syncProtocol.messageYjsSyncStep1) {
+          ws.endReason = 'disconnected'
           ws.close(CLOSE_ROOM_FULL, 'room is over the size limit')
           return
         }
@@ -1314,18 +1360,33 @@ const TALK_WHY = "you can't post in this session"
 // What an app's activity entries look like (session.js recordActivity, relay-mcp.js quilt_write).
 const ACTIVITY_FIELDS = ['by', 'path', 'kind', 'detail', 'ts']
 const ACTIVITY_KINDS = ['created', 'edited', 'deleted']
+// Claim ops as the audit trail names them.
+const CLAIM_ACTIONS = { claim: 'claimed', release: 'released', request: 'requested', handoff: 'handed_off', withdraw: 'withdrew' }
 const ACTIVITY_DETAIL = /^(\+\d+ -\d+|\d+ bytes)?$/
 const nameTaken = (name) => `The name "${name}" belongs to someone else in this room; pick another name`
 
 /** A saved member's access, in the relay's shape (members saved before access types may talk and have no exceptions). */
 const memberAccess = (m) => ({ role: m.role, scopes: m.scopes || [], scopesExcept: m.scopesExcept || [], talk: m.talk !== false })
 
+/**
+ * Why a connection's visit ended, from the close code, when the relay didn't close it
+ * itself (those set ws.endReason). A clean close (1000, 1001, 1005) is the app or agent
+ * leaving; anything else (1006 and the like) is a dropped connection.
+ */
+export function endReasonFor (code) {
+  if (code === 1000 || code === 1001 || code === 1005) return 'left'
+  if (code === CLOSE_DENIED) return 'removed'
+  if (code === CLOSE_ENDED) return 'session_ended'
+  if (code === CLOSE_PASS_EXPIRED) return 'pass_expired'
+  return 'disconnected'
+}
+
 /** Closes the connection when its pass runs out, unless a newer one arrives first. */
 function trackPass (ws, pass) {
   ws.pass = pass
   clearTimeout(ws.passTimer)
   const left = Math.min(Math.max(pass.exp - Date.now(), 0), 2 ** 31 - 1)
-  ws.passTimer = setTimeout(() => ws.close(CLOSE_PASS_EXPIRED, PASS_EXPIRED), left)
+  ws.passTimer = setTimeout(() => { ws.endReason = 'pass_expired'; ws.close(CLOSE_PASS_EXPIRED, PASS_EXPIRED) }, left)
 }
 
 /** A MSG_PASS: a valid pass for the same account (or agent) and key extends the connection. */
@@ -1402,6 +1463,8 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
   /** The room, loading it if needed; null if it's too big to load, or its files can't be read. */
   let webhooks = null // hosted agents' webhook subscriptions (set below, once `hosted` exists)
   let adoptHosted = null // puts back hosted agents waiting on a room (set below, once `hosted` exists)
+  let endHostedVisits = null // ends the audit-trail visits of hosted agents in a room (set below)
+  let sweepHosted = null // ends the visits of hosted agents gone quiet (set below)
   const getRoom = (name) => {
     let room = rooms.get(name)
     if (!room) {
@@ -1433,7 +1496,9 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       room.onEnd = () => {
         if (room.ended) return
         room.ended = true
-        for (const ws of [...room.conns.keys(), ...room.pending.keys()]) if (!ws.hosted) ws.close(CLOSE_ENDED, 'The owner ended this session')
+        for (const ws of [...room.conns.keys(), ...room.pending.keys()]) if (!ws.hosted) { ws.endReason = 'session_ended'; ws.close(CLOSE_ENDED, 'The owner ended this session') }
+        // Hosted agents in it have no connection to close: their visits end here.
+        if (endHostedVisits) endHostedVisits(name, 'session_ended')
         clearTimeout(room.unloadTimer)
         room.guard.destroy(); room.awareness.destroy(); room.doc.destroy()
         if (rooms.get(name) === room) rooms.delete(name)
@@ -1503,9 +1568,38 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
   }
   webhooks = hostedWebhooks({ hosted, saveHosted, log, fetch: opts.webhookFetch, delays: opts.webhookDelays })
   for (const room of rooms.values()) webhooks.watch(room)
+  // Hosted agents' visits, for the audit trail. With no connection to open and close, a
+  // visit starts at the first tool call it's let in for, and ends when it leaves, is
+  // removed, its session ends, or it goes quiet for HOSTED_ONLINE_MS (ended at its last call).
+  const openVisit = (h) => (h && h.visit && presence && presence.open.has(h.visit.start) ? h.visit : null)
+  const hostedVisitStart = (id, room, { name, tool, owner }) => {
+    const h = hosted.get(id)
+    if (!h || !presence) return
+    const open = openVisit(h)
+    if (open && open.room === room.name) return
+    if (open) presence.visitEnd(open, 'left')
+    h.visit = presence.visitStart({ room: room.name, account: id, name, owner: !!owner, via: 'hosted', tool })
+    saveHosted()
+  }
+  const hostedVisitEnd = (id, reason, at) => {
+    const h = hosted.get(id)
+    const open = openVisit(h)
+    if (!open) return
+    presence.visitEnd(open, reason, at)
+    delete h.visit
+    saveHosted()
+  }
+  endHostedVisits = (roomName, reason) => { for (const [id, h] of hosted) if (h.room === roomName) hostedVisitEnd(id, reason) }
+  const sweepHostedVisits = () => {
+    const cutoff = Date.now() - HOSTED_ONLINE_MS
+    for (const [id, h] of hosted) if (openVisit(h) && (h.seenAt || 0) < cutoff) hostedVisitEnd(id, 'idle', h.seenAt)
+  }
+  sweepHosted = sweepHostedVisits
   // Hosted agents waiting to be let in are back on the owner's list when their room loads,
   // without having to call a tool first; one the owner turns away is told on its next call.
   adoptHosted = (room) => {
+    room.hostedVisit = (id) => { const h = hosted.get(id); const v = openVisit(h); return v && v.room === room.name ? v : null }
+    room.onHostedGone = (id, reason) => { const h = hosted.get(id); if (h && h.room === room.name) hostedVisitEnd(id, reason) }
     for (const [id, h] of hosted) if (h.room === room.name && h.pending && !h.denied) room.restoreHosted(id, h)
     room.onHostedDenied = (id) => {
       const h = hosted.get(id)
@@ -1595,7 +1689,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       if (!passKey) return text(404, 'this relay has sign-in off; hosted agents need it on')
       const pass = httpPass(req)
       if (!pass) return text(401, SIGN_IN)
-      return handleHostedMcp({ req, res, pass, relay: { getRoom, roomEnded, refused, hosted, saveHosted, webhooks, log, endedMessage: ENDED_MESSAGE, updates } })
+      return handleHostedMcp({ req, res, pass, relay: { getRoom, roomEnded, refused, hosted, saveHosted, webhooks, log, endedMessage: ENDED_MESSAGE, updates, visitStart: hostedVisitStart, visitEnd: hostedVisitEnd } })
         .catch((err) => { log(`mcp error: ${err.message}`); if (!res.headersSent) text(500, 'mcp error') })
     }
     const mm = url.pathname.match(/^\/mcp\/([A-Za-z0-9_-]{20,64})$/)
@@ -1771,6 +1865,8 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       // the relay's: ws closes the socket itself once the error has a listener.
       ws.on('error', (err) => log(`[${name}] dropping ${person}: ${err.message}`))
       ws.features = features
+      // Which app or AI tool this is ("Quilt app", "Cursor"), for the audit trail; the app says so if it knows.
+      ws.tool = header('x-quilt-tool').replace(/[^\w .()/+-]/g, '').trim().slice(0, 40)
       if (pass) { ws.passKey = passKey; trackPass(ws, pass) }
       ipConns.set(ip, (ipConns.get(ip) || 0) + 1)
       ws.isAlive = true
@@ -1791,11 +1887,12 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
 
   const heartbeat = setInterval(() => {
     for (const ws of wss.clients) {
-      if (!ws.isAlive) { ws.terminate(); continue }
+      if (!ws.isAlive) { ws.endReason = 'disconnected'; ws.terminate(); continue }
       ws.isAlive = false
       ws.ping()
     }
     for (const room of rooms.values()) if (!room.ended) room.sweepClaims()
+    if (sweepHosted) sweepHosted()
   }, 30000)
 
   // Delete rooms nobody has opened for a while (hosted relays shouldn't grow forever).
@@ -1836,6 +1933,8 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         rooms, // exposed for tests
         store, // exposed for tests
         presence, // exposed for tests
+        hosted, // exposed for tests
+        sweepHosted: () => sweepHosted && sweepHosted(), // exposed for tests: ends quiet hosted agents' visits now
         sweep,
         close: async () => {
           clearInterval(heartbeat)
@@ -1846,7 +1945,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
           // Rooms are saved first, synchronously: Fly's kill timeout is about as long as
           // presence gets to reach the accounts API, so a hung or slow API must never be
           // able to delay saving a room's data.
-          for (const ws of wss.clients) ws.terminate()
+          for (const ws of wss.clients) { ws.endReason = 'relay_restart'; ws.terminate() }
           for (const room of rooms.values()) room.destroy()
           rooms.clear()
           wss.close()

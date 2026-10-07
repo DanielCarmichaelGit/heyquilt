@@ -270,6 +270,7 @@ export class Session extends EventEmitter {
       name: this.name,
       identity: this.identity || loadIdentity(),
       passes: this.passes,
+      tool: this.tool,
       doc: this.doc,
       beforeRemote: () => { if (this.ready) this.flushPending() }
     })

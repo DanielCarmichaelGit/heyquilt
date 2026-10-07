@@ -4,6 +4,12 @@
 // QUILT_API_URL and RELAY_API_SECRET. Events wait in a queue that is kept on disk
 // (`<dataDir>/presence-queue.jsonl`), so a restart or a down API loses nothing, and
 // are sent every minute, at most 500 per request, in order.
+//
+// For the audit trail, a visit says how the member came in (`via`: the app or a hosted
+// agent, and its `tool`), why it ended (`reason`, see END_REASONS), and what it did
+// meanwhile (`act` events: an action and its target, a path or a task id; never file
+// contents or chat text). The same action on the same target is reported at most once
+// a minute per visit.
 import fs from 'node:fs'
 import crypto from 'node:crypto'
 
@@ -16,6 +22,11 @@ export const PRESENCE_MAX_BACKOFF_MS = 10 * 60 * 1000
 // close(), but not on every drop or send while the relay is under load.
 export const PRESENCE_REWRITE_MS = 60 * 1000
 const SYNC_MS = 1000
+export const ACT_COALESCE_MS = 60 * 1000
+/** Why a visit ended. The accounts API turns an agent's `pass_expired` or `idle` into `revoked` when its keys were revoked first. */
+export const END_REASONS = ['left', 'disconnected', 'removed', 'pass_expired', 'session_ended', 'relay_restart', 'idle', 'replaced', 'needs_update']
+export const ACTIONS = ['created', 'edited', 'deleted', 'claimed', 'released', 'requested', 'handed_off', 'withdrew', 'messaged', 'task', 'tool']
+const MAX_TARGET = 300
 const SEND_TIMEOUT_MS = 15 * 1000
 const CLOSE_TIMEOUT_MS = 5 * 1000
 
@@ -58,6 +69,7 @@ export class PresenceReporter {
     this.sending = null
     this.closed = false
     this.timers = []
+    this.acted = new Map() // start event id -> Map(action|target -> when last reported), for visits not ended yet
   }
 
   /**
@@ -97,7 +109,7 @@ export class PresenceReporter {
     for (const id of this.open.keys()) if (seqs.has(id)) this.startSeqs.set(id, seqs.get(id))
     if (bad) this.log(`presence: skipped ${bad} unreadable line(s) in ${this.file}`)
     const ended = this.open.size
-    this.endAll()
+    this.endAll('relay_restart')
     this.rewrite = true
     this.persist(true) // startup: write the cleaned-up state now, not whenever the throttle allows
     return ended
@@ -115,19 +127,37 @@ export class PresenceReporter {
   get size () { return this.queue.length }
 
   /** Someone with a pass was let into a room. Returns the visit, for visitEnd. */
-  visitStart ({ room, account, name, owner = false }) {
+  visitStart ({ room, account, name, owner = false, via = '', tool = '' }) {
     if (this.closed) return null
-    const ev = { id: crypto.randomUUID(), type: 'start', room, account, name, ...(owner ? { owner: true } : {}), at: this.now() }
+    const ev = { id: crypto.randomUUID(), type: 'start', room, account, name, ...(owner ? { owner: true } : {}), ...(via ? { via } : {}), ...(tool ? { tool: String(tool).slice(0, 40) } : {}), at: this.now() }
     const visit = { start: ev.id, room, account }
     this.open.set(ev.id, visit)
     this.startSeqs.set(ev.id, this.enqueue(ev))
     return visit
   }
 
-  /** That connection left (closed, removed, ended, or its pass lapsed). Once per visit. */
-  visitEnd (visit) {
+  /** That connection left (closed, removed, ended, or its pass lapsed), for `reason`; `at` defaults to now. Once per visit. */
+  visitEnd (visit, reason = 'left', at) {
     if (this.closed || !visit || !this.open.delete(visit.start)) return
-    this.enqueueEnd(visit)
+    this.enqueueEnd(visit, reason, at)
+  }
+
+  /**
+   * Someone in a visit did something: `action` (one of ACTIONS) on `target` (a path, a
+   * task id or a tool name). Repeats of the same action on the same target within a
+   * minute are not reported again.
+   */
+  act (visit, action, target = '') {
+    if (this.closed || !visit || !this.open.has(visit.start) || !ACTIONS.includes(action)) return
+    const t = String(target || '').slice(0, MAX_TARGET)
+    const at = this.now()
+    let seen = this.acted.get(visit.start)
+    if (!seen) this.acted.set(visit.start, (seen = new Map()))
+    const k = `${action}|${t}`
+    if (at - (seen.get(k) ?? -Infinity) < ACT_COALESCE_MS) return
+    seen.set(k, at)
+    if (seen.size > 1000) for (const [key, when] of seen) if (at - when >= ACT_COALESCE_MS) seen.delete(key)
+    this.enqueue({ id: crypto.randomUUID(), type: 'act', start: visit.start, room: visit.room, account: visit.account, action, ...(t ? { target: t } : {}), at })
   }
 
   /**
@@ -146,17 +176,19 @@ export class PresenceReporter {
   }
 
   /** Ends every open visit now: on shutdown, and for visits a previous run left open. */
-  endAll () {
+  endAll (reason = 'relay_restart') {
     for (const visit of [...this.open.values()]) {
       this.open.delete(visit.start)
-      this.enqueueEnd(visit)
+      this.enqueueEnd(visit, reason)
     }
   }
 
-  enqueueEnd (visit) {
+  enqueueEnd (visit, reason, at) {
     const startSeq = this.startSeqs.get(visit.start) || 0
     this.startSeqs.delete(visit.start)
-    this.enqueue({ id: crypto.randomUUID(), type: 'end', start: visit.start, room: visit.room, account: visit.account, at: this.now() }, startSeq)
+    this.acted.delete(visit.start)
+    const when = Number.isFinite(at) ? Math.min(at, this.now()) : this.now()
+    this.enqueue({ id: crypto.randomUUID(), type: 'end', start: visit.start, room: visit.room, account: visit.account, ...(END_REASONS.includes(reason) ? { reason } : {}), at: when }, startSeq)
   }
 
   /** Returns the event's seq. */
@@ -190,6 +222,11 @@ export class PresenceReporter {
     this.queue.forEach((x, i) => { if (x.ev.type === 'end') endIndexByStart.set(x.ev.start, i) })
     const remove = new Set()
     let dropped = 0
+    // What visits did is the most plentiful and the least load-bearing: the oldest of it goes first.
+    for (let i = 0; i < this.queue.length && dropped < drop; i++) {
+      const x = this.queue[i]
+      if (x.ev.type === 'act' && x.seq > this.inFlight) { remove.add(i); dropped++ }
+    }
     for (let i = 0; i < this.queue.length && dropped < drop; i++) {
       const x = this.queue[i]
       if (x.ev.type !== 'start' || x.seq <= this.inFlight || remove.has(i)) continue
@@ -312,7 +349,7 @@ export class PresenceReporter {
     if (this.closed) return
     for (const t of this.timers) clearInterval(t)
     this.timers = []
-    this.endAll()
+    this.endAll('relay_restart')
     this.persist(true)
     this.closed = true
     let timer

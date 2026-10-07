@@ -48,8 +48,9 @@ export class Connection extends EventEmitter {
    * @param {import('./pass-source.js').PassSource} [opts.passes]  signs in to a relay that requires passes
    * @param {number} [opts.passRefreshMs]  how often to send the relay a fresh pass while connected
    * @param {number} [opts.livenessMs]  give up on a connection that stays silent this long
+   * @param {string} [opts.tool]  the app or AI tool this is, for the session's audit trail
    */
-  constructor ({ server, room, secret, key, viewSecret, kind = 'human', name, identity, doc, beforeRemote, features = 'large-files', passes = null, passRefreshMs = PASS_REFRESH_MS, livenessMs = LIVENESS_MS }) {
+  constructor ({ server, room, secret, key, viewSecret, kind = 'human', name, identity, doc, beforeRemote, features = 'large-files', passes = null, passRefreshMs = PASS_REFRESH_MS, livenessMs = LIVENESS_MS, tool = '' }) {
     super()
     if (room === RESERVED_ROOM) throw new Error(`"${RESERVED_ROOM}" is not a session name`)
     // Secrets travel in headers, never in the URL: proxies log URLs, and Fly's did (issue 011).
@@ -60,6 +61,9 @@ export class Connection extends EventEmitter {
     this.headers = { 'x-quilt-secret': secret || '' }
     if (key) this.headers['x-quilt-key'] = key
     if (viewSecret) this.headers['x-quilt-view-secret'] = viewSecret
+    // Header values must be plain ASCII.
+    const label = String(tool || '').replace(/[^\x20-\x7e]/g, '').trim().slice(0, 40)
+    if (label && label !== 'unknown') this.headers['x-quilt-tool'] = label
     this.access = null // what the relay says we may do: { state, role, scopes, owner, controlled }
     this.url = `${server.replace(/\/+$/, '')}/${encodeURIComponent(room)}?${q}`
     this.passes = passes

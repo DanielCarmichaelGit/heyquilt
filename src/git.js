@@ -29,7 +29,7 @@ const git = (dir, args, opts) => run('git', args, { cwd: dir, ...opts })
 const gh = (args, opts) => run(GH(), args, opts)
 
 /** The first useful line of a CLI error, without "fatal:"/"error:" noise. */
-function shortError (text) {
+export function shortError (text) {
   const lines = String(text).split('\n').map((l) => l.trim()).filter(Boolean)
   const line = lines.find((l) => /^(fatal|error|remote|GraphQL|HTTP)/i.test(l)) || lines[0] || 'Something went wrong.'
   return line.replace(/^(fatal|error):\s*/i, '').replace(/^remote:\s*/i, '').slice(0, 300)

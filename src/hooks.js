@@ -17,6 +17,7 @@
 // in a folder that isn't in a Quilt session.
 import fs from 'node:fs'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { findDaemon } from './control.js'
 import { migrateDir } from './legacy.js'
 import { describeEvent } from './inbox.js'
@@ -121,14 +122,19 @@ const patchFiles = (text) => [...String(text).matchAll(/^\*\*\* (?:Update|Add|De
  * Handles one hook event. Returns { output?, exitCode } where `output` is the
  * JSON object to print. `daemon` and `call` can be injected for tests.
  */
-export async function handleHook (event, { findDaemon: find = findDaemon, call = callWithTimeout, dialect: named = '' } = {}) {
+export async function handleHook (event, { findDaemon: find = findDaemon, call = callWithTimeout, dialect: named = '', pids = null } = {}) {
   const say = DIALECTS[dialectOf(event, named)]
   const name = event.hook_event_name
   const answer = (r) => (r.output || r.exitCode) ? r : { exitCode: 0, ...(say.none() ? { output: say.none() } : {}) }
   const cwd = event.cwd || (Array.isArray(event.workspace_roots) && event.workspace_roots[0]) || process.cwd()
   const d = find(cwd)
   if (!d) return answer({ exitCode: 0 })
-  const api = (method, route, body) => call(d, method, route, body)
+  // Which AI session this is: the one whose tool process (the parent of its `quilt mcp`) is
+  // among this hook's parents. Its claims, inbox and duties are its own (persona.js).
+  const mine = pids || parentPids()
+  const api = (method, route, body) => method === 'GET'
+    ? call(d, method, `${route}${route.includes('?') ? '&' : '?'}pids=${mine.join(',')}`)
+    : call(d, method, route, { ...(body || {}), pids: mine })
   const state = hookState(d.dir, event.session_id || event.conversation_id)
   const ev = { ...event, cwd }
   switch (say.events[name]) {
@@ -153,7 +159,8 @@ async function sessionStart (api, state, say, name) {
     'If a file is claimed by someone else, your edit is refused: do not retry or work around it. ' +
     'Ask for it in its file queue with quilt_request_file (a title like "Working on <what> for <task>" and up to 300 characters on your plan), then carry on with other work: you are told when it is handed to you, with their context. ' +
     'When someone asks for a file you hold, finish your change, then hand it off with quilt_handoff and your context; you cannot finish before you do.',
-    'Messages from collaborators, mentions of you and tasks handed to you are shown to you as you work; answer with quilt_message and take a task with quilt_move_task.'
+    'Messages from collaborators, mentions of you and tasks handed to you are shown to you as you work; answer with quilt_message and take a task with quilt_move_task.',
+    'You are a member of your own in the session, apart from your person and their other AI sessions, named after your work (your git branch, or the first thing you say you are doing); rename yourself with quilt_name_session.'
   ]
   const duties = await api('GET', '/duties').catch(() => ({}))
   if (duties.pickup && duties.pickup !== 'off') parts.push(`This person lets you pick up work from the task board by yourself (${duties.pickup === 'any' ? 'tasks assigned to you, then unassigned ones' : 'tasks assigned to you'}): when you finish, you are handed the next one.`)
@@ -273,6 +280,18 @@ async function releaseAll (api, state) {
   const s = state.read()
   for (const pattern of s.claims) await api('POST', '/release', { pattern }).catch(() => {})
   state.update((x) => { x.claims = [] })
+}
+
+/** This process's parents, nearest first (a few levels), for finding its AI session. */
+export function parentPids (start = process.ppid, depth = 6) {
+  const out = []
+  let pid = start
+  for (let i = 0; i < depth && pid > 1; i++) {
+    out.push(pid)
+    if (process.platform === 'win32') break
+    try { pid = Number(execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 1000 }).toString().trim()) } catch { break }
+  }
+  return out
 }
 
 /** Per-Claude-session state in .quilt/hooks/<session>.json: the claims it made and the messages it has seen. */

@@ -38,6 +38,7 @@ import { cleanAccess, narrowAccess, relayAccess, fromRelay, sameAccess, mayChang
 import { canAdmit, cleanAdmitBy, DEFAULT_ADMIT_BY, BAD_ADMIT_BY } from './admit-policy.js'
 import { patternsOverlap } from './fsutil.js'
 import { globMatcher } from './pathrules.js'
+import { personaName, firstName, PERSONA_SEP } from './persona.js'
 import { adoptLegacyEnv } from './legacy.js'
 import { makeStore, DiskStore } from './blobstore.js'
 import { JOIN_HOST } from './ui/invite.js'
@@ -887,11 +888,15 @@ class Room {
   }
 
   /** Who a claim from this connection belongs to: their name, or with sign-in on, their account. */
-  claimant (ws) {
+  claimant (ws, as = null) {
     const name = this.names.get(ws)
-    if (!ws.pass) return { name }
     const a = this.access.get(ws)
-    return { name, id: `${ws.pass.kind}:${ws.pass.sub}`, owner: !!(a && a.owner), talk: !(a && a.talk === false) }
+    const who = ws.pass ? { name, id: `${ws.pass.kind}:${ws.pass.sub}`, owner: !!(a && a.owner), talk: !(a && a.talk === false) } : { name }
+    // One of several AI sessions working through this person's app (persona.js): its claims are
+    // its own, under "<first name> · <label>" and the account plus the session's id. Nobody can
+    // claim as someone else's: the name is built here from the connection's own.
+    if (!as || typeof as.id !== 'string' || !/^[A-Za-z0-9_-]{4,40}$/.test(as.id)) return who
+    return { ...who, name: personaName(name, as.label), ...(who.id ? { id: `${who.id}~${as.id}` } : {}), persona: true, of: name }
   }
 
   /**
@@ -912,6 +917,9 @@ class Room {
     if (ws.pass) keys.push(`${ws.pass.kind}:${ws.pass.sub}`)
     return keys
   }
+
+  /** The holder key of a claimant (see holderKey): an AI session's activity is its own, not its person's. */
+  claimantKey (who) { return who.id || `name:${who.name}` }
 
   /** Someone did something in the session: their claims' idle time starts again. */
   noteActivity (keys) {
@@ -934,12 +942,14 @@ class Room {
   /** Whether a claim's holder is in the session now: connected, or a hosted agent seen lately. */
   holderPresent (c) {
     if (c.byId) {
-      const seen = this.hostedSeen.get(c.byId)
+      // An AI session's claim (account~session) is here while its person's app is.
+      const base = c.byId.split('~')[0]
+      const seen = this.hostedSeen.get(base)
       if (seen && Date.now() - seen < HOSTED_ONLINE_MS) return true
-      for (const ws of this.conns.keys()) if (ws.pass && `${ws.pass.kind}:${ws.pass.sub}` === c.byId) return true
+      for (const ws of this.conns.keys()) if (ws.pass && `${ws.pass.kind}:${ws.pass.sub}` === base) return true
       return false
     }
-    for (const n of this.names.values()) if (n === c.by) return true
+    for (const n of this.names.values()) if (n === c.by || (c.by.startsWith(`${firstName(n)}${PERSONA_SEP}`))) return true
     return this.hostedOnline().some((h) => h.name === c.by)
   }
 
@@ -987,7 +997,7 @@ class Room {
   handOff (c, r, { context = '', auto = false } = {}) {
     const now = Date.now()
     const queue = (c.queue || []).filter((x) => x.id !== r.id)
-    const next = { by: r.by, ...(r.byId ? { byId: r.byId } : {}), pattern: c.pattern, note: String(r.title || '').slice(0, 500), ts: now, from: c.by }
+    const next = { by: r.by, ...(r.byId ? { byId: r.byId } : {}), ...(r.of ? { of: r.of } : {}), pattern: c.pattern, note: String(r.title || '').slice(0, 500), ts: now, from: c.by }
     if (queue.length) next.queue = queue
     this.meta.claims[c.pattern] = next
     this.meta.seen[this.holderKey(next)] = now
@@ -1043,8 +1053,11 @@ class Room {
     // Whose claim is this? Older claims in a sign-in room have no account: they belong to their
     // name, as they did when made, and claiming one again adopts it under this account.
     // (The owner may release any of them too.)
-    const mine = (c) => id ? (c.byId ? c.byId === id : c.by === name) : c.by === name
+    const own = (c) => id ? (c.byId ? c.byId === id : c.by === name) : c.by === name
+    // A person may also release or hand off what their own AI sessions hold (account~session).
+    const mine = (c) => own(c) || (!who.persona && !!id && !!c.byId && c.byId.startsWith(`${id}~`))
     const pattern = String(req.pattern ?? '').trim().replace(/^\.\//, '')
+    if (req.op === 'touch') return { ok: true } // an AI session is at work: its claims' idle time starts again
     if (req.op === 'claim') {
       if (!pattern) throw new Error('pattern required')
       if (pattern.length > MAX_PATTERN) throw new Error('pattern too long')
@@ -1053,7 +1066,7 @@ class Room {
       const paths = [...this.doc.getMap('files').keys(), ...this.doc.getMap('blobs').keys()]
       const other = this.claimList().find((c) => !mine(c) && patternsOverlap(c.pattern, pattern, paths))
       if (other) throw new Error(`${pattern} overlaps ${other.by}'s claim on ${other.pattern}`)
-      this.meta.claims[pattern] = { by: name, ...(id ? { byId: id } : {}), pattern, note: who.talk === false ? '' : String(req.note ?? '').slice(0, 500), ts: Date.now(), ...(existing?.queue ? { queue: existing.queue } : {}) }
+      this.meta.claims[pattern] = { by: name, ...(id ? { byId: id } : {}), pattern, note: who.talk === false ? '' : String(req.note ?? '').slice(0, 500), ts: Date.now(), ...(who.persona ? { of: who.of } : {}), ...(existing?.queue ? { queue: existing.queue } : {}) }
       return { ok: true }
     }
     if (req.op === 'release') {
@@ -1092,7 +1105,7 @@ class Room {
       // One request per person per claim: asking again updates it and keeps its place.
       const prev = c.queue.find((r) => id ? r.byId === id : r.by === name)
       if (!prev && c.queue.length >= MAX_QUEUE) throw new Error(`${c.queue.length} are already waiting for ${c.pattern}`)
-      const r = prev || { id: crypto.randomBytes(6).toString('hex'), by: name, ...(id ? { byId: id } : {}), ts: Date.now() }
+      const r = prev || { id: crypto.randomBytes(6).toString('hex'), by: name, ...(id ? { byId: id } : {}), ...(who.persona ? { of: who.of } : {}), ts: Date.now() }
       Object.assign(r, { path: file, title, description, ...(task ? { task } : {}) })
       if (!prev) c.queue.push(r)
       this.postChat({ by: name, to: c.by, kind: 'queue', path: file, text: `📥 File queue · ${file}: ${`${title}${description ? ` — ${description}` : ''}`.replace(/[.!?]+$/, '')}. When you're done with it, hand it off to me with your context.` })
@@ -1313,8 +1326,9 @@ class Room {
       let reply
       try {
         req = JSON.parse(decoding.readVarString(dec))
-        reply = { id: req.id, ...this.claimRequest(this.claimant(ws), req) }
-        this.noteActivity(this.holderKeys(ws))
+        const who = this.claimant(ws, req.as)
+        reply = { id: req.id, ...this.claimRequest(who, req) }
+        this.noteActivity(who.persona ? [this.claimantKey(who)] : this.holderKeys(ws))
       } catch (err) {
         return send(ws, jsonMessage(MSG_CLAIMS, { claims: this.claimList(), reply: { id: req.id, ok: false, error: err.message } }))
       }

@@ -40,14 +40,15 @@ export function renderStatus (st, { asAi = false, mentionYours = false } = {}) {
   out.push('')
   out.push(`Relay: ${st.connected ? 'connected' : '**disconnected** (edits are kept and will sync on reconnect)'} · ${st.fileCount} shared files`)
   if (!st.connected && st.problem) out.push(`⚠️ ${st.problem}`)
-  out.push(`You: **${st.me.name}** (${st.me.tool})${st.me.focus ? ` · focus: ${st.me.focus}` : ''}`)
+  out.push(`You: **${st.me.name}** (${st.me.tool})${st.me.persona ? `, one of ${st.me.of}'s AI sessions` : ''}${st.me.focus ? ` · focus: ${st.me.focus}` : ''}`)
   out.push('')
 
   out.push('## Partners online')
   if (!st.peers.length) out.push('_Nobody else is connected right now._')
-  for (const p of st.peers) {
+  for (const p of st.peers.filter((x) => x.name !== st.me.name)) {
     const tools = [p.tool, ...(p.agents || [])].filter((t) => t && t !== 'unknown')
-    out.push(`- **${p.name}**${p.kind === 'agent' ? ' [AI agent]' : ''}${tools.length ? ` (${[...new Set(tools)].join(', ')})` : ''}${p.focus ? `: working on: ${p.focus}` : ''}`)
+    const kind = p.persona ? ` [AI session of ${p.mine && st.me.persona ? 'your person' : p.of}]` : p.kind === 'agent' ? ' [AI agent]' : ''
+    out.push(`- **${p.name}**${kind}${tools.length ? ` (${[...new Set(tools)].join(', ')})` : ''}${p.focus ? `: working on: ${p.focus}` : ''}`)
     const ai = aiLine(p.agent)
     if (ai) out.push(`  - AI: ${ai}`)
     const editing = p.editing.slice(0, 8)

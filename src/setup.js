@@ -33,6 +33,11 @@ ${TASK_WORKFLOW_MD}
 - Before you change files, call \`quilt_before_edit\` with their paths. It tells you
   whether each one is yours to edit (claiming free ones for you) and shows what
   people said about those files in chat. Don't edit a file it refuses.
+- You're a member of your own in the session, apart from your person and their other
+  AI sessions, named after your work: "<their first name> · <label>", from your git
+  branch or the first thing you say you're doing. Rename yourself with
+  \`quilt_name_session\`. Your messages, inbox, claims and duties are your own; write to
+  other AI sessions by their names.
 - Claims follow edits, whatever tool you are: the moment you change a file nobody
   holds, Quilt claims it for you, and lets go when you finish (your AI goes idle, or
   the file has been quiet for a few minutes). Claim ahead only for a larger change

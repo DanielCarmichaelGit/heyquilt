@@ -241,6 +241,7 @@ function autoOpenNewPeople (id) {
   let changed = false
   let grew = false
   for (const p of sum().status.peers) {
+    if (p.persona) continue // an AI session working through someone's app has no AI chat of its own to show
     if (w.autoOpened.includes(p.name)) continue
     w.autoOpened.push(p.name)
     grew = true
@@ -860,9 +861,10 @@ function renderPeopleMenu ({ force = false } = {}) {
       <button class="pm-open" data-person="${esc(p.name)}" title="Open ${p.isMe ? 'your' : `${esc(p.name)}'s`} AI chat">${avatar(p.name, p.color, p.online)}
         <span class="pm-main">
           <span class="pm-name">${esc(p.isMe ? `${p.name} (you)` : p.name)}${p.kind === 'agent' ? `<span class="tag bot">${I.bot}agent</span>` : ''}${toolsOf(p).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</span>
+          ${p.persona ? `<span class="pm-sub">${p.mine ? 'One of your AI sessions' : `One of ${esc(p.of)}'s AI sessions`}</span>` : ''}
           ${p.focus && !p.isMe ? `<span class="pm-sub">${esc(p.focus)}</span>` : ''}
           ${editing}
-          <span class="pm-sub">${agentLine(p)}</span>
+          ${p.persona ? '' : `<span class="pm-sub">${agentLine(p)}</span>`}
         </span></button>
       ${p.isMe ? '' : `<button class="btn sm ghost" data-dm="${esc(p.name)}">Message</button>`}
     </div>`

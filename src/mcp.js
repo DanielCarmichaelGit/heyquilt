@@ -10,7 +10,8 @@ import { SubscribeRequestSchema, UnsubscribeRequestSchema } from '@modelcontextp
 import fs from 'node:fs'
 import crypto from 'node:crypto'
 import path from 'node:path'
-import { findDaemon, call } from './control.js'
+import { findDaemon, call as rawCall } from './control.js'
+import { parentPids } from './hooks.js'
 import { renderMessage, renderStatus } from './status.js'
 import { formatTasks, columnName, assigneeLabel, renderNextTask } from './tasks.js'
 import { runSession, decodeInvite, newConn, readConfig, runningElsewhere, personsFolder, agentCopyFolder } from './runner.js'
@@ -77,6 +78,7 @@ export const MCP_INSTRUCTIONS =
   'Mentions of you (@yourname) in chat, direct messages to you and tasks handed to you wait in quilt_inbox: read it when you start, and act on each one. ' +
   'Chat: ' + CHAT_RULES.replace(/^Send a chat message\. /, '') + ' A message that needs nothing back is settled with quilt_inbox (no_reply: [its id]), not answered. ' +
   'To be woken instead of polling, subscribe to the quilt://inbox resource (you are told when something new arrives), or quilt_webhook_subscribe POSTs each one to a URL of yours as it happens. ' +
+  'You are a member of your own in the session, apart from your person and their other AI sessions, named "<their first name> · <label>" after your work (your git branch, or what you first say you are doing); rename yourself with quilt_name_session. Your messages, inbox, claims and duties are your own: write to other AI sessions by their names. ' +
   'Share what you are doing with quilt_share: when you start on a request (request and your plan) and when you finish (what you did and the files you changed). Partners see it in their feed, it puts your work on the task board, and it tells the host not to commit under you. ' +
   'When Claude Code is started with the quilt channel, they arrive on their own as <channel source="quilt"> events while you work: treat each like a request from that person, answer with quilt_message, and take a task with quilt_move_task. ' +
   TASK_WORKFLOW
@@ -87,6 +89,33 @@ export async function runMcp () {
     // The channel capability lets Claude Code (started with the quilt channel) take inbox events as turns.
     { instructions: MCP_INSTRUCTIONS, capabilities: { resources: { subscribe: true }, experimental: { 'claude/channel': {} } } }
   )
+
+  // This AI session, as the app tells it apart from other AI sessions working through it (Claude
+  // Code in one window, Cursor or Codex in another): it is a member of its own there, under a
+  // name of its own (persona.js), with its own messages, inbox, claims and duties.
+  const via = crypto.randomBytes(8).toString('hex')
+  const hello = { key: null, name: '', named: null, told: false }
+  // Every call to the app says which AI session it is from (in the query for a GET), and the first
+  // call to an app (or to one that restarted) says hello, so it has a name.
+  const call = async (d, method, route, body) => {
+    const key = `${d.dir}:${d.pid}`
+    if (hello.key !== key) {
+      hello.key = key
+      try {
+        const r = await rawCall(d, 'POST', '/persona', { via, tool: clientTool(), cwd: process.cwd(), ppid: process.ppid, mcpPids: parentPids(process.ppid, 2) })
+        Object.assign(hello, { name: r.name, named: r.named, told: hello.told || !!r.own })
+      } catch { hello.key = null } // an older app: everything still works, as this member
+    }
+    if (method === 'GET') return rawCall(d, method, `${route}${route.includes('?') ? '&' : '?'}via=${via}`)
+    return rawCall(d, method, route, { ...(body || {}), via })
+  }
+  // Said once, in front of an answer: who this session is in the session, and how to rename it.
+  const introduce = () => {
+    if (!hello.name || hello.told) return ''
+    hello.told = true
+    return `You are **${hello.name}** in this Quilt session: your messages, claims and inbox are your own, and partners write to you by that name. ` +
+      (hello.named ? '' : 'Give yourself a name after your work with quilt_name_session (a few words, like "file queue"); until you do, the first thing you say you are doing names you.') + '\n\n'
+  }
 
   // A session this MCP server runs itself, when the agent joined or started one.
   let joined = null // { run, dir, invite }
@@ -139,7 +168,7 @@ export async function runMcp () {
   const withDaemon = async (fn, { inbox = true, gate = null } = {}) => {
     const d = findDaemon(joined ? joined.dir : undefined)
     if (!d) return { content: [{ type: 'text', text: NOT_RUNNING + stale() }], isError: true }
-    const before = async () => (await notices(d)) + (inbox ? await arrivals(d) : '')
+    const before = async () => introduce() + (await notices(d)) + (inbox ? await arrivals(d) : '')
     const waiting = async () => { const n = renderQueueNotice(await queuedNow(d)); return n ? `\n\n📥 ${n}` : '' }
     try {
       const refused = gate ? await gate(d) : ''
@@ -249,6 +278,16 @@ export async function runMcp () {
     return `Focus set: ${focus}`
   }, { gate: gateFor('quilt_set_focus') }))
 
+  server.registerTool('quilt_name_session', {
+    description: 'Name yourself in the Quilt session after what you work on. You are a member of your own there, apart from your person and their other AI sessions: ' +
+      'partners see you as "<their first name> · <your name>", write to you by it, and see which files you hold. A few words, like "file queue" or "billing bug". Messages to your old name still reach you.',
+    inputSchema: { name: z.string().min(1).max(40).describe('A few words about what you work on') }
+  }, ({ name }) => withDaemon(async (d) => {
+    const r = await call(d, 'POST', '/persona/name', { name })
+    Object.assign(hello, { name: r.name, named: 'self', told: true })
+    return `You are now ${r.name} in this session.`
+  }))
+
   server.registerTool('quilt_claim', {
     description: 'Claim files so only you can change them while you work: quilt undoes anyone else\'s edits there. Accepts a file path, a folder (it need not exist yet), or a glob like "src/auth/**". Fails if it overlaps someone else\'s claim.',
     inputSchema: {
@@ -346,9 +385,6 @@ export async function runMcp () {
     return `Settled the merge of ${r.path} (${how}).`
   }, { gate: gateFor('quilt_resolve_merge') }))
 
-  // This AI session, as the daemon tells it apart from other sessions working as the same member
-  // (Claude Code in one window, Cursor or Codex in another), so only one answers each person.
-  const via = crypto.randomBytes(8).toString('hex')
   server.registerTool('quilt_message', {
     description: CHAT_RULES + ' Set "to" to message one person directly.',
     inputSchema: {
@@ -852,7 +888,7 @@ export async function runMcp () {
   server.server.oninitialized = () => {
     const client = server.server.getClientVersion()
     const d = findDaemon()
-    if (d && client && client.name) call(d, 'POST', '/agent', { client: client.name }).catch(() => {})
+    if (d && client && client.name) call(d, 'POST', '/agent', { client: client.name }).catch(() => {}) // says hello too
   }
 
   await server.connect(new StdioServerTransport())

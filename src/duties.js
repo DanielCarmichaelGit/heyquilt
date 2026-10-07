@@ -44,7 +44,8 @@ const ANY_MENTION = /(^|[^\w@])@\w/u
  * them, or one to everyone that mentions nobody. A message @mentioning only others is not an answer.
  */
 export function answered (messages, me, who, ts) {
-  return (messages || []).some((m) => m && m.by === me && (m.ts || 0) > (ts || 0) &&
+  const mine = Array.isArray(me) ? me : [me] // an AI session answers under any name it has had
+  return (messages || []).some((m) => m && mine.includes(m.by) && (m.ts || 0) > (ts || 0) &&
     (m.to ? m.to === who : mentioned(m.text, [who]).length > 0 || !ANY_MENTION.test(String(m.text || ''))))
 }
 
@@ -127,12 +128,13 @@ export function chatAbout (paths, { messages = [], me, now = Date.now(), windowM
  */
 export function waitingOn (messages, me, { now = Date.now(), windowMs = REQUEST_WINDOW_MS, agent = false, settled = null } = {}) {
   const out = []
+  const names = Array.isArray(me) ? me : [me] // an AI session's name, and the ones it had before
   for (const m of messages || []) {
-    if (!m || !m.by || m.by === me || typeof m.text !== 'string' || (m.ts || 0) < now - windowMs) continue
+    if (!m || !m.by || names.includes(m.by) || typeof m.text !== 'string' || (m.ts || 0) < now - windowMs) continue
     if (settled && settled.has(m.id)) continue // needs no reply (quilt_inbox no_reply)
     if (fileQueueMessage(m)) continue // a file queue request or a handoff: handled by handing off, not by a reply
-    const kind = m.to === me ? 'dm' : !m.to && mentionsMe(m.text, me, { agent }) ? 'mention' : null
-    if (kind && !answered(messages, me, m.by, m.ts)) out.push({ id: m.id, kind, by: m.by, text: m.text, ts: m.ts })
+    const kind = names.includes(m.to) ? 'dm' : !m.to && names.some((n) => mentionsMe(m.text, n, { agent })) ? 'mention' : null
+    if (kind && !answered(messages, names, m.by, m.ts)) out.push({ id: m.id, kind, by: m.by, text: m.text, ts: m.ts })
   }
   return out
 }

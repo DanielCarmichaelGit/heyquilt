@@ -24,6 +24,7 @@ import { readTasks, addTask as putTask, updateTask as patchTask, deleteTask as d
 import { getSettings } from './settings.js'
 import { HistoryLog, queryHistory, parseSince, currentTask } from './history.js'
 import { Inbox } from './inbox.js'
+import { personaName, cleanLabel, labelFromBranch, labelFromText, gitBranch } from './persona.js'
 import { chatAbout, waitingOn, queuedFor, renderQueueNotice, askForIt, answered, addressees, unaddressed, sentByAnother, renderRepeat } from './duties.js'
 import { makeSubscription, deliverEvents } from './webhooks.js'
 import { pickChecklist } from './agent-task-workflow.js'
@@ -41,6 +42,7 @@ const STILL_MARKED = 'this file has conflict markers in it; finish editing it (o
 const COLORS = ['#b9432b', '#3b6a9a', '#4a7a45', '#855a9c', '#a8701c', '#2e7a80', '#9c4f6b']
 const RECENT_MS = 2 * 60 * 1000
 const AGENT_FEED_CAP = 300
+const PERSONA_AWAY_MS = 30 * 60 * 1000 // an AI session not heard from this long is no longer shown as here
 const AUTO_CLAIM_QUIET_MS = 5 * 60 * 1000 // a file we stopped editing this long ago is let go of
 // Our AI stopped working (its chat reader says so) while someone waits for a file it held: this long
 // for it to hand the file on itself, then Quilt hands it on for it.
@@ -126,6 +128,11 @@ export class Session extends EventEmitter {
     // marked as needing no reply, and what each session sent lately, so only one answers each person.
     this.settledIds = new Set()
     this.aiSent = [] // [{ via, targets, text, ts }]
+    // Each AI session working through this app (its `quilt mcp`, by its `via` id) under a name of
+    // its own: "<first name> · <label>" (persona.js). via -> { via, name, label, aliases, tool,
+    // ppid, named, inbox, seenAt, touchedAt }. Its messages, claims, inbox and duties are its own.
+    this.personas = new Map()
+    this.autoVia = new Map() // a file claimed for one AI session as it edited -> that session's via
     // The agent's webhook subscription (webhooks.js), kept in .quilt/webhook.json: inbox events are POSTed there.
     this.webhook = null
     this.webhookTransport = webhookTransport // { fetch, delays } for tests
@@ -745,7 +752,7 @@ export class Session extends EventEmitter {
     const theirsBy = this.lastEditorOf(rel)
     // Claimed by someone else meanwhile: a record, even if they haven't changed it yet (ingest would reject it).
     const claim = this.claimFor(rel)
-    const claimedByOther = claim && claim.by !== this.name
+    const claimedByOther = claim && !this.ownClaim(claim)
     const pulled = via === 'pull'
     if (theirs === base && !claimedByOther) { release(); return this.ingest(rel, { pulled }) ? 'pushed' : null } // nobody else touched it
     if (ours === theirs || (ours === null && theirs === undefined)) {
@@ -1633,7 +1640,7 @@ export class Session extends EventEmitter {
     }
 
     const claim = this.claimFor(rel)
-    if (claim && claim.by !== this.name && (disk ? disk.key : undefined) !== this.sharedKey(rel)) {
+    if (claim && !this.ownClaim(claim) && (disk ? disk.key : undefined) !== this.sharedKey(rel)) {
       this.rejectClaimed(rel, disk, claim)
       return false
     }
@@ -1835,7 +1842,7 @@ export class Session extends EventEmitter {
 
   fromRemote (rel) {
     const claim = this.claimFor(rel)
-    if (claim && claim.by === this.name) this.reclaim(rel)
+    if (claim && this.ownClaim(claim)) this.reclaim(rel)
     else this.writeOut(rel)
   }
 
@@ -2489,9 +2496,13 @@ export class Session extends EventEmitter {
   scanInbox ({ quiet = false } = {}) {
     let events
     try {
+      const messages = this.chat.toArray().filter((m) => this.canSee(m))
+      const tasks = this.taskList()
+      // Each AI session's own inbox: what is said and handed to it by name.
+      for (const p of this.personas.values()) p.inbox.scan({ messages, tasks, reader: this.personaReader(p) }, { quiet: quiet || !this.ready })
       events = this.inboxTracker.scan({
-        messages: this.chat.toArray().filter((m) => this.canSee(m)),
-        tasks: this.taskList(),
+        messages,
+        tasks,
         reader: this.inboxReader()
       }, { quiet: quiet || !this.ready })
     } catch (err) {
@@ -2508,12 +2519,14 @@ export class Session extends EventEmitter {
    * already answered (by any AI session working as this member, or the person) or settled as
    * needing no reply is left out, so a second session doesn't answer it again; `all` keeps them.
    */
-  inbox ({ after = 0, all = false } = {}) {
-    const r = this.inboxTracker.since(after)
+  inbox ({ after = 0, all = false, via = null } = {}) {
+    const p = this.persona(via)
+    const r = (p ? p.inbox : this.inboxTracker).since(after)
     if (all) return r
     const msgs = this.chat.toArray().filter((m) => this.canSee(m))
+    const me = p ? [p.name, ...p.aliases] : this.name
     const open = (e) => (e.kind !== 'dm' && e.kind !== 'mention') || e.queue ||
-      (!this.settledIds.has(e.id) && !answered(msgs, this.name, e.by, e.ts))
+      (!this.settledIds.has(e.id) && !answered(msgs, me, e.by, e.ts))
     return { ...r, events: r.events.filter(open) }
   }
 
@@ -2527,10 +2540,11 @@ export class Session extends EventEmitter {
   }
 
   /** Everyone this member could address: who is here and who has been in the chat. */
-  memberNames () {
+  memberNames (me = this.name) {
     const names = new Set(this.peerNames())
+    if (me !== this.name) names.add(this.name) // an AI session may write to its own person
     for (const m of this.chat.toArray()) if (m && this.canSee(m)) { if (m.by) names.add(m.by); if (m.to) names.add(m.to) }
-    names.delete(this.name)
+    names.delete(me)
     return [...names].filter((n) => typeof n === 'string' && n)
   }
 
@@ -2621,6 +2635,152 @@ export class Session extends EventEmitter {
     this.conn.awareness.setLocalStateField('agents', [...this.agents])
   }
 
+  // ------------------------------------------------- AI sessions (persona.js) --
+  // Several AI sessions often work through this one app (two Claude Code chats, Cursor, Codex).
+  // Each is a member of its own, named after its work, so partners message the right one and
+  // its claims go idle when it stops, not when its person does.
+
+  /**
+   * An AI session (one `quilt mcp`, by its `via` id) says hello. Its name is taken from the git
+   * branch in its folder when that names the work, otherwise from its tool until it says what
+   * it is doing. Resolves to { name, named }; calling again keeps the name.
+   */
+  registerPersona ({ via, tool = '', cwd = '', ppid = null, pids = null } = {}) {
+    const chain = (Array.isArray(pids) ? pids : [ppid]).map(Number).filter((n) => n > 1).slice(0, 2)
+    via = String(via || '')
+    if (!/^[A-Za-z0-9_-]{4,40}$/.test(via)) throw new Error('bad session id')
+    // An agent that joined as its own member is this session: it already has a name of its own.
+    if (this.kind === 'agent') return { name: this.name, own: true }
+    const now = Date.now()
+    let p = this.personas.get(via)
+    if (!p) {
+      const fromBranch = labelFromBranch(gitBranch(cwd && fs.existsSync(cwd) ? cwd : this.root))
+      const label = fromBranch || cleanLabel(tool) || 'AI'
+      p = { via, label, name: '', aliases: [], tool: String(tool || '').slice(0, 40), chain, named: fromBranch ? 'branch' : null, inbox: new Inbox(), seenAt: now, touchedAt: 0, focus: '' }
+      p.name = this.freePersonaName(label)
+      this.personas.set(via, p)
+      // What is already in the chat wakes nobody.
+      p.inbox.scan({ messages: this.chat.toArray().filter((m) => this.canSee(m)), tasks: this.taskList(), reader: this.personaReader(p) }, { quiet: true })
+      if (!this.personaTimer) {
+        this.personaTimer = setInterval(() => this.publishPersonas(), 60 * 1000)
+        if (this.personaTimer.unref) this.personaTimer.unref()
+      }
+      this.log(`🤖 ${p.name} (${p.tool || 'AI'}) is working through this app`)
+    } else {
+      if (tool) p.tool = String(tool).slice(0, 40)
+      if (chain.length) p.chain = chain
+      p.seenAt = now
+    }
+    this.publishPersonas()
+    return { name: p.name, named: p.named }
+  }
+
+  /** "Daniel · file-queue", or with " 2" when someone in the session already has that name. */
+  freePersonaName (label, except = null) {
+    const taken = new Set(this.status().peers.filter((x) => !x.mine).map((x) => x.name))
+    taken.add(this.name)
+    for (const q of this.personas.values()) if (q !== except) taken.add(q.name)
+    const base = personaName(this.name, label)
+    let name = base
+    for (let i = 2; taken.has(name); i++) name = `${base} ${i}`
+    return name
+  }
+
+  persona (via) { return via ? this.personas.get(String(via)) || null : null }
+
+  /** Who an action from this AI session is by: its own name, or this member's. */
+  actorName (via) { const p = this.persona(via); return p ? p.name : this.name }
+
+  /** The claim request fields that make the relay act for an AI session (server.js claimant). */
+  as (via) { const p = this.persona(via); return p ? { as: { id: p.via, label: p.label } } : {} }
+
+  /** Whether a name is this member's or one of its AI sessions' (now or before a rename). */
+  isMine (name) {
+    if (!name) return false
+    if (name === this.name) return true
+    for (const p of this.personas.values()) if (p.name === name || p.aliases.includes(name)) return true
+    return false
+  }
+
+  /** Whether a claim is this member's or one of its AI sessions': files on this disk are ours to write. */
+  ownClaim (c) { return !!c && (c.by === this.name || c.of === this.name || this.isMine(c.by)) }
+
+  /** Whether one AI session holds a claim (not this member, nor another of its sessions). */
+  claimHeldBy (c, via) {
+    const p = this.persona(via)
+    return !!c && !!p && (c.by === p.name || p.aliases.includes(c.by))
+  }
+
+  personaReader (p) { return { name: p.name, aliases: p.aliases, asAi: false, agent: true, of: this.name } }
+
+  /** Renames an AI session ("self": it chose; "text": from what it said it does). The old name still reaches it. */
+  renamePersona (via, label, how = 'self') {
+    const p = this.persona(via)
+    if (!p) throw new Error('this AI session has not said hello to Quilt yet')
+    const clean = cleanLabel(label)
+    if (!clean) throw new Error('give a few words about what you work on')
+    const name = this.freePersonaName(clean, p)
+    if (name === p.name) return { name }
+    if (!p.aliases.includes(p.name)) p.aliases.push(p.name)
+    p.aliases = p.aliases.filter((n) => n !== name).slice(-5)
+    p.label = clean
+    p.name = name
+    p.named = how
+    this.publishPersonas()
+    this.log(`🤖 ${p.aliases[p.aliases.length - 1]} is now ${name}`)
+    return { name }
+  }
+
+  /** The first thing an unnamed AI session says it is doing names it (its focus, a task, what it shares). */
+  personaSays (via, text) {
+    const p = this.persona(via)
+    if (!p || !text) return
+    p.focus = String(text).slice(0, 200)
+    if (!p.named) {
+      const label = labelFromText(text)
+      if (label) { this.renamePersona(via, label, 'text'); return }
+    }
+    this.publishPersonas()
+  }
+
+  /** An AI session used a Quilt tool: it is here, and its claims' idle time starts again (once a minute at most). */
+  touchPersona (via) {
+    const p = this.persona(via)
+    if (!p) return
+    const now = Date.now()
+    const wasAway = now - p.seenAt > PERSONA_AWAY_MS
+    p.seenAt = now
+    if (wasAway) this.publishPersonas()
+    if (now - p.touchedAt < 60 * 1000 || !this.conn) return
+    p.touchedAt = now
+    this.conn.claimRequest({ op: 'touch', ...this.as(via) }).catch(() => {})
+  }
+
+  /** The AI session a hook belongs to: the one whose tool process is among the hook's parents. */
+  personaFor (pids) {
+    // The tool process can be the parent of `quilt mcp` or one level up (behind a shell), and
+    // several tools can share an app further up: the closest common parent wins.
+    const list = (Array.isArray(pids) ? pids : []).map(Number).filter((n) => n > 1)
+    let best = null
+    for (const p of this.personas.values()) {
+      (p.chain || []).forEach((pid, i) => {
+        const at = list.indexOf(pid)
+        if (at >= 0 && (!best || at + i < best.score)) best = { via: p.via, score: at + i }
+      })
+    }
+    return best ? best.via : null
+  }
+
+  /** Tells the session which AI sessions work here (those heard from in the last half hour). */
+  publishPersonas () {
+    if (!this.conn) return
+    const now = Date.now()
+    const live = [...this.personas.values()].filter((p) => now - p.seenAt < PERSONA_AWAY_MS)
+    const list = live.map((p) => ({ name: p.name, tool: p.tool, ...(p.focus ? { focus: p.focus } : {}) }))
+    const was = JSON.stringify(this.conn.awareness.getLocalState()?.personas || [])
+    if (JSON.stringify(list) !== was) this.conn.awareness.setLocalStateField('personas', list)
+  }
+
   // ------------------------------------------------------------ messaging --
 
   /**
@@ -2638,8 +2798,9 @@ export class Session extends EventEmitter {
     text = String(text || '').slice(0, 4000)
     if (!text && !file) throw new Error('message is empty')
     to = to ? String(to).trim() : null
-    if (to === this.name) throw new Error('that is you')
-    const names = agent ? this.memberNames() : []
+    const by = this.actorName(via) // an AI session speaks under its own name
+    if (to === by) throw new Error('that is you')
+    const names = agent ? this.memberNames(by) : []
     const targets = agent ? addressees(text, to, names) : []
     if (agent && !file) {
       const why = unaddressed(text, { to, everyone, names })
@@ -2649,7 +2810,7 @@ export class Session extends EventEmitter {
       const hit = !also && sentByAnother(this.aiSent, { via, targets, messages: this.chat.toArray().filter((m) => this.canSee(m)), now })
       if (hit) throw new Error(renderRepeat(hit, now))
     }
-    const msg = { id: crypto.randomBytes(8).toString('hex'), by: this.name, to, text, ts: Date.now() }
+    const msg = { id: crypto.randomBytes(8).toString('hex'), by, to, text, ts: Date.now() }
     if (file) msg.file = file
     this.doc.transact(() => {
       this.chat.push([msg])
@@ -2743,7 +2904,7 @@ export class Session extends EventEmitter {
 
   /** Whether a message is meant for me: a well-formed one that is public, mine, or addressed to me. */
   canSee (msg) {
-    return validMessage(msg) && (!msg.to || msg.to === this.name || msg.by === this.name)
+    return validMessage(msg) && (!msg.to || this.isMine(msg.to) || this.isMine(msg.by))
   }
 
   peerNames () {
@@ -2794,10 +2955,10 @@ export class Session extends EventEmitter {
   }
 
   /** Asks the relay for a claim; it refuses overlaps with anyone else's. */
-  async claim (pattern, note = '') {
+  async claim (pattern, note = '', via = null) {
     pattern = String(pattern ?? '').trim()
     if (!pattern) throw new Error('pattern required')
-    await this.conn.claimRequest({ op: 'claim', pattern, note: String(note) })
+    await this.conn.claimRequest({ op: 'claim', pattern, note: String(note), ...this.as(via) })
     this.autoClaims.delete(pattern) // claimed by hand now: ours until we release it
     return { ok: true }
   }
@@ -2834,10 +2995,12 @@ export class Session extends EventEmitter {
     for (const [rel, ts] of this.autoClaims) {
       if (!only(rel, ts)) continue
       const c = this.claims.get(rel)
-      if (c && c.by === this.name && c.queue && c.queue.length) continue
+      if (c && this.ownClaim(c) && c.queue && c.queue.length) continue
+      const via = this.autoVia.get(rel)
       this.autoClaims.delete(rel)
-      if (!c || c.by !== this.name || !this.conn) continue
-      done.push(this.conn.claimRequest({ op: 'release', pattern: rel }).catch(() => {}))
+      this.autoVia.delete(rel)
+      if (!c || !this.ownClaim(c) || !this.conn) continue
+      done.push(this.conn.claimRequest({ op: 'release', pattern: rel, ...this.as(via) }).catch(() => {}))
     }
     await Promise.all(done)
     return done.length
@@ -2860,14 +3023,17 @@ export class Session extends EventEmitter {
    * what people said about those files in chat, as context. When no chat reader can see
    * our AI work, it is marked working, so the host doesn't commit under it.
    */
-  async prepareEdit (paths) {
+  async prepareEdit (paths, via = null) {
     const files = []
+    const p0 = this.persona(via)
     for (const p of [...new Set((paths || []).map((x) => String(x || '').replace(/\\/g, '/').replace(/^\.\//, '')))]) {
       if (!p) continue
       if (!this.syncable(p)) { files.push({ path: p, shared: false }); continue }
       const held = (c) => ({ by: c.by, pattern: c.pattern, note: c.note || '', queue: c.queue || [] })
+      // An AI session's files are its own: another session of this same person is refused too.
+      const mine = (c) => p0 ? this.claimHeldBy(c, via) : c.by === this.name
       let c = this.claimFor(p)
-      if (c && c.by === this.name) {
+      if (c && mine(c)) {
         if (this.autoClaims.has(p)) this.autoClaims.set(p, Date.now())
         files.push({ path: p, shared: true, ok: true, mine: true })
         continue
@@ -2875,17 +3041,19 @@ export class Session extends EventEmitter {
       if (c) { files.push({ path: p, shared: true, ok: false, claim: held(c) }); continue }
       try {
         if (!this.conn) throw new Error('not connected')
-        await this.conn.claimRequest({ op: 'claim', pattern: p, note: this.focus ? `editing: ${this.focus}` : 'editing' })
+        const focus = (p0 && p0.focus) || this.focus
+        await this.conn.claimRequest({ op: 'claim', pattern: p, note: focus ? `editing: ${focus}` : 'editing', ...this.as(via) })
         this.autoClaims.set(p, Date.now())
+        if (p0) this.autoVia.set(p, via)
         files.push({ path: p, shared: true, ok: true, claimed: true })
       } catch (err) {
         c = this.claimFor(p)
-        files.push(c && c.by !== this.name ? { path: p, shared: true, ok: false, claim: held(c) } : { path: p, shared: true, ok: false, error: err.message })
+        files.push(c && !mine(c) ? { path: p, shared: true, ok: false, claim: held(c) } : { path: p, shared: true, ok: false, error: err.message })
       }
     }
     const chat = this.chatAbout(files.filter((f) => f.shared).map((f) => f.path))
     if (files.some((f) => f.claimed)) this.reportWorking(this.focus || '')
-    return { me: this.name, files, chat }
+    return { me: p0 ? p0.name : this.name, files, chat }
   }
 
   /**
@@ -2938,12 +3106,14 @@ export class Session extends EventEmitter {
    * What this member owes before work moves on: direct messages and mentions not answered yet,
    * and files they hold that someone is waiting for in the file queue (`queued`, see duties.js).
    */
-  duties () {
+  duties (via = null) {
+    const p = this.persona(via)
+    const me = p ? [p.name, ...p.aliases] : this.name
     const pickup = this.pickupMode()
     return {
-      me: this.name,
-      waiting: waitingOn(this.chat.toArray().filter((m) => this.canSee(m)), this.name, { agent: this.kind === 'agent', settled: this.settledIds }),
-      queued: this.queued(),
+      me: p ? p.name : this.name,
+      waiting: waitingOn(this.chat.toArray().filter((m) => this.canSee(m)), me, { agent: !!p || this.kind === 'agent', settled: this.settledIds }),
+      queued: this.queued(via),
       pickup,
       next: nextTask(this.taskList(), { name: this.name, asAi: this.kind !== 'agent' }, pickup)
     }
@@ -2960,26 +3130,30 @@ export class Session extends EventEmitter {
   // on with their context when done (the relay keeps the queue, see server.js).
 
   /** Files we hold that someone is waiting for: [{ pattern, queue }]. */
-  queued () { return queuedFor([...this.claims.values()], this.name) }
+  queued (via = null) {
+    const p = this.persona(via)
+    return p ? [p.name, ...p.aliases].flatMap((n) => queuedFor([...this.claims.values()], n)) : queuedFor([...this.claims.values()], this.name)
+  }
 
   /** Asks for a file someone else holds. Resolves to { request, position, holder, pattern }. */
-  async requestFile (file, { title = '', description = '', task = '' } = {}) {
+  async requestFile (file, { title = '', description = '', task = '', via = null } = {}) {
     const rel = String(file || '').replace(/\\/g, '/').replace(/^\.\//, '')
     if (!rel) throw new Error('path required')
-    return this.conn.claimRequest({ op: 'request', path: rel, title: String(title), description: String(description), ...(task ? { task: String(task) } : {}) })
+    return this.conn.claimRequest({ op: 'request', path: rel, title: String(title), description: String(description), ...(task ? { task: String(task) } : {}), ...this.as(via) })
   }
 
   /** Hands a file we hold to someone waiting for it (the first, or `to`: a name or request id), with our context. */
-  async handoff (file, { to = '', context = '' } = {}) {
+  async handoff (file, { to = '', context = '', via = null } = {}) {
     const rel = String(file || '').replace(/\\/g, '/').replace(/^\.\//, '')
-    const r = await this.conn.claimRequest({ op: 'handoff', pattern: rel, to: String(to || ''), context: String(context) })
+    const r = await this.conn.claimRequest({ op: 'handoff', pattern: rel, to: String(to || ''), context: String(context), ...this.as(via) })
     this.autoClaims.delete(r.pattern)
+    this.autoVia.delete(r.pattern)
     return r
   }
 
   /** Takes back one of our requests. */
-  async withdrawRequest (request) {
-    const r = await this.conn.claimRequest({ op: 'withdraw', request: String(request || '') })
+  async withdrawRequest (request, via = null) {
+    const r = await this.conn.claimRequest({ op: 'withdraw', request: String(request || ''), ...this.as(via) })
     return r.withdrawn || 0
   }
 
@@ -2989,7 +3163,7 @@ export class Session extends EventEmitter {
    */
   noteQueuedEdit (rel) {
     const c = this.claimFor(rel)
-    if (!c || c.by !== this.name || !c.queue || !c.queue.length) return
+    if (!c || !this.ownClaim(c) || !c.queue || !c.queue.length) return
     const last = this.queueNoticed.get(c.pattern) || 0
     if (Date.now() - last < 60 * 1000) return
     this.queueNoticed.set(c.pattern, Date.now())
@@ -3026,16 +3200,17 @@ export class Session extends EventEmitter {
   }
 
   /** Done with a piece of work: lets go of the claims that followed our edits and says we're done. */
-  async finishEditing () {
-    const released = await this.releaseAutoClaims()
+  async finishEditing (via = null) {
+    // One AI session finishing lets go of what was claimed for it; the others keep theirs.
+    const released = await this.releaseAutoClaims(this.persona(via) ? (rel) => this.autoVia.get(rel) === via : () => true)
     if (this.work?.state === 'working') this.setWork('done')
     this.workFromEdits = false
     return { released }
   }
 
   /** Releases one of our claims, or all of them with '*'. Resolves to the number released. */
-  async release (pattern = '*') {
-    const r = await this.conn.claimRequest({ op: 'release', pattern: String(pattern) })
+  async release (pattern = '*', via = null) {
+    const r = await this.conn.claimRequest({ op: 'release', pattern: String(pattern), ...this.as(via) })
     return r.released || 0
   }
 
@@ -3064,9 +3239,9 @@ export class Session extends EventEmitter {
     if (this.ready) {
       for (const [p, c] of next) {
         const was = this.claims.get(p)
-        if (c.by !== this.name && (!was || was.by !== c.by)) this.log(`🔒 ${c.by} claimed ${c.pattern}${c.note ? ` — ${c.note}` : ''}`)
+        if (!this.ownClaim(c) && (!was || was.by !== c.by)) this.log(`🔒 ${c.by} claimed ${c.pattern}${c.note ? ` — ${c.note}` : ''}`)
       }
-      for (const [p, c] of this.claims) if (!next.has(p) && c.by !== this.name) this.log(`🔓 ${c.by} released ${p}`)
+      for (const [p, c] of this.claims) if (!next.has(p) && !this.ownClaim(c)) this.log(`🔓 ${c.by} released ${p}`)
     }
     this.claims = next
     try { fs.writeFileSync(path.join(this.stateDir, 'claims.json'), JSON.stringify([...next.values()])) } catch {}
@@ -3184,7 +3359,7 @@ export class Session extends EventEmitter {
   /** Who else holds a merge's file right now, or null: settling it (or sending it to an AI) writes the file. */
   mergeHeldBy (rec) {
     const claim = this.claimFor(rec.path)
-    return claim && claim.by !== this.name ? claim : null
+    return claim && !this.ownClaim(claim) ? claim : null
   }
 
   mergeHeldCheck (rec) {
@@ -3495,6 +3670,15 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
           .map(([p, ts]) => ({ path: p, secondsAgo: Math.round((now - ts) / 1000) }))
       })
     }
+    // AI sessions working through someone's app (persona.js) are members of their own here,
+    // ours included (so the person can write to one of their own sessions).
+    for (const [id, s] of states) {
+      if (!s || !s.name || !Array.isArray(s.personas)) continue
+      for (const x of s.personas) {
+        if (!x || typeof x.name !== 'string' || !x.name || peers.some((p) => p.name === x.name)) continue
+        peers.push({ name: x.name.slice(0, 80), tool: typeof x.tool === 'string' ? x.tool.slice(0, 40) : '', kind: 'agent', persona: true, of: s.name, ...(id === this.doc.clientID ? { mine: true } : {}), agent: null, agents: [], work: null, focus: typeof x.focus === 'string' ? x.focus.slice(0, 200) : '', editing: [] })
+      }
+    }
     // Agents working over HTTP (the hosted MCP, chat links) have no live connection, so no
     // presence: the relay marks them online for a few minutes after each call instead.
     for (const m of this.members) {
@@ -3550,6 +3734,7 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
     for (const w of this.pullWait.values()) clearTimeout(w.timer)
     this.ready = false
     clearInterval(this.autoClaimTimer)
+    clearInterval(this.personaTimer)
     if (this.autoClaims.size && this.conn && !this.stopped) {
       await Promise.race([this.releaseAutoClaims(), new Promise((r) => setTimeout(r, 2000))])
     }

@@ -147,6 +147,12 @@ function sessionTools (server, ctx) {
   const peers = (room) => {
     const out = []
     for (const s of room.awareness.getStates().values()) if (s && s.name && s.name !== me) out.push(s)
+    // AI sessions working through someone's app (persona.js) are members of their own.
+    for (const s of room.awareness.getStates().values()) {
+      for (const x of (s && Array.isArray(s.personas) ? s.personas : [])) {
+        if (x && typeof x.name === 'string' && x.name && x.name !== me && !out.some((p) => p.name === x.name)) out.push({ name: x.name.slice(0, 80), kind: 'agent', tool: typeof x.tool === 'string' ? x.tool.slice(0, 40) : '', focus: typeof x.focus === 'string' ? x.focus.slice(0, 200) : '', persona: true, of: s.name })
+      }
+    }
     for (const h of room.hostedOnline ? room.hostedOnline() : []) if (h.name !== me && !out.some((p) => p.name === h.name)) out.push({ name: h.name, kind: h.kind, tool: 'hosted', hosted: true })
     return out
   }
@@ -235,7 +241,7 @@ function sessionTools (server, ctx) {
       const ag = p.agent || {}
       const ai = ag.sharing === false ? 'AI sharing paused' : ag.status === 'working' ? `${ag.tool || 'AI'} working` : ag.tool ? `${ag.tool} idle` : ''
       const editing = Object.keys(p.editing || {}).slice(0, 5)
-      lines.push(`- ${p.name} (${p.tool || 'unknown tool'}${p.kind === 'agent' ? ', agent' : ''})${ai ? ` · ${ai}` : ''}${p.focus ? ` · focus: ${p.focus}` : ''}${editing.length ? ` · editing ${editing.join(', ')}` : ''}`)
+      lines.push(`- ${p.name} (${p.tool || 'unknown tool'}${p.persona ? `, an AI session of ${p.of}` : p.kind === 'agent' ? ', agent' : ''})${ai ? ` · ${ai}` : ''}${p.focus ? ` · focus: ${p.focus}` : ''}${editing.length ? ` · editing ${editing.join(', ')}` : ''}`)
     }
     const cl = claimsOf(room)
     lines.push('', '## Claimed files', ...(cl.length ? cl.map((c) => `- ${c.pattern} by ${c.by}${c.note ? ` (${c.note})` : ''}${c.queue.length ? ` · waiting: ${c.queue.map((r) => `${r.by} ("${r.title}")`).join(', ')}` : ''}`) : ['- None.']))

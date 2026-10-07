@@ -43,15 +43,18 @@ export function mentionsMe (text, me, { agent = false } = {}) {
  * Events for `reader` that `state` has not seen. Pure: returns { events, state }.
  * - messages: chat the reader can see, oldest first ({ id, by, to, text, ts }).
  * - tasks: the board ({ id, title, column, by, assignee, forAi, tool, files }).
- * - reader: { name, asAi, agent }: agent means the reader joined as an agent, so
- *   @Agents mentions it too. asAi means the reader is that person's AI, so tasks
- *   for "their AI" are the reader's and tasks for the person are not.
+ * - reader: { name, asAi, agent, aliases, of }: agent means the reader joined as an
+ *   agent, so @Agents mentions it too. asAi means the reader is that person's AI, so
+ *   tasks for "their AI" are the reader's and tasks for the person are not. One of
+ *   several AI sessions working through a person's app (persona.js) has its own name,
+ *   the names it had before (`aliases`), and `of`, its person: tasks for "their AI" are its.
  * The first scan (no state) only takes stock: nothing that is already there
  * wakes anyone. A task fires once when it becomes the reader's while open;
  * handing it away and back fires again.
  */
 export function scanInbox ({ messages = [], tasks = [], reader, now = Date.now() }, state = null) {
   const me = reader && reader.name
+  const names = me ? [me, ...((reader && reader.aliases) || [])] : []
   const seed = !state
   const seenMsgs = new Set(state?.messages || [])
   const assigned = new Set(state?.assigned || [])
@@ -60,17 +63,20 @@ export function scanInbox ({ messages = [], tasks = [], reader, now = Date.now()
   for (const m of messages) {
     if (!m || typeof m.id !== 'string' || !m.id) continue
     msgIds.push(m.id)
-    if (seed || seenMsgs.has(m.id) || !me || m.by === me) continue
+    if (seed || seenMsgs.has(m.id) || !me || names.includes(m.by)) continue
     const text = typeof m.text === 'string' ? m.text : ''
     // File queue messages (a request for a file the reader holds, or a file handed to them) wake
     // them like a direct message, but ask for a handoff rather than a reply (duties.js).
     const queue = m.kind === 'queue' || m.kind === 'handoff' ? { queue: m.kind, file: typeof m.path === 'string' ? m.path : '' } : {}
-    if (m.to === me) events.push({ id: m.id, kind: 'dm', by: m.by, text, ts: m.ts, ...queue })
-    else if (!m.to && mentionsMe(text, me, { agent: !!reader.agent })) events.push({ id: m.id, kind: 'mention', by: m.by, text, ts: m.ts })
+    if (names.includes(m.to)) events.push({ id: m.id, kind: 'dm', by: m.by, text, ts: m.ts, ...queue })
+    else if (!m.to && names.some((n) => mentionsMe(text, n, { agent: !!reader.agent }))) events.push({ id: m.id, kind: 'mention', by: m.by, text, ts: m.ts })
   }
   const mine = []
   for (const t of tasks) {
-    if (!t || typeof t.id !== 'string' || !assignedToReader(t, reader)) continue
+    // An AI session's tasks: given to it by name (as a member), or to its person's AI.
+    const its = assignedToReader(t, reader) || names.slice(1).some((n) => assignedToReader(t, { ...reader, name: n })) ||
+      (reader && reader.of && (t.assignee === me || assignedToReader(t, { name: reader.of, asAi: true })))
+    if (!t || typeof t.id !== 'string' || !its) continue
     mine.push(t.id)
     if (seed || assigned.has(t.id) || t.column === 'done') continue
     events.push({

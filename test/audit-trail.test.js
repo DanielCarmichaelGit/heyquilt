@@ -9,7 +9,7 @@ import WebSocket from 'ws'
 import * as Y from 'yjs'
 import { startServer, endReasonFor, HOSTED_ONLINE_MS } from '../src/server.js'
 import { generateIdentity, signChallenge } from '../src/identity.js'
-import { MSG_AUTH, MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS, decoding, bytesMessage, jsonMessage, updateMessage, CLOSE_DENIED, CLOSE_ENDED, CLOSE_PASS_EXPIRED } from '../src/protocol.js'
+import { MSG_AUTH, MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS, MSG_CLAIM, decoding, bytesMessage, jsonMessage, updateMessage, CLOSE_DENIED, CLOSE_ENDED, CLOSE_PASS_EXPIRED } from '../src/protocol.js'
 import { PASS_KEYS, makePass } from './pass-helpers.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
@@ -158,4 +158,17 @@ test("a hosted agent's visit ends at its last call when it goes quiet, and as le
   assert.deepEqual(mine.filter((e) => e.type !== 'act').map((e) => [e.type, e.reason || e.via]), [['start', 'hosted'], ['end', 'idle'], ['start', 'hosted'], ['end', 'left']])
   assert.equal(mine.find((e) => e.reason === 'idle').at, quietSince, 'ended at its last call')
   assert.deepEqual(mine.filter((e) => e.type === 'act').map((e) => e.target), ['quilt_status', 'quilt_status'])
+})
+
+test("an app's claims, requests and releases are in its visit", async (t) => {
+  const api = collector()
+  const srv = await relay(t, api)
+  const r = room()
+  const o = await connect(srv, r, { name: 'Olive', sub: 'user-olive', viewSecret: 'v' })
+  await waitFor(() => srv.presence.open.size === 1)
+  o.ws.send(jsonMessage(MSG_CLAIM, { id: 1, op: 'claim', pattern: 'LICENSE', note: 'x' }))
+  o.ws.send(jsonMessage(MSG_CLAIM, { id: 2, op: 'release', pattern: 'LICENSE' }))
+  await waitFor(() => srv.presence.queue.filter((x) => x.ev.type === 'act').length === 2)
+  await srv.presence.flush()
+  assert.deepEqual(api.events.filter((e) => e.type === 'act').map((e) => [e.action, e.target]), [['claimed', 'LICENSE'], ['released', 'LICENSE']])
 })

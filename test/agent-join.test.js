@@ -37,7 +37,7 @@ test('quilt agent whoami says who the agent is, refreshing an expired access key
   const saved = await agentJoin({ link: await newLink(), name: 'whoami-bot', provider: 'Anthropic', type: 'coding', dir, log: () => {} })
   const me = await agentWhoami({ name: 'whoami-bot', dir })
   assert.deepEqual([me.agent.id, me.agent.kind], [saved.agentId, 'personal'])
-  assert.equal(describeAgent(me), 'whoami-bot (Anthropic, coding): your personal agent')
+  assert.equal(describeAgent(me), `whoami-bot (Anthropic, coding): your personal agent\nAgent id: ${saved.agentId}`)
   const file = agentFile('whoami-bot', dir)
   fs.writeFileSync(file, JSON.stringify({ ...saved, accessExpiresAt: Date.now() - 1 }))
   await agentWhoami({ name: 'whoami-bot', dir })
@@ -296,4 +296,19 @@ test('a slow refresh is waited for, not cut off: the timeouts nest', () => {
   assert.equal(refreshTimeoutMs, 120 * 1000)
   assert.ok(lockWaitMs > refreshTimeoutMs, 'another process waits out a whole refresh')
   assert.ok(lockMaxAgeMs > lockWaitMs, 'a live holder is never taken for stale')
+})
+
+test('quilt agent join with a new invite comes back as the agent saved under that name, or the one --agent-id names', async () => {
+  const dir = tmp()
+  const lines = []
+  const first = await agentJoin({ link: await newLink(), name: 'comeback', dir, log: (l) => lines.push(l) })
+  assert.match(lines[0], new RegExp(`agent id ${first.agentId}`))
+  const again = await agentJoin({ link: await newLink(), name: 'comeback', dir, log: (l) => lines.push(l) })
+  assert.equal(again.agentId, first.agentId)
+  assert.deepEqual(again.identity, first.identity, 'keeps its own key')
+  assert.match(lines[1], /Joined Quilt again as comeback/)
+  // On another computer, with nothing saved: --agent-id.
+  const elsewhere = await agentJoin({ link: await newLink(), name: 'comeback', agentId: first.agentId, dir: tmp(), log: () => {} })
+  assert.equal(elsewhere.agentId, first.agentId)
+  assert.equal((await t.store.agentById(first.agentId)).publicKey, elsewhere.identity.publicKey, 'the new computer brings its own key')
 })

@@ -13,7 +13,7 @@ const INVITE = { waiting: 'Waiting', expired: 'Expired', cancelled: 'Cancelled' 
 
 /** An invite's state, naming the agent that used it. */
 export function inviteStatusText (invite) {
-  if (invite.status === 'used') return invite.usedBy ? `Used by ${invite.usedBy.name} (${invite.usedBy.provider})` : 'Used'
+  if (invite.status === 'used') return invite.usedBy ? `${invite.rejoined ? 'Rejoined by' : 'Used by'} ${invite.usedBy.name} (${invite.usedBy.provider})` : 'Used'
   return Object.hasOwn(INVITE, invite.status) ? INVITE[invite.status] : 'Waiting'
 }
 

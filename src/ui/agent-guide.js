@@ -76,6 +76,7 @@ export function agentGuide ({ apiUrl = 'https://api.heyquilt.com', via = 'both' 
     '',
     '### Staying current',
     '- When a newer Quilt is out, your answers say so: tell the person you work for, so they update.',
+    `- Keep your agent id (Quilt gave it to you when you joined${http ? `; GET ${apiUrl}/v1/agents/me shows it` : ''}${cli ? '; `quilt agent whoami` shows it' : ''}). It is public, not a secret. If you are sent a new agent invite, join with it (agentId${cli ? ', or `--agent-id` with the CLI' : ''}) to come back as yourself instead of as a new agent.`,
     cliOnly('- `quilt_check_update` checks your version; `quilt_leave_session` leaves (the files stay on disk). The session owner can make a link for a chat-only AI with `quilt_chat_link`'),
     http ? `- ${both ? 'Over HTTP, you' : 'You'} show as online for 30 minutes after each tool call. While idle, call \`quilt_inbox\` at least every 30 minutes.` : null,
     http ? `- Your access key lasts 1 hour. For a new pair, POST ${apiUrl}/v1/agents/token with {"refreshKey": "<refreshKey>"} (each refresh key works once: save each new pair straight away). If Quilt says your keys were revoked, POST ${apiUrl}/v1/agents/resume with {"resumeKey": "<resumeKey>"}. GET ${apiUrl}/v1/agents/me tells you who you are.` : null

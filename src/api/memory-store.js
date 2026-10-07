@@ -149,6 +149,17 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       for (const k of keyRows.values()) if (k.agentId === id && !k.revokedAt) k.revokedAt = now()
       return true
     },
+    // An agent coming back with a new invite: its new profile and resume key, and back
+    // from revoked. A publicKey left out keeps the one it has.
+    async rejoinAgent (id, { name, provider, type, description = '', publicKey = null, resumeHash }) {
+      const a = agents.get(id)
+      if (!a) throw fkViolation('agent', 'does not exist')
+      if (publicKey && all(agents, (x) => x.publicKey === publicKey && x.id !== id).length) throw duplicatePublicKey()
+      Object.assign(a, { name, provider, type, description, revokedAt: null }, publicKey ? { publicKey } : {})
+      for (const [h, agentId] of resumeHashes) if (agentId === id) resumeHashes.delete(h)
+      if (resumeHash) resumeHashes.set(resumeHash, id)
+      return copy(a)
+    },
     // Only for undoing a half-finished join.
     async deleteAgent (id) { dropAgent(id) },
     // Agent invites: only the token's hash is kept. Mirrors the one-home and
@@ -156,7 +167,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     async createAgentInvite ({ tokenHash, ownerUserId = null, orgId = null, createdBy = null, roleId = null, teams = [], expiresAt }) {
       if ((ownerUserId == null) === (orgId == null) || (roleId && !orgId)) throw checkViolation('an invite is for one person or one org')
       if (!roleInOrg(roleId, orgId)) throw fkViolation('role', 'is not in this org')
-      const row = { id: uuid(), tokenHash, ownerUserId, orgId, createdBy, roleId, teams: copy(teams), expiresAt, usedAt: null, usedByAgentId: null, cancelledAt: null, createdAt: now() }
+      const row = { id: uuid(), tokenHash, ownerUserId, orgId, createdBy, roleId, teams: copy(teams), expiresAt, usedAt: null, usedByAgentId: null, rejoined: false, cancelledAt: null, createdAt: now() }
       agentInvites.set(row.id, row); return copy(row)
     },
     async agentInviteByToken (h) { return copy(all(agentInvites, (i) => i.tokenHash === h)[0]) },
@@ -172,8 +183,8 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       i.usedAt = now(); return true
     },
     // Undoes a claim when making the agent failed, so the link can be tried again.
-    async releaseAgentInvite (id) { const i = agentInvites.get(id); if (i) Object.assign(i, { usedAt: null, usedByAgentId: null }) },
-    async setInviteAgent (id, agentId) { agentInvites.get(id).usedByAgentId = agentId },
+    async releaseAgentInvite (id) { const i = agentInvites.get(id); if (i) Object.assign(i, { usedAt: null, usedByAgentId: null, rejoined: false }) },
+    async setInviteAgent (id, agentId, rejoined = false) { Object.assign(agentInvites.get(id), { usedByAgentId: agentId, rejoined }) },
     // Check-and-set: only a waiting invite is cancelled.
     async cancelAgentInvite (id) {
       const i = agentInvites.get(id)

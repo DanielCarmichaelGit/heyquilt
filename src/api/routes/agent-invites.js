@@ -24,6 +24,8 @@ export function agentInviteRoutes ({ store, user, person, now, apiUrl, limitSend
       kind: i.orgId ? 'org' : 'personal',
       status: inviteStatus(i, now()),
       usedBy: agent ? { id: agent.id, name: agent.name, provider: agent.provider } : null,
+      // An agent that came back as itself with its agentId, rather than a new one.
+      rejoined: !!i.rejoined,
       role: roleName,
       teams: i.teams.map((x) => ({ id: x.teamId, name: names.get(x.teamId) || '', access: x.access, scopes: x.scopes })),
       createdAt: i.createdAt,

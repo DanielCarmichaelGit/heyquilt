@@ -18,7 +18,7 @@ const TEAM = 'id, org_id, name, created_at'
 const TEAM_MEMBER = 'team_id, member_id, access, scopes, added_at'
 const INVITE = 'id, org_id, email, role_id, token_hash, invited_by, expires_at, accepted_at, cancelled_at, created_at'
 const REQUEST = 'id, org_id, user_id, email, status, decided_by, decided_at, created_at'
-const AGENT_INVITE = 'id, token_hash, owner_user_id, org_id, created_by, role_id, teams, expires_at, used_at, used_by_agent_id, cancelled_at, created_at'
+const AGENT_INVITE = 'id, token_hash, owner_user_id, org_id, created_by, role_id, teams, expires_at, used_at, used_by_agent_id, rejoined, cancelled_at, created_at'
 const AGENT_KEY = 'id, agent_id, family_id, access_hash, refresh_hash, access_expires_at, refresh_expires_at, refreshed_at, revoked_at, created_at'
 const RELAY_SESSION = 'room, name, owner_account, created_at, last_active_at, renamed_at'
 const ACCESS_TYPE = 'id, owner_account, name, files, folders, talk, created_at, updated_at'
@@ -109,6 +109,13 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
       await one(db.from('agent_keys').update({ revoked_at: at }).eq('agent_id', id).is('revoked_at', null))
       return rows.length > 0
     },
+    // An agent coming back with a new invite: its new profile and resume key, and back
+    // from revoked. A publicKey left out keeps the one it has.
+    async rejoinAgent (id, { name, provider, type, description = '', publicKey = null, resumeHash }) {
+      const patch = { name, provider, type, description, resume_hash: resumeHash, revoked_at: null }
+      if (publicKey) patch.public_key = publicKey
+      return rowFrom(await one(db.from('agents').update(patch).eq('id', id).select(AGENT).single()))
+    },
     // Only for undoing a half-finished join; cascades to its keys and membership.
     async deleteAgent (id) { await one(db.from('agents').delete().eq('id', id)) },
     // Agent invites: only the token's hash is stored. A deleted role clears
@@ -129,8 +136,8 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
       return rows.length > 0
     },
     // Undoes a claim when making the agent failed, so the link can be tried again.
-    async releaseAgentInvite (id) { await one(db.from('agent_invites').update({ used_at: null, used_by_agent_id: null }).eq('id', id)) },
-    async setInviteAgent (id, agentId) { await one(db.from('agent_invites').update({ used_by_agent_id: agentId }).eq('id', id)) },
+    async releaseAgentInvite (id) { await one(db.from('agent_invites').update({ used_at: null, used_by_agent_id: null, rejoined: false }).eq('id', id)) },
+    async setInviteAgent (id, agentId, rejoined = false) { await one(db.from('agent_invites').update({ used_by_agent_id: agentId, rejoined }).eq('id', id)) },
     // Check-and-set: only a waiting invite is cancelled.
     async cancelAgentInvite (id) {
       const rows = await one(db.from('agent_invites').update({ cancelled_at: new Date().toISOString() }).eq('id', id).is('used_at', null).is('cancelled_at', null).gt('expires_at', new Date().toISOString()).select('id'))

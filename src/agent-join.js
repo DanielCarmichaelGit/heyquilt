@@ -87,17 +87,28 @@ function load (file, name) {
   }
 }
 
-/** Uses an invite link once and saves the agent's keys. */
-export async function agentJoin ({ link, name, provider = DEFAULTS.provider, type = DEFAULTS.type, description = '', dir, fetch: fetchImpl = globalThis.fetch, log = console.log }) {
+/** The agent saved under this name, or null when there is none (or it can't be read). */
+function savedOrNull (file) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return null }
+}
+
+/**
+ * Uses an invite link once and saves the agent's keys. An agent that joined before comes
+ * back as itself: with `agentId`, or with the id saved under this name on this computer
+ * (then it keeps its own key too). Without either it joins as a new agent.
+ */
+export async function agentJoin ({ link, name, agentId, provider = DEFAULTS.provider, type = DEFAULTS.type, description = '', dir, fetch: fetchImpl = globalThis.fetch, log = console.log }) {
   const file = agentFile(name, dir)
   const { api, token } = parseJoinLink(link)
-  // The agent's own Ed25519 key, for joining sessions in later versions.
-  const identity = generateIdentity()
-  const r = await send(fetchImpl, api, 'POST', `/v1/join/${token}`, { name, provider, type, description, publicKey: identity.publicKey })
+  const before = savedOrNull(file)
+  const id = agentId || (before?.api === api ? before.agentId : undefined)
+  // The agent's own Ed25519 key, for joining sessions. A returning agent keeps the one it has.
+  const identity = id && before?.agentId === id && before.identity ? before.identity : generateIdentity()
+  const r = await send(fetchImpl, api, 'POST', `/v1/join/${token}`, { name, provider, type, description, publicKey: identity.publicKey, ...(id ? { agentId: id } : {}) })
   if (!r.ok) throw new Error(r.body?.error || `Couldn't join Quilt (${r.status}).`)
   const saved = { name, api, agentId: r.body.agentId, accessKey: r.body.accessKey, accessExpiresAt: r.body.accessExpiresAt, refreshKey: r.body.refreshKey, refreshExpiresAt: r.body.refreshExpiresAt, resumeKey: r.body.resumeKey, identity }
   save(file, saved)
-  log(`Joined Quilt as ${name}. Keys saved in ${file}`)
+  log(`${r.body.rejoined ? 'Joined Quilt again as' : 'Joined Quilt as'} ${name} (agent id ${saved.agentId}: public, keep it to come back as yourself with a new invite). Keys saved in ${file}`)
   return saved
 }
 
@@ -273,6 +284,8 @@ export function pickAgent ({ agent, dir } = {}) {
 export function describeAgent (me) {
   const where = me.agent.kind === 'org' ? `an agent in ${me.agent.org.name}` : 'your personal agent'
   const lines = [`${me.agent.name} (${me.agent.provider}, ${me.agent.type}): ${where}`]
+  // Public: what the agent gives with a new invite to come back as itself.
+  if (me.agent.id) lines.push(`Agent id: ${me.agent.id}`)
   if (me.role) lines.push(`Role: ${me.role.name}`)
   for (const t of me.teams) lines.push(`Team ${t.name}: ${t.access}${t.scopes.length ? `, folders ${t.scopes.join(', ')}` : ''}`)
   return lines.join('\n')

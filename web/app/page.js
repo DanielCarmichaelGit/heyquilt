@@ -11,9 +11,21 @@ import { SHOT_RATIO, shotSrc, shotSrcSet } from '@/lib/shots.js'
 // worked out in the browser (DownloadButtons.js, DeletedNotice.js).
 
 const STEPS = [
-  ['start', 'The Quilt app, picking a project folder to start a session.', 'Start a session', 'Pick a project folder in the Quilt app.'],
-  ['invite', 'A Quilt invite link, ready to send to a partner.', 'Send the link', 'Your partner clicks it and the project appears on their computer.'],
-  ['session', 'A live Quilt session with both partners editing.', 'Build together', 'Edits sync live, and you see who is changing what.']
+  {
+    shot: 'start', patch: 'a', alt: 'The New session dialog in the Quilt app, with a project folder picked.',
+    title: 'Start a session', text: 'Pick a project folder in the Quilt app, or a GitHub repo and branch. From then on Quilt keeps it in step for everyone.',
+    points: ['Any folder, with git or without', 'Your files stay on your computer', 'Start from a GitHub repo in one click']
+  },
+  {
+    shot: 'invite', patch: 'b', alt: 'The Invite dialog in a Quilt session, with an edit link and a view-only link.',
+    title: 'Send the link', text: 'Your partner opens it, signs in, and the project appears on their computer. You let them in, as an editor or a viewer.',
+    points: ['Edit or view-only links', 'You approve everyone who joins', 'AI agents join the same way']
+  },
+  {
+    shot: 'session', patch: 'c', alt: 'A live Quilt session: a file claimed by Sam, open beside the chat.',
+    title: 'Build together', text: 'Edits sync live. Everyone sees who is changing what, and no AI overwrites a file someone else is working on.',
+    points: ['Live edits, line by line', 'Claims keep two AIs apart', 'Chat, tasks and history in one place']
+  }
 ]
 const TOOLS = ['Claude Code', 'Cursor', 'Codex', 'Windsurf', 'VS Code', 'Zed']
 const AGENT_STEPS = [
@@ -86,21 +98,28 @@ export default function Home () {
           </section>
         </div>
 
-        <div className='wrap sec' id='how'>
-          <h2>Three steps, no setup</h2>
-          <p className='sub'>Pick a folder, send a link, and you're building together.</p>
-          <div className='steps'>
-            {STEPS.map(([shot, alt, title, text], i) => (
-              <div key={title} className='step'>
-                <WindowShot name={shot} sizes='(max-width: 760px) calc(100vw - 32px), 350px' alt={alt} title='quilt · project' height={150} />
-                <div className='step-t'>
-                  <span className='pill step-n'>{i + 1}</span>
-                  <h3>{title}</h3>
-                  <p className='muted'>{text}</p>
-                </div>
-              </div>
-            ))}
+        <div className='wrap sec how' id='how'>
+          <div className='how-head'>
+            <h2>Three steps, no setup</h2>
+            <p className='sub'>Pick a folder, send a link, and you're building together. Nothing to install in your editor, nothing to configure.</p>
           </div>
+          <ol className='how-list'>
+            {STEPS.map((step, i) => (
+              <li key={step.title} className={`how-row how-${step.patch}`}>
+                <span className='how-n' aria-hidden='true'>{i + 1}</span>
+                <div className='how-shot'>
+                  <div className='quilt-patch' aria-hidden='true' />
+                  <WindowShot name={step.shot} sizes='(max-width: 900px) calc(100vw - 32px), 520px' alt={step.alt} title='quilt · landing-page' height='auto' />
+                </div>
+                <div className='how-t'>
+                  <span className='how-kicker'>Step {i + 1}</span>
+                  <h3>{step.title}</h3>
+                  <p>{step.text}</p>
+                  <ul>{step.points.map((pt) => <li key={pt}>{pt}</li>)}</ul>
+                </div>
+              </li>
+            ))}
+          </ol>
         </div>
 
         <div className='wrap'>

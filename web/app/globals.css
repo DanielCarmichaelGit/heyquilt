@@ -200,6 +200,46 @@ code, .mono { font-family: var(--mono); font-size: 13px; }
 .step-n { width: 26px; height: 26px; border-radius: 50%; background: var(--qm-a); color: var(--text); font-size: 13px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; margin-bottom: 8px; }
 .step-t h3 { margin: 0 0 4px; }
 .step-t p { margin: 0; }
+/* How it works: alternating rows on a stitched thread, each screenshot on its own patch */
+.how-head { text-align: center; max-width: 620px; margin: 0 auto 8px; }
+.how-head .sub { margin-bottom: 0; }
+.how-list { position: relative; list-style: none; margin: 0; padding: 24px 0 0; display: flex; flex-direction: column; gap: 56px; }
+.how-list::before { content: ''; position: absolute; left: 50%; top: 40px; bottom: 40px; border-left: 2px dashed var(--border-strong); transform: translateX(-1px); }
+.how-row { position: relative; display: grid; grid-template-columns: 1fr 1fr; gap: 88px; align-items: center; }
+.how-row > * { min-width: 0; }
+.how-row:nth-child(even) .how-shot { order: 2; }
+.how-n { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 2; width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; font-weight: 600; font-size: 17px; color: var(--text); background: var(--qm-a); box-shadow: 0 0 0 6px var(--bg); outline: 2px dashed rgba(255, 255, 255, .9); outline-offset: -7px; }
+.how-b .how-n { background: var(--qm-b); } .how-c .how-n { background: var(--qm-c); }
+.how-shot { position: relative; padding: 18px 18px 0 0; }
+.how-row:nth-child(even) .how-shot { padding: 18px 0 0 18px; }
+.how-shot .quilt-patch { position: absolute; inset: 0 0 -18px 18px; border-radius: 16px; background-size: 40px 40px; background-position: 0 0, 0 20px, 20px -20px, -20px 0; opacity: .75; }
+.how-row:nth-child(even) .how-shot .quilt-patch { inset: 0 18px -18px 0; }
+.how-shot .qwin { position: relative; box-shadow: 0 24px 50px -28px rgba(var(--shadow), .5); }
+.how-t { display: flex; flex-direction: column; gap: 10px; max-width: 420px; }
+.how-row:nth-child(odd) .how-t { justify-self: start; }
+.how-row:nth-child(even) .how-t { justify-self: end; }
+.how-kicker { font-size: 12px; letter-spacing: .12em; text-transform: uppercase; font-weight: 500; color: var(--accent); }
+.how-t h3 { font-size: 26px; }
+.how-t p { color: var(--muted); font-size: 16px; }
+.how-t ul { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.how-t li { display: flex; align-items: center; gap: 10px; font-size: 14.5px; }
+.how-t li::before { content: ''; width: 18px; height: 18px; border-radius: 6px; flex: none; background: var(--qm-a) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.5l2.5 2.5L12 5.5' fill='none' stroke='%232b2a38' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 14px no-repeat; }
+.how-b .how-t li::before { background-color: var(--qm-b); } .how-c .how-t li::before { background-color: var(--qm-c); }
+@media (max-width: 900px) {
+  .how-list { gap: 44px; padding-left: 0; }
+  .how-list::before { left: 22px; }
+  .how-row { grid-template-columns: minmax(0, 1fr); gap: 22px; padding-left: 60px; }
+  .how-row:nth-child(even) .how-shot { order: 0; }
+  .how-n { left: 22px; top: 0; transform: translate(-50%, 0); }
+  .how-row:nth-child(n) .how-t { justify-self: start; }
+  .how-row:nth-child(n) .how-shot { padding: 12px 12px 0 0; }
+  .how-row:nth-child(n) .how-shot .quilt-patch { inset: 0 0 -12px 12px; }
+}
+@media (max-width: 480px) {
+  .how-list::before { display: none; }
+  .how-row { padding-left: 0; padding-top: 58px; }
+  .how-n { left: 0; transform: none; }
+}
 
 .feature-band { display: grid; grid-template-columns: 1fr 1.2fr; gap: 40px; align-items: center; background: var(--text); color: var(--bg); border-radius: 18px; padding: 48px; margin: 0 0 64px; }
 .feature-band h2 { color: var(--bg); font-size: 28px; margin: 0 0 12px; }

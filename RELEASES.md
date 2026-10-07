@@ -11,6 +11,7 @@ nothing else is.
 
 ## 0.3.16 — 2026-10-07
 
+- **A warmer How it works on heyquilt.com.** The homepage's three steps are now full-size screenshots of today's app, each on its own quilt patch, joined by a stitched thread with numbered badges, and each step lists what it means for you (any folder, links you approve, claims that keep two AIs apart).
 - **Docs: connect your own agents.** A new page on heyquilt.com, **Docs → Your own agents**, explains how the AIs on your computer join a session: your everyday AI tools are connected by themselves and work as you, and an agent of your own joins as its own member in five steps (install the command, make an agent invite, `quilt agent join`, `quilt join --agent` in the background, let it in), with how it works in a session, how you stay in control and troubleshooting.
 
 ## 0.3.15 — 2026-10-07

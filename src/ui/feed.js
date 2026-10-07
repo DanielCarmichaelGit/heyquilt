@@ -166,6 +166,7 @@ function inline (text) {
     let s = esc(part)
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     s = s.replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>')
+    s = s.replace(/!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/g, (m, alt, href) => `<img class="md-img" alt="${alt}" src="${href}" loading="lazy">`)
     s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (m, label, href) => `<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`)
     return s.replace(/\n/g, '<br>')
   }).join('')

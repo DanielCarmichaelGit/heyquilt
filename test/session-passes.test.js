@@ -10,6 +10,7 @@ import { startServer } from '../src/server.js'
 import { Session } from '../src/session.js'
 import { Connection } from '../src/connection.js'
 import { runSession } from '../src/runner.js'
+import { renderStatus } from '../src/status.js'
 import { generateIdentity } from '../src/identity.js'
 import http from 'node:http'
 import { WebSocketServer } from 'ws'
@@ -214,6 +215,32 @@ test('runSession takes your name, and an agent badge, from the pass', async (t) 
   assert.equal(run.session.kind, 'agent')
   await waitFor(() => srv.rooms.get('sp-6')?.access.size)
   assert.deepEqual([...srv.rooms.get('sp-6').access.values()].map((a) => [a.name, a.kind]), [['helper', 'agent']])
+})
+
+test('a pass that cannot be fetched says why (once, in the log and status), and clears when one arrives', async (t) => {
+  const id = generateIdentity()
+  const dir = tmp('why')
+  const first = await runSession({ dir, conn: { server, room: 'sp-9', secret: 's' }, name: 'Dana', identity: id, passes: testPasses(id), agentFeed: false })
+  await first.stop()
+  let up = false
+  const passes = new PassSource({
+    fetchPass: async () => {
+      if (!up) throw new Error("Couldn't reach Quilt (CERT_HAS_EXPIRED).")
+      const exp = Date.now() + 600_000
+      return { pass: makePass({ identity: id, name: 'Dana', exp }), expiresAt: exp }
+    }
+  })
+  const logs = []
+  const run = await runSession({ dir, conn: { server, room: 'sp-9', secret: 's' }, name: 'Dana', identity: id, passes, agentFeed: false, onLog: (l) => logs.push(l) })
+  t.after(() => run.stop())
+  await waitFor(() => run.session.status().problem)
+  assert.equal(run.session.status().problem, "Couldn't get a session pass: Couldn't reach Quilt (CERT_HAS_EXPIRED).")
+  assert.match(renderStatus(run.session.status()), /⚠️ Couldn't get a session pass: Couldn't reach Quilt \(CERT_HAS_EXPIRED\)\./)
+  await new Promise((resolve) => setTimeout(resolve, 1700)) // a few retries
+  assert.equal(logs.filter((l) => /session pass/.test(l)).length, 1, 'logged once, not on every retry')
+  up = true
+  await waitFor(() => run.session.status().connected, 15000)
+  assert.equal(run.session.status().problem, undefined)
 })
 
 test('runSession does not wait for a pass: a folder synced before starts offline under the saved name, then takes the pass name', async (t) => {

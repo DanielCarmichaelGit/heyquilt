@@ -20,9 +20,9 @@ with their own AI coding tool. Files can change underneath you at any time.
 - Before starting a task, check what your collaborators are doing: call the
   \`quilt_status\` MCP tool, or run \`quilt status\` in a shell, or read
   \`.quilt/STATUS.md\`.
-- The session has a shared task board (To do, In progress, Done). Read it with
+- The session has a shared task board (To do, In progress, QA, Done). Read it with
   \`quilt_tasks\`. Add work with \`quilt_add_task\`. Move a task to In progress
-  when you start it and to Done when you finish (\`quilt_move_task\`).
+  when you start it and to QA with \`qaNotes\` when you finish (\`quilt_move_task\`).
 ${TASK_WORKFLOW_MD}
 - See what a partner's AI is doing with \`quilt_partner_feed\`, and where people
   are working with \`quilt_list_files\` (recent edits and claims).
@@ -53,9 +53,10 @@ ${TASK_WORKFLOW_MD}
   refused until everyone who wrote to you has an answer.
 - \`quilt_inbox\` lists what is waiting for you: mentions of you (@yourname), direct
   messages and tasks handed to you. Read it when you start and act on each one.
-- Before moving a ticket to Done, run the checks under "Verifying a change" (in
-  AGENTS.md; add them there if the section is missing) and pass what you ran and saw
-  as \`verified\` to \`quilt_move_task\`. Done without evidence is refused.
+- Before moving a ticket to QA, run the checks under "Verifying a change" (in
+  AGENTS.md; add them there if the section is missing) and pass a change description
+  plus self-validation as \`qaNotes\` to \`quilt_move_task\`. QA without notes is refused.
+  Moving to Done still needs \`verified\`.
 - Always re-read a file right before editing it; never rely on an old copy.
 - Prefer small, focused edits over rewriting whole files.
 - Git works as usual here: commit, pull and push yourself. Quilt recognises git

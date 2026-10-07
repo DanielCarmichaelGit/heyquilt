@@ -16,8 +16,8 @@ import { runSession, decodeInvite, newConn, readConfig, runningElsewhere, person
 import { INVALID_INVITE } from './ui/invite.js'
 import { toolLabel } from './agents/common.js'
 import { sessionPasses } from './pass-source.js'
-import { pickAgent } from './agent-join.js'
-import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, MAX_VERIFIED } from './agent-task-workflow.js'
+import { pickAgent, agentWhoami } from './agent-join.js'
+import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, qaRefusal, qaNotesEnough, qaNotesLine, MAX_VERIFIED } from './agent-task-workflow.js'
 import { formatHistory } from './history.js'
 import { renderInbox, describeEvent, INBOX_HOW } from './inbox.js'
 import { renderChatAbout, renderUnanswered, heldRefusal, renderQueueNotice, renderQueued } from './duties.js'
@@ -163,7 +163,7 @@ export async function runMcp () {
   }))
 
   server.registerTool('quilt_tasks', {
-    description: 'List the shared task board (To do, In progress, Done), with an id on each task. Open tasks assigned to you are listed first. Call this before starting work.',
+    description: 'List the shared task board (To do, In progress, QA, Done), with an id on each task. Open tasks assigned to you are listed first. Call this before starting work.',
     inputSchema: {}
   }, () => withDaemon(async (d) => {
     const st = await call(d, 'GET', '/status')
@@ -191,17 +191,24 @@ export async function runMcp () {
 
   server.registerTool('quilt_move_task', {
     description: 'Move a task on the shared board. "doing" when you start it: you get a briefing (its files, recent changes to them, claims, the project\'s checks). ' +
-      '"done" when you finish: requires `verified`, what you ran and what you saw; without it the move is refused.',
+      '"qa" when you finish implementing and testing: requires `qaNotes` (what changed and how you self-validated); without it the move is refused. ' +
+      '"done" after QA: requires `verified`, what you ran and what you saw; without it the move is refused.',
     inputSchema: {
       id: z.string().describe('Task id from quilt_tasks'),
-      column: z.enum(['todo', 'doing', 'done']).describe('todo, doing, or done'),
+      column: z.enum(['todo', 'doing', 'qa', 'done']).describe('todo, doing, qa, or done'),
+      qaNotes: z.string().max(MAX_VERIFIED).optional().describe('For "qa": describe the changes you made and how you self-validated them.'),
       verified: z.string().max(MAX_VERIFIED).optional().describe('For "done": what you ran and what you saw, concretely (commands, results, what you exercised in the app).')
     }
-  }, ({ id, column, verified }) => withDaemon(async (d) => {
+  }, ({ id, column, qaNotes, verified }) => withDaemon(async (d) => {
     const brief = await call(d, 'POST', '/tasks/brief', { id })
+    if (column === 'qa' && !qaNotesEnough(qaNotes)) return qaRefusal({ task: brief.task, checklist: brief.checklist })
     if (column === 'done' && !verifiedEnough(verified)) return doneRefusal({ task: brief.task, checklist: brief.checklist })
-    const { task } = await call(d, 'POST', '/tasks/update', { id, column, ...(column === 'done' ? { verified } : {}) })
+    const patch = { id, column }
+    if (column === 'qa') patch.qaNotes = qaNotes
+    if (column === 'done') patch.verified = verified
+    const { task } = await call(d, 'POST', '/tasks/update', patch)
     if (column === 'doing') return pickupBrief({ ...brief, task })
+    if (column === 'qa') return `Moved "${task.title}" to QA. Notes: ${qaNotesLine(task)}`
     if (column === 'done') return `Moved "${task.title}" to Done. Verified: ${verifiedLine(task)}`
     return `Moved "${task.title}" to ${columnName(task.column)}.`
   }, { gate: gates(gateFor('quilt_move_task'), column === 'done' && queueGate('move the task again')) }))
@@ -514,7 +521,18 @@ export async function runMcp () {
       aside = dir || cwd
       dir = agentCopyFolder(conn.room, auth.name)
     }
-    const tool = clientTool()
+    // Prefer the agent's registered provider when it names the model maker (xAI), or
+    // when the MCP client did not identify a tool. Host IDEs (Cursor) otherwise stay.
+    let tool = clientTool()
+    try {
+      const me = await agentWhoami({ name: auth.name })
+      const provider = me?.agent?.provider
+      if (provider) {
+        const labeled = toolLabel(provider)
+        if (labeled === 'xAI') tool = 'xAI'
+        else if ((!tool || tool === 'AI agent') && labeled) tool = labeled
+      }
+    } catch {}
     logs = []
     const run = await runSession({
       dir,

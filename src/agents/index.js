@@ -48,7 +48,9 @@ export function startAgentReaders ({ dir, onEntries, onState, onLog = () => {}, 
         onLog,
         onEntries: guard((entries) => {
           if (!entries.length) return
-          lastActive = i
+          // Do not pin lastActive from entries alone: Claude Code (and others) backfill
+          // history on start, which used to leave partners seeing "Claude Code idle"
+          // forever even when the person actually uses Cursor / xAI / Grok.
           onEntries(entries)
           report()
         }),

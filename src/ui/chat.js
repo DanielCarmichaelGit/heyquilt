@@ -26,13 +26,17 @@ export function fileCardHref (session, id, token) {
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
+/** @Agents mentions every agent in the session at once (ALL_AGENTS in src/inbox.js). */
+export const ALL_AGENTS = 'Agents'
+
 /**
  * A message's text as HTML: escaped, with every @Name of `names` (the session's
  * members, any case, whole names only) marked up as a mention, and one of `me` marked
  * as mine. The rule is the one agents wake on (`mentioned` in src/inbox.js): the @
  * starts a word, so an email address is not a mention, and the name ends one.
+ * `meAgent`: the reader is an agent, so an @Agents mention is theirs too.
  */
-export function textHtml (text, names = [], me = '') {
+export function textHtml (text, names = [], me = '', { meAgent = false } = {}) {
   const t = String(text ?? '')
   const list = [...new Set((names || []).map((n) => String(n || '').trim()).filter(Boolean))].sort((a, b) => b.length - a.length)
   if (!list.length || !t.includes('@')) return esc(t)
@@ -42,7 +46,7 @@ export function textHtml (text, names = [], me = '') {
   for (const m of t.matchAll(re)) {
     const start = m.index + m[1].length
     const name = m[2].slice(1)
-    const mine = !!me && name.toLowerCase() === String(me).toLowerCase()
+    const mine = (!!me && name.toLowerCase() === String(me).toLowerCase()) || (meAgent && name.toLowerCase() === ALL_AGENTS.toLowerCase())
     out += esc(t.slice(last, start)) + `<span class="mention${mine ? ' me' : ''}">${esc(m[2])}</span>`
     last = start + m[2].length
   }

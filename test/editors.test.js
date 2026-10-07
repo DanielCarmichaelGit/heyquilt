@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import { installedEditors, openCommand, claudeCli, claudeSessionCommand, claudePromptCommand, openIn } from '../src/editors.js'
+import { installedEditors, openCommand, claudeCli, claudeSessionCommand, openIn } from '../src/editors.js'
 
 const mac = (apps) => ({ platform: 'darwin', home: '/Users/me', exists: (p) => apps.includes(p) })
 
@@ -74,55 +74,21 @@ test('a Claude session is made in the folder with a free local command', () => {
   assert.deepEqual(opts, { cwd: '/Users/me/Panorama' })
 })
 
-test('a Claude session can start with a prompt that edits files without asking', () => {
-  const [file, args, opts] = claudePromptCommand('/bin/claude', '/Users/me/Panorama', 'abc', 'Merge conflict in src/a.js')
-  assert.equal(file, '/bin/claude')
-  assert.deepEqual(args, ['-p', 'Merge conflict in src/a.js', '--session-id', 'abc', '--permission-mode', 'acceptEdits'])
-  assert.deepEqual(opts, { cwd: '/Users/me/Panorama', timeout: 300000 })
-})
-
 // A Claude CLI is installed both as the app bundle (for `locate`) and the free-standing
 // binary at ~/.local/bin (for `claudeCli`), with an injectable `run` and `copy` so no real
 // process is spawned.
 const claudeInstalled = { ...mac(['/Applications/Claude.app']), exists: (p) => p === '/Applications/Claude.app' || p === '/Users/me/.local/bin/claude' }
 
-test('sending a merge to Claude Code returns before the headless run finishes, then resumes on success', async () => {
+test('sending a merge to Claude Code runs nothing: the prompt goes on the clipboard and the folder opens', async () => {
   const calls = []
-  let resolveRun
-  const run = (file, args, opts) => {
-    calls.push({ file, args, opts })
-    return calls.length === 1 ? new Promise((resolve) => { resolveRun = resolve }) : Promise.resolve()
-  }
-  let onDone
-  const done = new Promise((resolve) => { onDone = resolve })
-  const result = await openIn('claude', '/Users/me/Panorama', { ...claudeInstalled, run, prompt: 'Merge conflict', onDone })
-  assert.deepEqual(result, { copied: false, started: true })
-  assert.equal(calls.length, 1, 'the HTTP request did not wait for the headless run')
-  resolveRun()
-  assert.deepEqual(await done, { ok: true })
-  assert.equal(calls.length, 2, 'it resumed the session once the run finished')
-  assert.equal(calls[1].file, 'open')
-  assert.match(calls[1].args[0], /^claude:\/\/resume\?session=/)
-})
-
-test('sending a merge to Claude Code falls back to the clipboard and the folder when the run fails', async () => {
-  const calls = []
-  let rejectRun
-  const run = (file, args, opts) => {
-    calls.push({ file, args, opts })
-    return calls.length === 1 ? new Promise((resolve, reject) => { rejectRun = reject }) : Promise.resolve()
-  }
+  const run = async (file, args) => { calls.push({ file, args }) }
   const copied = []
   const copy = async (text) => { copied.push(text); return true }
-  let onDone
-  const done = new Promise((resolve) => { onDone = resolve })
-  const result = await openIn('claude', '/Users/me/Panorama', { ...claudeInstalled, run, copy, prompt: 'Merge conflict', onDone })
-  assert.deepEqual(result, { copied: false, started: true })
-  rejectRun(new Error('boom'))
-  assert.deepEqual(await done, { ok: false, copied: true, error: 'boom' })
+  const result = await openIn('claude', '/Users/me/Panorama', { ...claudeInstalled, run, copy, prompt: 'Merge conflict' })
+  assert.deepEqual(result, { copied: true })
   assert.deepEqual(copied, ['Merge conflict'])
-  assert.equal(calls.length, 2, 'it still opened the folder')
-  assert.equal(calls[1].file, 'open')
+  assert.deepEqual(calls.map((c) => c.file), ['open'], 'no claude command was run')
+  assert.match(calls[0].args[0], /^claude:\/\/code\/new\?folder=/)
 })
 
 test('a send to an unknown or missing app is refused before anything reaches the clipboard', async () => {
@@ -140,6 +106,6 @@ test('a send to another app copies the prompt, then opens the folder', async () 
   const copy = async () => { order.push('copy'); return true }
   const run = async (file) => { order.push(`run ${file}`) }
   const r = await openIn('zed', '/Users/me/p', { ...mac(['/Applications/Zed.app']), run, copy, prompt: 'Merge conflict' })
-  assert.deepEqual(r, { copied: true, started: false })
+  assert.deepEqual(r, { copied: true })
   assert.deepEqual(order, ['copy', 'run open'])
 })

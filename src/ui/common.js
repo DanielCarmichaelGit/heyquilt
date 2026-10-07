@@ -92,8 +92,9 @@ export const ago = (ts) => {
 export const clock = (ts) => new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 export const PALETTE = ['#b9432b', '#3b6a9a', '#4a7a45', '#855a9c', '#a8701c', '#2e7a80', '#9c4f6b']
 export const colorFor = (name, given) => given || PALETTE[Math.abs([...String(name)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 0)) % PALETTE.length]
+/** `online`: true (a live connection) or 'http' (an agent over HTTP that checked in lately: a blue dot). */
 export const avatar = (name, color, online = false) =>
-  `<div class="avatar${online ? ' online' : ''}" style="background:${esc(colorFor(name, color))}">${esc(String(name || '?').slice(0, 1))}</div>`
+  `<div class="avatar${online ? ' online' : ''}${online === 'http' ? ' http' : ''}" style="background:${esc(colorFor(name, color))}">${esc(String(name || '?').slice(0, 1))}</div>`
 
 export function toast (msg) {
   const t = $('#toast')

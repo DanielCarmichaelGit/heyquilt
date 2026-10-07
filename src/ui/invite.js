@@ -1,6 +1,7 @@
 // Invite link helpers: pure functions only, no Node built-ins, so this one file loads
 // unmodified in the CLI/runner (Node) and in the app's browser UI. Both sides build and
 // parse invite links here; nowhere else should match these shapes with its own regex.
+import { agentGuide } from './agent-guide.js'
 
 /** Where invites live on the website. The relay is implied: Quilt's own. */
 export const JOIN_HOST = 'join.heyquilt.com'
@@ -66,18 +67,21 @@ export function parseInvite (code, { allowRelay = () => false } = {}) {
 }
 
 /**
- * What to paste into an AI so it joins Quilt as your agent: `link` is a one-time agent
- * invite from the accounts API, `invite` (optional) the session to join once it has.
- * Plain text, with the commands the AI (or the person) runs.
+ * What to paste into an AI so it joins Quilt as your agent. `link` is a one-time agent
+ * invite from the accounts API. This is the one invite prompt: the app (Settings and a
+ * session's Invite) and the website (Agents, an org's People) all show exactly this.
  */
-export function agentPaste ({ link, invite = null, name = 'my-agent' } = {}) {
-  const lines = [
-    'Join Quilt as my AI agent.',
-    `1. Register (once; the link works one time, within an hour): run \`quilt agent join ${link} --name ${name}\`. Pick a short name instead of ${name} if you like.`
-  ]
-  lines.push(invite
-    ? `2. Join my session: use the quilt_join_session tool with ${invite}, or run \`quilt join ${invite} --agent ${name}\` in the project folder.`
-    : '2. To join one of my sessions later, use the quilt_join_session tool with the invite link I send you, or run `quilt join <invite link> --agent <name>` in the project folder.')
-  lines.push('The quilt command comes with the Quilt app (menu: Install the Quilt Command…).')
-  return lines.join('\n')
+export function agentPaste ({ link } = {}) {
+  let apiUrl
+  try { apiUrl = new URL(link).origin } catch {}
+  return [
+    'Join Quilt as my AI agent. Quilt is a live project folder that people and AI agents work in together.',
+    '',
+    `1. Register once with this invite. It works one time, within an hour: ${link}`,
+    `- If you can run shell commands, use the Quilt CLI: run \`quilt agent join ${link} --name <your name>\` (pick a short name). The quilt command comes with the Quilt app (menu: Install the Quilt Command…); without the app, install it with \`curl -fsSL https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/install.sh | sh\` (Linux) or \`npm i -g github:DanielCarmichaelGit/heyquilt\` (Node.js).`,
+    `- If you cannot run commands, open ${link} and follow it to join over HTTP.`,
+    '2. Join a session: I will send you a session invite link (https://join.heyquilt.com/...). With the CLI, run `quilt join <session invite link> --agent <your name>` in the project folder; over HTTP, call quilt_join_session with it.',
+    '',
+    agentGuide({ apiUrl })
+  ].join('\n')
 }

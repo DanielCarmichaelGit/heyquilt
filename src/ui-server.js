@@ -93,6 +93,7 @@ export const STATIC = {
   '/common.js': ['common.js', 'text/javascript; charset=utf-8'],
   '/mark.js': ['mark.js', 'text/javascript; charset=utf-8'],
   '/invite.js': ['invite.js', 'text/javascript; charset=utf-8'],
+  '/agent-guide.js': ['agent-guide.js', 'text/javascript; charset=utf-8'],
   '/access-form.js': ['access-form.js', 'text/javascript; charset=utf-8'],
   '/session.js': ['session.js', 'text/javascript; charset=utf-8'],
   '/chat.js': ['chat.js', 'text/javascript; charset=utf-8'],
@@ -566,15 +567,8 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       const mergeId = String(b.id || '')
       const { prompt } = s.prepareMergeSend(mergeId)
       const app = String(b.app || '')
-      const mergePath = s.mergeList().find((m) => m.id === mergeId)?.path || mergeId
-      // The headless run can take minutes; openIn returns once it's started, and logs how it went when it's done.
-      const { copied, started } = await openIn(app, s.root, {
-        prompt,
-        onDone: (result) => s.log(result.ok
-          ? `Claude Code finished merging ${mergePath}; a session opened`
-          : 'Claude Code could not run; the prompt is on your clipboard')
-      })
-      return { copied, started, app }
+      const { copied } = await openIn(app, s.root, { prompt })
+      return { copied, app }
     },
     'POST /api/sessions/:id/stop': (b, id) => stop(id).then(() => ({ ok: true })),
     'POST /api/sessions/:id/say': (b, id) => get(id).say(b.text, { to: b.to || null }),

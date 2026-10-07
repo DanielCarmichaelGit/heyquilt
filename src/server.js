@@ -48,7 +48,8 @@ import { hostedWebhooks } from './relay-webhooks.js'
 const ROOM_RE = /^[A-Za-z0-9_-]{1,64}$/
 const MAX_NAME = 64
 // A hosted agent counts as online this long after its last tool call.
-const HOSTED_ONLINE_MS = 3 * 60 * 1000
+// Agents over HTTP have no connection to watch: each tool call is a check-in, good for this long.
+export const HOSTED_ONLINE_MS = 30 * 60 * 1000
 // A room's renames: each one saves the room and queues a presence report, so they're rationed.
 const RENAME_MS = 2000
 const MAX_PATTERN = 500
@@ -147,6 +148,7 @@ class Room {
     // that only talks to the relay over HTTP, see relay-mcp.js) waits under a { hosted: id } stand-in.
     this.pending = new Map()
     this.hostedSeen = new Map() // member id -> when a hosted agent last called a tool
+    this.hostedExpiry = new Map() // member id -> the timer that shows it offline when its check-in runs out
     this.files = this.doc.getMap('files')
     this.blobs = this.doc.getMap('blobs')
     this.fileKeys = this.doc.getMap('fileKeys')
@@ -455,8 +457,16 @@ class Room {
     this.hostedSeen.set(id, Date.now())
     this.noteActivity([id])
     for (const [k, p] of this.pending) if (k.hosted && p.id === id) this.pending.delete(k)
-    // Newly online (or back after a while): everyone's member list shows it.
-    if (Date.now() - was >= HOSTED_ONLINE_MS) this.broadcastMembers()
+    // Newly online, or a newer check-in time: everyone's member list shows it (once a minute at most).
+    if (Date.now() - was >= 60 * 1000) this.broadcastMembers()
+    // And shows it gone when this check-in runs out with no other.
+    clearTimeout(this.hostedExpiry.get(id))
+    const t = setTimeout(() => {
+      this.hostedExpiry.delete(id)
+      if (!this.hostedOnline().some((h) => h.id === id)) this.broadcastMembers()
+    }, HOSTED_ONLINE_MS + 1000)
+    t.unref?.()
+    this.hostedExpiry.set(id, t)
   }
 
   /** Hosted agents active in the last few minutes, for status and presence. */
@@ -466,7 +476,7 @@ class Room {
     for (const [id, ts] of this.hostedSeen) {
       if (ts < cutoff) { this.hostedSeen.delete(id); continue }
       const m = this.meta.members[id]
-      if (m) out.push({ id, name: m.name, kind: m.kind, role: m.role })
+      if (m) out.push({ id, name: m.name, kind: m.kind, role: m.role, seen: ts })
     }
     return out
   }
@@ -623,14 +633,15 @@ class Room {
   memberList () {
     const online = new Map()
     for (const a of this.access.values()) online.set(a.owner ? this.ownerId : a.id, true)
-    for (const h of this.hostedOnline()) online.set(h.id, true)
+    const http = new Map() // member id -> its last check-in, for agents over HTTP
+    for (const h of this.hostedOnline()) { online.set(h.id, true); http.set(h.id, h.seen) }
     const list = []
     if (this.meta.owner) {
       const ownerName = this.meta.ownerName || Object.entries(this.meta.identities).find(([, k]) => k === this.meta.owner)?.[0] || 'owner'
       list.push({ key: this.ownerId, name: ownerName, kind: 'human', role: 'owner', scopes: [], online: online.has(this.ownerId) })
     }
     pruneChatLinks(this) // chat links that ran out leave the list
-    for (const [key, m] of Object.entries(this.meta.members)) list.push({ key, name: m.name, kind: m.kind, ...memberAccess(m), online: online.has(key), ...(m.chat ? { chat: true, expiresAt: m.expiresAt } : {}) })
+    for (const [key, m] of Object.entries(this.meta.members)) list.push({ key, name: m.name, kind: m.kind, ...memberAccess(m), online: online.has(key), ...(http.has(key) ? { http: true, lastSeen: http.get(key) } : {}), ...(m.chat ? { chat: true, expiresAt: m.expiresAt } : {}) })
     return list
   }
 

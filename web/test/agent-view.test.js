@@ -26,3 +26,4 @@ test('HOSTED_NOTE explains how an agent with no key joins sessions', () => {
   assert.match(HOSTED_NOTE, /needs no computer running Quilt/)
   assert.equal(HOSTED_NOTE.includes('—'), false, 'no em dash')
 })
+

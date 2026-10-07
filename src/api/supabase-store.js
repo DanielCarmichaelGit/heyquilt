@@ -86,12 +86,14 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     async updateProfile (userId, { name, color, tool }) {
       return rowFrom(await one(db.from('profiles').update(toSnake({ name, color, tool })).eq('id', userId).select('id, name, color, tool').single()))
     },
-    async createAgent ({ name, provider, type, description = '', publicKey = null, ownerUserId = null, orgId = null, invitedBy = null }) {
+    async createAgent ({ name, provider, type, description = '', publicKey = null, resumeHash = null, ownerUserId = null, orgId = null, invitedBy = null }) {
       return rowFrom(await one(db.from('agents')
-        .insert({ name, provider, type, description, public_key: publicKey, owner_user_id: ownerUserId, org_id: orgId, invited_by: invitedBy })
+        .insert({ name, provider, type, description, public_key: publicKey, resume_hash: resumeHash, owner_user_id: ownerUserId, org_id: orgId, invited_by: invitedBy })
         .select(AGENT).single()))
     },
     async agentById (id) { return rowFrom(await one(db.from('agents').select(AGENT).eq('id', id).maybeSingle())) },
+    // AGENT never selects resume_hash, so the hash only ever goes in, never out.
+    async agentByResume (hash) { return rowFrom(await one(db.from('agents').select(AGENT).eq('resume_hash', hash).maybeSingle())) },
     async agentByPublicKey (publicKey) {
       if (!publicKey) return null
       return rowFrom(await one(db.from('agents').select(AGENT).eq('public_key', publicKey).maybeSingle()))

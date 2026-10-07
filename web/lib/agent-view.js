@@ -1,7 +1,7 @@
 // Words for agents and agent invites on the website. Pure.
 const STATUS = {
-  reused: { label: 'Signed out', why: 'An old key of this agent was used again, so its keys were revoked. Invite it again.' },
-  expired: { label: 'Signed out', why: "It wasn't used for 30 days. Invite it again." }
+  reused: { label: 'Signed out', why: 'An old key of this agent was used again, so its keys were revoked. It gets new ones with its resume key; if it has none, invite it again.' },
+  expired: { label: 'Signed out', why: "It wasn't used for 30 days. It gets new keys with its resume key; if it has none, invite it again." }
 }
 
 /** Why an agent is signed out, or null while it can still refresh its keys. */

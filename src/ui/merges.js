@@ -13,13 +13,19 @@ export function done (m, deleted = false) {
   return deleted ? 'deleted this offline' : 'changed this offline'
 }
 
-/** One plain sentence: who changed what, where. */
+/** One plain sentence: who changed what, where; then who holds the file now. */
 function describe (m, me) {
+  const held = m.heldBy && m.heldBy !== me && m.kind !== 'claimed' ? ` ${cap(esc(m.heldBy))} has it claimed now.` : ''
+  return what(m, me) + held
+}
+
+function what (m, me) {
   const who = cap(you(m.by, me))
   const other = you(m.others[0], me)
   const did = done(m)
   if (m.kind === 'ai') return `${who} ${did} and ${other} changed it in the session. An AI combined the two: have a look.`
-  if (m.kind === 'claimed') return `${who} ${did}, but ${you(m.claimedBy, me)} ${m.claimedBy === me ? 'have' : 'has'} it claimed. The session's version is in the file.`
+  if (m.kind === 'claimed' && !m.heldBy) return `${who} ${did} while ${you(m.claimedBy, me)} had it claimed. The session's version is in the file.`
+  if (m.kind === 'claimed') return `${who} ${did}, but ${you(m.heldBy, me)} ${m.heldBy === me ? 'have' : 'has'} it claimed. The session's version is in the file.`
   if (m.oursDeleted) return `${who} ${done(m, true)} and ${other} changed it in the session.`
   if (m.theirsHash === null) return `${who} ${did}, but it was deleted in the session.`
   return `${who} ${did} and ${other} changed it in the session${m.reason ? ` (${esc(m.reason)})` : ''}.`
@@ -40,6 +46,13 @@ export function mergeActionsHtml (m, me, editors, { full = false, viewer = false
   // Markers are in the file: only "done" and "keep mine" still make sense.
   if (m.state === 'editing') return `<span class="hint">Markers are in the file</span>${b('mine', mineLabel(m, me))}${b('agent', 'Resolved', 'primary')}`
   if (m.kind === 'ai') return (full ? b('mine', mineLabel(m, me)) : '') + b('review', 'Looks fine', 'primary')
+  // Settling writes the file, and so would an AI sent to merge it: ask whoever holds it, or keep theirs.
+  if (m.heldBy && m.heldBy !== me) {
+    const ask = m.asked
+      ? `<span class="tag">Asked ${esc(m.heldBy)} for it</span>`
+      : `<button class="btn sm" data-merge="${id}" data-ask="${esc(m.path)}" title="Join the file queue: ${esc(m.heldBy)} hands it to you when done">Ask ${esc(m.heldBy)} for it</button>`
+    return b('theirs', theirsLabel(m, me)) + ask
+  }
   const hand = m.binary || m.oursDeleted || m.theirsHash === null ? '' : b('hand', 'Edit by hand')
   const [first, ...rest] = editors
   const send = first
@@ -70,7 +83,6 @@ export function renderMergeBar (el, { merges, me, editors, viewer = false }) {
 }
 
 function sentToast (r, name) {
-  if (r.started) return toast(`${name} is merging it. A session opens when it's done.`)
   toast(r.copied ? `Opened ${name}. The merge prompt is on your clipboard: paste it in.` : `Opened ${name}.`)
 }
 
@@ -92,6 +104,11 @@ export function bindMerges (el, { sessionId, onCompare, editors }) {
     btn.disabled = true
     try {
       if (btn.dataset.send) await send(btn.dataset.merge, btn.dataset.send)
+      else if (btn.dataset.ask) {
+        const file = btn.dataset.ask
+        await api('POST', `/api/sessions/${sessionId()}/request-file`, { path: file, title: `Settle the merge of ${file}`, description: 'I changed this file outside the session while you had it. When you hand it over, I will merge my changes with yours.' })
+        toast(`Asked for ${file}. It comes to you, with their notes, when they hand it over.`)
+      }
       else {
         await api('POST', `/api/sessions/${sessionId()}/merges/resolve`, { id: btn.dataset.merge, how: btn.dataset.how })
         toast(settledToast[btn.dataset.how] || 'Done')

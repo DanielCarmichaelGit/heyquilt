@@ -32,8 +32,8 @@ within milliseconds. Your agents can also see what the other agents are doing.
   WebSockets, and only lets in people signed in to heyquilt.com. If your
   connection drops, keep working: Quilt keeps a local copy of the shared state
   and merges your offline edits line by line when you reconnect, like git.
-  Overlapping edits go to your own AI to combine; real conflicts land in the
-  **Merges** bar for everyone to settle.
+  Edits to the same lines land in the **Merges** bar for the people involved
+  to settle.
 - **Watch each other's AI, live.** The app shows your partner's AI conversation
   as it happens: their prompts, the AI's replies, and one-line actions like
   "Edited src/app.ts" or "Ran npm test". Quilt reads Claude Code's and Cursor's

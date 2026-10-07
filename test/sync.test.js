@@ -56,25 +56,6 @@ async function pair (t, seed = {}) {
   return { A, B, dirA, dirB, room }
 }
 
-// A merge "AI" for tests: QUILT_MERGE_CMD runs this script, which answers
-// CONFLICT unless MERGE_FAKE_ANSWER names a file whose content to return
-// (after MERGE_FAKE_DELAY_MS, if set).
-const FAKE_MERGE = path.join(tmp('merge-cli'), 'fake-merge.mjs')
-fs.writeFileSync(FAKE_MERGE, `
-import fs from 'node:fs'
-const file = process.env.MERGE_FAKE_ANSWER
-let input = ''
-process.stdin.on('data', (d) => { input += d })
-process.stdin.on('end', () => {
-  if (process.env.MERGE_FAKE_LOG) fs.appendFileSync(process.env.MERGE_FAKE_LOG, input + '\\n----\\n')
-  setTimeout(() => {
-    if (!file) { process.stdout.write('CONFLICT: the test says no\\n'); return }
-    process.stdout.write('\`\`\`\\n' + fs.readFileSync(file, 'utf8') + '\`\`\`\\n')
-  }, Number(process.env.MERGE_FAKE_DELAY_MS) || 0)
-})
-`)
-process.env.QUILT_MERGE_CMD = `${process.execPath} ${FAKE_MERGE}`
-
 /** Bob leaves, both sides edit, bob returns. Returns bob's new session. */
 async function rejoinAfter (t, { A, B, dirA, dirB, room }, { bob = {}, alice = {} } = {}) {
   await close(B)
@@ -415,94 +396,35 @@ test('offline edits to the same lines open a merge conflict and keep the session
   assert.deepEqual(rec.others, ['alice'])
   assert.equal(rec.ours, 'top\nmiddle (bob)\nbottom\n')
   assert.equal(rec.base, 'top\nmiddle\nbottom\n')
-  assert.match(rec.reason, /the test says no/)
   assert.equal(read(p.dirB, 'same.txt'), 'top\nmiddle (alice)\nbottom\n', "the session's version is on bob's disk")
   assert.equal(read(p.dirA, 'same.txt'), 'top\nmiddle (alice)\nbottom\n', 'alice is not disturbed')
   assert.equal(read(path.join(p.dirB, '.quilt', 'merges', rec.id), 'ours'), 'top\nmiddle (bob)\nbottom\n')
   await waitFor(() => p.A.mergeList().some((m) => m.id === rec.id)) // alice sees the record too
 })
 
-test('the AI merges overlapping edits when it can, and the result is listed for review', async (t) => {
-  const p = await pair(t, { 'ai.txt': 'top\nmiddle\nbottom\n' })
-  await waitFor(() => read(p.dirB, 'ai.txt') === 'top\nmiddle\nbottom\n')
-  const answer = path.join(tmp('answer'), 'merged.txt')
-  fs.writeFileSync(answer, 'top\nmiddle (bob and alice)\nbottom\n')
-  const log = path.join(tmp('log'), 'calls.txt')
-  process.env.MERGE_FAKE_ANSWER = answer
-  process.env.MERGE_FAKE_LOG = log
-  t.after(() => { delete process.env.MERGE_FAKE_ANSWER; delete process.env.MERGE_FAKE_LOG })
-  const B = await rejoinAfter(t, p, { bob: { 'ai.txt': 'top\nmiddle (bob)\nbottom\n' }, alice: { 'ai.txt': 'top\nmiddle (alice)\nbottom\n' } })
-  await waitFor(() => read(p.dirA, 'ai.txt') === 'top\nmiddle (bob and alice)\nbottom\n' && read(p.dirB, 'ai.txt') === 'top\nmiddle (bob and alice)\nbottom\n')
-  const rec = B.mergeList().find((m) => m.path === 'ai.txt')
-  assert.equal(rec.kind, 'ai')
-  assert.equal(rec.state, 'open')
-  const prompt = fs.readFileSync(log, 'utf8')
-  assert.match(prompt, /middle \(bob\)/)
-  assert.match(prompt, /middle \(alice\)/)
-  assert.match(prompt, /alice/)
-})
-
-test('an AI merge is still applied when its local copies cannot be written, so its record is true', async (t) => {
-  const p = await pair(t, { 'aidisk.txt': 'top\nmiddle\nbottom\n' })
-  await waitFor(() => read(p.dirB, 'aidisk.txt') === 'top\nmiddle\nbottom\n')
-  const answer = path.join(tmp('answer'), 'merged.txt')
-  fs.writeFileSync(answer, 'top\nmiddle (bob and alice)\nbottom\n')
-  process.env.MERGE_FAKE_ANSWER = answer
-  const real = Session.prototype.writeMergeFiles
-  Session.prototype.writeMergeFiles = function () { throw new Error('disk full (test)') }
-  t.after(() => { delete process.env.MERGE_FAKE_ANSWER; Session.prototype.writeMergeFiles = real })
-  const B = await rejoinAfter(t, p, { bob: { 'aidisk.txt': 'top\nmiddle (bob)\nbottom\n' }, alice: { 'aidisk.txt': 'top\nmiddle (alice)\nbottom\n' } })
-  await waitFor(() => read(p.dirA, 'aidisk.txt') === 'top\nmiddle (bob and alice)\nbottom\n' && read(p.dirB, 'aidisk.txt') === 'top\nmiddle (bob and alice)\nbottom\n')
-  const rec = B.mergeList().find((m) => m.path === 'aidisk.txt')
-  assert.equal(rec.kind, 'ai')
-  assert.equal(rec.ours, 'top\nmiddle (bob)\nbottom\n', 'the record still has the offline version for review')
-  assert.equal(fs.existsSync(path.join(p.dirB, '.quilt', 'conflicts')), false, 'not set aside as a failed merge')
-})
-
 test('a merge interrupted by quitting keeps its base, and the next start merges from it', async (t) => {
   const p = await pair(t, { 'quit.txt': 'top\nmiddle\nbottom\n' })
   await waitFor(() => read(p.dirB, 'quit.txt') === 'top\nmiddle\nbottom\n')
-  const log = path.join(tmp('log'), 'calls.txt')
-  process.env.MERGE_FAKE_LOG = log
-  process.env.MERGE_FAKE_DELAY_MS = '1500'
-  t.after(() => { delete process.env.MERGE_FAKE_LOG; delete process.env.MERGE_FAKE_DELAY_MS })
+  // The merge is held mid-way (as a slow disk or git would) until bob quits.
+  const real = Session.prototype.mergeOne
+  let merging = false
+  Session.prototype.mergeOne = function () {
+    merging = true
+    return new Promise((resolve) => { const iv = setInterval(() => { if (this.stopped) { clearInterval(iv); resolve(null) } }, 20) })
+  }
+  t.after(() => { Session.prototype.mergeOne = real })
   const B1 = await rejoinAfter(t, p, { bob: { 'quit.txt': 'top\nmiddle (bob)\nbottom\n' }, alice: { 'quit.txt': 'top\nmiddle (alice)\nbottom\n' } })
-  // The relay has synced and the AI is thinking: bob quits now.
-  await waitFor(() => fs.existsSync(log))
+  await waitFor(() => merging)
   await close(B1)
+  Session.prototype.mergeOne = real
   const held = JSON.parse(read(path.join(p.dirB, '.quilt'), 'merging.json'))
   assert.deepEqual(held, { 'quit.txt': 'top\nmiddle\nbottom\n' })
-  delete process.env.MERGE_FAKE_DELAY_MS
   const B2 = await open(t, p.dirB, 'bob', { room: p.room })
   const rec = await waitFor(() => B2.mergeList().find((m) => m.path === 'quit.txt'))
   assert.equal(rec.base, 'top\nmiddle\nbottom\n', 'the base from before, not the session version the saved doc took')
   assert.equal(rec.ours, 'top\nmiddle (bob)\nbottom\n')
   assert.equal(read(p.dirA, 'quit.txt'), 'top\nmiddle (alice)\nbottom\n', "bob's edit was not pushed raw over alice's")
   await waitFor(() => read(path.join(p.dirB, '.quilt'), 'merging.json') === null)
-})
-
-test('an AI merge is not applied when the session changed the file again while the AI ran', async (t) => {
-  const p = await pair(t, { 'moving.txt': 'top\nmiddle\nbottom\n' })
-  await waitFor(() => read(p.dirB, 'moving.txt') === 'top\nmiddle\nbottom\n')
-  const answer = path.join(tmp('answer'), 'merged.txt')
-  fs.writeFileSync(answer, 'top\nmiddle (bob and alice)\nbottom\n')
-  const log = path.join(tmp('log'), 'calls.txt')
-  process.env.MERGE_FAKE_ANSWER = answer
-  process.env.MERGE_FAKE_LOG = log
-  process.env.MERGE_FAKE_DELAY_MS = '1500'
-  t.after(() => { delete process.env.MERGE_FAKE_ANSWER; delete process.env.MERGE_FAKE_LOG; delete process.env.MERGE_FAKE_DELAY_MS })
-  const B = await rejoinAfter(t, p, { bob: { 'moving.txt': 'top\nmiddle (bob)\nbottom\n' }, alice: { 'moving.txt': 'top\nmiddle (alice)\nbottom\n' } })
-  await waitFor(() => fs.existsSync(log)) // the AI is thinking
-  const latest = 'top\nmiddle (alice, again)\nbottom\n'
-  write(p.dirA, 'moving.txt', latest)
-  await waitFor(() => B.sharedKey('moving.txt') === latest)
-  const rec = await waitFor(() => B.mergeList().find((m) => m.path === 'moving.txt'), 5000)
-  assert.equal(rec.kind, 'conflict')
-  assert.match(rec.reason, /changed it again while the AI was merging/)
-  assert.equal(rec.ours, 'top\nmiddle (bob)\nbottom\n')
-  await waitFor(() => read(p.dirB, 'moving.txt') === latest)
-  assert.equal(read(p.dirA, 'moving.txt'), latest, "alice's latest edit is not undone")
-  assert.equal(p.A.sharedKey('moving.txt'), latest)
 })
 
 test('a large file the session deleted while away is not downloaded, and nothing crashes', async (t) => {
@@ -1009,18 +931,6 @@ test('keep mine on a file someone else claimed is refused', async (t) => {
   await waitFor(() => B.claims.size === 0)
   B.resolveMerge(rec.id, { how: 'mine' })
   await waitFor(() => read(p.dirA, 'locked.txt') === 'bob\n')
-})
-
-test('an AI merge listed for review is closed with "review"', async (t) => {
-  const p = await pair(t, { 'ai.txt': 'top\nmiddle\nbottom\n' })
-  await waitFor(() => read(p.dirB, 'ai.txt') === 'top\nmiddle\nbottom\n')
-  const answer = path.join(tmp('answer'), 'merged.txt')
-  fs.writeFileSync(answer, 'top\nmiddle (both)\nbottom\n')
-  process.env.MERGE_FAKE_ANSWER = answer
-  t.after(() => { delete process.env.MERGE_FAKE_ANSWER })
-  const B = await rejoinAfter(t, p, { bob: { 'ai.txt': 'top\nmiddle (bob)\nbottom\n' }, alice: { 'ai.txt': 'top\nmiddle (alice)\nbottom\n' } })
-  const rec = await waitFor(() => B.mergeList().find((m) => m.path === 'ai.txt' && m.kind === 'ai'))
-  assert.equal(B.resolveMerge(rec.id, { how: 'review' }).state, 'done')
 })
 
 test('a viewer sees a merge but cannot settle it, not even as reviewed', async (t) => {

@@ -40,8 +40,6 @@ async function open (t, dir, name, extra) {
   s.setAgentState({ tool: s.tool, status: 'idle' }) // people typing by hand; their edits are not claimed for them
   return s
 }
-process.env.QUILT_MERGE_CMD = `${process.execPath} ${path.join(tmp('cli'), 'no.mjs')}`
-fs.writeFileSync(process.env.QUILT_MERGE_CMD.split(' ')[1], "process.stdout.write('CONFLICT: no\\n')")
 
 let rooms = 0
 const LOGO = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 1, 0xfe])

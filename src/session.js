@@ -29,7 +29,6 @@ import { pickChecklist } from './agent-task-workflow.js'
 import { changeRefusal, TALK_REFUSED } from './session-access.js'
 import { canAdmit } from './admit-policy.js'
 import { merge3, withMarkers, hasMarkers } from './merge3.js'
-import { aiMerge, findMergeCli } from './merge-ai.js'
 import { openMerge, updateMerge, readMerges, pruneMerges, cleanName } from './merges.js'
 import { ensureQuiltIgnored } from './gitignore.js'
 import { gitDir, headKey, headRef, gitRuns, askTwice, lastCallTimedOut, busy as gitBusy, leftoverLock, STALE_LOCK_MS, indexStamp, classify, filesAt, changesBetween, treeState, branchTip, watchGit, unmergedPaths, stashStamp, upstreamAdds, pullState, SETTLE_MS, BURST_PATHS } from './gitstate.js'
@@ -126,7 +125,6 @@ export class Session extends EventEmitter {
     this.agentPrompts = new Map() // conv -> latest prompt line, so an edit can be titled after the question that started it
     this.merges = this.doc.getMap('merges') // id -> merge record (see merges.js)
     this.merging = new Set() // paths held out of normal sync until their offline merge has run
-    this.mergeCliMissing = false // logged once per session
     this.work = null // { state: 'working'|'done', note, ts }: what an agent says it's doing
     // Claims follow edits (see autoClaim): path -> when this person last changed it. Released when
     // their AI goes idle, when the file has been quiet for autoClaimQuietMs, and at stop.
@@ -174,7 +172,6 @@ export class Session extends EventEmitter {
     this.startName = startName // a new session's name (its folder), sent once the relay lets us in as owner
     this.startNameSent = false
     this.logs = [] // the last 200 log lines (for status and tests)
-    this.mergeSendProblems = new Map() // merge id -> why sending it to an AI failed
     // Git awareness (gitstate.js): a git operation in this folder is recognised, not broadcast as edits.
     this.git = null // { key, branch, sha } this folder was on when the session started (null: not a repo)
     this.gitSeen = null // the head last seen by classifyBurst
@@ -758,38 +755,8 @@ export class Session extends EventEmitter {
       release()
       return 'merged'
     }
-    const cli = findMergeCli()
-    if (!cli && !this.mergeCliMissing) {
-      this.mergeCliMissing = true
-      this.log('overlapping changes go straight to merge conflicts: no AI tool (claude, codex or cursor-agent) is installed to merge with')
-    }
-    const ai = await aiMerge({ path: rel, base: base || '', ours, theirs, mine: this.name, theirsBy, cli })
-    // Stopped while the AI ran: leave the disk and the doc alone; the next start merges it again.
-    if (this.stopped) { release(); return null }
-    // The AI merged the version it was shown. If the session changed it again
-    // meanwhile, applying that merge would undo those edits: a person decides.
-    const now = this.sharedKey(rel)
-    if (ai.text && now === theirs) {
-      // The AI can take a while: if the file changed again meanwhile, keep that copy before replacing it.
-      const onDisk = this.readDisk(rel)
-      if (onDisk && onDisk.key !== undefined && onDisk.key !== ours) this.keepConflict(rel, onDisk)
-      // The record first, so an applied AI merge always has one to review.
-      // theirsBy is peer-written (an activity entry): flatten it so a stray
-      // control character can't make openMerge throw and drop the record.
-      const rec = openMerge(this.doc, this.merges, { path: rel, by: this.name, byId: this.myKey(), others: theirsBy ? [cleanName(theirsBy)] : [], kind: 'ai', ours, base, theirsHash: sha1(theirs), binary: false, via }, LOCAL)
-      // The local copies are for Send to… and review; the record already has
-      // ours (an "ai" record is never local), so a failed write mustn't stop the merge it describes.
-      try {
-        this.writeMergeFiles(rec.id, { base, ours, theirs })
-      } catch (err) {
-        this.log(`could not keep the versions of ${rel} under .quilt/merges: ${err.message}`)
-      }
-      this.applyMerged(rel, ai.text, `by AI with ${theirsBy || 'the session'}'s changes`)
-      release()
-      return 'ai'
-    }
-    const reason = ai.text ? 'the session changed it again while the AI was merging' : ai.refused
-    return this.openConflict({ rel, base, ours, theirs: now, theirsBy: this.lastEditorOf(rel), disk, kind: 'conflict', reason, binary: false, via })
+    // Both sides changed the same lines: the people involved settle it (Quilt never merges with an AI).
+    return this.openConflict({ rel, base, ours, theirs, theirsBy, disk, kind: 'conflict', binary: false, via })
   }
 
   /** Writes a merged text to the shared doc and the disk as one edit of ours. */
@@ -3068,19 +3035,7 @@ export class Session extends EventEmitter {
   /** A merge as status shows it: without its texts, with who holds the file and whether we asked for it. */
   mergeStatus ({ ours, base, ...m }) {
     const claim = m.state === 'done' ? null : this.mergeHeldBy(m)
-    const problem = m.state === 'done' ? null : this.mergeSendProblems.get(m.id)
-    return {
-      ...m,
-      ...(claim ? { heldBy: claim.by, asked: (claim.queue || []).some((r) => r.by === this.name) } : {}),
-      ...(problem ? { sendProblem: problem } : {})
-    }
-  }
-
-  /** How a send of a merge to an AI went: a problem shows on the merge bar (on this computer only) until the next send. */
-  noteMergeSend (id, problem = null) {
-    if (problem) this.mergeSendProblems.set(id, String(problem))
-    else this.mergeSendProblems.delete(id)
-    this.scheduleStatusWrite()
+    return claim ? { ...m, heldBy: claim.by, asked: (claim.queue || []).some((r) => r.by === this.name) } : m
   }
 
   /** A file being edited by hand lost its markers: that merge is settled. */
@@ -3117,7 +3072,6 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
     // The prompt asks a tool to write rec.path: never one the session doesn't sync.
     if (!this.syncable(rec.path)) throw new Error(`${rec.path} is not synced in this session, so Quilt will not send it`)
     this.mergeHeldCheck(rec)
-    this.noteMergeSend(id) // a new try
     const dir = this.mergeDir(id)
     fs.mkdirSync(dir, { recursive: true })
     const { ours, base, theirs } = this.mergeTexts(rec)

@@ -13,11 +13,10 @@ export function done (m, deleted = false) {
   return deleted ? 'deleted this offline' : 'changed this offline'
 }
 
-/** One plain sentence: who changed what, where; then who holds the file now, and how a send to an AI went. */
+/** One plain sentence: who changed what, where; then who holds the file now. */
 function describe (m, me) {
   const held = m.heldBy && m.heldBy !== me && m.kind !== 'claimed' ? ` ${cap(esc(m.heldBy))} has it claimed now.` : ''
-  const sent = m.sendProblem ? ` <span class="warn">${esc(m.sendProblem)}</span>` : ''
-  return what(m, me) + held + sent
+  return what(m, me) + held
 }
 
 function what (m, me) {
@@ -84,7 +83,6 @@ export function renderMergeBar (el, { merges, me, editors, viewer = false }) {
 }
 
 function sentToast (r, name) {
-  if (r.started) return toast(`${name} is merging it. A session opens when it's done.`)
   toast(r.copied ? `Opened ${name}. The merge prompt is on your clipboard: paste it in.` : `Opened ${name}.`)
 }
 

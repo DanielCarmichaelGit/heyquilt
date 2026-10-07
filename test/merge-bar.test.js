@@ -1,5 +1,5 @@
 // The merge bar: a file someone else holds can't be settled or sent to an AI, so the bar
-// offers to ask for it (or keep their version); a failed send to Claude Code says why.
+// offers to ask for it (or keep their version).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
@@ -32,13 +32,6 @@ test('once it is handed over (or nobody holds it), every way of settling is back
   assert.match(html, /Edit by hand/)
   assert.match(html, /Send to Claude Code/)
   assert.doesNotMatch(html, /data-ask=/)
-})
-
-test('a send that failed shows why on the bar, escaped', () => {
-  const el = { hidden: true, innerHTML: '', contains: () => false }
-  renderMergeBar(el, { merges: [merge({ kind: 'conflict', sendProblem: 'Claude Code is signed out. Run `claude /login` <now>.' })], me: 'Dana', editors })
-  assert.equal(el.hidden, false)
-  assert.match(el.innerHTML, /<span class="warn">Claude Code is signed out\. Run `claude \/login` &lt;now&gt;\.<\/span>/)
 })
 
 test('a claimed merge says who holds the file now, and stops saying so once it is handed over', () => {

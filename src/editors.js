@@ -144,18 +144,6 @@ export function claudeSessionCommand (cli, dir, id) {
   return [cli, ['-p', `/rename ${path.basename(dir)} (quilt)`, '--session-id', id], { cwd: dir }]
 }
 
-/** A Claude Code session that starts by working on `prompt` headless (edits allowed), then can be opened to look at. */
-export function claudePromptCommand (cli, dir, id, prompt) {
-  return [cli, ['-p', prompt, '--session-id', id, '--permission-mode', 'acceptEdits'], { cwd: dir, timeout: 300000 }]
-}
-
-/** Why a headless Claude Code run failed, said so the person can fix it. */
-export function claudeRunProblem (message = '') {
-  if (/authenticat|log ?in|oauth|api key/i.test(message)) return 'Claude Code is signed out on this computer, so it could not merge. Run `claude /login` in a terminal, then send it again.'
-  if (/timed? ?out|ETIMEDOUT|SIGTERM/i.test(message)) return 'Claude Code took more than 5 minutes, so Quilt stopped it. Send it again, or edit by hand.'
-  return `Claude Code could not merge it${message ? ` (${message})` : ''}.`
-}
-
 /** Puts text on the clipboard (pbcopy on a Mac, clip on Windows, xclip elsewhere). False when it couldn't. */
 export async function copyToClipboard (text) {
   const cmd = process.platform === 'darwin' ? ['pbcopy', []] : process.platform === 'win32' ? ['clip', []] : ['xclip', ['-selection', 'clipboard']]
@@ -180,28 +168,17 @@ async function openInClaude (dir, opts) {
     await runFn(file, args)
     return copied
   }
-  if (cli) {
+  // With a prompt (a merge to settle), it goes on the clipboard like for every other app:
+  // Quilt never runs an AI itself.
+  if (cli && !opts.prompt) {
     const id = crypto.randomUUID()
-    if (opts.prompt) {
-      // A headless merge can take minutes: don't hold the caller open for it. Resume once it
-      // finishes; fall back to the clipboard and the folder if the run (or the resume) fails.
-      runFn(...claudePromptCommand(cli, dir, id, opts.prompt))
-        .then(() => runFn(...resumeLink(id)))
-        .then(() => opts.onDone?.({ ok: true }))
-        .catch(async (error) => {
-          let copied = false
-          try { copied = await fallback() } catch {} // nothing more to fall back to
-          opts.onDone?.({ ok: false, copied, error: error.message })
-        })
-      return { copied: false, started: true }
-    }
     try {
       await runFn(...claudeSessionCommand(cli, dir, id))
       await runFn(...resumeLink(id))
-      return { copied: false, started: false }
+      return { copied: false }
     } catch {} // fall back to the folder link
   }
-  return { copied: await fallback(), started: false }
+  return { copied: await fallback() }
 }
 
 export async function openIn (id, dir, opts = {}) {
@@ -213,7 +190,7 @@ export async function openIn (id, dir, opts = {}) {
     const command = openCommand(id, dir, opts) // throws for an unknown or missing app: the clipboard is left alone
     const copied = opts.prompt ? await copyFn(opts.prompt) : false
     await runFn(...command)
-    return { copied, started: false }
+    return { copied }
   } catch (err) {
     throw new Error(`Could not open it: ${err.message}`)
   }

@@ -9,6 +9,10 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.15 — 2026-10-07
+
+- **Cloud agents on Linux get set up right.** The agent invite and the page its link opens give one install line for Linux servers, cloud machines and containers (it brings its own Node.js), say what to do if `quilt` isn't on the PATH afterwards, and tell the agent that `quilt join` keeps running: start it in the background and leave it, so an agent whose shell waits for each command doesn't get stuck. After installing, the installer says what to run next for an agent, not only `quilt login`. Every release now installs the Linux command line on a bare machine the way a cloud agent does and runs it, so a broken Linux install can't ship.
+
 ## 0.3.14 — 2026-10-07
 
 - **Copy buttons in the docs.** Every command on heyquilt.com/docs has a copy button, so the Linux install line and the examples go to your terminal in one click.

@@ -94,6 +94,20 @@ jobs:
       - run: npx electron-builder --linux --publish never
       - name: The command line for servers and cloud machines
         run: node scripts/cli-bundle.mjs
+      # The way a cloud agent gets Quilt: install.sh on a bare Linux machine, then the
+      # commands it is told to run. Nothing on the runner is used: the bundle brings its Node.js.
+      - name: Install it the way a cloud agent does, and run it
+        run: |
+          home=$(mktemp -d)
+          env -i HOME="$home" PATH=/usr/bin:/bin QUILT_BIN="$home/.local/bin" QUILT_DOWNLOAD="file://$PWD/dist/quilt-cli-linux-x64.tar.gz" sh dist/install.sh 2>&1 | tee install.log
+          grep -q "agent join" install.log
+          q="$home/.local/bin/quilt"
+          env -i HOME="$home" PATH=/usr/bin:/bin "$q" --version
+          env -i HOME="$home" PATH=/usr/bin:/bin "$q" help | grep -q "quilt agent join"
+          # A made-up invite: the command runs, reaches the API and says why it failed.
+          out=$(env -i HOME="$home" PATH=/usr/bin:/bin "$q" agent join https://api.heyquilt.com/v1/join/qj_ci-smoke-not-real --name ci-smoke 2>&1 || true)
+          echo "$out"
+          echo "$out" | grep -qi "invite"
       - uses: actions/upload-artifact@v4
         with:
           retention-days: 3 # only needed until the release is published

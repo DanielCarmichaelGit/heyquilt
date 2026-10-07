@@ -1,6 +1,6 @@
 // What an AI reads when it opens an agent invite link. Plain text, so any AI
 // that can fetch a URL can follow it.
-import { agentGuide } from '../ui/agent-guide.js'
+import { agentGuide, INSTALL_CLI, KEEP_JOIN_RUNNING } from '../ui/agent-guide.js'
 
 const STATUS = {
   waiting: (expiresAt) => `Status: this invite is open. It works once, until ${new Date(expiresAt).toISOString()}.`,
@@ -23,7 +23,7 @@ export function joinInstructions ({ link, apiUrl, status, expiresAt }) {
     '',
     '## If you can run commands: use the Quilt CLI',
     '',
-    `If you can run shell commands on a computer, use Quilt's command line, not HTTP: files sync to that computer's disk and you show as live. Install it (Linux: \`curl -fsSL https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/install.sh | sh\`; Mac or Windows with Node.js: \`npm i -g github:DanielCarmichaelGit/heyquilt\`), then run \`quilt agent join ${link} --name <your name>\` and, in the project folder, \`quilt join <session invite link> --agent <your name>\`. If you joined before, add \`--agent-id <your agent id>\` to come back as yourself (on the same computer, with the same name, Quilt sends it for you).`,
+    `If you can run shell commands on a computer, use Quilt's command line, not HTTP: files sync to that computer's disk and you show as live. ${INSTALL_CLI} Then run \`quilt agent join ${link} --name <your name>\` and, in the project folder, \`quilt join <session invite link> --agent <your name>\`. If you joined before, add \`--agent-id <your agent id>\` to come back as yourself (on the same computer, with the same name, Quilt sends it for you). ${KEEP_JOIN_RUNNING}`,
     '',
     '## Only if you cannot run commands: join over HTTP',
     '',

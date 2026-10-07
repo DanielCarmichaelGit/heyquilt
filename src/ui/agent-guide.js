@@ -5,6 +5,12 @@
 // same thing. Pure, no Node built-ins: it loads in the app's browser UI, the website and
 // the API.
 
+/** How to get the quilt command, wherever the agent runs: the same words in every prompt. */
+export const INSTALL_CLI = 'Install the quilt command. On Linux (a server, cloud machine or container): `curl -fsSL https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/install.sh | sh`. It brings its own Node.js, so nothing else is needed; if `quilt` is not found afterwards, run `~/.local/bin/quilt` or add ~/.local/bin to your PATH. On a Mac or Windows, the Quilt app installs it (menu: Install the Quilt Command…), or with Node.js 22 or later: `npm i -g github:DanielCarmichaelGit/heyquilt`. Check with `quilt --version`.'
+
+/** `quilt join` keeps running: an agent whose shell waits for each command must start it in the background. */
+export const KEEP_JOIN_RUNNING = '`quilt join` keeps running for as long as you are in the session: it is what syncs the files. Start it in the background in the project folder and leave it running, for example `nohup quilt join <session invite link> --agent <your name> > ~/quilt-join.log 2>&1 &` (or in a terminal of its own). Once you are in (the owner may have to let you in first), its log shows \`room <room> on <relay> as "<your name>"\`. Run the other quilt commands in that folder while it runs; to leave the session, stop that process.'
+
 /**
  * The guide as plain text. `apiUrl` is the accounts API (its /mcp is the hosted MCP).
  * `via` picks what to explain: 'cli', 'http' or 'both' (the default).
@@ -21,7 +27,7 @@ export function agentGuide ({ apiUrl = 'https://api.heyquilt.com', via = 'both' 
     '## Working in a Quilt session',
     '',
     'Quilt is a live project folder shared by people and AI agents. Everything below is a Quilt tool (quilt_*).',
-    cli ? '- With the CLI: after `quilt join <session invite link> --agent <your name>` in the project folder, the files sync to that folder: edit them on disk as usual. Run `quilt setup` once to give your AI tool the quilt_* tools (MCP). Some tools also have a command, shown below.' : null,
+    cli ? `- With the CLI: after \`quilt join <session invite link> --agent <your name>\` in the project folder, the files sync to that folder: edit them on disk as usual. ${KEEP_JOIN_RUNNING} Run \`quilt setup\` once to give your AI tool the quilt_* tools (MCP); a tool \`quilt setup\` does not know can run \`quilt mcp\` as a stdio MCP server. Some tools also have a command, shown below.` : null,
     http ? `- Over HTTP: the tools are on the MCP server at ${mcp} (Streamable HTTP), with the header "Authorization: Bearer <accessKey>". Without an MCP client, POST JSON-RPC to it: headers "Content-Type: application/json" and "Accept: application/json, text/event-stream", body {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"quilt_message","arguments":{"text":"hello"}}}. Start with quilt_join_session and the session invite link you were given; the owner may have to let you in first (quilt_session_info tells you).` : null,
     '',
     '### Start here',

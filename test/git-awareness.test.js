@@ -719,3 +719,67 @@ test('a committed file that differs from the session\'s: said so; after the pull
   assert.equal(rec.via, 'pull')
   assert.equal(read(dirA, 'docs/notes.md'), 'notes from the session\n', 'the session keeps its version until someone settles it')
 })
+
+/** A third clone pushes `commits` (each a map of path -> text, or null to delete) to the pair's remote. */
+function pushCommits (dirA, commits) {
+  const c = tmp('c'); git(c, 'clone', '-q', git(dirA, 'remote', 'get-url', 'origin'), '.')
+  commits.forEach((files, i) => {
+    for (const [rel, text] of Object.entries(files)) {
+      if (text === null) git(c, 'rm', '-q', rel)
+      else { write(c, rel, text); git(c, 'add', rel) }
+    }
+    git(c, 'commit', '-qm', `change ${i + 1}`)
+  })
+  git(c, 'push', '-q', 'origin', 'main')
+}
+
+test('a pull is one "pulled" event: no claims, no per-file edits, and its own group in Changes', async (t) => {
+  const { A, B, dirA, dirB } = await pairRepos(t)
+  pushCommits(dirA, [
+    { 'src/app.js': 'line1\nline2\nline3\nline4\nline5\nline6\n', 'docs/new.md': 'new\nfile\n' },
+    { 'README.md': null }
+  ])
+  // Bob's AI is at work, so a hand edit of his would be claimed for him. A pull must not be.
+  B.setAgentState({ tool: B.tool, status: 'working' })
+  git(dirB, 'pull', '-q', '--ff-only')
+  await waitFor(() => read(dirA, 'docs/new.md') === 'new\nfile\n' && read(dirA, 'README.md') === null && read(dirA, 'src/app.js').endsWith('line6\n'), 10000)
+
+  const pulled = await waitFor(() => A.status().activity.find((a) => a.kind === 'pulled'))
+  assert.equal(pulled.by, 'bob')
+  assert.equal(pulled.detail, '2 commits from main · 3 files')
+  assert.ok(!A.status().activity.some((a) => a.by === 'bob' && a.kind !== 'pulled'), 'no per-file entries for what the pull brought')
+  await never(() => A.status().claims.some((c) => c.by === 'bob'), 1500)
+
+  const bob = A.changes().people.find((p) => p.name === 'bob')
+  assert.deepEqual(bob.files.filter((f) => f.path !== '.gitignore'), [], 'a pull is not bob\'s own work (Quilt\'s .quilt/ line in .gitignore aside)')
+  assert.equal(bob.pulled.fileCount, 3)
+  assert.deepEqual(bob.pulled.files.map((f) => [f.path, f.kind]).sort(), [['README.md', 'deleted'], ['docs/new.md', 'created'], ['src/app.js', 'edited']])
+  assert.equal(bob.pulled.added, 3)
+  assert.equal(bob.pulled.removed, 1)
+  assert.ok(A.changes().files.find((f) => f.path === 'src/app.js').by.every((b) => b.pulled === true))
+
+  const md = renderStatus(A.status())
+  assert.match(md, /bob pulled 2 commits from main · 3 files/)
+  assert.match(md, /\*\*bob\*\* pulled from git: 3 files, \+3 -1/)
+  assert.doesNotMatch(md, /bob edited `src\/app\.js`/)
+  const h = A.historyQuery({ path: 'src/app.js' }).find((e) => e.by === 'bob')
+  assert.equal(h.pulled, true, 'the chronology says the change came from a pull')
+
+  // A hand edit afterwards is bob's own again, claimed while his AI works.
+  write(dirB, 'src/app.js', 'line1\nline2\nline3\nline4\nline5\nline6\nline7 by bob\n')
+  B.ingest('src/app.js')
+  await waitFor(() => A.status().claims.some((c) => c.by === 'bob' && c.pattern === 'src/app.js'))
+  const after = await waitFor(() => { const p = A.changes().people.find((x) => x.name === 'bob'); return p.files.some((f) => f.path === 'src/app.js') && p })
+  assert.deepEqual(after.files.filter((f) => f.path === 'src/app.js').map((f) => [f.path, f.added]), [['src/app.js', 1]])
+  assert.equal(after.pulled.fileCount, 3)
+})
+
+test('a commit of your own is not a pull: nothing is recorded when HEAD moves over work already shared', async (t) => {
+  const { A, B, dirB } = await pairRepos(t)
+  write(dirB, 'src/app.js', 'line1\nline2 edited\nline3\nline4\nline5\n')
+  const bobsOwn = (S) => (S.changes().people.find((p) => p.name === 'bob')?.files || []).filter((f) => f.path !== '.gitignore') // Quilt's .quilt/ line aside
+  await waitFor(() => bobsOwn(A).some((f) => f.path === 'src/app.js'))
+  git(dirB, 'commit', '-qam', 'mine')
+  await never(() => A.status().activity.some((a) => a.kind === 'pulled'), 3000)
+  assert.equal(B.changes().people.find((p) => p.name === 'bob').pulled, null)
+})

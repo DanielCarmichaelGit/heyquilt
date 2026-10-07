@@ -761,6 +761,15 @@ details.choice-foot .hint { display: block; margin-top: 6px; }
 .chg-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; padding: 0 7px; height: 18px; border-radius: 999px; background: color-mix(in srgb, var(--c) 14%, transparent); color: var(--text); }
 .chg-chip::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--c); }
 .chg-chip .add, .chg-chip .del { font-family: var(--mono); font-size: 10.5px; }
+.chg-pulled { margin-top: 6px; }
+.chg-pulled summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; font-size: 12.5px; font-weight: 500; color: var(--muted); padding: 3px 6px; border-radius: 4px; border: 1px dashed var(--border-strong); }
+.chg-pulled summary::-webkit-details-marker { display: none; }
+.chg-pulled summary:hover { color: var(--text); }
+.chg-pulled summary svg { width: 13px; height: 13px; flex: none; transition: transform .15s ease; transform: rotate(-90deg); }
+.chg-pulled[open] summary svg { transform: none; }
+.chg-pulled summary .spacer { flex: 1; }
+.chg-chip.pulled { background: transparent; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 45%, transparent); }
+.chg-chip i { font-style: normal; font-weight: 500; color: var(--muted); }
 .chg-panel .error { margin: 0; }
 .chg-panel .error:empty { display: none; }
 @media (max-width: 900px) {

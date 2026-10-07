@@ -93,7 +93,8 @@ export function renderStatus (st, { asAi = false, mentionYours = false } = {}) {
   if (!act.length) out.push('_Nothing yet._')
   for (const a of act) {
     const who = a.by === st.me.name ? 'you' : a.by
-    out.push(`- ${ago(a.ts)}: ${who} ${a.kind} \`${a.path}\`${a.detail ? ` (${a.detail})` : ''}`)
+    if (a.kind === 'pulled') out.push(`- ${ago(a.ts)}: ${who} pulled ${a.detail || 'commits'}`)
+    else out.push(`- ${ago(a.ts)}: ${who} ${a.kind} \`${a.path}\`${a.detail ? ` (${a.detail})` : ''}`)
   }
   out.push('')
 
@@ -102,10 +103,15 @@ export function renderStatus (st, { asAi = false, mentionYours = false } = {}) {
   if (!changes.length) out.push('_No changes yet._')
   for (const p of changes) {
     const who = p.name === st.me.name ? 'you' : `**${p.name}**`
-    const n = p.fileCount ?? p.files.length
-    const files = p.files.map((f) => `\`${f.path}\` (${fileChange(f)})`)
-    if (n > p.files.length) files.push(`and ${n - p.files.length} more`)
-    out.push(`- ${who}: ${n} file${n === 1 ? '' : 's'}, +${p.added} -${p.removed} (${ago(p.ts)}): ${files.join(', ')}`)
+    const line = (g, label) => {
+      const n = g.fileCount ?? g.files.length
+      const files = g.files.map((f) => `\`${f.path}\` (${fileChange(f)})`)
+      if (n > g.files.length) files.push(`and ${n - g.files.length} more`)
+      out.push(`- ${who}${label}: ${n} file${n === 1 ? '' : 's'}, +${g.added} -${g.removed} (${ago(g.ts)}): ${files.join(', ')}`)
+    }
+    // Their own edits, then what their git pulls brought (other people's commits), never mixed.
+    if ((p.fileCount ?? p.files.length) || !p.pulled) line(p, '')
+    if (p.pulled) line(p.pulled, ' pulled from git')
   }
   out.push('')
 

@@ -22,6 +22,9 @@ nothing else is.
 - **Shut down from Settings works.** In a session, **Settings → Shut down Quilt** now asks on top of the Settings pop-up instead of behind it, and clicking it again doesn't stack more questions.
 - **@Agents messages every agent at once.** Type `@Agents` in a session's chat (it's offered as you type while an agent is connected) and every agent in the session is woken by it, just as if you had mentioned each one by name, and each owes you an answer before moving its work on. People, and your own AI, are not woken by it.
 - **Agents come back as themselves with a new invite.** Every agent now gets an agent id when it joins and is told to save it. The id isn't a secret: it only says who the agent is, like a username. If you send an agent a new invite, it gives its id when it joins and comes back as the same agent, with its name, history, tasks and access, instead of showing up as a second agent with the same name. An agent you removed can come back this way too. Giving the id is optional: without it, the agent joins as a new one. With the CLI it's `--agent-id`, and on the same computer Quilt sends it for you. The website shows these invites as "Rejoined by".
+- **A pull is one event.** When you pull commits into a synced folder, everyone sees one line, like "Daniel pulled 45 commits from main · 269 files", instead of an edit for every file. Partners' AIs read it in their Quilt status.
+- **Pulling never claims files.** Before, a pull while your AI was working claimed every file it changed in your name, which blocked your partners. Now only your own edits are claimed.
+- **Changes keeps pulls apart.** In the Changes panel, what a pull brought sits in its own folded "Pulled from git" group under the person who pulled, and by file it is marked "pulled". It no longer adds to that person's own counts. `quilt_history` says which changes came from a pull.
 
 ## 0.3.12 — 2026-10-07
 

@@ -11,6 +11,9 @@ import * as Y from 'yjs'
 // A folder without git syncs this key: the room's default branch (see Room.resolveKey).
 export const DEFAULT_KEY = '∅'
 export const MAX_BRANCH_KEY = 200
+// Branch documents a room may have at once (an empty one still costs a meta entry, a
+// broadcast to everyone on every create, and a loaded Y.Doc): refused in plain English past this.
+export const MAX_BRANCHES = 50
 export const BRANCH_IDLE_MS = 10 * 60 * 1000
 // A branch nobody has been on this long leaves the session (never the default branch).
 export const BRANCH_TTL_MS = 30 * 24 * 60 * 60 * 1000

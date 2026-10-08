@@ -373,7 +373,7 @@ export class Connection extends EventEmitter {
         if (reply.ok) { this.setBranch(j.key, j.doc); this.send(syncStep1Message(j.doc, j.key)) }
       }
       if (reply && reply.op === 'join' && reply.ok) this.emit('branch-joined', reply)
-      if (reply && reply.id === this.autoJoin && !reply.ok) this.emit('branch-refused', reply.error || 'refused')
+      if (reply && reply.id === this.autoJoin && !reply.ok) this.failBranch(reply.error || 'refused')
       if (Array.isArray(branches)) this.emit('branches', branches)
       this.settle(reply, 'the relay refused that branch change')
     } else if (type === MSG_AWARENESS) {
@@ -414,6 +414,23 @@ export class Connection extends EventEmitter {
     doc.on('update', this._onBranchUpdate)
   }
 
+  /**
+   * The automatic join (the `branch` constructor option) was refused: there is no branch to
+   * sync, so nothing more is sent for it (`_onBranchUpdate` checks `branchKey`), and `synced`
+   * can complete without it. `branch-refused` is emitted first, so anyone in `waitForSync` /
+   * `waitForBranchSync` rejects instead of resolving on the `synced` this unblocks.
+   */
+  failBranch (error) {
+    if (this.branchDoc) this.branchDoc.off('update', this._onBranchUpdate)
+    this.branchKey = null
+    this.branchDoc = null
+    this.branchSynced = false
+    this.joining = null
+    this.autoJoin = null
+    this.emit('branch-refused', error)
+    this.noteSynced()
+  }
+
   /** Moves this connection to branch `key`, syncing `doc` as it once the relay agrees: { branch, created, base }. */
   joinBranch (key, doc, extra = {}) {
     return this.request(MSG_BRANCH, { op: 'join', branch: key, ...extra }, 'branch switches', (id) => { this.joining = { id, key, doc } })
@@ -434,11 +451,13 @@ export class Connection extends EventEmitter {
     return new Promise((resolve, reject) => {
       const onSynced = () => { cleanup(); resolve() }
       const onFatal = (err) => { cleanup(); reject(err) }
+      const onRefused = (err) => { cleanup(); reject(err instanceof Error ? err : new Error(String(err))) }
       const onDown = (s) => { if (s === 'disconnected') { cleanup(); reject(new Error('disconnected from relay')) } }
-      const cleanup = () => { this.off('branch-synced', onSynced); this.off('fatal', onFatal); this.off('status', onDown) }
+      const cleanup = () => { this.off('branch-synced', onSynced); this.off('fatal', onFatal); this.off('status', onDown); this.off('branch-refused', onRefused) }
       this.on('branch-synced', onSynced)
       this.on('fatal', onFatal)
       this.on('status', onDown)
+      this.on('branch-refused', onRefused)
     })
   }
 
@@ -479,9 +498,11 @@ export class Connection extends EventEmitter {
     return new Promise((resolve, reject) => {
       const onSynced = () => { cleanup(); resolve() }
       const onFatal = (err) => { cleanup(); reject(err) }
-      const cleanup = () => { this.off('synced', onSynced); this.off('fatal', onFatal) }
+      const onRefused = (err) => { cleanup(); reject(err instanceof Error ? err : new Error(String(err))) }
+      const cleanup = () => { this.off('synced', onSynced); this.off('fatal', onFatal); this.off('branch-refused', onRefused) }
       this.on('synced', onSynced)
       this.on('fatal', onFatal)
+      this.on('branch-refused', onRefused)
     })
   }
 

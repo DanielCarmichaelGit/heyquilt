@@ -33,7 +33,7 @@ import {
   ROOM_DOC, syncHeader,
   syncStep1Message, updateMessage, awarenessMessage, bytesMessage, jsonMessage
 } from './protocol.js'
-import { BranchStore, DEFAULT_KEY, BRANCH_IDLE_MS, validBranchKey, covers } from './branchdocs.js'
+import { BranchStore, DEFAULT_KEY, BRANCH_IDLE_MS, MAX_BRANCHES, validBranchKey, covers } from './branchdocs.js'
 import { parsePublicKey, verifyChallenge } from './identity.js'
 import { verifyPass, PASS_TTL_MS } from './passes.js'
 import { cleanAccess, narrowAccess, relayAccess, fromRelay, sameAccess, mayChange, TALK_REFUSED } from './session-access.js'
@@ -67,6 +67,8 @@ const MAX_REMOVED = 200
 const ROLES = ['editor', 'viewer']
 const MB = 1024 * 1024
 const DAY = 24 * 60 * 60 * 1000
+// How often a branch's "last used" time (see Room.noteBranchSeen) is saved while it is busy.
+const BRANCH_SEEN_SAVE_MS = 60 * 60 * 1000
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const LOGO = path.join(ROOT, 'assets', 'logo.svg')
 const hash = (s) => crypto.createHash('sha256').update(String(s)).digest()
@@ -679,7 +681,23 @@ class Room {
   branchDoc (key, { by = '', base = null } = {}) {
     const k = this.resolveKey(key)
     if (this.noteBranch(k, { by, base })) this.broadcastBranches()
+    this.noteBranchSeen(k)
     return this.store.load(k)
+  }
+
+  /**
+   * Branch `key` was used just now (joined, edited, saved, or left): refreshed in the
+   * session's meta, so the 30-day prune (task 4) never deletes a branch someone is on.
+   * Saved at most once an hour per branch unless `force` (a join is worth saving right
+   * away), so busy editing doesn't write the session's meta file on every keystroke.
+   */
+  noteBranchSeen (key, { force = false } = {}) {
+    const b = this.meta.branches[key]
+    if (!b) return
+    const now = Date.now()
+    if (!force && b.seen && now - b.seen < BRANCH_SEEN_SAVE_MS) return
+    b.seen = now
+    this.saveMeta()
   }
 
   /** A branch document just loaded: its changes go to the connections on that branch, and are saved. */
@@ -696,13 +714,14 @@ class Room {
     })
   }
 
-  /** A branch document was saved: the stored files it points at are remembered for when it is unloaded (storedIds). */
+  /** A branch document was saved: records it was used just now (see noteBranchSeen), and the
+   * stored files it points at are remembered for when it is unloaded (storedIds). */
   noteBranchSaved (e) {
     const b = this.meta.branches[e.key]
     if (!b) return
+    b.seen = Date.now()
     const ids = [...e.blobs.values()].filter((x) => x && x.stored && x.stored.id).map((x) => x.stored.id).sort()
-    if (String(ids) === String(b.stored || [])) return
-    b.stored = ids
+    if (String(ids) !== String(b.stored || [])) b.stored = ids
     this.saveMeta()
   }
 
@@ -728,18 +747,28 @@ class Room {
     if (req.op === 'join') {
       const k = this.resolveKey(key)
       const created = !this.meta.branches[k]
-      if (created && this.full) throw new Error("This session is over its size limit, so it can't take another branch.")
+      if (created) {
+        if (this.full) throw new Error("This session is over its size limit, so it can't take another branch.")
+        if (Object.keys(this.meta.branches).length >= MAX_BRANCHES) throw new Error(`This session already has ${MAX_BRANCHES} branches, its limit; an existing one has to go before another can start.`)
+        const a = this.access.get(ws)
+        if (a && a.role === 'viewer') throw new Error('you can only view this session, so you cannot start a new branch')
+      }
       try { this.store.load(k) } catch (err) {
         if (!err.unreadable) throw err
         this.log(`[${this.name}] ${err.message}`)
         throw new Error("This branch's data can't be read on the relay right now")
       }
-      if (ws.branch && ws.branch !== k) this.store.unsubscribe(ws, ws.branch)
+      if (ws.branch && ws.branch !== k) {
+        // Kept a moment longer: a sync message the app sent for it just before switching,
+        // still in flight, is applied rather than silently dropped (handle, MSG_SYNC).
+        this.store.unsubscribe(ws, ws.branch)
+        ws.prevBranch = ws.branch
+      }
       this.store.subscribe(ws, k)
       ws.branch = k // the document, as the relay keeps it
       ws.branchAs = key // as the app named it (∅ without git): its sync messages carry this
       this.noteBranch(k, { by: this.names.get(ws) || '', base: req.base })
-      this.meta.branches[k].seen = Date.now()
+      this.noteBranchSeen(k, { force: true })
       return { ok: true, branch: k, created, base: this.meta.branches[k].base, listChanged: created }
     }
     if (req.op === 'confirm') {
@@ -1403,7 +1432,7 @@ class Room {
   leave (ws, code) {
     if (ws.visit) { if (this.presence) this.presence.visitEnd(ws.visit, ws.endReason || endReasonFor(code)); ws.visit = null }
     const ids = this.conns.get(ws)
-    if (ws.branch) this.store.unsubscribe(ws, ws.branch)
+    if (ws.branch) { this.store.unsubscribe(ws, ws.branch); this.noteBranchSeen(ws.branch, { force: true }) }
     this.conns.delete(ws)
     this.names.delete(ws)
     if (this.access.delete(ws)) {
@@ -1431,7 +1460,10 @@ class Room {
       let doc = this.doc
       if (docId !== ROOM_DOC) {
         // A connection syncs the room's document and the one branch it joined, nothing else.
-        const e = ws.branch && this.resolveKey(docId) === ws.branch ? this.store.get(ws.branch) : null
+        // An edit it sent for the branch it just left, still in flight when the join landed
+        // (ws.prevBranch, set in branchRequest), is still applied rather than lost.
+        const k = this.resolveKey(docId)
+        const e = (k === ws.branch || k === ws.prevBranch) ? this.store.get(k) : null
         if (!e) return
         doc = e.doc
       }

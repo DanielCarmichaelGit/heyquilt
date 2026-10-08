@@ -535,6 +535,23 @@ function slowGit (secs) {
   return bin
 }
 
+/**
+ * A git that blocks every call made *in `holdDir`* until the test calls `release()`, then
+ * runs the real git normally; a call in any other folder (QUILT_GIT applies to every
+ * session in the process, so a partner folder's own git calls must not wait on this gate
+ * too) always runs straight away. Lets a test hold a burst's classification open for
+ * exactly as long as it needs to set up a race, instead of guessing a sleep that must
+ * outlast whatever the host is doing at the time (the fixed-sleep version of these tests,
+ * slowGit, flaked under load).
+ */
+function gatedGit (holdDir) {
+  const dir = tmp('gatedgit')
+  const gate = path.join(dir, 'gate')
+  const bin = path.join(dir, 'git')
+  fs.writeFileSync(bin, `#!/bin/sh\nif [ "$(pwd -P)" = "${holdDir}" ]; then\n  while [ ! -f "${gate}" ]; do sleep 0.02; done\nfi\nexec git "$@"\n`, { mode: 0o755 })
+  return { bin, release: () => fs.writeFileSync(gate, '') }
+}
+
 test('a slow git never stalls the app: the folder is held while git is asked, then settles', async (t) => {
   const { B, dirA, dirB } = await pairRepos(t)
   write(dirA, 'README.md', 'main work\n')
@@ -555,7 +572,8 @@ test('a slow git never stalls the app: the folder is held while git is asked, th
 
 test('a change from the room while git is asked about a burst is merged with it, not lost', async (t) => {
   const { A, B, dirA, dirB } = await pairRepos(t)
-  process.env.QUILT_GIT = slowGit(1)
+  const gated = gatedGit(fs.realpathSync(dirB))
+  process.env.QUILT_GIT = gated.bin
   try {
     // bob stages his edit (git writes the index: a burst, asked of git); alice edits another line meanwhile.
     write(dirB, 'src/app.js', 'line1 (bob)\nline2\nline3\nline4\nline5\n'); git(dirB, 'add', 'src/app.js')
@@ -563,6 +581,7 @@ test('a change from the room while git is asked about a burst is merged with it,
     write(dirA, 'src/app.js', 'line1\nline2\nline3\nline4\nline5 (alice)\n')
     await waitFor(() => B.heldPaths.has('src/app.js'))
     assert.equal(read(dirB, 'src/app.js'), 'line1 (bob)\nline2\nline3\nline4\nline5\n', 'nothing written over bob\'s file while git is asked')
+    gated.release() // only now let git (still asking about bob's burst) finish classifying it
     const both = 'line1 (bob)\nline2\nline3\nline4\nline5 (alice)\n'
     await waitFor(() => read(dirA, 'src/app.js') === both && read(dirB, 'src/app.js') === both, 30000)
   } finally { delete process.env.QUILT_GIT }
@@ -571,7 +590,8 @@ test('a change from the room while git is asked about a burst is merged with it,
 
 test('new files from the room while git is asked about a burst land as they are: no merge records', async (t) => {
   const { A, B, dirA, dirB } = await pairRepos(t)
-  process.env.QUILT_GIT = slowGit(1)
+  const gated = gatedGit(fs.realpathSync(dirB))
+  process.env.QUILT_GIT = gated.bin
   const mine = Array.from({ length: 25 }, (_, i) => `bob/f${i}.txt`)
   const theirs = Array.from({ length: 40 }, (_, i) => `alice/f${i}.txt`)
   try {
@@ -579,6 +599,7 @@ test('new files from the room while git is asked about a burst land as they are:
     await waitFor(() => B.classifying)
     for (const rel of theirs) write(dirA, rel, `alice ${rel}\n`)
     await waitFor(() => theirs.some((rel) => B.heldPaths.has(rel)))
+    gated.release() // only now let git (still asking about bob's burst) finish classifying it
     await waitFor(() => theirs.every((rel) => read(dirB, rel) === `alice ${rel}\n`) && mine.every((rel) => read(dirA, rel) === `bob ${rel}\n`), 30000)
   } finally { delete process.env.QUILT_GIT }
   await never(() => A.mergeList().some((m) => m.state === 'open') || B.mergeList().some((m) => m.state === 'open'), 1500)

@@ -4,9 +4,10 @@
 import { EventEmitter } from 'node:events'
 import WebSocket from 'ws'
 import crypto from 'node:crypto'
+import * as Y from 'yjs'
 import {
   MSG_SYNC, MSG_AWARENESS, MSG_QUERY_AWARENESS, MSG_AUTH, MSG_CLAIM, MSG_CLAIMS,
-  MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS, MSG_PASS,
+  MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS, MSG_PASS, MSG_BRANCH, MSG_BRANCHES,
   CLOSE_AUTH_FAILED, CLOSE_NAME_TAKEN, CLOSE_ROOM_FULL, CLOSE_DENIED, CLOSE_ENDED, CLOSE_PASS_EXPIRED,
   encoding, decoding, syncProtocol, awarenessProtocol,
   ROOM_DOC, FEATURES, syncHeader,
@@ -51,7 +52,7 @@ export class Connection extends EventEmitter {
    * @param {number} [opts.livenessMs]  give up on a connection that stays silent this long
    * @param {string} [opts.tool]  the app or AI tool this is, for the session's audit trail
    */
-  constructor ({ server, room, secret, key, viewSecret, kind = 'human', name, identity, doc, beforeRemote, features = FEATURES, passes = null, passRefreshMs = PASS_REFRESH_MS, livenessMs = LIVENESS_MS, tool = '' }) {
+  constructor ({ server, room, secret, key, viewSecret, kind = 'human', name, identity, doc, branch = null, beforeRemote, features = FEATURES, passes = null, passRefreshMs = PASS_REFRESH_MS, livenessMs = LIVENESS_MS, tool = '' }) {
     super()
     if (room === RESERVED_ROOM) throw new Error(`"${RESERVED_ROOM}" is not a session name`)
     // Secrets travel in headers, never in the URL: proxies log URLs, and Fly's did (issue 011).
@@ -87,6 +88,22 @@ export class Connection extends EventEmitter {
     this.synced = false
     this.closed = false
     this.backoff = 500
+    // Besides the room's document, the one branch this connection syncs (see setBranch). The
+    // relay forgets it on every disconnect, so each (re)connection joins it again (startSync).
+    this.branchKey = null
+    this.branchDoc = null
+    this.joinExtra = {} // sent with the first automatic join: adopt (the branch an older app's saved document is), base (HEAD, for a new branch)
+    this.joining = null // { id, key, doc } while joinBranch waits for the relay
+    this.autoJoin = null // the id of the automatic join, whose refusal is said (branch-refused)
+    this.roomSynced = false
+    this.branchSynced = false
+    this._onBranchUpdate = (update, origin) => {
+      if (origin !== REMOTE && this.branchKey !== null) this.send(updateMessage(update, this.branchKey))
+    }
+    if (branch) {
+      this.setBranch(branch.key, branch.doc)
+      this.joinExtra = { ...(branch.adopt ? { adopt: branch.adopt } : {}), ...(branch.base ? { base: branch.base } : {}) }
+    }
 
     this._onUpdate = (update, origin) => {
       if (origin !== REMOTE) this.send(updateMessage(update))
@@ -240,6 +257,9 @@ export class Connection extends EventEmitter {
       const wasConnected = this.connected
       this.connected = false
       this.synced = false
+      this.roomSynced = false
+      this.branchSynced = false
+      this.joining = null
       this.authed = false
       if (this.ws === ws) this.ws = null
       for (const [id, r] of this.requests) { clearTimeout(r.timer); r.reject(new Error('disconnected from relay')); this.requests.delete(id) }
@@ -309,6 +329,14 @@ export class Connection extends EventEmitter {
 
   startSync () {
     this.send(syncStep1Message(this.doc))
+    if (this.branchKey !== null) {
+      // The relay handles messages in order: the join lands before the branch's sync step 1.
+      const id = crypto.randomBytes(8).toString('hex')
+      this.autoJoin = id
+      this.send(jsonMessage(MSG_BRANCH, { id, op: 'join', branch: this.branchKey, ...this.joinExtra }))
+      this.joinExtra = {}
+      this.send(syncStep1Message(this.branchDoc, this.branchKey))
+    }
     // Set again rather than resent: that moves our clock on, so the relay takes the state
     // even when it still holds the clock from before a drop (it would ignore a repeat).
     const mine = this.awareness.getLocalState()
@@ -323,18 +351,31 @@ export class Connection extends EventEmitter {
     const type = decoding.readVarUint(dec)
     if (type === MSG_SYNC) {
       const docId = decoding.readVarString(dec)
-      if (docId !== ROOM_DOC) return // branch documents: see joinBranch (task 3)
+      const doc = docId === ROOM_DOC ? this.doc : docId === this.branchKey ? this.branchDoc : null
+      if (!doc) return // a branch this connection has left
       // Give the owner a chance to capture unsaved local edits so remote
       // changes merge with them instead of overwriting them.
       this.beforeRemote()
       const enc = syncHeader(docId)
       const header = encoding.length(enc)
-      const msgType = syncProtocol.readSyncMessage(dec, enc, this.doc, REMOTE)
+      const msgType = syncProtocol.readSyncMessage(dec, enc, doc, REMOTE)
       if (encoding.length(enc) > header) this.send(encoding.toUint8Array(enc))
-      if (msgType === syncProtocol.messageYjsSyncStep2 && !this.synced) {
-        this.synced = true
-        this.emit('synced')
+      if (msgType === syncProtocol.messageYjsSyncStep2) {
+        if (doc === this.doc) this.roomSynced = true
+        else if (!this.branchSynced) { this.branchSynced = true; this.emit('branch-synced') }
+        this.noteSynced()
       }
+    } else if (type === MSG_BRANCHES) {
+      const { branches, reply } = JSON.parse(decoding.readVarString(dec))
+      if (reply && this.joining && reply.id === this.joining.id) {
+        const j = this.joining
+        this.joining = null
+        if (reply.ok) { this.setBranch(j.key, j.doc); this.send(syncStep1Message(j.doc, j.key)) }
+      }
+      if (reply && reply.op === 'join' && reply.ok) this.emit('branch-joined', reply)
+      if (reply && reply.id === this.autoJoin && !reply.ok) this.emit('branch-refused', reply.error || 'refused')
+      if (Array.isArray(branches)) this.emit('branches', branches)
+      this.settle(reply, 'the relay refused that branch change')
     } else if (type === MSG_AWARENESS) {
       awarenessProtocol.applyAwarenessUpdate(this.awareness, decoding.readVarUint8Array(dec), REMOTE)
     } else if (type === MSG_QUERY_AWARENESS) {
@@ -357,6 +398,50 @@ export class Connection extends EventEmitter {
     }
   }
 
+  /** Room and branch documents both synced: 'synced' (once per connection). */
+  noteSynced () {
+    const was = this.synced
+    this.synced = this.roomSynced && (this.branchKey === null || this.branchSynced)
+    if (this.synced && !was) this.emit('synced')
+  }
+
+  /** Syncs `doc` as branch `key` from now on; the previous branch document is let go. */
+  setBranch (key, doc) {
+    if (this.branchDoc) this.branchDoc.off('update', this._onBranchUpdate)
+    this.branchKey = key
+    this.branchDoc = doc
+    this.branchSynced = false
+    doc.on('update', this._onBranchUpdate)
+  }
+
+  /** Moves this connection to branch `key`, syncing `doc` as it once the relay agrees: { branch, created, base }. */
+  joinBranch (key, doc, extra = {}) {
+    return this.request(MSG_BRANCH, { op: 'join', branch: key, ...extra }, 'branch switches', (id) => { this.joining = { id, key, doc } })
+  }
+
+  /** Resolves once the relay holds every change this app has on its branch (before a switch clears the folder). */
+  confirmBranch () {
+    if (this.branchKey === null) return Promise.resolve({ ok: true })
+    const sv = Buffer.from(Y.encodeStateVector(this.branchDoc)).toString('base64')
+    return this.request(MSG_BRANCH, { op: 'confirm', branch: this.branchKey, sv }, 'branch switches')
+  }
+
+  /** Any other branch request (remove). */
+  branchRequest (req) { return this.request(MSG_BRANCH, req, 'branch changes') }
+
+  waitForBranchSync () {
+    if (this.branchSynced) return Promise.resolve()
+    return new Promise((resolve, reject) => {
+      const onSynced = () => { cleanup(); resolve() }
+      const onFatal = (err) => { cleanup(); reject(err) }
+      const onDown = (s) => { if (s === 'disconnected') { cleanup(); reject(new Error('disconnected from relay')) } }
+      const cleanup = () => { this.off('branch-synced', onSynced); this.off('fatal', onFatal); this.off('status', onDown) }
+      this.on('branch-synced', onSynced)
+      this.on('fatal', onFatal)
+      this.on('status', onDown)
+    })
+  }
+
   settle (reply, fallback) {
     const r = reply && this.requests.get(reply.id)
     if (!r) return
@@ -366,11 +451,12 @@ export class Connection extends EventEmitter {
     else r.reject(new Error(reply.error || fallback))
   }
 
-  request (type, req, what) {
+  request (type, req, what, onId = null) {
     if (!this.authed || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error(`not connected to the relay; ${what} need a connection`))
     }
     const id = crypto.randomBytes(8).toString('hex')
+    if (onId) onId(id)
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.requests.delete(id); reject(new Error('the relay did not answer')) }, REQUEST_TIMEOUT_MS)
       this.requests.set(id, { resolve, reject, timer })
@@ -404,6 +490,7 @@ export class Connection extends EventEmitter {
     clearInterval(this.passTimer)
     clearTimeout(this.livenessTimer)
     this.doc.off('update', this._onUpdate)
+    if (this.branchDoc) this.branchDoc.off('update', this._onBranchUpdate)
     this.awareness.off('update', this._onAwareness)
     awarenessProtocol.removeAwarenessStates(this.awareness, [this.doc.clientID], 'local')
     if (this.ws) {

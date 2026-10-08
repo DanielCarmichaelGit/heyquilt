@@ -27,12 +27,13 @@ import { handleAgentMcp, handleHostedMcp, watchFeatures } from './relay-mcp.js'
 import { UpdateCheck } from './update-check.js'
 import {
   MSG_SYNC, MSG_AWARENESS, MSG_QUERY_AWARENESS, MSG_AUTH, MSG_CLAIM, MSG_CLAIMS, MAX_SHARED_FILE_BYTES,
-  MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS, MSG_PASS,
+  MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS, MSG_PASS, MSG_BRANCH, MSG_BRANCHES,
   CLOSE_AUTH_FAILED, CLOSE_NAME_TAKEN, CLOSE_ROOM_FULL, CLOSE_DENIED, CLOSE_ENDED, CLOSE_NEEDS_UPDATE, CLOSE_PASS_EXPIRED,
   encoding, decoding, syncProtocol, awarenessProtocol,
   ROOM_DOC, syncHeader,
   syncStep1Message, updateMessage, awarenessMessage, bytesMessage, jsonMessage
 } from './protocol.js'
+import { BranchStore, DEFAULT_KEY, BRANCH_IDLE_MS, validBranchKey, covers } from './branchdocs.js'
 import { parsePublicKey, verifyChallenge } from './identity.js'
 import { verifyPass, PASS_TTL_MS } from './passes.js'
 import { cleanAccess, narrowAccess, relayAccess, fromRelay, sameAccess, mayChange, TALK_REFUSED } from './session-access.js'
@@ -92,6 +93,8 @@ export function relayConfig (opts = {}) {
     maxNewRoomsPerHour: num(opts.maxNewRoomsPerHour ?? env.QUILT_MAX_NEW_ROOMS_PER_HOUR, 30),
     roomTtlDays: num(opts.roomTtlDays ?? env.QUILT_ROOM_TTL_DAYS, 30),
     idleUnloadMs: num(opts.idleUnloadMs, 60 * 1000),
+    // A branch document nobody is on leaves memory this long after its last use (the room may stay).
+    branchIdleMs: num(opts.branchIdleMs, BRANCH_IDLE_MS),
     // A claim whose holder has done nothing in the session this long is let go (see sweepClaims):
     // handed to the first one waiting in its file queue, or released.
     claimIdleMs: num(opts.claimIdleMs, 20 * 60 * 1000),
@@ -138,6 +141,16 @@ class Room {
     }
     this.meta.identities = this.meta.identities || {} // name -> public key
     this.meta.claims = this.meta.claims || {} // pattern -> { by, byId?, pattern, note, ts }; byId is the account, with sign-in on
+    // Each branch's files live in a document of their own (branchdocs.js); the session's
+    // branches are key -> { by, at, base, seen, stored }, and the default is the first one joined.
+    this.meta.branches = this.meta.branches || {}
+    this.store = new BranchStore({
+      dir: dataDir && path.join(dataDir, 'branches', name),
+      idleMs: cfg.branchIdleMs,
+      onLoad: (e) => this.wireBranch(e),
+      onSave: (e) => this.noteBranchSaved(e),
+      onDiskError: (err) => this.diskError(err)
+    })
     // Claim holder (see holderKey) -> when they last did something in the session (changed the
     // document: a file, a message, their AI's feed; or used a hosted tool), for sweepClaims.
     this.meta.seen = this.meta.seen || {}
@@ -182,7 +195,7 @@ class Room {
       if (!events || !this.guard.trackedOrigins.has(tr.origin)) return
       this.activityAdded.set(tr, events.flatMap((e) => [...e.changes.added].flatMap((item) => item.content.getContent())))
     })
-    this.full = this.bytes > cfg.maxRoomBytes
+    this.full = this.totalBytes() > cfg.maxRoomBytes
     this.saveTimer = null
     this.unloadTimer = null
     this.presence = null // a PresenceReporter when the relay reports presence (set by startServer)
@@ -638,6 +651,110 @@ class Room {
   forget (item) {
     const i = item ? this.guard.undoStack.indexOf(item) : -1
     if (i >= 0) this.guard.undoStack.splice(i, 1)
+  }
+
+  /** The room's default branch: the first one anyone joined (∅, a folder without git, until then). */
+  get defaultKey () { return this.meta.defaultBranch || DEFAULT_KEY }
+
+  /** The document a branch name stands for: ∅ is the default branch. */
+  resolveKey (key) { return key === DEFAULT_KEY ? this.defaultKey : key }
+
+  /** Bytes the room takes: its own document and every branch's. */
+  totalBytes () {
+    let n = this.bytes
+    if (this.store) for (const key of Object.keys(this.meta.branches)) n += this.store.size(key)
+    return n
+  }
+
+  /** Adds a branch to the session (once): who started it, when, and the commit it started from. True when new. */
+  noteBranch (key, { by = '', base = null } = {}) {
+    if (this.meta.branches[key]) return false
+    this.meta.branches[key] = { by, at: Date.now(), base: typeof base === 'string' && /^[0-9a-f]{40,64}$/.test(base) ? base : null }
+    if (!this.meta.defaultBranch) this.meta.defaultBranch = key
+    this.saveMeta()
+    return true
+  }
+
+  /** Branch `key`'s document, loaded, and added to the session when new (hosted agents and chat links use this). */
+  branchDoc (key, { by = '', base = null } = {}) {
+    const k = this.resolveKey(key)
+    if (this.noteBranch(k, { by, base })) this.broadcastBranches()
+    return this.store.load(k)
+  }
+
+  /** A branch document just loaded: its changes go to the connections on that branch, and are saved. */
+  wireBranch (e) {
+    e.doc.on('update', (update, origin) => {
+      if (origin && this.conns.has(origin)) this.noteActivity(this.holderKeys(origin))
+      for (const ws of e.conns) if (ws !== origin) send(ws, updateMessage(update, ws.branchAs))
+      e.bytes += update.length
+      if (!this.full && this.totalBytes() > this.cfg.maxRoomBytes) {
+        this.full = true
+        this.log(`[${this.name}] over the size limit; further edits are refused`)
+      }
+      this.store.scheduleSave(e)
+    })
+  }
+
+  /** A branch document was saved: the stored files it points at are remembered for when it is unloaded (storedIds). */
+  noteBranchSaved (e) {
+    const b = this.meta.branches[e.key]
+    if (!b) return
+    const ids = [...e.blobs.values()].filter((x) => x && x.stored && x.stored.id).map((x) => x.stored.id).sort()
+    if (String(ids) === String(b.stored || [])) return
+    b.stored = ids
+    this.saveMeta()
+  }
+
+  /** The session's branches, for everyone's branch menu. */
+  branchList () {
+    return Object.entries(this.meta.branches).map(([key, b]) => ({ key, by: b.by || '', at: b.at || 0, base: b.base || null, default: key === this.defaultKey }))
+  }
+
+  broadcastBranches () {
+    const msg = jsonMessage(MSG_BRANCHES, { branches: this.branchList() })
+    for (const ws of this.conns.keys()) send(ws, msg)
+  }
+
+  /**
+   * A connection's branch request; returns the reply fields. join: subscribe to a branch's
+   * document (one at a time), adding the branch to the session when new. confirm: the relay
+   * holds everything the app has of the branch it joined, up to the app's state vector (an
+   * app asks before it clears its folder for a switch).
+   */
+  branchRequest (ws, req) {
+    const key = String(req.branch ?? '')
+    if (!validBranchKey(key)) throw new Error(`"${key.slice(0, 60)}" isn't a branch name`)
+    if (req.op === 'join') {
+      const k = this.resolveKey(key)
+      const created = !this.meta.branches[k]
+      if (created && this.full) throw new Error("This session is over its size limit, so it can't take another branch.")
+      try { this.store.load(k) } catch (err) {
+        if (!err.unreadable) throw err
+        this.log(`[${this.name}] ${err.message}`)
+        throw new Error("This branch's data can't be read on the relay right now")
+      }
+      if (ws.branch && ws.branch !== k) this.store.unsubscribe(ws, ws.branch)
+      this.store.subscribe(ws, k)
+      ws.branch = k // the document, as the relay keeps it
+      ws.branchAs = key // as the app named it (∅ without git): its sync messages carry this
+      this.noteBranch(k, { by: this.names.get(ws) || '', base: req.base })
+      this.meta.branches[k].seen = Date.now()
+      return { ok: true, branch: k, created, base: this.meta.branches[k].base, listChanged: created }
+    }
+    if (req.op === 'confirm') {
+      const k = this.resolveKey(key)
+      const e = k === ws.branch ? this.store.get(k) : null
+      if (!e) throw new Error(`you are not on ${key}`)
+      let want
+      try {
+        want = new Uint8Array(Buffer.from(String(req.sv || ''), 'base64'))
+        Y.decodeStateVector(want)
+      } catch { throw new Error('that is not a state vector') }
+      if (!covers(Y.encodeStateVector(e.doc), want)) throw new Error(`not all of your changes on ${key} have reached the relay yet`)
+      return { ok: true, branch: k }
+    }
+    throw new Error('unknown branch request')
   }
 
   /** Can this connection's app handle the session as it is now? */
@@ -1276,15 +1393,17 @@ class Room {
     this.conns.set(ws, new Set())
     this.names.set(ws, name)
     send(ws, syncStep1Message(this.doc))
+    send(ws, jsonMessage(MSG_BRANCHES, { branches: this.branchList() }))
     const states = [...this.awareness.getStates().keys()]
     if (states.length) send(ws, awarenessMessage(this.awareness, states))
-    send(ws, jsonMessage(MSG_CLAIMS, { claims: this.claimList() }))
+    send(ws, jsonMessage(MSG_CLAIMS, { claims: this.claimList(ws.branch) }))
     this.touch()
   }
 
   leave (ws, code) {
     if (ws.visit) { if (this.presence) this.presence.visitEnd(ws.visit, ws.endReason || endReasonFor(code)); ws.visit = null }
     const ids = this.conns.get(ws)
+    if (ws.branch) this.store.unsubscribe(ws, ws.branch)
     this.conns.delete(ws)
     this.names.delete(ws)
     if (this.access.delete(ws)) {
@@ -1309,7 +1428,13 @@ class Room {
     const type = decoding.readVarUint(dec)
     if (type === MSG_SYNC) {
       const docId = decoding.readVarString(dec)
-      if (docId !== ROOM_DOC) return // branch documents arrive with MSG_BRANCH (task 3)
+      let doc = this.doc
+      if (docId !== ROOM_DOC) {
+        // A connection syncs the room's document and the one branch it joined, nothing else.
+        const e = ws.branch && this.resolveKey(docId) === ws.branch ? this.store.get(ws.branch) : null
+        if (!e) return
+        doc = e.doc
+      }
       if (this.full) {
         // Over quota: still answer "what do you have?" so people can read, but refuse new data.
         if (decoding.peekVarUint(dec) !== syncProtocol.messageYjsSyncStep1) {
@@ -1320,8 +1445,26 @@ class Room {
       }
       const enc = syncHeader(docId)
       const header = encoding.length(enc)
-      syncProtocol.readSyncMessage(dec, enc, this.doc, ws)
+      syncProtocol.readSyncMessage(dec, enc, doc, ws)
       if (encoding.length(enc) > header) send(ws, encoding.toUint8Array(enc))
+    } else if (type === MSG_BRANCH) {
+      let req = {}
+      let reply
+      try {
+        req = JSON.parse(decoding.readVarString(dec))
+        reply = { id: req.id, op: req.op, ...this.branchRequest(ws, req) }
+      } catch (err) {
+        reply = { id: req.id, op: req.op, ok: false, error: err.message }
+      }
+      const listChanged = reply.listChanged
+      delete reply.listChanged
+      send(ws, jsonMessage(MSG_BRANCHES, { branches: this.branchList(), reply }))
+      if (reply.ok && reply.op === 'join') {
+        // What the relay has of the branch, and its claims: the app answers with what it has.
+        send(ws, syncStep1Message(this.store.get(ws.branch).doc, ws.branchAs))
+        send(ws, jsonMessage(MSG_CLAIMS, { claims: this.claimList(ws.branch) }))
+      }
+      if (listChanged) this.broadcastBranches()
     } else if (type === MSG_AWARENESS) {
       const update = decoding.readVarUint8Array(dec)
       if (!this.presenceAllowed(ws, update)) return this.log(`[${this.name}] dropped presence from ${this.names.get(ws)} under another name`)
@@ -1364,6 +1507,7 @@ class Room {
   destroy () {
     clearTimeout(this.unloadTimer)
     this.save()
+    this.store.destroy()
     this.guard.destroy()
     this.awareness.destroy()
     this.doc.destroy()
@@ -1525,7 +1669,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         // Hosted agents in it have no connection to close: their visits end here.
         if (endHostedVisits) endHostedVisits(name, 'session_ended')
         clearTimeout(room.unloadTimer)
-        room.guard.destroy(); room.awareness.destroy(); room.doc.destroy()
+        room.store.discard(); room.guard.destroy(); room.awareness.destroy(); room.doc.destroy()
         if (rooms.get(name) === room) rooms.delete(name)
         removeRoomData(name)
         // A tombstone keeps the room refused for good, instead of letting a new one start under the same name.
@@ -1644,6 +1788,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       if (dataDir) {
         fs.rmSync(path.join(dataDir, `${name}.ydoc`), { force: true })
         fs.rmSync(path.join(dataDir, `${name}.json`), { force: true })
+        fs.rmSync(path.join(dataDir, 'branches', name), { recursive: true, force: true })
       }
       fs.rmSync(path.join(filesDir, name), { recursive: true, force: true })
     } catch (err) { log(`[${name}] could not delete its files: ${err.message}`) }

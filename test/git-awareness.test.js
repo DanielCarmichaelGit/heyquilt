@@ -33,7 +33,8 @@ const identityOf = (n) => { if (!ids.has(n)) ids.set(n, generateIdentity()); ret
 const stopped = new Set()
 const close = async (s) => { if (!stopped.has(s)) { stopped.add(s); await s.stop() } }
 async function open (t, dir, name, extra) {
-  const s = new Session({ dir, server, secret: 'pw', name, identity: identityOf(name), ...extra })
+  // These tests are about a person's own git commands: commits come in only when they pull (see upstream.test.js).
+  const s = new Session({ dir, server, secret: 'pw', name, identity: identityOf(name), bringInUpstream: false, ...extra })
   t.after(() => close(s))
   if (process.env.GA_DEBUG) { s.on('log', (m) => console.error(`[${name}] ${m}`)); s.on('hold', (h) => console.error(`[${name}] hold ${JSON.stringify(h)}`)) }
   await s.start({ waitTimeoutMs: 5000 })

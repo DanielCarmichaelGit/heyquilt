@@ -1,8 +1,10 @@
-// What git is doing to a synced folder, read-only. Quilt never writes to git:
-// it asks git whether a burst of file changes was an edit, a discard (stash,
+// What git is doing to a synced folder. Quilt reads git: it asks git whether a burst of file changes was an edit, a discard (stash,
 // reset, restore), new commits (pull, merge, rebase) or a branch switch, and
 // what a file looked like at a commit, so the shared work can be kept apart
-// from what git did. Every git call is asynchronous (the app's window and its
+// from what git did. It writes to git in two ways only, both at the end of
+// this file: a background fetch (remote-tracking refs, never files or
+// branches), and moving the folder's own branch forward to commits it is
+// behind (fast-forward only, never merging history; see bringIn in session.js). Every git call is asynchronous (the app's window and its
 // relay connection never wait on git); the file reads below are synchronous.
 import fs from 'node:fs'
 import path from 'node:path'
@@ -43,7 +45,7 @@ let lastTimedOut = false
  * (missing: the git binary could not be started at all; timedOut: it ran
  * past GIT_TIMEOUT_MS and was stopped). Never rejects.
  */
-function call (root, args, { buffer = false, input } = {}) {
+function call (root, args, { buffer = false, input, timeout = GIT_TIMEOUT_MS, env = {} } = {}) {
   // QUILT_GIT lets tests point at a git binary that doesn't exist, to exercise
   // the "git is unreachable" path without touching the real PATH.
   const bin = gitBinary()
@@ -57,9 +59,9 @@ function call (root, args, { buffer = false, input } = {}) {
       child = execFile(bin, args, {
         cwd: root,
         encoding: buffer ? 'buffer' : 'utf8',
-        timeout: GIT_TIMEOUT_MS,
+        timeout,
         maxBuffer: MAX_OUTPUT,
-        env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }
+        env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', ...env }
       }, (err, stdout) => {
         if (!err) { runs.add(bin); return done(stdout, false, false) }
         const missing = err.code === 'ENOENT' || err.code === 'EACCES'
@@ -432,13 +434,22 @@ export async function pullState (root) {
   return { upstream: name.trim(), behind, adds: new Map([...adds].filter(([rel]) => !tracked.has(rel))) }
 }
 
-/** Watches HEAD, the index, a fetch (FETCH_HEAD) and the in-progress markers; events: head, index, fetch, busy, idle. */
+/**
+ * Watches HEAD, the index, a fetch (FETCH_HEAD) and the in-progress markers; events: head, index, fetch, busy, idle.
+ * Also `ref`: a branch moved without HEAD's file changing (a commit, or another worktree of the
+ * same repository moving this branch: `git update-ref`, `git push . x:main`, `git fetch . x:main`).
+ */
 export function watchGit (root, onEvent) {
   const dir = gitDir(root)
   if (!dir) return { close: async () => {} }
   const names = new Set(['HEAD', 'index', 'FETCH_HEAD', ...MARKERS.map(([f]) => f)])
   let wasBusy = !!busy(root, dir)
   const watcher = watch(dir, { ignoreInitial: true, depth: 0, followSymlinks: false })
+  // Branches live in the shared directory a worktree's .git points into (refs/heads, packed-refs).
+  const common = commonDir(root) || dir
+  const refs = watch([path.join(common, 'refs', 'heads'), path.join(common, 'packed-refs')], { ignoreInitial: true, followSymlinks: false })
+  const onRef = (p) => { if (!p.endsWith('.lock')) onEvent({ type: 'ref' }) }
+  refs.on('add', onRef).on('change', onRef).on('unlink', onRef).on('error', () => {})
   const onAny = (p) => {
     const name = path.basename(p)
     if (!names.has(name)) return
@@ -451,5 +462,126 @@ export function watchGit (root, onEvent) {
     }
   }
   watcher.on('add', onAny).on('change', onAny).on('unlink', onAny).on('addDir', onAny).on('unlinkDir', onAny)
-  return { close: () => watcher.close() }
+  return { close: () => Promise.all([watcher.close(), refs.close()]) }
+}
+
+/** The repository's shared git directory (a worktree's .git/worktrees/<name> points at it), or null. */
+export function commonDir (root) {
+  const dir = gitDir(root)
+  if (!dir) return null
+  try { return path.resolve(dir, fs.readFileSync(path.join(dir, 'commondir'), 'utf8').trim()) } catch { return dir }
+}
+
+// ------------------------------------------------------------ upstream --
+// What the folder's branch has to catch up with. A fetch can wait on the network: it gets longer.
+export const FETCH_TIMEOUT_MS = 60 * 1000
+
+/**
+ * The branch's upstream: { name ("origin/main"), remote ("origin"), url, sha }, or null
+ * (no upstream set, or git failed). The address is read from the folder's own git config:
+ * nobody sets it in Quilt.
+ */
+export async function upstreamOf (root) {
+  const name = ((await run(root, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'])) || '').trim()
+  if (!name) return null
+  const sha = ((await run(root, ['rev-parse', '-q', '--verify', '@{upstream}^{commit}'])) || '').trim() || null
+  const branch = headRef(root)
+  const remote = branch ? ((await run(root, ['config', '--get', `branch.${branch}.remote`])) || '').trim() : ''
+  const url = remote && remote !== '.' ? ((await run(root, ['remote', 'get-url', remote])) || '').trim() : ''
+  return { name, remote: remote || null, url: url || null, sha }
+}
+
+/**
+ * Fetches the branch's upstream remote in the background: only remote-tracking refs move, never
+ * a file, the index or a branch. No prompt ever waits for a password (GIT_TERMINAL_PROMPT=0, no
+ * askpass): a remote that needs one the folder doesn't have just isn't fetched. Returns whether it ran.
+ */
+export async function fetchUpstream (root, remote) {
+  if (!remote || remote === '.') return false
+  const r = await call(root, ['-c', 'core.askPass=', 'fetch', '--quiet', '--no-tags', '--no-write-fetch-head', '--prune', remote], {
+    timeout: FETCH_TIMEOUT_MS,
+    env: { GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '', SSH_ASKPASS: '', GCM_INTERACTIVE: 'never', GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND || 'ssh -o BatchMode=yes' }
+  })
+  return r.out !== null
+}
+
+/** Whether commit a is an ancestor of (or the same as) b; null when git can't say. */
+export async function isAncestor (root, a, b) {
+  const r = await call(root, ['merge-base', '--is-ancestor', a, b])
+  if (r.out !== null) return true
+  if (r.missing || r.timedOut) return null
+  // Exit 1 is "no"; anything else (an unknown commit) is "can't say".
+  const known = await run(root, ['cat-file', '-e', `${a}^{commit}`]) !== null && await run(root, ['cat-file', '-e', `${b}^{commit}`]) !== null
+  return known ? false : null
+}
+
+/** Whether the index has changes staged against `sha`; null when git can't say. */
+export async function stagedAgainst (root, sha) {
+  const r = await call(root, ['diff-index', '--cached', '--quiet', '--ignore-submodules', sha, '--'])
+  if (r.out !== null) return false
+  return r.missing || r.timedOut ? null : true
+}
+
+/**
+ * Moves the folder's branch from `from` to `to` and sets the index to `to`, leaving every file
+ * as it is (they were written first: see catchUp). Refused by git if the branch is no longer at
+ * `from`. Returns whether it moved; `fastForward.indexLate` is set when the index could not follow yet.
+ */
+export async function fastForward (root, branch, from, to) {
+  const moved = await call(root, ['update-ref', '-m', 'quilt: catch up with upstream', `refs/heads/${branch}`, to, from])
+  if (moved.out === null) return false
+  fastForward.indexLate = !(await resetIndex(root, to))
+  return true
+}
+
+/**
+ * Every branch and worktree of the repository, as seen from this folder:
+ * { worktrees: [{ path, branch, sha }], branches: [{ name, sha, upstream, ahead, behind, author, ts, subject }] }.
+ * Null when git fails. Worktrees share the repository, so one folder sees them all.
+ */
+export async function repoBranches (root) {
+  const wt = await run(root, ['worktree', 'list', '--porcelain'])
+  if (wt === null) return null
+  const worktrees = []
+  let cur = null
+  for (const line of wt.split('\n')) {
+    if (line.startsWith('worktree ')) { cur = { path: line.slice(9), branch: null, sha: null }; worktrees.push(cur) } else if (cur && line.startsWith('HEAD ')) { cur.sha = line.slice(5) } else if (cur && line.startsWith('branch ')) { cur.branch = line.slice(7).replace(/^refs\/heads\//, '') }
+  }
+  const fmt = '%(refname:short)%00%(objectname)%00%(upstream:short)%00%(upstream:track,nobracket)%00%(authorname)%00%(committerdate:unix)%00%(contents:subject)'
+  const refs = await run(root, ['for-each-ref', '--sort=-committerdate', '--count=200', `--format=${fmt}`, 'refs/heads'])
+  if (refs === null) return null
+  const branches = []
+  for (const line of refs.split('\n')) {
+    if (!line) continue
+    const [name, sha, upstream, track, author, ts, subject] = line.split('\0')
+    const n = (word) => { const m = new RegExp(`${word} (\\d+)`).exec(track || ''); return m ? Number(m[1]) : 0 }
+    branches.push({ name, sha, upstream: upstream || null, ahead: n('ahead'), behind: n('behind'), gone: /gone/.test(track || ''), author, ts: Number(ts) * 1000 || 0, subject })
+  }
+  return { worktrees, branches }
+}
+
+/** A file's bytes at a commit as checkout would write them (--filters), or null. */
+export async function blobAt (root, sha, rel) {
+  const out = await run(root, ['cat-file', '--filters', `${sha}:${rel}`], { buffer: true })
+  return out === null ? null : out
+}
+
+/** Whether the commit has any file under `dir` ('' is the top), or null when git fails. */
+export async function hasFilesUnder (root, sha, dir) {
+  const out = await run(root, ['--literal-pathspecs', 'ls-tree', '-r', '--name-only', sha, '--', dir || '.'])
+  return out === null ? null : out.trim().length > 0
+}
+
+/**
+ * Sets the index to `sha` (what HEAD now points at), leaving every file as it is. Another git
+ * (an AI's `git status`) may hold the index lock a moment: asked again for up to two seconds.
+ */
+export async function resetIndex (root, sha) {
+  for (let i = 0; i < 20; i++) {
+    const r = await call(root, ['read-tree', '--reset', sha])
+    if (r.out !== null) return true
+    if (r.missing || r.timedOut) return false
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  return false
 }

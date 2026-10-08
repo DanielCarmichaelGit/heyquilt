@@ -35,7 +35,8 @@ import { canAdmit } from './admit-policy.js'
 import { merge3, withMarkers, hasMarkers } from './merge3.js'
 import { openMerge, updateMerge, readMerges, pruneMerges, cleanName } from './merges.js'
 import { ensureQuiltIgnored } from './gitignore.js'
-import { gitDir, headKey, headRef, gitRuns, askTwice, lastCallTimedOut, busy as gitBusy, leftoverLock, STALE_LOCK_MS, indexStamp, classify, filesAt, changesBetween, commitsBetween, treeState, branchTip, watchGit, unmergedPaths, stashStamp, upstreamAdds, pullState, SETTLE_MS, BURST_PATHS } from './gitstate.js'
+import { gitDir, headKey, headRef, gitRuns, askTwice, lastCallTimedOut, busy as gitBusy, leftoverLock, STALE_LOCK_MS, indexStamp, classify, filesAt, changesBetween, commitsBetween, treeState, branchTip, watchGit, unmergedPaths, stashStamp, upstreamAdds, pullState, SETTLE_MS, BURST_PATHS, upstreamOf, fetchUpstream, isAncestor, stagedAgainst, fastForward, resetIndex, blobAt, hasFilesUnder, repoBranches } from './gitstate.js'
+import { planCatchUp, catchUpAdvice } from './upstream.js'
 
 export { applyTextDiff }
 
@@ -71,11 +72,14 @@ const HEAD_CHANGED = '.quilt/HEAD-changed'
 // Settles in a row that couldn't ask git (about a minute) before saying so; the folder stays held regardless.
 const GIT_FAILURES_TO_SAY = 30
 const FLUSH_MS = 40 // file changes are flushed this long after the first
+// How often a folder looks for commits its branch is behind (fetching its upstream first).
+const UPSTREAM_MS = Number(process.env.QUILT_UPSTREAM_MS) || 60 * 1000
 
 export class Session extends EventEmitter {
-  constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, summarize = null, identity = null, passes = null, startName = '', autoClaimQuietMs = AUTO_CLAIM_QUIET_MS, handoffGraceMs = HANDOFF_GRACE_MS, aiTasks = null, webhookTransport = null, pullWaitMs = PULL_WAIT_MS }) {
+  constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, summarize = null, identity = null, passes = null, startName = '', autoClaimQuietMs = AUTO_CLAIM_QUIET_MS, handoffGraceMs = HANDOFF_GRACE_MS, aiTasks = null, webhookTransport = null, pullWaitMs = PULL_WAIT_MS, bringInUpstream = true }) {
     super()
     this.pullWaitMs = pullWaitMs
+    this.bringInUpstream = bringInUpstream // false: commits come in only when someone pulls (tests of the pull path)
     this.pull = null // { upstream, behind, adds: [{ path, same, waiting }] }: what a pull would bring over files the session put here
     this.pullWait = new Map() // path -> { since, stash, timer }: removed to make way for a pull, kept for everyone meanwhile
     this.pullWaitOver = new Set() // waited for and no pull came: not waited for again until the next fetch
@@ -213,6 +217,16 @@ export class Session extends EventEmitter {
     this.savedGit = null // { key, sha, held } from state.json: the branch synced, and whether a hold was on, at the last stop
     this.rejoin = false // restarted held: when the hold ends, every path is checked, not only those seen changing
     this.gitFailures = 0 // settles in a row that couldn't ask git
+    // Commits made outside the session that this branch is behind (see bringIn): { name, url, sha,
+    // behind, ahead, diverged, conflicts, waiting, checkedAt } of the branch's upstream, or null.
+    this.upstream = null
+    this.upstreamTimer = null
+    this.upstreamFetch = false
+    this.upstreamPoll = null
+    this.upstreamSaid = '' // the advice last given, so it's given once per state
+    this.upstreamDeferred = null // the commit this folder let another member's folder bring in first
+    this.indexLate = null // a commit the branch moved to whose index git couldn't set yet (another git held it)
+    this.repo = null // every branch and worktree of the repository (repoBranches), shown to the room
     this.burstByIndex = false // the last isBurst saw the index change
     this.gitChain = Promise.resolve() // git work in this folder, one piece at a time (see gitTask)
     this.classifying = null // { behind } while a burst is classified: the folder is held meanwhile (see held)
@@ -1641,6 +1655,235 @@ export class Session extends EventEmitter {
     this.scheduleStatusWrite()
   }
 
+  // ------------------------------------------------------------ upstream --
+  // Commits made outside the session (pushed from a worktree, merged on GitHub,
+  // or another worktree moving this branch) come in without anyone pulling:
+  // the folder's branch moves forward to them, with the session's uncommitted
+  // work merged into their files (upstream.js). Never a history merge: a branch
+  // that has commits of its own the upstream lacks is left to a person or AI.
+
+  /** Looks again shortly (a branch moved, a fetch landed); several asks in a row make one look. */
+  checkUpstreamSoon ({ fetch = false, delay = SETTLE_MS } = {}) {
+    if (!this.git || !this.git.branch || this.stopped) return
+    this.upstreamFetch = this.upstreamFetch || fetch
+    if (this.upstreamTimer) return // one look is already on its way: it takes this ask too
+    this.upstreamTimer = setTimeout(() => {
+      this.upstreamTimer = null
+      const f = this.upstreamFetch
+      this.upstreamFetch = false
+      this.gitTask(() => this.checkUpstream({ fetch: f })).catch((err) => this.log(`could not check for new commits: ${err.message}`))
+    }, delay)
+    this.upstreamTimer.unref()
+  }
+
+  /** Nothing under way here: no hold, no burst, no file changes waiting, no git operation. */
+  quietForUpstream () {
+    return !this.stopped && !!this.git && !!this.git.branch && !this.held() && !this.pending.size &&
+      Date.now() - this.lastFileEventAt >= SETTLE_MS && !this.gitBusy() && this.ready !== false
+  }
+
+  /**
+   * The look itself (in gitTask order). Asks git where the branch and its upstream are,
+   * fetching first when asked, and catches up when the branch is behind. Returns the state.
+   */
+  async checkUpstream ({ fetch = false, now = false } = {}) {
+    if (!this.git || !this.git.branch || this.stopped) return this.upstream
+    if (!this.quietForUpstream()) {
+      if (!this.hold) this.checkUpstreamSoon({ fetch }) // busy for a moment: asked again once it's quiet
+      return this.upstream
+    }
+    const head = await headKey(this.root)
+    if (!head || head.key !== this.git.key) return this.upstream
+    if (this.indexLate === head.sha && await resetIndex(this.root, head.sha)) { this.indexLate = null; this.gitIndex = indexStamp(this.root) }
+    let up = await upstreamOf(this.root)
+    if (up && fetch && up.remote && await fetchUpstream(this.root, up.remote)) up = await upstreamOf(this.root)
+    this.refreshRepo()
+    if (this.stopped || !this.quietForUpstream()) return this.upstream
+    // The branch moved without this folder's files moving with it: another worktree of the
+    // repository moved it (a commit made here was taken in by noteCommits instead).
+    const seen = this.gitSeen
+    if (this.bringInUpstream && seen && seen.sha && seen.key === head.key && seen.sha !== head.sha) {
+      await this.noteCommits()
+      if (this.gitSeen && this.gitSeen.sha !== head.sha && await isAncestor(this.root, seen.sha, head.sha)) {
+        await this.bringIn(seen.sha, head.sha, { moveRef: false, up, now: true })
+      }
+    }
+    if (!up || !up.sha) { this.setUpstream(up ? { ...up, behind: 0, ahead: 0 } : null); return this.upstream }
+    if (!this.bringInUpstream) return this.upstream
+    const at = (this.gitSeen && this.gitSeen.sha) || head.sha
+    if (up.sha === at) { this.setUpstream({ ...up, behind: 0, ahead: 0 }); return this.upstream }
+    const behind = await commitsBetween(this.root, at, up.sha)
+    const ahead = await commitsBetween(this.root, up.sha, at)
+    if (behind === null || ahead === null) return this.upstream
+    if (!behind) { this.setUpstream({ ...up, behind, ahead }); return this.upstream }
+    if (ahead) { this.setUpstream({ ...up, behind, ahead, diverged: true }); return this.upstream }
+    await this.bringIn(at, up.sha, { moveRef: true, up: { ...up, behind, ahead }, now })
+    return this.upstream
+  }
+
+  /**
+   * Brings commits `from`..`to` into this folder and the session: every file they changed is
+   * merged with the session's uncommitted work, then the branch moves to `to` (moveRef) or,
+   * when it already has, the index follows it. All or nothing: one file that can't be merged
+   * cleanly and nothing is written; the AIs are told which, and why.
+   */
+  async bringIn (from, to, { moveRef, up = null, now = false }) {
+    const branch = this.git.branch
+    const upName = up ? up.name : branch
+    const state = (extra) => this.setUpstream({ ...(up || { name: upName }), behind: extra.behind ?? (up ? up.behind : 0), ahead: 0, ...extra })
+    // Another member's folder on this branch, with its own upstream, takes it first: two folders
+    // sharing the same commits at once would share them twice. This one waits one look.
+    if (!now && this.upstreamDeferred !== to && this.otherCatcherFirst()) {
+      this.upstreamDeferred = to
+      state({ waiting: 'another member is bringing these commits in' })
+      return
+    }
+    const staged = await stagedAgainst(this.root, from)
+    if (staged !== false) { state({ waiting: staged ? 'changes are staged for a commit here' : 'git could not say what is staged' }); return }
+    const changes = await changesBetween(this.root, from, to)
+    if (!changes) return
+    const paths = [...changes.keys()]
+    const [base, theirs] = [await filesAt(this.root, from, paths), await filesAt(this.root, to, paths)]
+    if (!base || !theirs || this.stopped || !this.quietForUpstream()) return
+    for (const rel of paths) {
+      if (!this.syncable(rel)) continue
+      const claim = this.claimFor(rel)
+      if (claim && !this.ownClaim(claim)) { state({ waiting: `${claim.by} holds ${rel}` }); return }
+      if (this.writeRefusal(rel)) { state({ waiting: `you may not change ${rel} in this session` }); return }
+    }
+    const diskKey = (rel) => {
+      const d = this.readDisk(rel)
+      if (!d) return null
+      return d.skip || d.tooLarge ? undefined : d.key
+    }
+    // The session and this folder must agree first: a change still on its way waits for the next look.
+    for (const rel of paths) {
+      if (!this.syncable(rel)) continue
+      if ((diskKey(rel) ?? undefined) !== this.sharedKey(rel)) { this.checkUpstreamSoon(); return }
+    }
+    // Files the session moved: same name, somewhere the old commit didn't have them.
+    const goneHere = new Set(paths.filter((rel) => base.get(rel) && diskKey(rel) === null).map((rel) => rel.slice(rel.lastIndexOf('/') + 1)))
+    const moved = new Map()
+    if (goneHere.size) {
+      const cands = [...this.sharedPaths()].filter((rel) => goneHere.has(rel.slice(rel.lastIndexOf('/') + 1)) && !changes.has(rel))
+      const atFrom = cands.length ? await filesAt(this.root, from, cands) : new Map()
+      if (!atFrom) return
+      for (const rel of cands) if (atFrom.get(rel) === null) { const k = diskKey(rel); if (k) moved.set(rel, k) }
+    }
+    // Folders the session emptied, that the new commits add files to (a reorganisation they predate).
+    const emptied = new Set()
+    for (const rel of paths) {
+      if (base.get(rel) !== null || theirs.get(rel) === null) continue
+      const dir = rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : ''
+      if (emptied.has(dir) || [...this.sharedPaths()].some((p) => (dir ? p.startsWith(dir + '/') : !p.includes('/')))) continue
+      if (await hasFilesUnder(this.root, from, dir)) emptied.add(dir)
+    }
+    const plan = planCatchUp({ changes, base, theirs, disk: diskKey, moved, emptied })
+    if (this.stopped || !this.quietForUpstream()) return
+    if (plan.conflicts.length) {
+      const behind = up ? up.behind : await commitsBetween(this.root, from, to)
+      state({ behind, conflicts: plan.conflicts })
+      return
+    }
+    // The branch first: if it moved meanwhile, nothing has been written.
+    if (moveRef ? !(await fastForward(this.root, branch, from, to)) : !(await resetIndex(this.root, to))) {
+      this.checkUpstreamSoon()
+      return
+    }
+    this.gitSeen = { key: branch, branch, sha: to }
+    if (moveRef && fastForward.indexLate) this.indexLate = to // the index follows at the next look
+    let written = 0
+    for (const [rel, key] of plan.writes) {
+      try {
+        const abs = resolveInside(this.root, rel)
+        if (key === null) {
+          fs.rmSync(abs, { force: true })
+          removeEmptyParents(this.root, path.dirname(abs))
+        } else {
+          const data = key.startsWith('bin:') ? await blobAt(this.root, to, rel) : key
+          if (data === null) throw new Error('git could not read it')
+          fs.mkdirSync(path.dirname(abs), { recursive: true })
+          this.writeFile(rel, abs, data)
+        }
+        written++
+        if (this.syncable(rel)) this.ingest(rel, { pulled: true })
+      } catch (err) { this.log(`could not bring in ${rel}: ${err.message}`) }
+    }
+    // What git and Quilt just wrote is accounted for: the next flush is no burst of git's.
+    this.gitIndex = indexStamp(this.root)
+    this.headChangedAt = 0
+    this.upstreamDeferred = null
+    const count = await commitsBetween(this.root, from, to)
+    const moves = plan.moves.length ? `; followed ${plan.moves.map((m) => `${m.from} → ${m.to}`).join(', ')}` : ''
+    this.log(`⬇️ brought in ${count ?? 'new'} commit${count === 1 ? '' : 's'} from ${upName} (${written} file${written === 1 ? '' : 's'})${moves}`)
+    if (written) await this.notePull({ from: { sha: from }, to: { sha: to, branch }, files: written })
+    if (plan.strays.length) {
+      const list = plan.strays.slice(0, 5).join(', ') + (plan.strays.length > 5 ? ', …' : '')
+      this.notice(`The commits Quilt just brought in from ${upName} add ${list} to a folder the session had emptied (moved elsewhere?). Check whether they belong where the session moved the rest.`)
+    }
+    this.setUpstream({ ...(up || { name: upName }), sha: up ? up.sha : to, behind: 0, ahead: 0, brought: { count, files: written, at: Date.now() } })
+  }
+
+  /** Whether another member's folder on this branch is first in line to bring commits in (the lowest client id). */
+  otherCatcherFirst () {
+    if (!this.conn || !this.conn.awareness) return false
+    const me = this.conn.awareness.clientID
+    for (const [id, st] of this.conn.awareness.getStates()) {
+      if (id === me || !st || !st.git) continue
+      if (st.git.branch === this.git.branch && !st.git.held && id < me) return true
+    }
+    return false
+  }
+
+  setUpstream (up) {
+    const next = up ? {
+      name: up.name, url: up.url || null, sha: up.sha || null, behind: up.behind || 0, ahead: up.ahead || 0,
+      diverged: !!up.diverged, conflicts: up.conflicts || [], waiting: up.waiting || null, brought: up.brought || (this.upstream && this.upstream.brought) || null, checkedAt: Date.now()
+    } : null
+    this.upstream = next
+    // Told once per state (at the top of the AI's next quilt answer, and in the log).
+    const said = next && (next.diverged || next.conflicts.length) ? catchUpAdvice({ branch: this.git.branch, upstream: next.name, ...next }) : ''
+    if (said && said !== this.upstreamSaid) { this.notice(said); this.log(`⬇️ ${said}`) }
+    this.upstreamSaid = said
+    this.shareGit()
+    this.scheduleStatusWrite()
+  }
+
+  /** Reads every branch and worktree of the repository again (for the room's branch list). */
+  refreshRepo () {
+    repoBranches(this.root).then((r) => {
+      if (!r || this.stopped) return
+      const real = (p) => { try { return fs.realpathSync(p) } catch { return path.resolve(p) } }
+      const home = real(this.root)
+      this.repo = {
+        worktrees: r.worktrees.map((w) => ({ name: real(w.path) === home ? '.' : path.basename(w.path), branch: w.branch, sha: w.sha })),
+        branches: r.branches.slice(0, 30)
+      }
+      this.shareGit()
+    }).catch(() => {})
+  }
+
+  /** What this folder tells the room about git: its branch, its upstream, the repository's branches and worktrees. */
+  gitSummary () {
+    if (!this.git) return null
+    const u = this.upstream
+    return {
+      branch: this.git.branch,
+      key: this.git.key,
+      sha: this.gitSeen ? this.gitSeen.sha : this.git.sha,
+      held: this.hold ? this.hold.kind : null,
+      on: this.hold && this.hold.kind === 'switching' ? this.hold.to : this.git.key,
+      upstream: u ? { name: u.name, url: u.url, behind: u.behind, ahead: u.ahead, diverged: u.diverged, conflicts: u.conflicts.length, waiting: u.waiting, checkedAt: u.checkedAt } : null,
+      repo: this.repo
+    }
+  }
+
+  shareGit () {
+    if (!this.conn || !this.conn.awareness) return
+    const g = this.gitSummary()
+    if (JSON.stringify(g) !== JSON.stringify(this.conn.awareness.getLocalState()?.git ?? null)) this.conn.awareness.setLocalStateField('git', g)
+  }
+
   /** git left a conflict here (`stash pop`, a merge, a rebase): held until it's resolved, said once per hold. */
   noteConflict (paths) {
     if (!this.hold) return
@@ -2365,11 +2608,14 @@ export class Session extends EventEmitter {
     if (this.git) {
       this.gitWatcher = watchGit(this.root, (e) => {
         if (this.stopped) return
-        if (e.type === 'head') { this.headChangedAt = Date.now(); this.queue(HEAD_CHANGED) } else if (e.type === 'busy') { this.setHold('busy'); this.settleSoon() } else if (e.type === 'fetch') { this.pullWaitOver.clear(); this.refreshPull() } else this.settleSoon() // idle, index
+        if (e.type === 'head') { this.headChangedAt = Date.now(); this.queue(HEAD_CHANGED) } else if (e.type === 'busy') { this.setHold('busy'); this.settleSoon() } else if (e.type === 'fetch') { this.pullWaitOver.clear(); this.refreshPull(); this.checkUpstreamSoon() } else if (e.type === 'ref') { this.checkUpstreamSoon() } else this.settleSoon() // idle, index
         if (this.hold && this.hold.kind === 'switching') this.checkBackOnBranch()
       })
       if (this.hold && this.hold.kind === 'switching') this.checkBackOnBranch() // back before the watcher started?
       else this.settleSoon() // a hold resumed at start ends once the tree has settled
+      this.upstreamPoll = setInterval(() => this.checkUpstreamSoon({ fetch: true }), UPSTREAM_MS)
+      this.upstreamPoll.unref()
+      this.checkUpstreamSoon({ fetch: true })
     }
     this.scanDisk({ baseline: true }) // the folder was just reconciled; the first re-scan catches anything since
     this.watcher = watch(this.root, {
@@ -2428,7 +2674,7 @@ export class Session extends EventEmitter {
     const color = this.color || COLORS[Math.abs(hashCode(this.name)) % COLORS.length]
     this.conn.awareness.setLocalState({
       name: this.name, tool: this.tool, color, focus: '', editing: {}, agents: [], kind: this.kind,
-      agent: { tool: null, status: 'idle', sharing: this.agentSharing }
+      agent: { tool: null, status: 'idle', sharing: this.agentSharing }, git: this.gitSummary()
     })
     this.conn.awareness.on('change', ({ added, removed }, origin) => {
       if (origin === 'local' || origin === 'connection') return
@@ -3854,7 +4100,7 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
       chat: this.messages({ limit: 20, markRead: false }),
       unread: this.unreadCount(),
       fileCount: this.files.size + this.blobs.size,
-      git: this.git ? { branch: this.git.branch, key: this.git.key, hold: this.hold ? { kind: this.hold.kind, since: this.hold.since, to: this.hold.to || null, conflict: this.hold.conflict || null } : null, pull: this.pull } : null
+      git: this.git ? { branch: this.git.branch, key: this.git.key, hold: this.hold ? { kind: this.hold.kind, since: this.hold.since, to: this.hold.to || null, conflict: this.hold.conflict || null } : null, pull: this.pull, upstream: this.upstream, repo: this.repo } : null
     }
   }
 
@@ -3880,6 +4126,8 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
     for (const t of this.rechecks.values()) clearTimeout(t)
     this.rechecks.clear()
     clearInterval(this.reconcileTimer)
+    clearInterval(this.upstreamPoll)
+    clearTimeout(this.upstreamTimer)
     if (this.gitWatcher) await this.gitWatcher.close()
     this.flushPending()
     clearTimeout(this.settleTimer)

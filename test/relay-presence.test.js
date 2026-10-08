@@ -47,7 +47,7 @@ async function relay (t, opts = {}) {
 }
 
 function connect (srv, r, { identity = generateIdentity(), pass, viewSecret } = {}) {
-  const q = new URLSearchParams({ secret: 's', name: 'n', key: identity.publicKey, kind: 'human', features: 'large-files' })
+  const q = new URLSearchParams({ secret: 's', name: 'n', key: identity.publicKey, kind: 'human', features: 'large-files,branches' })
   if (pass) q.set('pass', pass)
   if (viewSecret) q.set('viewSecret', viewSecret)
   const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/${r}?${q}`)

@@ -16,6 +16,15 @@ export const MSG_ACCESS = 13 // relay -> client: JSON { state: 'pending'|'approv
 export const MSG_ADMIN = 14 // client (owner) -> relay: JSON { id, op: 'approve'|'deny'|'set'|'remove'|'end'|'name', key, role, scopes, access?, typeId?, name }
 export const MSG_MEMBERS = 15 // relay -> client: JSON { members, sessionName, pending?, reply?: { id, ok, error } }
 export const MSG_PASS = 16 // client -> relay: JSON { pass }: a fresh session pass, sent at least every 5 minutes
+export const MSG_BRANCH = 17 // client -> relay: JSON { id, op: 'join'|'confirm'|'remove', branch, base?, adopt?, sv? }
+export const MSG_BRANCHES = 18 // relay -> client: JSON { branches, reply?: { id, op, ok, error?, branch?, created?, base? } }
+
+// Every sync message names its document: the room's (chat, tasks, the feed, commit requests,
+// activity) is '', a branch's (its files) is the branch key. Git never allows an empty branch name.
+export const ROOM_DOC = ''
+
+// What this app can do, sent when it connects. The relay turns away apps without what a session needs.
+export const FEATURES = 'large-files,branches'
 
 // WebSocket close codes the relay uses to refuse a client for good.
 export const CLOSE_AUTH_FAILED = 4401
@@ -41,16 +50,22 @@ export const MAX_SHARED_FILE_BYTES = 100 * 1024 * 1024
 
 export { encoding, decoding, syncProtocol, awarenessProtocol }
 
-export function syncStep1Message (doc) {
+/** An encoder with a sync message's header written: the type and the document it is for. */
+export function syncHeader (docId = ROOM_DOC) {
   const enc = encoding.createEncoder()
   encoding.writeVarUint(enc, MSG_SYNC)
+  encoding.writeVarString(enc, docId)
+  return enc
+}
+
+export function syncStep1Message (doc, docId = ROOM_DOC) {
+  const enc = syncHeader(docId)
   syncProtocol.writeSyncStep1(enc, doc)
   return encoding.toUint8Array(enc)
 }
 
-export function updateMessage (update) {
-  const enc = encoding.createEncoder()
-  encoding.writeVarUint(enc, MSG_SYNC)
+export function updateMessage (update, docId = ROOM_DOC) {
+  const enc = syncHeader(docId)
   syncProtocol.writeUpdate(enc, update)
   return encoding.toUint8Array(enc)
 }

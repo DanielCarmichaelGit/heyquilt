@@ -38,7 +38,7 @@ async function relay (t, opts = {}) {
  * the connection first, so a slow round-trip fails instead of hanging.
  */
 function connect (srv, r, { identity = generateIdentity(), pass, secret = 's', name = 'url-name', kind = 'human', viewSecret } = {}) {
-  const q = new URLSearchParams({ secret, name, key: identity.publicKey, kind, features: 'large-files' })
+  const q = new URLSearchParams({ secret, name, key: identity.publicKey, kind, features: 'large-files,branches' })
   if (pass) q.set('pass', pass)
   if (viewSecret) q.set('viewSecret', viewSecret)
   const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/${r}?${q}`)

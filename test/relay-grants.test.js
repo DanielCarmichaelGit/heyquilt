@@ -62,7 +62,7 @@ async function ownedRoom () {
 
 /** A bare connection (see relay-passes.test.js): resolves once the relay says where it stands. */
 function connect (r, { identity = generateIdentity(), pass, secret = 'view' } = {}) {
-  const q = new URLSearchParams({ name: 'x', key: identity.publicKey, kind: 'human', features: 'large-files' })
+  const q = new URLSearchParams({ name: 'x', key: identity.publicKey, kind: 'human', features: 'large-files,branches' })
   const ws = new WebSocket(`${server}/${r}?${q}`, { headers: { 'x-quilt-secret': secret, ...(pass ? { 'x-quilt-pass': pass } : {}) } })
   ws.binaryType = 'arraybuffer'
   const c = { ws, identity, access: [], members: [] }

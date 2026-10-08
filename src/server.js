@@ -30,6 +30,7 @@ import {
   MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS, MSG_PASS,
   CLOSE_AUTH_FAILED, CLOSE_NAME_TAKEN, CLOSE_ROOM_FULL, CLOSE_DENIED, CLOSE_ENDED, CLOSE_NEEDS_UPDATE, CLOSE_PASS_EXPIRED,
   encoding, decoding, syncProtocol, awarenessProtocol,
+  ROOM_DOC, syncHeader,
   syncStep1Message, updateMessage, awarenessMessage, bytesMessage, jsonMessage
 } from './protocol.js'
 import { parsePublicKey, verifyChallenge } from './identity.js'
@@ -1307,19 +1308,20 @@ class Room {
     const dec = decoding.createDecoder(buf)
     const type = decoding.readVarUint(dec)
     if (type === MSG_SYNC) {
+      const docId = decoding.readVarString(dec)
+      if (docId !== ROOM_DOC) return // branch documents arrive with MSG_BRANCH (task 3)
       if (this.full) {
         // Over quota: still answer "what do you have?" so people can read, but refuse new data.
-        const sub = decoding.readVarUint(decoding.createDecoder(buf.subarray(1)))
-        if (sub !== syncProtocol.messageYjsSyncStep1) {
+        if (decoding.peekVarUint(dec) !== syncProtocol.messageYjsSyncStep1) {
           ws.endReason = 'disconnected'
           ws.close(CLOSE_ROOM_FULL, 'room is over the size limit')
           return
         }
       }
-      const enc = encoding.createEncoder()
-      encoding.writeVarUint(enc, MSG_SYNC)
+      const enc = syncHeader(docId)
+      const header = encoding.length(enc)
       syncProtocol.readSyncMessage(dec, enc, this.doc, ws)
-      if (encoding.length(enc) > 1) send(ws, encoding.toUint8Array(enc))
+      if (encoding.length(enc) > header) send(ws, encoding.toUint8Array(enc))
     } else if (type === MSG_AWARENESS) {
       const update = decoding.readVarUint8Array(dec)
       if (!this.presenceAllowed(ws, update)) return this.log(`[${this.name}] dropped presence from ${this.names.get(ws)} under another name`)
@@ -1863,13 +1865,15 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
     if (!publicKey) return reject(socket, 400, 'This relay needs a newer quilt; please update')
     const key = parsePublicKey(publicKey)
     if (!person || person.length > MAX_NAME || !key) return reject(socket, 400, 'Bad name or identity key')
+    // Every session keeps its files in branch documents: an app that can't sync them is told to update.
+    const features = String(url.searchParams.get('features') || '').split(',')
+    if (!features.includes('branches')) return reject(socket, 400, NEEDS_UPDATE)
     if (roomEnded(name)) return reject(socket, 410, ENDED_MESSAGE)
     const ip = clientIp(req)
     const starter = pass ? account : ip
     if ((ipConns.get(ip) || 0) >= cfg.maxConnsPerIp) return reject(socket, 429, 'Too many connections')
     const room = getRoom(name)
     if (!room) return reject(socket, ...refused(name))
-    const features = String(url.searchParams.get('features') || '').split(',')
     const creating = !room.exists
     if (creating && !canCreate(starter)) { dropIfUnused(room); return reject(socket, 429, 'Too many new sessions') }
     const auth = room.authorize(secret, relayKey, viewSecret, publicKey)

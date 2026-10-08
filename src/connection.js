@@ -9,6 +9,7 @@ import {
   MSG_ACCESS, MSG_ADMIN, MSG_MEMBERS, MSG_PASS,
   CLOSE_AUTH_FAILED, CLOSE_NAME_TAKEN, CLOSE_ROOM_FULL, CLOSE_DENIED, CLOSE_ENDED, CLOSE_PASS_EXPIRED,
   encoding, decoding, syncProtocol, awarenessProtocol,
+  ROOM_DOC, FEATURES, syncHeader,
   syncStep1Message, updateMessage, awarenessMessage, bytesMessage, jsonMessage
 } from './protocol.js'
 import { signChallenge, RESERVED_ROOM } from './identity.js'
@@ -50,7 +51,7 @@ export class Connection extends EventEmitter {
    * @param {number} [opts.livenessMs]  give up on a connection that stays silent this long
    * @param {string} [opts.tool]  the app or AI tool this is, for the session's audit trail
    */
-  constructor ({ server, room, secret, key, viewSecret, kind = 'human', name, identity, doc, beforeRemote, features = 'large-files', passes = null, passRefreshMs = PASS_REFRESH_MS, livenessMs = LIVENESS_MS, tool = '' }) {
+  constructor ({ server, room, secret, key, viewSecret, kind = 'human', name, identity, doc, beforeRemote, features = FEATURES, passes = null, passRefreshMs = PASS_REFRESH_MS, livenessMs = LIVENESS_MS, tool = '' }) {
     super()
     if (room === RESERVED_ROOM) throw new Error(`"${RESERVED_ROOM}" is not a session name`)
     // Secrets travel in headers, never in the URL: proxies log URLs, and Fly's did (issue 011).
@@ -321,13 +322,15 @@ export class Connection extends EventEmitter {
     const dec = decoding.createDecoder(buf)
     const type = decoding.readVarUint(dec)
     if (type === MSG_SYNC) {
+      const docId = decoding.readVarString(dec)
+      if (docId !== ROOM_DOC) return // branch documents: see joinBranch (task 3)
       // Give the owner a chance to capture unsaved local edits so remote
       // changes merge with them instead of overwriting them.
       this.beforeRemote()
-      const enc = encoding.createEncoder()
-      encoding.writeVarUint(enc, MSG_SYNC)
+      const enc = syncHeader(docId)
+      const header = encoding.length(enc)
       const msgType = syncProtocol.readSyncMessage(dec, enc, this.doc, REMOTE)
-      if (encoding.length(enc) > 1) this.send(encoding.toUint8Array(enc))
+      if (encoding.length(enc) > header) this.send(encoding.toUint8Array(enc))
       if (msgType === syncProtocol.messageYjsSyncStep2 && !this.synced) {
         this.synced = true
         this.emit('synced')

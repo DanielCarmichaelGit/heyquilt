@@ -114,7 +114,7 @@ test('once a room stores files, apps without large-file support are turned away'
   await ask(base, 'r4', ID, 'upload', 's', { size: 1 })
   const server = base.replace('http', 'ws')
   const refused = await new Promise((resolve) => {
-    const c = new Connection({ server, room: 'r4', secret: 's', name: 'old', identity: generateIdentity(), doc: new Y.Doc(), features: '' })
+    const c = new Connection({ server, room: 'r4', secret: 's', name: 'old', identity: generateIdentity(), doc: new Y.Doc(), features: 'branches' })
     c.on('fatal', (err) => { c.close(); resolve(err.message) })
   })
   assert.match(refused, /newer version of Quilt/)
@@ -157,7 +157,7 @@ test('ending a room while a file is being uploaded to the relay\'s disk does not
 test('apps without large-file support already in the room are sent away when it first stores a file', async (t) => {
   const { base } = await relay(t)
   const server = base.replace('http', 'ws')
-  const old = new Connection({ server, room: 'r6', secret: 's', name: 'old', identity: generateIdentity(), doc: new Y.Doc(), features: '' })
+  const old = new Connection({ server, room: 'r6', secret: 's', name: 'old', identity: generateIdentity(), doc: new Y.Doc(), features: 'branches' })
   t.after(() => old.close())
   const current = new Connection({ server, room: 'r6', secret: 's', name: 'new', identity: generateIdentity(), doc: new Y.Doc() })
   t.after(() => current.close())
@@ -176,7 +176,7 @@ test('an app without large-file support needs the right secret to learn the sess
   await ask(base, 'r7', ID, 'upload', 's', { size: 1 })
   const server = base.replace('http', 'ws')
   const refused = await new Promise((resolve) => {
-    const c = new Connection({ server, room: 'r7', secret: 'wrong', name: 'old', identity: generateIdentity(), doc: new Y.Doc(), features: '' })
+    const c = new Connection({ server, room: 'r7', secret: 'wrong', name: 'old', identity: generateIdentity(), doc: new Y.Doc(), features: 'branches' })
     c.on('fatal', (err) => { c.close(); resolve(err.message) })
   })
   assert.match(refused, /Wrong room secret/)

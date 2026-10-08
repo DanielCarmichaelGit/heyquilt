@@ -29,7 +29,7 @@ async function relay (t) {
   return srv
 }
 function connect (srv, r, { identity = generateIdentity(), pass, viewSecret } = {}) {
-  const q = new URLSearchParams({ name: 'x', key: identity.publicKey, kind: 'human', features: 'large-files' })
+  const q = new URLSearchParams({ name: 'x', key: identity.publicKey, kind: 'human', features: 'large-files,branches' })
   const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/${r}?${q}`, { headers: { 'x-quilt-secret': 's', 'x-quilt-pass': pass, ...(viewSecret ? { 'x-quilt-view-secret': viewSecret } : {}) } })
   ws.binaryType = 'arraybuffer'
   const c = { ws, access: [], members: [] }

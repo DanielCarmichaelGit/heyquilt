@@ -447,7 +447,7 @@ test('secrets go in the upgrade request headers, never in its URL, and the relay
   // Older clients still send everything in the query string; that keeps working for one release.
   const oldId = generateIdentity()
   const pass = await testPasses(oldId, { name: 'Old', sub: 'user-old' }).get()
-  const q = new URLSearchParams({ secret: 's', name: 'old', key: oldId.publicKey, relayKey: 'RELAY-KEY', features: 'large-files', pass })
+  const q = new URLSearchParams({ secret: 's', name: 'old', key: oldId.publicKey, relayKey: 'RELAY-KEY', features: 'large-files,branches', pass })
   const ws = new WebSocket(`${server}/old-style?${q}`)
   ws.on('error', () => {})
   const status = await new Promise((resolve) => {
@@ -505,7 +505,7 @@ test('only the creator of a session becomes its owner, even if an invitee signs 
   const server = `ws://127.0.0.1:${srv.port}`
   const creator = generateIdentity()
   // The app's first connection: the upgrade creates the room, then the link drops before the challenge is answered.
-  const first = new WebSocket(`${server}/room?secret=EDIT&viewSecret=VIEW&name=olive&key=${creator.publicKey}&features=large-files`)
+  const first = new WebSocket(`${server}/room?secret=EDIT&viewSecret=VIEW&name=olive&key=${creator.publicKey}&features=large-files,branches`)
   await new Promise((resolve, reject) => { first.on('open', resolve); first.on('error', reject) })
   first.close()
   await new Promise((resolve) => first.on('close', resolve))

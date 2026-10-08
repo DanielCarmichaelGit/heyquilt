@@ -39,6 +39,7 @@ import { ensureQuiltIgnored } from './gitignore.js'
 import { gitDir, headKey, headRef, gitRuns, askTwice, lastCallTimedOut, busy as gitBusy, leftoverLock, STALE_LOCK_MS, indexStamp, classify, filesAt, changesBetween, commitsBetween, treeState, branchTip, watchGit, unmergedPaths, stashStamp, upstreamAdds, pullState, SETTLE_MS, BURST_PATHS, upstreamOf, fetchUpstream, isAncestor, stagedAgainst, fastForward, resetIndex, blobAt, hasFilesUnder, repoBranches } from './gitstate.js'
 import { planCatchUp, catchUpAdvice } from './upstream.js'
 import { cleanGit, branchBoard } from './branches.js'
+import { DEFAULT_KEY } from './branchdocs.js'
 
 export { applyTextDiff }
 
@@ -107,11 +108,16 @@ export class Session extends EventEmitter {
     this.stateDir = migrateDir(this.root)
     this.stateFile = path.join(this.stateDir, 'state.bin')
 
+    this.roomFile = path.join(this.stateDir, 'room.bin')
+    // Two documents: the room's (chat, tasks, the agent feed, commit requests, activity) and
+    // the one for the branch this folder syncs (its files and what goes with them; see
+    // bindBranchDoc). state.bin keeps the branch's, room.bin the room's.
     this.doc = new Y.Doc()
-    this.files = this.doc.getMap('files') // path -> Y.Text
-    this.blobs = this.doc.getMap('blobs') // path -> { hash, data(base64) } or { hash, size, stored: { id, key } }
-    // keyId -> { wraps, ts }: file keys for large files, each wrapped for editors and viewers.
-    this.fileKeys = this.doc.getMap('fileKeys')
+    this.branch = null // the branch this folder syncs, as the relay names it (∅: the room's default, for a folder without git)
+    this.branchList = [] // the session's branches, from the relay: [{ key, by, at, base, default, hosted }]
+    this.localBranches = [] // this repo's own branches (refs/heads), for the branch menu
+    this.legacyState = false // state.json from before branch documents: its state.bin is the room's old single document
+    this.bindBranchDoc(new Y.Doc())
     this.uploading = new Map() // path -> hash being uploaded
     this.downloading = new Map() // path -> hash being downloaded
     this.largeFilesOff = false // the relay has no file storage (an older relay)
@@ -128,12 +134,6 @@ export class Session extends EventEmitter {
     this.claims = new Map()
     this.chat = this.doc.getArray('chat') // { by, text, ts }
     this.activity = this.doc.getArray('activity') // { by, path, kind, detail, ts }
-    // The chronology: every change with its diff and the task it was for (src/history.js).
-    this.history = new HistoryLog(this.doc, this.doc.getArray('history'), { origin: LOCAL })
-    // "<name>\0<path>" -> { by, path, added, removed, edits, kind, ts }: what each
-    // person has changed in this room, every edit counted. Each person writes
-    // only their own keys, so there is nothing to merge.
-    this.tallies = this.doc.getMap('changes')
     this.agentFeed = this.doc.getArray('agentFeed') // { id, by, tool, conv, kind, text, ts }
     this.commitRequests = this.doc.getMap('commitRequests') // id -> { id, by, message, ts, state: 'open'|'done', doneBy, hash }
     this.tasks = this.doc.getMap('tasks') // id -> { id, title, column, by, assignee, forAi, tool, files, conv, verified, qaNotes, recurring, cron, order, ts }
@@ -155,7 +155,6 @@ export class Session extends EventEmitter {
     this.webhookSending = Promise.resolve()
     this.relayProblem = null // why the relay can't be reached, when we know (setRelayProblem)
     this.agentPrompts = new Map() // conv -> latest prompt line, so an edit can be titled after the question that started it
-    this.merges = this.doc.getMap('merges') // id -> merge record (see merges.js)
     this.merging = new Set() // paths held out of normal sync until their offline merge has run
     this.catchUp = null // "while you were away" (catchup.js), until the person dismisses it
     this.settleTried = new Set() // claimed merges already tried against a session version (id:sha1)
@@ -289,6 +288,32 @@ export class Session extends EventEmitter {
 
   log (msg) { this.logs.push(msg); if (this.logs.length > 200) this.logs.shift(); this.emit('log', msg) }
 
+  /**
+   * Points the folder's file state at a branch document: files (path -> Y.Text), blobs
+   * (path -> { hash, data } or { hash, size, stored: { id, key } }), fileKeys (keyId ->
+   * { wraps, ts }: keys for large files, wrapped for editors and viewers), merges (merge
+   * records, see merges.js), tallies ("<name>\0<path>" -> what each person changed, each
+   * writing only their own keys) and the chronology (every change with its diff and task).
+   */
+  bindBranchDoc (doc) {
+    this.bdoc = doc
+    this.files = doc.getMap('files')
+    this.blobs = doc.getMap('blobs')
+    this.fileKeys = doc.getMap('fileKeys')
+    this.merges = doc.getMap('merges')
+    this.tallies = doc.getMap('changes')
+    this.history = new HistoryLog(doc, doc.getArray('history'), { origin: LOCAL })
+  }
+
+  /** A change to this branch's files and the room's record of it, made together (each document sends its own update). */
+  transact (fn, origin = LOCAL) { this.bdoc.transact(() => this.doc.transact(fn, origin), origin) }
+
+  /** The relay's list of the session's branches. */
+  setBranches (list) {
+    this.branchList = (Array.isArray(list) ? list : []).filter((b) => b && typeof b.key === 'string')
+    this.scheduleStatusWrite()
+  }
+
   async start ({ waitTimeoutMs = 0 } = {}) {
     fs.mkdirSync(this.stateDir, { recursive: true })
     this.loadWebhook()
@@ -303,6 +328,11 @@ export class Session extends EventEmitter {
     const headTimedOut = !this.git && lastCallTimedOut(this.root)
     const gitUnreadable = !this.git && !!gitDir(this.root) && (headTimedOut || !(headRef(this.root) && await gitRuns(this.root)))
     if (hadState) this.loadClaims()
+    // Restarted on another branch, or mid-hold: nothing in this tree is the session's offline work (see resumeHold).
+    const resumed = hadState && this.resumeHold()
+    // The branch document this folder syncs: the branch it syncs in git (still the one it was paused off, until
+    // the folder follows git), ∅ (the room's default) without git.
+    this.branch = this.git ? this.git.key : (gitDir(this.root) && headRef(this.root)) || DEFAULT_KEY
 
     this.conn = new Connection({
       server: this.server,
@@ -316,6 +346,9 @@ export class Session extends EventEmitter {
       passes: this.passes,
       tool: this.tool,
       doc: this.doc,
+      // An app's saved document from before branch documents is the room's old one: the relay kept it as that branch's.
+      // base: the commit a branch new to the session starts from (a partner without it locally creates it there).
+      branch: { key: this.branch, doc: this.bdoc, ...(this.git && this.git.sha ? { base: this.git.sha } : {}), ...(this.legacyState && this.savedGit ? { adopt: this.savedGit.key } : {}) },
       beforeRemote: () => { if (this.ready) this.flushPending() }
     })
     this.conn.on('status', (s) => {
@@ -332,6 +365,9 @@ export class Session extends EventEmitter {
     this.conn.on('claims', (list) => this.setClaims(list))
     this.conn.on('access', (a) => this.setAccess(a))
     this.conn.on('members', (m) => this.setMembers(m))
+    this.conn.on('branches', (list) => this.setBranches(list))
+    this.conn.on('branch-joined', (r) => { if (typeof r.branch === 'string' && r.branch) { this.branch = r.branch; this.scheduleStatusWrite() } })
+    this.conn.on('branch-refused', (why) => this.log(`⚠️ the relay refused this folder's branch: ${why}`))
     this.setupPresence()
 
     this.loadCatchUp()
@@ -341,7 +377,6 @@ export class Session extends EventEmitter {
       // away, let the relay tell us what the others did, then merge the two.
       // Restarted on another branch, or mid-hold: nothing in this tree is the session's offline work.
       const marks = historyMarks(this.history.entries()) // what we had seen: the catch-up is the rest
-      const resumed = this.resumeHold()
       if (gitUnreadable) this.saysGitUnreadable(resumed)
       const offline = resumed ? { entries: [], take: [], downloads: [] } : this.captureOffline()
       this.goLive()
@@ -480,26 +515,7 @@ export class Session extends EventEmitter {
   }
 
   goLive () {
-    this.files.observeDeep((events, tr) => {
-      if (tr.origin === LOCAL) return
-      const paths = new Set()
-      for (const ev of events) {
-        if (ev.target === this.files) for (const k of ev.changes.keys.keys()) paths.add(k)
-        else if (ev.path.length) paths.add(ev.path[0])
-      }
-      this.applyRemote(paths)
-    })
-    this.blobs.observe((ev, tr) => {
-      if (tr.origin === LOCAL) return
-      const paths = [...ev.changes.keys.keys()]
-      for (const k of paths) this.retry.delete(k)
-      this.applyRemote(paths)
-    })
-    this.fileKeys.observe(() => {
-      this.shareKeysWithViewers()
-      // Files whose key just arrived can be downloaded now.
-      for (const [rel, b] of this.blobs) if (b && b.stored && this.lastKnown.get(rel) !== `bin:${b.hash}`) this.writeOut(rel)
-    })
+    this.observeBranch()
     this.shareKeysWithViewers()
     this.chat.observe((ev, tr) => {
       for (const item of ev.changes.added) {
@@ -540,7 +556,6 @@ export class Session extends EventEmitter {
       }
       this.emit('status-changed')
     })
-    this.merges.observe(() => { this.scheduleStatusWrite(); this.emit('merges', this.mergeList()) })
     this.agentFeed.observe((ev) => {
       const added = []
       for (const item of ev.changes.added) for (const e of item.content.getContent()) if (e && e.id) added.push(e)
@@ -554,13 +569,43 @@ export class Session extends EventEmitter {
     this.scheduleStatusWrite()
   }
 
+  /** Watches the branch document: the room's changes to files reach the disk. Done again for each branch the folder moves to. */
+  observeBranch () {
+    this.files.observeDeep((events, tr) => {
+      if (tr.origin === LOCAL) return
+      const paths = new Set()
+      for (const ev of events) {
+        if (ev.target === this.files) for (const k of ev.changes.keys.keys()) paths.add(k)
+        else if (ev.path.length) paths.add(ev.path[0])
+      }
+      this.applyRemote(paths)
+    })
+    this.blobs.observe((ev, tr) => {
+      if (tr.origin === LOCAL) return
+      const paths = [...ev.changes.keys.keys()]
+      for (const k of paths) this.retry.delete(k)
+      this.applyRemote(paths)
+    })
+    this.fileKeys.observe(() => {
+      this.shareKeysWithViewers()
+      // Files whose key just arrived can be downloaded now.
+      for (const [rel, b] of this.blobs) if (b && b.stored && this.lastKnown.get(rel) !== `bin:${b.hash}`) this.writeOut(rel)
+    })
+    this.merges.observe(() => { this.scheduleStatusWrite(); this.emit('merges', this.mergeList()) })
+    this.bdoc.on('update', () => this.scheduleStateSave())
+  }
+
   // ---------------------------------------------------------------- state --
 
   loadState () {
     try {
       const meta = JSON.parse(fs.readFileSync(path.join(this.stateDir, 'state.json'), 'utf8'))
       if (meta.room !== this.room || meta.server !== this.server) return false
-      Y.applyUpdate(this.doc, fs.readFileSync(this.stateFile), LOCAL)
+      // state.bin: the branch document this folder synced. From before branch documents it is the
+      // room's one document, which the relay kept as that branch's (Room.migrateLegacy).
+      Y.applyUpdate(this.bdoc, fs.readFileSync(this.stateFile), LOCAL)
+      try { Y.applyUpdate(this.doc, fs.readFileSync(this.roomFile), LOCAL) } catch {} // none from before: the relay sends it
+      this.legacyState = meta.layout !== 2
       this.storedOnDisk = new Map(Object.entries(meta.storedOnDisk || {}))
       this.known = meta.known ? new Map(Object.entries(meta.known)) : null
       // No gitKey (an older state file): taken as the branch the folder is on now.
@@ -645,16 +690,16 @@ export class Session extends EventEmitter {
   saveState () {
     clearTimeout(this.stateTimer)
     this.stateTimer = null
-    const tmp = this.stateFile + '.tmp'
-    fs.writeFileSync(tmp, Y.encodeStateAsUpdate(this.doc))
-    fs.renameSync(tmp, this.stateFile)
+    const save = (file, doc) => { fs.writeFileSync(file + '.tmp', Y.encodeStateAsUpdate(doc)); fs.renameSync(file + '.tmp', file) }
+    save(this.stateFile, this.bdoc)
+    save(this.roomFile, this.doc)
     // Hashes of what we last wrote or read for each path: on the next start they
     // tell a file the room changed behind our back from one edited offline.
     const known = {}
     for (const [rel, key] of this.lastKnown) known[rel] = sha1(key)
     // When we were last in touch with the session: "you left 3h ago" on the next catch-up.
     if (this.conn && this.conn.connected) this.savedSeenAt = Date.now()
-    fs.writeFileSync(path.join(this.stateDir, 'state.json'), JSON.stringify({ room: this.room, server: this.server, storedOnDisk: Object.fromEntries(this.storedOnDisk), known, ...this.gitState(), ...this.roleState(), ...(this.savedSeenAt ? { seenAt: this.savedSeenAt } : {}) }))
+    fs.writeFileSync(path.join(this.stateDir, 'state.json'), JSON.stringify({ room: this.room, server: this.server, layout: 2, branch: this.branch, storedOnDisk: Object.fromEntries(this.storedOnDisk), known, ...this.gitState(), ...this.roleState(), ...(this.savedSeenAt ? { seenAt: this.savedSeenAt } : {}) }))
   }
 
   /** This member's role, so the next start knows it before the relay says (ignoreQuiltState). */
@@ -812,7 +857,7 @@ export class Session extends EventEmitter {
       const b = this.blobs.get(rel)
       if (b && b.stored) this.downloadLarge(rel, b) // the session may have deleted or replaced it meanwhile
     }
-    pruneMerges(this.doc, this.merges, LOCAL)
+    pruneMerges(this.bdoc, this.merges, LOCAL)
     const parts = []
     if (counts.pushed) parts.push(`${counts.pushed} shared`)
     if (counts.merged) parts.push(`${counts.merged} merged`)
@@ -889,7 +934,7 @@ export class Session extends EventEmitter {
   /** Writes a merged text to the shared doc and the disk as one edit of ours (`pulled`: one a git pull brought). */
   applyMerged (rel, text, detail, { pulled = false } = {}) {
     const abs = resolveInside(this.root, rel)
-    this.doc.transact(() => {
+    this.transact(() => {
       this.blobs.delete(rel)
       let ytext = this.files.get(rel)
       if (!ytext) { ytext = new Y.Text(); this.files.set(rel, ytext) }
@@ -922,7 +967,7 @@ export class Session extends EventEmitter {
     // and leave this conflict silently unrecorded.
     const by = theirsBy ? cleanName(theirsBy) : null
     const claimant = claimedBy ? cleanName(claimedBy) : null
-    const rec = openMerge(this.doc, this.merges, {
+    const rec = openMerge(this.bdoc, this.merges, {
       path: rel,
       by: this.name,
       byId: this.myKey(),
@@ -2043,7 +2088,7 @@ export class Session extends EventEmitter {
     if (!disk) {
       if (!this.files.has(rel) && !this.blobs.has(rel)) { this.lastKnown.delete(rel); return false }
       this.closeHandMerge(rel, null) // deleting a file being merged by hand settles it too
-      this.doc.transact(() => {
+      this.transact(() => {
         const was = this.files.get(rel)
         const before = was ? was.toString() : undefined
         this.files.delete(rel)
@@ -2070,7 +2115,7 @@ export class Session extends EventEmitter {
 
     if (!disk.binary) this.closeHandMerge(rel, disk.text)
     let detail = ''
-    this.doc.transact(() => {
+    this.transact(() => {
       const existed = this.files.has(rel) || this.blobs.has(rel)
       let texts
       if (disk.binary) {
@@ -2471,7 +2516,7 @@ export class Session extends EventEmitter {
     const key = newFileKey()
     const id = crypto.randomBytes(4).toString('hex')
     const wraps = this.wrapKeys().map((wk) => wrapKey(key, wk))
-    this.doc.transact(() => this.fileKeys.set(id, { wraps, ts: Date.now() }), LOCAL)
+    this.bdoc.transact(() => this.fileKeys.set(id, { wraps, ts: Date.now() }), LOCAL)
     return { id, key }
   }
 
@@ -2482,7 +2527,7 @@ export class Session extends EventEmitter {
     for (const [id, key] of this.fileKeysICanOpen()) {
       const entry = this.fileKeys.get(id)
       if (entry.wraps.some((w) => unwrapKey(w, vk))) continue
-      this.doc.transact(() => this.fileKeys.set(id, { ...entry, wraps: [...entry.wraps, wrapKey(key, vk)] }), LOCAL)
+      this.bdoc.transact(() => this.fileKeys.set(id, { ...entry, wraps: [...entry.wraps, wrapKey(key, vk)] }), LOCAL)
     }
   }
 
@@ -2549,7 +2594,7 @@ export class Session extends EventEmitter {
       if (!now || now.key !== diskKey) return // it changed again; that change is already queued
       if (this.sharedKey(rel) !== sharedBefore || this.downloading.has(rel)) return // a partner's newer version wins
       const existed = this.files.has(rel) || this.blobs.has(rel)
-      this.doc.transact(() => {
+      this.transact(() => {
         this.files.delete(rel)
         this.blobs.set(rel, { hash, size, stored: { id, key: keyId } })
         this.recordActivity(rel, existed ? 'edited' : 'created', `${size} bytes`, undefined, { pulled })
@@ -3738,7 +3783,7 @@ export class Session extends EventEmitter {
       if (conflicts.length) { this.log(`⚠️  ${holder} let go of ${rec.path}, but your changes clash with theirs: see Merges`); continue }
       try {
         this.applyMerged(rec.path, text, `with ${holder}'s changes, once they let go of it`)
-        updateMerge(this.doc, this.merges, rec.id, { state: 'done', resolvedBy: this.name, reason: `Combined automatically once ${holder} let go of it` }, LOCAL)
+        updateMerge(this.bdoc, this.merges, rec.id, { state: 'done', resolvedBy: this.name, reason: `Combined automatically once ${holder} let go of it` }, LOCAL)
       } catch (err) {
         this.log(`could not combine ${rec.path}: ${err.message}`)
         continue
@@ -3830,9 +3875,9 @@ export class Session extends EventEmitter {
       if (!rec.binary && !rec.oursDeleted && ours === null) throw onlyThere()
       if (rec.binary || ours === null || theirs === null) throw new Error('markers only work when both sides have a text version: keep mine or keep theirs instead')
       this.applyMerged(rec.path, withMarkers(base || '', ours, theirs, { mine: rec.by, theirs: rec.others[0] || 'session' }), 'with conflict markers to edit by hand')
-      return updateMerge(this.doc, this.merges, id, { state: 'editing', how: 'hand', resolvedBy: this.name }, LOCAL)
+      return updateMerge(this.bdoc, this.merges, id, { state: 'editing', how: 'hand', resolvedBy: this.name }, LOCAL)
     }
-    const out = updateMerge(this.doc, this.merges, id, { state: 'done', how, resolvedBy: this.name }, LOCAL)
+    const out = updateMerge(this.bdoc, this.merges, id, { state: 'done', how, resolvedBy: this.name }, LOCAL)
     this.log(`✅ ${rec.path}: merge settled (${how === 'mine' ? `${rec.by}'s version` : how === 'theirs' ? "the session's version" : how === 'agent' ? 'merged by an AI' : 'reviewed'})`)
     this.scheduleStatusWrite()
     return out
@@ -3881,7 +3926,7 @@ export class Session extends EventEmitter {
   closeHandMerge (rel, text) {
     const rec = this.mergeList().find((m) => m.path === rel && m.state === 'editing')
     if (!rec || hasMarkers(text)) return
-    updateMerge(this.doc, this.merges, rec.id, { state: 'done', how: 'hand', resolvedBy: this.name }, LOCAL)
+    updateMerge(this.bdoc, this.merges, rec.id, { state: 'done', how: 'hand', resolvedBy: this.name }, LOCAL)
     this.log(`✅ ${rel}: merged by hand`)
   }
 
@@ -4194,6 +4239,7 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
     return {
       room: this.room,
       server: this.server,
+      branch: this.branch,
       connected: !!(this.conn && this.conn.connected),
       ...(this.relayProblem ? { problem: this.relayProblem } : {}),
       access: this.access,

@@ -4,6 +4,7 @@ import crypto from 'node:crypto'
 import { HttpError, UUID, stripInvisible } from '../http.js'
 import { DAY_MS } from '../activity.js'
 import { cleanSessionName } from '../../session-name.js'
+import { END_REASONS, ACTIONS } from '../../presence.js'
 
 export const MAX_EVENTS = 500
 // 500 events of a few hundred bytes each: more than the API's usual 16 KB.
@@ -12,6 +13,10 @@ export const KEEP_MS = 365 * DAY_MS
 export const SEEN_MS = 7 * DAY_MS
 const ROOM = /^[A-Za-z0-9_-]{1,64}$/
 const ACCOUNT = /^(person|agent):[A-Za-z0-9_-]{1,64}$/
+
+const VIA = ['app', 'hosted']
+/** A short label: printable, at most `n` characters. */
+const label = (x, n) => stripInvisible(x).slice(0, n).join('').replace(/[\u0000-\u001f\u007f]/g, '').trim()
 
 const digest = (s) => crypto.createHash('sha256').update(String(s)).digest()
 
@@ -25,11 +30,16 @@ export function cleanEvent (e, now) {
   if (e.type === 'start') {
     if (!ACCOUNT.test(String(e.account))) return null
     const name = stripInvisible(e.name).slice(0, 64).join('').trim() || 'Quilt user'
-    return { ...base, account: e.account, name, owner: e.owner === true }
+    const how = { ...(VIA.includes(e.via) ? { via: e.via } : {}), ...(label(e.tool, 40) ? { tool: label(e.tool, 40) } : {}) }
+    return { ...base, account: e.account, name, owner: e.owner === true, ...how }
   }
   if (e.type === 'end') {
     if (!ACCOUNT.test(String(e.account)) || !UUID.test(String(e.start))) return null
-    return { ...base, account: e.account, start: String(e.start).toLowerCase() }
+    return { ...base, account: e.account, start: String(e.start).toLowerCase(), ...(END_REASONS.includes(e.reason) ? { reason: e.reason } : {}) }
+  }
+  if (e.type === 'act') {
+    if (!ACCOUNT.test(String(e.account)) || !UUID.test(String(e.start)) || !ACTIONS.includes(e.action)) return null
+    return { ...base, account: e.account, start: String(e.start).toLowerCase(), action: e.action, target: label(e.target, 300) }
   }
   if (e.type === 'name') {
     const name = cleanSessionName(e.name)

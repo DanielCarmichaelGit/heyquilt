@@ -36,6 +36,11 @@ test('a subscription keeps the secret the agent chose, or makes one and shows it
   assert.match(made.secret, /^[a-f0-9]{48}$/)
   assert.deepEqual(made.events, WEBHOOK_EVENTS)
   assert.throws(() => makeSubscription({ url: 'https://h.example.com/a', secret: 'short' }), /16 to 200/)
+  const keyed = makeSubscription({ url: 'https://h.example.com/a', bearer: ' crsr_abc123 ' })
+  assert.equal(keyed.bearer, 'crsr_abc123', 'a receiver key of its own, trimmed')
+  assert.equal('bearer' in made, false)
+  assert.throws(() => makeSubscription({ url: 'https://h.example.com/a', bearer: 'a\nb' }), /one line/)
+  assert.match(describeSubscription(keyed), /with your bearer key in the Authorization header/)
   assert.match(describeSubscription(made, { showSecret: true }), new RegExp(`Secret \\(shown once.*: ${made.secret}`))
   assert.doesNotMatch(describeSubscription(made), new RegExp(made.secret))
   assert.match(describeSubscription(made), /POSTs to https:\/\/h.example.com\/a on chat.mention, chat.dm, task.assigned/)
@@ -89,6 +94,10 @@ test('a delivery is one signed JSON POST, with the event in headers', async () =
   assert.equal(init.headers['x-quilt-timestamp'], '1700000000000')
   assert.equal(JSON.parse(init.body).id, 'm1')
   assert.equal(verifyWebhook(sub.secret, '1700000000000', init.body, init.headers['x-quilt-signature']), true)
+  assert.equal('authorization' in init.headers, false, 'no bearer unless asked')
+  const g = fakeFetch([200])
+  await deliverWebhook({ ...sub, bearer: 'crsr_key' }, { event: 'chat.dm' }, { fetch: g.fetch, ...noSleep })
+  assert.equal(g.calls[0].init.headers.authorization, 'Bearer crsr_key')
 })
 
 test('a receiver that is down or answers 5xx/429 is tried again; 4xx is not; the last failure is logged', async () => {

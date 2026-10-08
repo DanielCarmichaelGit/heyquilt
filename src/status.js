@@ -1,7 +1,33 @@
 // Renders a session status snapshot as Markdown. Used for .quilt/STATUS.md,
 // `quilt status`, and the MCP `quilt_status` tool, so every tool sees the same view.
 
+import { branchesMarkdown } from './branches.js'
 import { taskMarkdown } from './tasks.js'
+import { mergeAction } from './merges.js'
+import { catchUpMarkdown } from './catchup.js'
+
+/** A shell word for a path (quoted only when it needs to be). */
+const shellWord = (p) => /^[\w./@+-]+$/.test(p) ? p : `'${p.replace(/'/g, "'\\''")}'`
+
+/** The one line that makes way for a pull over files the session put here, and pulls. */
+export function makeWayCommand (paths) {
+  return `rm ${paths.map(shellWord).join(' ')} && git pull --autostash`
+}
+
+/**
+ * What to tell a person's AI when the upstream adds files the session already
+ * put in this folder (git refuses to pull over untracked files). `adds`: [{ path, same, waiting }].
+ */
+export function pullAdvice ({ upstream, behind, adds }) {
+  const inWay = adds.filter((a) => !a.waiting)
+  const differ = adds.filter((a) => !a.same)
+  const list = (xs) => xs.map((a) => a.path).join(', ')
+  const lines = [`${upstream} has ${behind} commit${behind === 1 ? '' : 's'} adding ${list(adds)}, which the session already put in this folder${differ.length ? '' : ' with the same content'}.`]
+  if (inWay.length) lines.push(`git won't pull over untracked files: make way and pull with \`${makeWayCommand(inWay.map((a) => a.path))}\`. Quilt keeps them for everyone and doesn't share the removal (a plain delete at any other time deletes for everyone).`)
+  else lines.push('They are out of the way: pull now (`git pull --autostash`). Quilt keeps them for everyone meanwhile.')
+  for (const a of differ) lines.push(`${a.path} differs from the session's: after the pull Quilt merges the two (a merge record if they clash).`)
+  return lines.join(' ')
+}
 
 const ago = (ts) => {
   const s = Math.max(0, Math.round((Date.now() - ts) / 1000))
@@ -15,15 +41,20 @@ export function renderStatus (st, { asAi = false, mentionYours = false } = {}) {
   out.push(`# Quilt pair session: room \`${st.room}\``)
   out.push('')
   out.push(`Relay: ${st.connected ? 'connected' : '**disconnected** (edits are kept and will sync on reconnect)'} · ${st.fileCount} shared files`)
-  out.push(`You: **${st.me.name}** (${st.me.tool})${st.me.focus ? ` · focus: ${st.me.focus}` : ''}`)
+  if (!st.connected && st.problem) out.push(`⚠️ ${st.problem}`)
+  out.push(`You: **${st.me.name}** (${st.me.tool})${st.me.persona ? `, one of ${st.me.of}'s AI sessions` : ''}${st.me.focus ? ` · focus: ${st.me.focus}` : ''}`)
   if (st.workspaceName || st.workspace) out.push(`Workspace: ${st.workspaceName || st.workspace}`)
   out.push('')
 
+  const away = catchUpMarkdown(st.catchUp, { ago })
+  if (away.length) out.push(...away, '')
+
   out.push('## Partners online')
   if (!st.peers.length) out.push('_Nobody else is connected right now._')
-  for (const p of st.peers) {
+  for (const p of st.peers.filter((x) => x.name !== st.me.name)) {
     const tools = [p.tool, ...(p.agents || [])].filter((t) => t && t !== 'unknown')
-    out.push(`- **${p.name}**${p.kind === 'agent' ? ' [AI agent]' : ''}${tools.length ? ` (${[...new Set(tools)].join(', ')})` : ''}${p.focus ? `: working on: ${p.focus}` : ''}`)
+    const kind = p.persona ? ` [AI session of ${p.mine && st.me.persona ? 'your person' : p.of}]` : p.kind === 'agent' ? ' [AI agent]' : ''
+    out.push(`- **${p.name}**${kind}${tools.length ? ` (${[...new Set(tools)].join(', ')})` : ''}${p.focus ? `: working on: ${p.focus}` : ''}`)
     const ai = aiLine(p.agent)
     if (ai) out.push(`  - AI: ${ai}`)
     const editing = p.editing.slice(0, 8)
@@ -34,6 +65,20 @@ export function renderStatus (st, { asAi = false, mentionYours = false } = {}) {
   out.push('## Tasks')
   out.push(taskMarkdown(st.tasks, st.me.name, { tool: st.me.tool, asAi, mentionYours }))
   out.push('')
+
+  if (st.branches && st.branches.length) {
+    out.push('## Branches')
+    out.push(branchesMarkdown(st.branches, { limit: 6 }))
+    out.push('')
+  }
+
+  const pull = st.git && st.git.pull
+  if (pull && pull.adds && pull.adds.length) {
+    out.push('## Pulling')
+    out.push(pullAdvice(pull))
+    for (const a of pull.adds) out.push(`- \`${a.path}\`: ${a.waiting ? 'out of the way, waiting for your pull' : a.same ? 'same content as the session\'s' : 'differs from the session\'s'}`)
+    out.push('')
+  }
 
   out.push('## Claimed files')
   if (!st.claims.length) out.push('_No claims._')
@@ -49,7 +94,7 @@ export function renderStatus (st, { asAi = false, mentionYours = false } = {}) {
     for (const m of merges) {
       const who = m.by === st.me.name ? 'you' : m.by
       const otherName = m.others[0] ? (m.others[0] === st.me.name ? 'you' : m.others[0]) : null
-      const action = m.oursDeleted ? 'deleted it offline' : 'changed it offline'
+      const action = mergeAction(m)
       const theirsPart = m.theirsHash === null ? ', it was deleted in the session' : otherName ? `, ${otherName} changed it in the session` : ''
       out.push(`- \`${m.path}\` (id ${m.id}): ${who} ${action}${theirsPart}${m.kind === 'ai' ? '; merged by AI, needs a look' : ''}. See quilt_merges.`)
     }
@@ -61,7 +106,8 @@ export function renderStatus (st, { asAi = false, mentionYours = false } = {}) {
   if (!act.length) out.push('_Nothing yet._')
   for (const a of act) {
     const who = a.by === st.me.name ? 'you' : a.by
-    out.push(`- ${ago(a.ts)}: ${who} ${a.kind} \`${a.path}\`${a.detail ? ` (${a.detail})` : ''}`)
+    if (a.kind === 'pulled') out.push(`- ${ago(a.ts)}: ${who} pulled ${a.detail || 'commits'}`)
+    else out.push(`- ${ago(a.ts)}: ${who} ${a.kind} \`${a.path}\`${a.detail ? ` (${a.detail})` : ''}`)
   }
   out.push('')
 
@@ -70,10 +116,15 @@ export function renderStatus (st, { asAi = false, mentionYours = false } = {}) {
   if (!changes.length) out.push('_No changes yet._')
   for (const p of changes) {
     const who = p.name === st.me.name ? 'you' : `**${p.name}**`
-    const n = p.fileCount ?? p.files.length
-    const files = p.files.map((f) => `\`${f.path}\` (${fileChange(f)})`)
-    if (n > p.files.length) files.push(`and ${n - p.files.length} more`)
-    out.push(`- ${who}: ${n} file${n === 1 ? '' : 's'}, +${p.added} -${p.removed} (${ago(p.ts)}): ${files.join(', ')}`)
+    const line = (g, label) => {
+      const n = g.fileCount ?? g.files.length
+      const files = g.files.map((f) => `\`${f.path}\` (${fileChange(f)})`)
+      if (n > g.files.length) files.push(`and ${n - g.files.length} more`)
+      out.push(`- ${who}${label}: ${n} file${n === 1 ? '' : 's'}, +${g.added} -${g.removed} (${ago(g.ts)}): ${files.join(', ')}`)
+    }
+    // Their own edits, then what their git pulls brought (other people's commits), never mixed.
+    if ((p.fileCount ?? p.files.length) || !p.pulled) line(p, '')
+    if (p.pulled) line(p.pulled, ' pulled from git')
   }
   out.push('')
 

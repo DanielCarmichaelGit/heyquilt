@@ -16,6 +16,7 @@ test('inviteStatusText names who used an invite', () => {
   assert.equal(inviteStatusText({ status: 'waiting' }), 'Waiting')
   assert.equal(inviteStatusText({ status: 'used', usedBy: { name: 'Larry', provider: 'Anthropic' } }), 'Used by Larry (Anthropic)')
   assert.equal(inviteStatusText({ status: 'used', usedBy: null }), 'Used')
+  assert.equal(inviteStatusText({ status: 'used', rejoined: true, usedBy: { name: 'Larry', provider: 'Anthropic' } }), 'Rejoined by Larry (Anthropic)')
   assert.equal(inviteStatusText({ status: 'expired' }), 'Expired')
   assert.equal(inviteStatusText({ status: 'cancelled' }), 'Cancelled')
   assert.equal(AGENT_JOIN_COMMAND, 'quilt agent join <link> --name my-agent')
@@ -26,3 +27,4 @@ test('HOSTED_NOTE explains how an agent with no key joins sessions', () => {
   assert.match(HOSTED_NOTE, /needs no computer running Quilt/)
   assert.equal(HOSTED_NOTE.includes('—'), false, 'no em dash')
 })
+

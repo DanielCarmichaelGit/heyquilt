@@ -413,7 +413,7 @@ function workspaceInviteDialog (id) {
     $('#wi-error', back).textContent = ''
     try {
       const { link } = await api('POST', `/api/workspaces/${encodeURIComponent(id)}/agent-invites`, { access: $('#wi-access', back).value, sessions: joins() })
-      $('#wi-new-agent', back).innerHTML = agentInviteHtml(agentPaste({ link }), 'wi-paste')
+      $('#wi-new-agent', back).innerHTML = agentInviteHtml(agentPaste({ link, invitedToSessions: joins() === 'all' }), 'wi-paste')
     } catch (err) {
       $('#wi-error', back).textContent = err.message
       invite.disabled = false
@@ -623,7 +623,7 @@ function agentsPageHtml () {
     </header>
     <div id="agents-invite"><p class="error" id="agents-error"></p></div>
     <div id="agents-list"><p class="hint">Loading…</p></div>
-    <p class="hint ag-foot"><a href="https://heyquilt.com/docs/agents" target="_blank" rel="noopener">How agent kinds work</a> · Revoke agents on <a href="https://heyquilt.com/dashboard/agents" target="_blank" rel="noopener">heyquilt.com</a></p>
+    <p class="hint ag-foot"><a href="https://heyquilt.com/docs/agent-kinds" target="_blank" rel="noopener">How agent kinds work</a> · Revoke agents on <a href="https://heyquilt.com/dashboard/agents" target="_blank" rel="noopener">heyquilt.com</a></p>
   </div>`
 }
 
@@ -658,7 +658,7 @@ function settingsHtml ({ head = true } = {}) {
         <p class="hint">Make a one-time invite and paste the text into your AI (Claude Code, Cursor, Codex and others). It registers as your agent; from then on it can join any session you send it. Revoke agents on <a href="https://heyquilt.com/dashboard/agents" target="_blank" rel="noopener">heyquilt.com</a>.</p>
         <p class="error" id="agents-error"></p>
       </div>
-      <div class="sec-actions"><span class="hint">Inside a session, Invite also offers this with the session's link filled in.</span><button class="btn primary" type="button" id="agents-make">${I.bot}<span>Invite an agent</span></button></div>
+      <div class="sec-actions"><span class="hint">Then send it a session's invite link to join.</span><button class="btn primary" type="button" id="agents-make">${I.bot}<span>Invite an agent</span></button></div>
     </div>
   </section>`}
 
@@ -708,6 +708,11 @@ function settingsHtml ({ head = true } = {}) {
       </div>
       ${toggle('shareAgent', p.shareAgent, 'Share my AI chat', 'Partners see your prompts, the replies and which files it touches. You can pause it inside any session.')}
       ${toggle('summarize', p.summarize, 'Summarize my chats', 'Your prompts and your AI’s replies are shortened to a sentence or two on this computer before they’re shared. Uses your claude CLI (a few Haiku tokens each); if it isn’t available, the text is just shortened.')}
+      <div class="field">
+        <label for="s-aitasks">Let my AI pick up tasks by itself</label>
+        <select class="input" id="s-aitasks" name="aiTasks">${[['off', 'Off'], ['mine', 'Tasks assigned to it'], ['any', 'Assigned to it, then unassigned ones']].map(([v, l]) => `<option value="${v}" ${p.aiTasks === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        <span class="hint">When your AI finishes a piece of work, Quilt hands it the next To do task from the board, in whichever AI tool you use. Applies at once.</span>
+      </div>
       ${toggle('preferLocal', p.preferLocal, 'Keep my files when joining a folder that has some', 'When off, their versions of the same files win.')}
       ${toggle('report', p.report, 'Send problem reports to Quilt', 'The app tells Quilt which actions you take (not what you read), whether they worked and how long they took, with the error message when something fails, your app version and OS. Never your files, your chats or your links.')}
       <div class="sec-actions"><span></span><button class="btn primary" type="submit">Save</button></div>
@@ -812,7 +817,7 @@ function bindSettings (root, refresh) {
 
   const sess = $('#sessions-sec', root)
   sess.querySelector('[data-browse-settings]').onclick = () => pickFolder($('#s-joindir', root))
-  saveForm(sess, (f) => ({ joinDir: f.get('joinDir'), shareAgent: !!f.get('shareAgent'), summarize: !!f.get('summarize'), preferLocal: !!f.get('preferLocal'), report: !!f.get('report') }))
+  saveForm(sess, (f) => ({ joinDir: f.get('joinDir'), shareAgent: !!f.get('shareAgent'), summarize: !!f.get('summarize'), preferLocal: !!f.get('preferLocal'), report: !!f.get('report'), aiTasks: f.get('aiTasks') }))
 
   // Appearance applies at once; the server puts it on <html> at the next launch.
   $('#appearance-sec', root).addEventListener('click', async (e) => {

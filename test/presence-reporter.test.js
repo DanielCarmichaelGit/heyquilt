@@ -35,7 +35,7 @@ test('a visit starts and ends once, with the account, name and owner; a rename i
   assert.equal(await r.flush(), true)
   const [start, end, name] = api.events()
   assert.deepEqual({ ...start, id: 'x' }, { id: 'x', type: 'start', room: 'r1', account: 'person:u1', name: 'Dana', owner: true, at: 1_000_000 })
-  assert.deepEqual({ ...end, id: 'x' }, { id: 'x', type: 'end', start: start.id, room: 'r1', account: 'person:u1', at: 1_005_000 })
+  assert.deepEqual({ ...end, id: 'x' }, { id: 'x', type: 'end', start: start.id, room: 'r1', account: 'person:u1', reason: 'left', at: 1_005_000 })
   assert.deepEqual({ ...name, id: 'x' }, { id: 'x', type: 'name', room: 'r1', name: 'Pricing', at: 1_005_000 })
   assert.equal(api.events().length, 3, 'one end per visit')
   assert.equal(api.requests[0].url, 'http://api.test/v1/relay/presence')
@@ -323,4 +323,58 @@ test('while the disk is failing, appends are given up for one rewrite later, and
   r.visitStart({ room: 'r1', account: 'person:later', name: 'Later' })
   r.persist()
   assert.equal(logs.filter((l) => l.includes('could not save the queue')).length, 2)
+})
+
+test('the audit trail: a visit says how it came in, why it ended (and when, if given), and what it did, a repeat once a minute', async () => {
+  const api = fakeApi()
+  const { r, advance } = reporter({ fetch: api.fetch })
+  const v = r.visitStart({ room: 'r1', account: 'agent:a1', name: 'Bot', via: 'hosted', tool: 'Codex' })
+  r.act(v, 'edited', 'src/a.js')
+  advance(30_000)
+  r.act(v, 'edited', 'src/a.js') // within the minute: not again
+  r.act(v, 'claimed', 'src/a.js')
+  r.act(v, 'nonsense', 'x') // not an action
+  advance(30_000)
+  r.act(v, 'edited', 'src/a.js') // a minute on: again
+  r.visitEnd(v, 'idle', 1_010_000)
+  r.act(v, 'edited', 'src/b.js') // after it ended: nothing
+  assert.equal(await r.flush(), true)
+  const evs = api.events()
+  assert.deepEqual([evs[0].via, evs[0].tool], ['hosted', 'Codex'])
+  assert.deepEqual(evs.filter((e) => e.type === 'act').map((e) => [e.action, e.target, e.start === evs[0].id, e.at]), [
+    ['edited', 'src/a.js', true, 1_000_000], ['claimed', 'src/a.js', true, 1_030_000], ['edited', 'src/a.js', true, 1_060_000]
+  ])
+  const end = evs.at(-1)
+  assert.deepEqual([end.type, end.reason, end.at], ['end', 'idle', 1_010_000])
+})
+
+test('an unknown end reason is left out, and an end time is never in the future', async () => {
+  const api = fakeApi()
+  const { r } = reporter({ fetch: api.fetch })
+  const v = r.visitStart({ room: 'r1', account: 'person:u1', name: 'Dana' })
+  r.visitEnd(v, 'because', 5_000_000)
+  await r.flush()
+  const end = api.events().at(-1)
+  assert.equal(end.reason, undefined)
+  assert.equal(end.at, 1_000_000)
+})
+
+test('over the cap, what visits did goes first; starts and ends stay', () => {
+  const { r } = reporter({ maxQueue: 20 })
+  const v = r.visitStart({ room: 'r1', account: 'person:u1', name: 'Dana' })
+  for (let i = 0; i < 30; i++) r.act(v, 'edited', `f${i}`)
+  r.visitEnd(v, 'left')
+  const types = r.queue.map((x) => x.ev.type)
+  assert.ok(types.includes('start') && types.includes('end'))
+  assert.ok(r.size <= 20)
+})
+
+test('visits a crash left open end as relay_restart on the next start', () => {
+  const file = tmp()
+  const a = new PresenceReporter({ apiUrl: 'http://api.test', secret: 's', file, fetch: async () => ({ ok: false, status: 503 }) })
+  a.visitStart({ room: 'r1', account: 'person:u1', name: 'Dana' })
+  a.persist(true)
+  const b = new PresenceReporter({ apiUrl: 'http://api.test', secret: 's', file })
+  assert.equal(b.load(), 1)
+  assert.equal(b.queue.at(-1).ev.reason, 'relay_restart')
 })

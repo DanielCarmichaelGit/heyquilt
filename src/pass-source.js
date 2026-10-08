@@ -3,11 +3,15 @@
 // connected they fetch a fresh one every 5 minutes (see connection.js). A session
 // asks for passes for its own room: those carry what you may do there.
 import { readPass } from './passes.js'
-import { apiUrl, readAccount, NOT_SIGNED_IN, SIGNED_OUT } from './account.js'
-import { agentAccess, readAgent } from './agent-join.js'
+import { apiUrl, accountFile, readAccount, resumeAccount, NOT_SIGNED_IN, SIGNED_OUT } from './account.js'
+import { agentAccess, agentResume, readAgent } from './agent-join.js'
 
 export const PASS_EARLY_MS = 2 * 60 * 1000
 export const PASS_REFRESH_MS = 5 * 60 * 1000
+// A pass request with no answer gives up after this, so the retry runs: right after a computer
+// wakes, the network may be gone for a while and the system's own timeout can take minutes.
+// Passes are cheap to ask for again, unlike an agent's key refresh.
+export const PASS_TIMEOUT_MS = 10 * 1000
 const AGENT_SIGNED_OUT = "This agent's keys stopped working. Invite it again."
 
 /** The API turned the token away: this computer (or agent) is signed out for good. */
@@ -77,13 +81,13 @@ export class PassSource {
   }
 }
 
-async function requestPass (fetchImpl, api, bearer, signedOutMessage, room = '') {
+async function requestPass (fetchImpl, api, bearer, signedOutMessage, room = '', timeoutMs = PASS_TIMEOUT_MS) {
   let res
   try {
     const body = room ? { headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' }, body: JSON.stringify({ room }) } : { headers: { authorization: `Bearer ${bearer}` } }
-    res = await fetchImpl(`${String(api).replace(/\/+$/, '')}/v1/passes`, { method: 'POST', ...body })
+    res = await fetchImpl(`${String(api).replace(/\/+$/, '')}/v1/passes`, { method: 'POST', ...body, signal: AbortSignal.timeout(timeoutMs) })
   } catch (err) {
-    throw new Error(`Couldn't reach Quilt (${err.cause?.code || err.message}).`)
+    throw new Error(`Couldn't reach Quilt (${err.name === 'TimeoutError' ? 'ETIMEDOUT' : err.cause?.code || err.message}).`)
   }
   const body = await res.json().catch(() => null)
   if (res.status === 401) throw new SignedOutError(signedOutMessage)
@@ -91,9 +95,38 @@ async function requestPass (fetchImpl, api, bearer, signedOutMessage, room = '')
   return body
 }
 
-/** Passes for this computer's account, from its qd_ token. */
-export function personPasses ({ token, api = apiUrl(), fetch: fetchImpl = globalThis.fetch, now } = {}) {
-  return new PassSource({ now, fetchPass: (room) => requestPass(fetchImpl, api, token, SIGNED_OUT, room) })
+/**
+ * Passes for this computer's account, from its qd_ token. A token turned away isn't the
+ * end: another app on this computer may have signed in again since (its token is in
+ * account.json), or the computer signs back in with its key. Only a computer that's no
+ * longer linked gets SignedOutError.
+ */
+export function personPasses ({ token, api = apiUrl(), fetch: fetchImpl = globalThis.fetch, now, file = accountFile(), resume = resumeAccount, timeoutMs } = {}) {
+  let current = token
+  // Whose sign-in this is: a sign-in for someone else since (a different account) doesn't carry on these passes.
+  const first = readAccount(file)
+  const who = first && first.token === token ? first.account.id : null
+  const same = (a) => a && (!who || a.account.id === who)
+  return new PassSource({
+    now,
+    fetchPass: async (room) => {
+      try {
+        return await requestPass(fetchImpl, api, current, SIGNED_OUT, room, timeoutMs)
+      } catch (err) {
+        if (!err.signedOut) throw err
+        const saved = readAccount(file)
+        if (saved && saved.token !== current) {
+          if (!same(saved)) throw err
+          current = saved.token
+        } else {
+          const back = await resume({ api, fetch: fetchImpl, file })
+          if (!same(back)) throw err
+          current = back.token
+        }
+        return requestPass(fetchImpl, api, current, SIGNED_OUT, room, timeoutMs)
+      }
+    }
+  })
 }
 
 /** Passes for a saved agent, from its access key (refreshed with its refresh key when it runs out). */
@@ -108,7 +141,21 @@ export function agentPasses ({ name, dir, fetch: fetchImpl = globalThis.fetch, n
         if (err.status === 401) throw new SignedOutError(err.message)
         throw err
       }
-      return requestPass(fetchImpl, saved.api, saved.accessKey, AGENT_SIGNED_OUT, room)
+      try {
+        return await requestPass(fetchImpl, saved.api, saved.accessKey, AGENT_SIGNED_OUT, room)
+      } catch (err) {
+        if (!err.signedOut) throw err
+        // Keys revoked before the access key ran out: the agent signs back in with its resume key.
+        let back
+        try {
+          back = await agentResume({ name, dir, accessKey: saved.accessKey, fetch: fetchImpl })
+        } catch (e) {
+          if (e.status === 401) throw new SignedOutError(e.message)
+          throw e
+        }
+        if (!back) throw err
+        return requestPass(fetchImpl, back.api, back.accessKey, AGENT_SIGNED_OUT, room)
+      }
     }
   })
 }

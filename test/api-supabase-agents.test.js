@@ -23,8 +23,16 @@ test('supabase createAgent writes the profile and home, and selects no secrets',
   const { client, calls } = fakeDb(() => agentRow)
   const a = await createSupabaseStore({ client }).createAgent({ name: 'Larry', provider: 'Anthropic', type: 'coding agent', ownerUserId: 'u1', invitedBy: 'u1' })
   assert.deepEqual([a.id, a.provider, a.ownerUserId, a.orgId, a.createdAt], ['a1', 'Anthropic', 'u1', null, Date.parse(ISO)])
-  assert.deepEqual(calls[0].ops.find(([op]) => op === 'insert')[1], { name: 'Larry', provider: 'Anthropic', type: 'coding agent', description: '', public_key: null, owner_user_id: 'u1', org_id: null, invited_by: 'u1' })
+  assert.deepEqual(calls[0].ops.find(([op]) => op === 'insert')[1], { name: 'Larry', provider: 'Anthropic', type: 'coding agent', description: '', public_key: null, resume_hash: null, owner_user_id: 'u1', org_id: null, invited_by: 'u1' })
   assert.equal(calls[0].ops.find(([op]) => op === 'select')[1], 'id, name, provider, type, description, public_key, owner_user_id, org_id, invited_by, created_at, last_used_at, revoked_at')
+})
+
+test('supabase agentByResume looks the agent up by the hash and selects no secrets', async () => {
+  const { client, calls } = fakeDb(() => agentRow)
+  const a = await createSupabaseStore({ client }).agentByResume('h1')
+  assert.equal(a.id, 'a1')
+  assert.ok(has(calls[0], 'eq', 'resume_hash', 'h1'))
+  assert.equal(calls[0].ops.find(([op]) => op === 'select')[1].includes('resume'), false)
 })
 
 test("supabase listPersonalAgents reads only the person's live agents; agentByPublicKey skips empty keys", async () => {
@@ -41,10 +49,12 @@ test("supabase listPersonalAgents reads only the person's live agents; agentByPu
 test('supabase revokeAgent revokes the agent once, then every key it holds', async () => {
   const { client, calls } = fakeDb((q) => (q.table === 'agents' ? [{ id: 'a1' }] : null))
   assert.equal(await createSupabaseStore({ client }).revokeAgent('a1'), true)
-  assert.deepEqual(calls.map((c) => c.table), ['agents', 'agent_keys'])
+  assert.deepEqual(calls.map((c) => c.table), ['agents', 'agent_keys', 'agent_app_keys'])
   assert.ok(has(calls[0], 'is', 'revoked_at', null))
-  assert.ok(has(calls[1], 'eq', 'agent_id', 'a1'))
-  assert.ok(has(calls[1], 'is', 'revoked_at', null))
+  for (const c of calls.slice(1)) {
+    assert.ok(has(c, 'eq', 'agent_id', 'a1'))
+    assert.ok(has(c, 'is', 'revoked_at', null))
+  }
   assert.equal(await createSupabaseStore({ client: fakeDb(() => []).client }).revokeAgent('a1'), false)
 })
 
@@ -96,9 +106,11 @@ test('supabase agent invites: ISO expiry, filtered lists, and check-and-set clai
   assert.ok(has(calls[5], 'is', 'cancelled_at', null))
   assert.ok(calls[5].ops.some(([op, col]) => op === 'gt' && col === 'expires_at'), 'only a waiting invite is cancelled')
   await s.releaseAgentInvite('i1')
-  assert.ok(has(calls[6], 'update', { used_at: null, used_by_agent_id: null }))
+  assert.ok(has(calls[6], 'update', { used_at: null, used_by_agent_id: null, rejoined: false }))
   await s.setInviteAgent('i1', 'a1')
-  assert.ok(has(calls[7], 'update', { used_by_agent_id: 'a1' }))
+  assert.ok(has(calls[7], 'update', { used_by_agent_id: 'a1', rejoined: false }))
+  await s.setInviteAgent('i1', 'a1', true)
+  assert.ok(has(calls[8], 'update', { used_by_agent_id: 'a1', rejoined: true }))
 })
 
 test('supabase agent keys: ISO expiries, a refresh spent once, a family revoked together', async () => {
@@ -135,4 +147,20 @@ test('supabase setTeamAccess changes folders only when given; teamsOfMember retu
   await s.setTeamAccess('t1', 'm1', 'viewer', ['src'])
   assert.ok(has(calls[1], 'update', { access: 'viewer', scopes: ['src'] }))
   assert.deepEqual(await s.teamsOfMember('m1'), [{ teamId: 't1', access: 'viewer', scopes: ['src'] }])
+})
+
+test('supabase app keys: stored by hash, listed live, revoked only for their own agent', async () => {
+  const row = { id: 'k1', agent_id: 'a1', name: 'Pipedream', key_hash: 'h1', created_at: ISO, last_used_at: null, revoked_at: null }
+  const { client, calls } = fakeDb((q) => (q.ops.some(([op]) => op === 'update') ? [{ id: 'k1' }] : q.ops.some(([op]) => op === 'order') ? [row] : row))
+  const s = createSupabaseStore({ client })
+  const k = await s.createAgentAppKey({ agentId: 'a1', name: 'Pipedream', keyHash: 'h1' })
+  assert.deepEqual([k.id, k.agentId, k.createdAt], ['k1', 'a1', Date.parse(ISO)])
+  assert.deepEqual(calls[0].ops.find(([op]) => op === 'insert')[1], { agent_id: 'a1', name: 'Pipedream', key_hash: 'h1' })
+  assert.equal((await s.agentAppKeyByHash('h1')).id, 'k1')
+  assert.ok(has(calls[1], 'eq', 'key_hash', 'h1'))
+  assert.equal((await s.listAgentAppKeys('a1')).length, 1)
+  assert.ok(has(calls[2], 'eq', 'agent_id', 'a1') && has(calls[2], 'is', 'revoked_at', null))
+  assert.equal(await s.revokeAgentAppKey('a1', 'k1'), true)
+  assert.ok(has(calls[3], 'eq', 'id', 'k1') && has(calls[3], 'eq', 'agent_id', 'a1') && has(calls[3], 'is', 'revoked_at', null))
+  assert.ok(calls.every((c) => c.table === 'agent_app_keys'))
 })

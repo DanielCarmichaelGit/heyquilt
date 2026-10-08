@@ -72,7 +72,7 @@ test('with workspaces off, global is ignored: the invite and the join are exactl
   try {
     const made = await off.call('POST', '/v1/agent-invites', { global: true }, 'mem')
     assert.equal(made.status, 200)
-    assert.deepEqual(Object.keys(made.body.invite).sort(), ['createdAt', 'expiresAt', 'id', 'kind', 'role', 'status', 'teams', 'usedAt', 'usedBy'])
+    assert.deepEqual(Object.keys(made.body.invite).sort(), ['createdAt', 'expiresAt', 'id', 'kind', 'rejoined', 'role', 'status', 'teams', 'usedAt', 'usedBy'])
     assert.equal((await off.store.agentInviteById(made.body.invite.id)).global, false)
     const joined = await off.call('POST', `/v1/join/${made.body.link.split('/').pop()}`, { name: 'Off', provider: 'Anthropic', type: 'coding agent' })
     assert.equal(joined.status, 200, JSON.stringify(joined.body))

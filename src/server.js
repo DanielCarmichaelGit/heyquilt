@@ -8,11 +8,14 @@
 // require a relay key, and rooms have size quotas.
 //
 // Access: a room created with a view-only secret has an owner (the first
-// person to sign in) who approves everyone else and gives them a role:
+// person to sign in). By default only the owner lets people in; they can
+// open that to editors or anyone in the session. People who may admit
+// approve joiners and give them a role:
 // editors change files, viewers only watch and chat, and agents can be
 // limited to some folders. The relay enforces it by undoing file changes a
 // member isn't allowed to make, before anyone else sees them.
 import http from 'node:http'
+import { makeChatLink, extendChatLink, pruneChatLinks, handleChatLink, fetchPublicFile } from './chat-links.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -32,7 +35,10 @@ import {
 import { parsePublicKey, verifyChallenge } from './identity.js'
 import { verifyPass, PASS_TTL_MS } from './passes.js'
 import { cleanAccess, narrowAccess, relayAccess, fromRelay, sameAccess, mayChange, TALK_REFUSED } from './session-access.js'
+import { canAdmit, cleanAdmitBy, DEFAULT_ADMIT_BY, BAD_ADMIT_BY } from './admit-policy.js'
 import { patternsOverlap } from './fsutil.js'
+import { globMatcher } from './pathrules.js'
+import { personaName, firstName, PERSONA_SEP } from './persona.js'
 import { adoptLegacyEnv } from './legacy.js'
 import { makeStore, DiskStore } from './blobstore.js'
 import { JOIN_HOST } from './ui/invite.js'
@@ -43,10 +49,16 @@ import { hostedWebhooks } from './relay-webhooks.js'
 const ROOM_RE = /^[A-Za-z0-9_-]{1,64}$/
 const MAX_NAME = 64
 // A hosted agent counts as online this long after its last tool call.
-const HOSTED_ONLINE_MS = 3 * 60 * 1000
+// Agents over HTTP have no connection to watch: each tool call is a check-in, good for this long.
+export const HOSTED_ONLINE_MS = 30 * 60 * 1000
 // A room's renames: each one saves the room and queues a presence report, so they're rationed.
 const RENAME_MS = 2000
 const MAX_PATTERN = 500
+// The file queue: requests for a claimed file (a title, and a summary of the plan), and handoffs.
+const MAX_REQUEST_TITLE = 120
+const MAX_REQUEST_TEXT = 300
+const MAX_HANDOFF_TEXT = 2000
+const MAX_QUEUE = 20
 const MAX_SCOPES = 20
 // Removed accounts remembered per room, so an older pass's grant can't bring them back.
 const MAX_REMOVED = 200
@@ -79,6 +91,9 @@ export function relayConfig (opts = {}) {
     maxNewRoomsPerHour: num(opts.maxNewRoomsPerHour ?? env.QUILT_MAX_NEW_ROOMS_PER_HOUR, 30),
     roomTtlDays: num(opts.roomTtlDays ?? env.QUILT_ROOM_TTL_DAYS, 30),
     idleUnloadMs: num(opts.idleUnloadMs, 60 * 1000),
+    // A claim whose holder has done nothing in the session this long is let go (see sweepClaims):
+    // handed to the first one waiting in its file queue, or released.
+    claimIdleMs: num(opts.claimIdleMs, 20 * 60 * 1000),
     trustProxy: opts.trustProxy ?? /^(1|true|yes)$/i.test(env.QUILT_TRUST_PROXY || ''),
     // Large files: Supabase Storage when both are set, otherwise the relay's own disk.
     storageUrl: opts.storageUrl ?? env.QUILT_STORAGE_URL ?? '',
@@ -122,6 +137,10 @@ class Room {
     }
     this.meta.identities = this.meta.identities || {} // name -> public key
     this.meta.claims = this.meta.claims || {} // pattern -> { by, byId?, pattern, note, ts }; byId is the account, with sign-in on
+    // Claim holder (see holderKey) -> when they last did something in the session (changed the
+    // document: a file, a message, their AI's feed; or used a hosted tool), for sweepClaims.
+    this.meta.seen = this.meta.seen || {}
+    this.loadedAt = Date.now()
     // Member id -> { name, kind, role, scopes, since }. The id is the public key, or
     // '<kind>:<sub>' for members approved with a pass (an account, on any computer).
     this.meta.members = this.meta.members || {}
@@ -130,6 +149,7 @@ class Room {
     // that only talks to the relay over HTTP, see relay-mcp.js) waits under a { hosted: id } stand-in.
     this.pending = new Map()
     this.hostedSeen = new Map() // member id -> when a hosted agent last called a tool
+    this.hostedExpiry = new Map() // member id -> the timer that shows it offline when its check-in runs out
     this.files = this.doc.getMap('files')
     this.blobs = this.doc.getMap('blobs')
     this.fileKeys = this.doc.getMap('fileKeys')
@@ -137,16 +157,25 @@ class Room {
     this.feed = this.doc.getArray('agentFeed')
     this.activity = this.doc.getArray('activity') // { by, path, kind, detail, ts }
     this.commitRequests = this.doc.getMap('commitRequests') // id -> { id, by, message, ts, state, ... }
+    this.taskComments = this.doc.getMap('taskComments') // task id -> [{ id, by, text, ts }] (task-comments.js)
     // Undoes changes from people who may not make them: file changes from viewers and from
     // people outside their folders, and posts from people who may not post (chat, the feed,
-    // words of their own in the activity log, commit requests). Only their connections are tracked.
-    this.guard = new Y.UndoManager([this.files, this.blobs, this.fileKeys, this.chat, this.feed, this.activity, this.commitRequests], { trackedOrigins: new Set(), captureTimeout: 0 })
+    // task comments, words of their own in the activity log, commit requests). Only their connections are tracked.
+    this.guard = new Y.UndoManager([this.files, this.blobs, this.fileKeys, this.chat, this.feed, this.taskComments, this.activity, this.commitRequests], { trackedOrigins: new Set(), captureTimeout: 0 })
     this.undoing = null
     this.recorded = null // the change the guard recorded last, for checkChange
     this.guard.on('stack-item-added', ({ stackItem, type }) => { if (type === 'undo') this.recorded = stackItem })
     // What a tracked change added to the activity log, read before Yjs merges the new entries
     // into older ones (after which a change event can no longer tell them apart).
     this.activityAdded = new WeakMap()
+    this.tasks = this.doc.getMap('tasks')
+    // The audit trail: what a connection with a visit changed (files, chat, the board), by path or task id.
+    this.auditAs = null // a hosted agent whose tool is running now (relay-mcp.js): its changes are its
+    this.doc.on('afterTransaction', (tr) => {
+      if (!this.presence) return
+      const visit = tr.origin && tr.origin.visit ? tr.origin.visit : (this.auditAs && this.hostedVisit ? this.hostedVisit(this.auditAs) : null)
+      if (visit) this.auditChange(tr, visit)
+    })
     this.doc.on('afterTransaction', (tr) => {
       const events = tr.changedParentTypes.get(this.activity)
       if (!events || !this.guard.trackedOrigins.has(tr.origin)) return
@@ -161,6 +190,7 @@ class Room {
     this.doc.on('update', (update, origin, doc, tr) => {
       if (origin === this.guard && this.undoing) { this.undoing.push(update); return } // sent merged, below
       if (origin && origin !== this.guard && this.guard.trackedOrigins.has(origin) && !this.checkChange(origin, update, tr)) return
+      if (origin && this.conns.has(origin)) this.noteActivity(this.holderKeys(origin))
       const msg = updateMessage(update)
       for (const ws of this.conns.keys()) if (ws !== origin) send(ws, msg)
       this.bytes += update.length
@@ -396,6 +426,18 @@ class Room {
   }
 
   /**
+   * Puts a hosted agent back on the waiting list after a relay restart (the list lives in
+   * memory; relay.hosted remembers who was waiting). Skips anyone already let in.
+   */
+  restoreHosted (id, { name, kind, invitedAs }) {
+    if (!this.controlled || !name) return
+    if (this.meta.members[id] || id === this.meta.owner || id === this.meta.ownerSub) return
+    if ([...this.pending].some(([k, p]) => k.hosted && p.id === id)) return
+    this.pending.set({ hosted: id }, { key: '', id, name, kind: kind === 'agent' ? 'agent' : 'human', invitedAs: invitedAs || 'viewer', since: Date.now() })
+    this.broadcastMembers()
+  }
+
+  /**
    * A hosted agent's current standing: approved (with its access) or pending. A room pass
    * with a grant approves it, and puts it on the member list.
    */
@@ -419,13 +461,55 @@ class Room {
     return { state: 'pending', id }
   }
 
+  /** What a connection's change did, for the audit trail: files changed, messages posted, tasks touched. */
+  auditChange (tr, visit) {
+    const act = (action, target) => this.presence.act(visit, action, target)
+    for (const e of tr.changedParentTypes.get(this.activity) || []) {
+      for (const item of e.changes.added) {
+        for (const x of item.content.getContent()) if (x && ACTIVITY_KINDS.includes(x.kind) && x.path) act(x.kind, String(x.path))
+      }
+    }
+    for (const e of tr.changedParentTypes.get(this.chat) || []) {
+      for (const item of e.changes.added) for (const m of item.content.getContent()) if (m && typeof m === 'object') act('messaged', m.to ? `to ${m.to}` : '')
+    }
+    const tasks = new Set()
+    for (const e of tr.changedParentTypes.get(this.tasks) || []) {
+      if (e.target === this.tasks) for (const k of e.keysChanged || []) tasks.add(k)
+      else if (e.path.length) tasks.add(String(e.path[0]))
+    }
+    // A comment on a task is work on that task.
+    for (const e of tr.changedParentTypes.get(this.taskComments) || []) {
+      if (e.target === this.taskComments) for (const k of e.keysChanged || []) if (this.taskComments.has(k)) tasks.add(k)
+    }
+    for (const id of tasks) act('task', id)
+  }
+
+  /** The audit trail, for a member by id: the visit of their connection here, or of the hosted agent. */
+  audit (id, action, target) {
+    if (!this.presence || !id) return
+    for (const ws of this.conns.keys()) {
+      if (ws.visit && ws.pass && `${ws.pass.kind}:${ws.pass.sub}` === id) return this.presence.act(ws.visit, action, target)
+    }
+    const v = this.hostedVisit && this.hostedVisit(id)
+    if (v) this.presence.act(v, action, target)
+  }
+
   /** A hosted agent just used a tool: it shows as online for a while, and stops waiting. */
   hostedActive (id) {
     const was = this.hostedSeen.get(id) || 0
     this.hostedSeen.set(id, Date.now())
+    this.noteActivity([id])
     for (const [k, p] of this.pending) if (k.hosted && p.id === id) this.pending.delete(k)
-    // Newly online (or back after a while): everyone's member list shows it.
-    if (Date.now() - was >= HOSTED_ONLINE_MS) this.broadcastMembers()
+    // Newly online, or a newer check-in time: everyone's member list shows it (once a minute at most).
+    if (Date.now() - was >= 60 * 1000) this.broadcastMembers()
+    // And shows it gone when this check-in runs out with no other.
+    clearTimeout(this.hostedExpiry.get(id))
+    const t = setTimeout(() => {
+      this.hostedExpiry.delete(id)
+      if (!this.hostedOnline().some((h) => h.id === id)) this.broadcastMembers()
+    }, HOSTED_ONLINE_MS + 1000)
+    t.unref?.()
+    this.hostedExpiry.set(id, t)
   }
 
   /** Hosted agents active in the last few minutes, for status and presence. */
@@ -435,7 +519,7 @@ class Room {
     for (const [id, ts] of this.hostedSeen) {
       if (ts < cutoff) { this.hostedSeen.delete(id); continue }
       const m = this.meta.members[id]
-      if (m) out.push({ id, name: m.name, kind: m.kind, role: m.role })
+      if (m) out.push({ id, name: m.name, kind: m.kind, role: m.role, seen: ts })
     }
     return out
   }
@@ -465,8 +549,8 @@ class Room {
     // allowed and refused changes together (an edit and a post in one transaction).
     const undo = new Set()
     for (const [type, events] of tr.changedParentTypes) {
-      if (type === this.chat || type === this.feed) {
-        if (a?.talk === false) { posts.push(type === this.chat ? 'chat' : 'the feed'); undo.add(type) }
+      if (type === this.chat || type === this.feed || type === this.taskComments) {
+        if (a?.talk === false) { posts.push(type === this.chat ? 'chat' : type === this.feed ? 'the feed' : 'a task comment'); undo.add(type) }
         continue
       }
       if (type === this.commitRequests) {
@@ -568,12 +652,17 @@ class Room {
     if (this.meta.largeFiles) return
     this.meta.largeFiles = true
     for (const ws of [...this.conns.keys(), ...this.pending.keys()]) {
-      if (!ws.hosted && !this.supported(ws)) ws.close(CLOSE_NEEDS_UPDATE, NEEDS_UPDATE)
+      if (!ws.hosted && !this.supported(ws)) { ws.endReason = 'needs_update'; ws.close(CLOSE_NEEDS_UPDATE, NEEDS_UPDATE) }
     }
   }
 
+  get admitBy () { return cleanAdmitBy(this.meta.admitBy) || DEFAULT_ADMIT_BY }
+
+  /** May this connection's access let people in, under the room's setting? */
+  personCanAdmit (a) { return canAdmit(a, this.admitBy) }
+
   accessMessage (a) {
-    return { state: 'approved', role: a.role, scopes: a.scopes || [], scopesExcept: a.scopesExcept || [], talk: a.talk !== false, owner: !!a.owner, controlled: this.controlled }
+    return { state: 'approved', role: a.role, scopes: a.scopes || [], scopesExcept: a.scopesExcept || [], talk: a.talk !== false, owner: !!a.owner, controlled: this.controlled, admitBy: this.admitBy, canAdmit: this.personCanAdmit(a) }
   }
 
   /** Tracks restricted connections so their file changes are checked. */
@@ -587,13 +676,15 @@ class Room {
   memberList () {
     const online = new Map()
     for (const a of this.access.values()) online.set(a.owner ? this.ownerId : a.id, true)
-    for (const h of this.hostedOnline()) online.set(h.id, true)
+    const http = new Map() // member id -> its last check-in, for agents over HTTP
+    for (const h of this.hostedOnline()) { online.set(h.id, true); http.set(h.id, h.seen) }
     const list = []
     if (this.meta.owner) {
       const ownerName = this.meta.ownerName || Object.entries(this.meta.identities).find(([, k]) => k === this.meta.owner)?.[0] || 'owner'
       list.push({ key: this.ownerId, name: ownerName, kind: 'human', role: 'owner', scopes: [], online: online.has(this.ownerId) })
     }
-    for (const [key, m] of Object.entries(this.meta.members)) list.push({ key, name: m.name, kind: m.kind, ...memberAccess(m), online: online.has(key) })
+    pruneChatLinks(this) // chat links that ran out leave the list
+    for (const [key, m] of Object.entries(this.meta.members)) list.push({ key, name: m.name, kind: m.kind, ...memberAccess(m), online: online.has(key), ...(http.has(key) ? { http: true, lastSeen: http.get(key) } : {}), ...(m.chat ? { chat: true, expiresAt: m.expiresAt } : {}) })
     return list
   }
 
@@ -601,21 +692,40 @@ class Room {
     return [...this.pending.values()].map((p) => ({ key: p.id, name: p.name, kind: p.kind, invitedAs: p.invitedAs, since: p.since }))
   }
 
-  /** Sends everyone the member list; only the owner sees who's waiting. */
+  /** Sends everyone the member list; people who may let others in also see who's waiting. */
   broadcastMembers (replyTo = null, reply = null) {
     if (!this.controlled) return
     const members = this.memberList()
     const pending = this.pendingList()
+    const admitBy = this.admitBy
     for (const [ws, a] of this.access) {
-      const msg = { members, sessionName: this.meta.name || '', ...(a.owner ? { pending } : {}), ...(ws === replyTo && reply ? { reply } : {}) }
+      const msg = { members, sessionName: this.meta.name || '', admitBy, pending: this.personCanAdmit(a) ? pending : [], ...(ws === replyTo && reply ? { reply } : {}) }
       send(ws, jsonMessage(MSG_MEMBERS, msg))
     }
   }
 
-  /** Owner-only changes to who's in the room. Returns the reply fields. */
+  /** Changes to who's in the room. Letting people in follows admitBy; the rest is owner-only. Returns the reply fields. */
   adminRequest (ws, req) {
     const me = this.access.get(ws)
-    if (!me || !me.owner) throw new Error('only the session owner can do that')
+    if (!me) throw new Error('only the session owner can do that')
+    if (req.op === 'admitBy') {
+      if (!me.owner) throw new Error('only the session owner can do that')
+      const next = cleanAdmitBy(req.admitBy)
+      if (!next) throw new Error(BAD_ADMIT_BY)
+      if (next !== this.admitBy) {
+        this.meta.admitBy = next
+        this.saveMeta()
+        // Everyone's access follows the new setting (canAdmit / admitBy on the access message).
+        for (const [cws, a] of this.access) send(cws, jsonMessage(MSG_ACCESS, this.accessMessage(a)))
+      }
+      return { ok: true }
+    }
+    // A chat link lets a chat AI in, so whoever may let people in may make one, and set how long it lasts.
+    if (req.op === 'approve' || req.op === 'deny' || req.op === 'chatlink' || req.op === 'chatextend') {
+      if (!this.personCanAdmit(me)) throw new Error('you cannot let people into this session')
+    } else if (!me.owner) {
+      throw new Error('only the session owner can do that')
+    }
     if (req.op === 'name') {
       // The owner's app names the session after its folder, and the owner can rename it.
       const name = cleanSessionName(req.name)
@@ -634,6 +744,18 @@ class Room {
         if (this.presence) this.presence.rename({ room: this.name, name })
       }
       return { ok: true }
+    }
+    if (req.op === 'chatlink') {
+      // A link a chat-only AI (ChatGPT, claude.ai, Grok…) works through by opening pages (chat-links.js).
+      // It joins as a member of its own; the token is in this reply only, to whoever asked.
+      const l = makeChatLink(this, { name: req.name, minutes: req.minutes, by: me.name })
+      this.log(`[${this.name}] chat link made for ${l.name}`)
+      return { ok: true, token: l.token, name: l.name, expiresAt: l.expiresAt }
+    }
+    if (req.op === 'chatextend') {
+      // How long a chat link still works, from now. One that ran out is gone: a new link is needed.
+      const l = extendChatLink(this, String(req.key || ''), req.minutes)
+      return { ok: true, name: l.name, expiresAt: l.expiresAt }
     }
     if (req.op === 'end') {
       // Reply first; the relay then sends everyone away and deletes the room.
@@ -674,9 +796,11 @@ class Room {
     }
     if (req.op === 'deny') {
       if (!waiting.length) throw new Error('nobody with that key is waiting')
-      for (const [pws] of waiting) {
+      for (const [pws, w] of waiting) {
         this.pending.delete(pws)
-        if (!pws.hosted) pws.close(CLOSE_DENIED, 'The session owner did not let you in')
+        // A hosted agent finds out on its next tool call; relay.hosted remembers it, across restarts.
+        if (pws.hosted) { if (this.onHostedDenied) this.onHostedDenied(w.id); continue }
+        pws.close(CLOSE_DENIED, 'The session owner did not let you in')
       }
       return { ok: true }
     }
@@ -703,6 +827,11 @@ class Room {
     if (req.op === 'remove') {
       // An account goes with any older entries for keys it has used here, so it can't get back in by key.
       const gone = [key, ...((this.meta.accountKeys || {})[key] || [])]
+      // Their claims go with them: nobody left could release them.
+      const names = gone.map((id) => this.meta.members[id]?.name).filter(Boolean)
+      const theirs = (x) => x.byId ? gone.includes(x.byId) : names.includes(x.by)
+      this.dropRequests(theirs)
+      this.dropClaims(theirs, (c) => `${c.by} was removed from the session.`)
       for (const id of gone) delete this.meta.members[id]
       // A pass issued before now can't bring them back by its grant (see passGrant). Removals
       // older than a pass lasts can match no valid pass, so they go; the newest are kept.
@@ -710,8 +839,9 @@ class Room {
       const removed = Object.entries({ ...(this.meta.removed || {}), [key]: Date.now() }).filter(([, at]) => at > cutoff).sort((a, b) => a[1] - b[1])
       this.meta.removed = Object.fromEntries(removed.slice(-MAX_REMOVED))
       this.saveMeta()
-      for (const [cws, a] of this.access) if (gone.includes(a.id)) cws.close(CLOSE_DENIED, 'The session owner removed you')
-      for (const id of gone) this.hostedSeen.delete(id)
+      for (const [cws, a] of this.access) if (gone.includes(a.id)) { cws.endReason = 'removed'; cws.close(CLOSE_DENIED, 'The session owner removed you') }
+      for (const id of gone) { this.hostedSeen.delete(id); if (this.onHostedGone) this.onHostedGone(id, 'removed') }
+      this.broadcastClaims()
       return { ok: true }
     }
     throw new Error('unknown request')
@@ -754,7 +884,7 @@ class Room {
         // The same person over a new connection: they're back from a drop the relay hasn't
         // noticed yet (its heartbeat takes up to a minute). The old connection is dead; let
         // it go now, or they'd stay unseen until it does.
-        if (this.samePerson(other, ws)) { ids.delete(id); other.terminate(); continue }
+        if (this.samePerson(other, ws)) { ids.delete(id); other.endReason = 'replaced'; other.terminate(); continue }
         return false
       }
       if (state !== null && state.name !== name) return false
@@ -763,15 +893,151 @@ class Room {
   }
 
   /** Who a claim from this connection belongs to: their name, or with sign-in on, their account. */
-  claimant (ws) {
+  claimant (ws, as = null) {
     const name = this.names.get(ws)
-    if (!ws.pass) return { name }
     const a = this.access.get(ws)
-    return { name, id: `${ws.pass.kind}:${ws.pass.sub}`, owner: !!(a && a.owner), talk: !(a && a.talk === false) }
+    const who = ws.pass ? { name, id: `${ws.pass.kind}:${ws.pass.sub}`, owner: !!(a && a.owner), talk: !(a && a.talk === false) } : { name }
+    // One of several AI sessions working through this person's app (persona.js): its claims are
+    // its own, under "<first name> · <label>" and the account plus the session's id. Nobody can
+    // claim as someone else's: the name is built here from the connection's own.
+    if (!as || typeof as.id !== 'string' || !/^[A-Za-z0-9_-]{4,40}$/.test(as.id)) return who
+    return { ...who, name: personaName(name, as.label), ...(who.id ? { id: `${who.id}~${as.id}` } : {}), persona: true, of: name }
   }
 
+  /**
+   * Each claim, with `active` (whoever holds it is in the session now), `activeAt` (when they
+   * last did something there) and its file queue: who asked for it next ({ id, path, by,
+   * title, description, task, ts }), oldest first.
+   */
   claimList () {
-    return Object.values(this.meta.claims).sort((a, b) => a.ts - b.ts)
+    return Object.values(this.meta.claims).map((c) => ({ ...c, queue: c.queue || [], active: this.holderPresent(c), activeAt: this.lastActive(c) })).sort((a, b) => a.ts - b.ts)
+  }
+
+  /** Who holds a claim: their account with sign-in on, otherwise their name. */
+  holderKey (c) { return c.byId || `name:${c.by}` }
+
+  /** The holder keys a connection speaks for: its account, and its name (claims older than sign-in). */
+  holderKeys (ws) {
+    const keys = [`name:${this.names.get(ws)}`]
+    if (ws.pass) keys.push(`${ws.pass.kind}:${ws.pass.sub}`)
+    return keys
+  }
+
+  /** The holder key of a claimant (see holderKey): an AI session's activity is its own, not its person's. */
+  claimantKey (who) { return who.id || `name:${who.name}` }
+
+  /** Someone did something in the session: their claims' idle time starts again. */
+  noteActivity (keys) {
+    const now = Date.now()
+    let save = false
+    for (const k of keys) {
+      if (!Object.values(this.meta.claims).some((c) => this.holderKey(c) === k)) continue
+      // Saved now and then, so a relay restart doesn't count them idle for longer than they were.
+      if (now - (this.meta.seen[k] || 0) > 60 * 1000) save = true
+      this.meta.seen[k] = now
+    }
+    if (save) this.saveMeta()
+  }
+
+  /** When a claim's holder last did something in the session (since the relay loaded it, at the earliest). */
+  lastActive (c) {
+    return Math.max(this.meta.seen[this.holderKey(c)] ?? this.loadedAt, c.ts || 0)
+  }
+
+  /** Whether a claim's holder is in the session now: connected, or a hosted agent seen lately. */
+  holderPresent (c) {
+    if (c.byId) {
+      // An AI session's claim (account~session) is here while its person's app is.
+      const base = c.byId.split('~')[0]
+      const seen = this.hostedSeen.get(base)
+      if (seen && Date.now() - seen < HOSTED_ONLINE_MS) return true
+      for (const ws of this.conns.keys()) if (ws.pass && `${ws.pass.kind}:${ws.pass.sub}` === base) return true
+      return false
+    }
+    for (const n of this.names.values()) if (n === c.by || (c.by.startsWith(`${firstName(n)}${PERSONA_SEP}`))) return true
+    return this.hostedOnline().some((h) => h.name === c.by)
+  }
+
+  /** The claim covering a file: its own, or a folder or glob claim that matches it (the earliest). */
+  claimFor (file) {
+    if (this.meta.claims[file]) return this.meta.claims[file]
+    return Object.values(this.meta.claims).filter((c) => globMatcher(c.pattern)(file)).sort((a, b) => a.ts - b.ts)[0] || null
+  }
+
+  /**
+   * Lets go of the claims `pick` chooses. A claim someone is waiting for in its file queue goes
+   * to the first of them instead of being released (`why` says why, in the message they get).
+   * Returns how many went.
+   */
+  dropClaims (pick, why = null) {
+    let n = 0
+    for (const c of Object.values(this.meta.claims)) {
+      if (!pick(c)) continue
+      n++
+      if (c.queue && c.queue.length) this.handOff(c, c.queue[0], { context: why ? why(c) : `${c.by} let go of it.`, auto: true })
+      else delete this.meta.claims[c.pattern]
+    }
+    this.forgetSeen()
+    return n
+  }
+
+  /** Takes the requests `pick` chooses out of every file queue (someone removed, or gone). */
+  dropRequests (pick) {
+    for (const c of Object.values(this.meta.claims)) {
+      if (!c.queue) continue
+      c.queue = c.queue.filter((r) => !pick(r))
+      if (!c.queue.length) delete c.queue
+    }
+  }
+
+  forgetSeen () {
+    for (const k of Object.keys(this.meta.seen)) if (!Object.values(this.meta.claims).some((c) => this.holderKey(c) === k)) delete this.meta.seen[k]
+  }
+
+  /**
+   * Gives claim `c` to the one who asked for it in request `r`, with the holder's context,
+   * and tells them in a direct message (which wakes their agent). The rest of the queue
+   * stays with the claim: the new holder hands it on in turn.
+   */
+  handOff (c, r, { context = '', auto = false } = {}) {
+    const now = Date.now()
+    const queue = (c.queue || []).filter((x) => x.id !== r.id)
+    const next = { by: r.by, ...(r.byId ? { byId: r.byId } : {}), ...(r.of ? { of: r.of } : {}), pattern: c.pattern, note: String(r.title || '').slice(0, 500), ts: now, from: c.by }
+    if (queue.length) next.queue = queue
+    this.meta.claims[c.pattern] = next
+    this.meta.seen[this.holderKey(next)] = now
+    const text = auto
+      ? `📦 ${c.pattern} is yours now: you asked for it ("${r.title}"). ${context}`.trim()
+      : `📦 I'm handing you ${c.pattern} (you asked: "${r.title}"). My context: ${context}`
+    // Sent as from the holder; marked as a handoff, it wakes them but asks for no answer (duties.js).
+    this.postChat({ by: c.by, to: r.by, text, kind: 'handoff', path: c.pattern })
+    this.log(`[${this.name}] ${c.pattern} handed from ${c.by} to ${r.by}${auto ? ' (automatically)' : ''}`)
+  }
+
+  /** A chat entry written by the relay itself (file queue requests and handoffs). */
+  postChat ({ by, to = null, text, kind, path: file }) {
+    const chat = this.doc.getArray('chat')
+    const msg = { id: crypto.randomBytes(8).toString('hex'), by, to, text: String(text).slice(0, 4000), ts: Date.now(), kind, path: file }
+    this.doc.transact(() => {
+      chat.push([msg])
+      if (chat.length > 500) chat.delete(0, chat.length - 500)
+    })
+    return msg
+  }
+
+  /**
+   * Lets go of claims whose holder has done nothing in the session for claimIdleMs (no edit,
+   * no message, no tool call): handed to the first one waiting for it, or released. Returns
+   * how many went (and tells everyone, when any did).
+   */
+  sweepClaims (now = Date.now()) {
+    const mins = Math.round(this.cfg.claimIdleMs / 60000)
+    const n = this.dropClaims((c) => now - this.lastActive(c) >= this.cfg.claimIdleMs, (c) => `${c.by} had done nothing in the session for ${mins} minutes.`)
+    if (n) this.log(`[${this.name}] let go of ${n} claim(s) idle for ${mins} minutes`)
+    // Also when a holder came or went: everyone's app shows whose claims are held by someone away.
+    const shown = this.claimList().map((c) => `${c.pattern}\0${c.active}`).join('\n')
+    if (n || shown !== this.claimsShown) { this.claimsShown = shown; this.broadcastClaims() }
+    return n
   }
 
   /**
@@ -779,13 +1045,24 @@ class Room {
    * claims belong to a verified name; with it, { name, id, owner }, where they
    * belong to the account (id). Returns the reply fields.
    */
+  /** A claim request (claimRequestOp), and on success a line in the audit trail. */
   claimRequest (who, req) {
+    const r = this.claimRequestOp(who, req)
+    const action = CLAIM_ACTIONS[req && req.op]
+    if (action && who && who.id) this.audit(who.id, action, String(req.pattern || req.path || req.request || '').slice(0, 300))
+    return r
+  }
+
+  claimRequestOp (who, req) {
     const { name, id } = who
     // Whose claim is this? Older claims in a sign-in room have no account: they belong to their
     // name, as they did when made, and claiming one again adopts it under this account.
     // (The owner may release any of them too.)
-    const mine = (c) => id ? (c.byId ? c.byId === id : c.by === name) : c.by === name
+    const own = (c) => id ? (c.byId ? c.byId === id : c.by === name) : c.by === name
+    // A person may also release or hand off what their own AI sessions hold (account~session).
+    const mine = (c) => own(c) || (!who.persona && !!id && !!c.byId && c.byId.startsWith(`${id}~`))
     const pattern = String(req.pattern ?? '').trim().replace(/^\.\//, '')
+    if (req.op === 'touch') return { ok: true } // an AI session is at work: its claims' idle time starts again
     if (req.op === 'claim') {
       if (!pattern) throw new Error('pattern required')
       if (pattern.length > MAX_PATTERN) throw new Error('pattern too long')
@@ -794,20 +1071,83 @@ class Room {
       const paths = [...this.doc.getMap('files').keys(), ...this.doc.getMap('blobs').keys()]
       const other = this.claimList().find((c) => !mine(c) && patternsOverlap(c.pattern, pattern, paths))
       if (other) throw new Error(`${pattern} overlaps ${other.by}'s claim on ${other.pattern}`)
-      this.meta.claims[pattern] = { by: name, ...(id ? { byId: id } : {}), pattern, note: who.talk === false ? '' : String(req.note ?? '').slice(0, 500), ts: Date.now() }
+      this.meta.claims[pattern] = { by: name, ...(id ? { byId: id } : {}), pattern, note: who.talk === false ? '' : String(req.note ?? '').slice(0, 500), ts: Date.now(), ...(who.persona ? { of: who.of } : {}), ...(existing?.queue ? { queue: existing.queue } : {}) }
       return { ok: true }
     }
     if (req.op === 'release') {
+      // A holder can't just let go of a file someone is waiting for: they hand it off, with
+      // their context (op 'handoff'). Releasing everything lets go of the rest.
+      const queued = (c) => c.queue && c.queue.length
       if (pattern === '*' || !pattern) {
-        const all = this.claimList().filter(mine)
-        for (const c of all) delete this.meta.claims[c.pattern]
-        return { ok: true, released: all.length }
+        const held = Object.values(this.meta.claims).filter((c) => mine(c) && queued(c)).map((c) => c.pattern)
+        return { ok: true, released: this.dropClaims((c) => mine(c) && !queued(c)), ...(held.length ? { held } : {}) }
       }
       const c = this.meta.claims[pattern]
       if (!c) return { ok: true, released: 0 }
-      if (!mine(c) && !(id && who.owner && !c.byId)) throw new Error(`${pattern} is claimed by ${c.by}; only they can release it`)
-      delete this.meta.claims[pattern]
+      // The owner may release anyone's claim. Someone under the same name may release one
+      // held by an account that isn't here (theirs from before a re-invite), but not take it.
+      // Either way, the first one waiting for it gets it.
+      const stale = c.by === name && !this.holderPresent(c)
+      if (!mine(c) && !who.owner && !stale) throw new Error(`${pattern} is claimed by ${c.by}; only they can release it (or the session owner)`)
+      if (mine(c) && queued(c)) throw new Error(`${c.queue.map((r) => r.by).join(', ')} ${c.queue.length === 1 ? 'is' : 'are'} waiting for ${pattern} in its file queue: hand it off with your context instead of releasing it`)
+      this.dropClaims((x) => x === c, () => mine(c) ? `${c.by} let go of it.` : `${name} (the session owner) released ${c.by}'s claim.`)
       return { ok: true, released: 1 }
+    }
+    if (req.op === 'request') {
+      // Asking for a file someone else holds: a line in that claim's file queue. Its holder is
+      // told now, and must hand it off (with context) before letting go.
+      const file = String(req.path ?? '').trim().replace(/^\.\//, '')
+      if (!file || file.length > MAX_PATTERN) throw new Error('path required')
+      if (who.talk === false) throw new Error('you may not post in this session')
+      const c = this.claimFor(file)
+      if (!c) throw new Error(`${file} is not claimed: claim it and go ahead`)
+      if (mine(c)) throw new Error(`${file} is already yours`)
+      const title = String(req.title ?? '').trim().slice(0, MAX_REQUEST_TITLE)
+      if (!title) throw new Error('title required: what you want to do, in a few words')
+      const description = String(req.description ?? '').trim().slice(0, MAX_REQUEST_TEXT)
+      const task = req.task ? String(req.task).slice(0, 80) : undefined
+      c.queue = c.queue || []
+      // One request per person per claim: asking again updates it and keeps its place.
+      const prev = c.queue.find((r) => id ? r.byId === id : r.by === name)
+      if (!prev && c.queue.length >= MAX_QUEUE) throw new Error(`${c.queue.length} are already waiting for ${c.pattern}`)
+      const r = prev || { id: crypto.randomBytes(6).toString('hex'), by: name, ...(id ? { byId: id } : {}), ...(who.persona ? { of: who.of } : {}), ts: Date.now() }
+      Object.assign(r, { path: file, title, description, ...(task ? { task } : {}) })
+      if (!prev) c.queue.push(r)
+      this.postChat({ by: name, to: c.by, kind: 'queue', path: file, text: `📥 File queue · ${file}: ${`${title}${description ? ` — ${description}` : ''}`.replace(/[.!?]+$/, '')}. When you're done with it, hand it off to me with your context.` })
+      return { ok: true, request: r.id, position: c.queue.indexOf(r) + 1, holder: c.by, pattern: c.pattern }
+    }
+    if (req.op === 'withdraw') {
+      // The one who asked (or the owner) takes a request back.
+      for (const c of Object.values(this.meta.claims)) {
+        const r = (c.queue || []).find((x) => x.id === req.request)
+        if (!r) continue
+        if (!(id ? r.byId === id : r.by === name) && !who.owner) throw new Error('that request is not yours')
+        c.queue = c.queue.filter((x) => x !== r)
+        if (!c.queue.length) delete c.queue
+        return { ok: true, withdrawn: 1 }
+      }
+      return { ok: true, withdrawn: 0 }
+    }
+    if (req.op === 'handoff') {
+      // The holder passes a claim to someone waiting for it (the first, unless `to` names a
+      // request id or a person), with what they know: what they changed, what's left, gotchas.
+      const c = this.meta.claims[pattern] || (pattern && this.claimFor(pattern))
+      if (!c) throw new Error(`${pattern || 'that'} is not claimed`)
+      if (!mine(c) && !who.owner) throw new Error(`${c.pattern} is ${c.by}'s to hand off`)
+      const queue = c.queue || []
+      if (!queue.length) throw new Error(`nobody is waiting for ${c.pattern}: release it instead`)
+      const to = req.to ? String(req.to) : ''
+      const r = to ? queue.find((x) => x.id === to || x.by === to) : queue[0]
+      if (!r) throw new Error(`${to} is not waiting for ${c.pattern}`)
+      const context = String(req.context ?? '').trim().slice(0, MAX_HANDOFF_TEXT)
+      if (!context && mine(c)) throw new Error('context required: what you changed, what is left and anything they should know')
+      this.handOff(c, r, { context: context || `${name} (the session owner) handed it on.`, auto: !mine(c) })
+      return { ok: true, to: r.by, pattern: c.pattern, waiting: queue.length - 1 }
+    }
+    if (req.op === 'clear-inactive') {
+      // The owner clears every claim held by someone who isn't in the session now.
+      if (!who.owner) throw new Error('only the session owner can clear claims')
+      return { ok: true, released: this.dropClaims((c) => !this.holderPresent(c)) }
     }
     throw new Error('unknown claim operation')
   }
@@ -907,9 +1247,9 @@ class Room {
       this.enter(ws, { key: publicKey, id: acc.id || account || publicKey, name, kind, role: acc.role, scopes: acc.scopes, scopesExcept: acc.scopesExcept || [], talk: acc.talk !== false, owner: acc.owner })
       onJoin()
     })
-    ws.on('close', () => {
+    ws.on('close', (code) => {
       if (this.pending.delete(ws)) this.broadcastMembers()
-      if (this.access.has(ws) || this.conns.has(ws)) this.leave(ws)
+      if (this.access.has(ws) || this.conns.has(ws)) this.leave(ws, code)
     })
     send(ws, bytesMessage(MSG_AUTH, nonce))
   }
@@ -919,7 +1259,7 @@ class Room {
     this.setAccess(ws, a)
     // Presence: an account's visit starts once it's let in (never while it waits for the owner).
     if (ws.pass && this.presence && !ws.visit) {
-      ws.visit = this.presence.visitStart({ room: this.name, account: `${ws.pass.kind}:${ws.pass.sub}`, name: a.name, owner: !!a.owner })
+      ws.visit = this.presence.visitStart({ room: this.name, account: `${ws.pass.kind}:${ws.pass.sub}`, name: a.name, owner: !!a.owner, via: 'app', tool: ws.tool || '' })
       // The accounts API learns who owns a session from this report, and only the owner may
       // give people access there: tell it now rather than within the minute.
       if (a.owner) this.presence.tick().catch(() => {})
@@ -941,8 +1281,8 @@ class Room {
     this.touch()
   }
 
-  leave (ws) {
-    if (ws.visit) { if (this.presence) this.presence.visitEnd(ws.visit); ws.visit = null }
+  leave (ws, code) {
+    if (ws.visit) { if (this.presence) this.presence.visitEnd(ws.visit, ws.endReason || endReasonFor(code)); ws.visit = null }
     const ids = this.conns.get(ws)
     this.conns.delete(ws)
     this.names.delete(ws)
@@ -971,6 +1311,7 @@ class Room {
         // Over quota: still answer "what do you have?" so people can read, but refuse new data.
         const sub = decoding.readVarUint(decoding.createDecoder(buf.subarray(1)))
         if (sub !== syncProtocol.messageYjsSyncStep1) {
+          ws.endReason = 'disconnected'
           ws.close(CLOSE_ROOM_FULL, 'room is over the size limit')
           return
         }
@@ -990,7 +1331,9 @@ class Room {
       let reply
       try {
         req = JSON.parse(decoding.readVarString(dec))
-        reply = { id: req.id, ...this.claimRequest(this.claimant(ws), req) }
+        const who = this.claimant(ws, req.as)
+        reply = { id: req.id, ...this.claimRequest(who, req) }
+        this.noteActivity(who.persona ? [this.claimantKey(who)] : this.holderKeys(ws))
       } catch (err) {
         return send(ws, jsonMessage(MSG_CLAIMS, { claims: this.claimList(), reply: { id: req.id, ok: false, error: err.message } }))
       }
@@ -1009,7 +1352,10 @@ class Room {
         reply = { id: req.id, ok: false, error: err.message }
       }
       if (reply.ok) this.broadcastMembers(ws, reply)
-      else send(ws, jsonMessage(MSG_MEMBERS, { members: this.memberList(), sessionName: this.meta.name || '', ...(this.access.get(ws)?.owner ? { pending: this.pendingList() } : {}), reply }))
+      else {
+        const a = this.access.get(ws)
+        send(ws, jsonMessage(MSG_MEMBERS, { members: this.memberList(), sessionName: this.meta.name || '', admitBy: this.admitBy, pending: this.personCanAdmit(a) ? this.pendingList() : [], reply }))
+      }
     }
   }
 
@@ -1033,18 +1379,33 @@ const TALK_WHY = "you can't post in this session"
 // What an app's activity entries look like (session.js recordActivity, relay-mcp.js quilt_write).
 const ACTIVITY_FIELDS = ['by', 'path', 'kind', 'detail', 'ts']
 const ACTIVITY_KINDS = ['created', 'edited', 'deleted']
+// Claim ops as the audit trail names them.
+const CLAIM_ACTIONS = { claim: 'claimed', release: 'released', request: 'requested', handoff: 'handed_off', withdraw: 'withdrew' }
 const ACTIVITY_DETAIL = /^(\+\d+ -\d+|\d+ bytes)?$/
 const nameTaken = (name) => `The name "${name}" belongs to someone else in this room; pick another name`
 
 /** A saved member's access, in the relay's shape (members saved before access types may talk and have no exceptions). */
 const memberAccess = (m) => ({ role: m.role, scopes: m.scopes || [], scopesExcept: m.scopesExcept || [], talk: m.talk !== false })
 
+/**
+ * Why a connection's visit ended, from the close code, when the relay didn't close it
+ * itself (those set ws.endReason). A clean close (1000, 1001, 1005) is the app or agent
+ * leaving; anything else (1006 and the like) is a dropped connection.
+ */
+export function endReasonFor (code) {
+  if (code === 1000 || code === 1001 || code === 1005) return 'left'
+  if (code === CLOSE_DENIED) return 'removed'
+  if (code === CLOSE_ENDED) return 'session_ended'
+  if (code === CLOSE_PASS_EXPIRED) return 'pass_expired'
+  return 'disconnected'
+}
+
 /** Closes the connection when its pass runs out, unless a newer one arrives first. */
 function trackPass (ws, pass) {
   ws.pass = pass
   clearTimeout(ws.passTimer)
   const left = Math.min(Math.max(pass.exp - Date.now(), 0), 2 ** 31 - 1)
-  ws.passTimer = setTimeout(() => ws.close(CLOSE_PASS_EXPIRED, PASS_EXPIRED), left)
+  ws.passTimer = setTimeout(() => { ws.endReason = 'pass_expired'; ws.close(CLOSE_PASS_EXPIRED, PASS_EXPIRED) }, left)
 }
 
 /** A MSG_PASS: a valid pass for the same account (or agent) and key extends the connection. */
@@ -1124,6 +1485,9 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
 
   /** The room, loading it if needed; null if it's too big to load, or its files can't be read. */
   let webhooks = null // hosted agents' webhook subscriptions (set below, once `hosted` exists)
+  let adoptHosted = null // puts back hosted agents waiting on a room (set below, once `hosted` exists)
+  let endHostedVisits = null // ends the audit-trail visits of hosted agents in a room (set below)
+  let sweepHosted = null // ends the visits of hosted agents gone quiet (set below)
   const getRoom = (name) => {
     let room = rooms.get(name)
     if (!room) {
@@ -1139,6 +1503,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       unreadable.delete(name)
       rooms.set(name, room)
       if (webhooks) webhooks.watch(room) // hosted agents' webhooks fire on its chat and board
+      if (adoptHosted) adoptHosted(room)
       room.presence = presence
       // Idle rooms are saved and dropped from memory (only when they're on disk).
       room.onEmpty = () => {
@@ -1154,7 +1519,9 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       room.onEnd = () => {
         if (room.ended) return
         room.ended = true
-        for (const ws of [...room.conns.keys(), ...room.pending.keys()]) if (!ws.hosted) ws.close(CLOSE_ENDED, 'The owner ended this session')
+        for (const ws of [...room.conns.keys(), ...room.pending.keys()]) if (!ws.hosted) { ws.endReason = 'session_ended'; ws.close(CLOSE_ENDED, 'The owner ended this session') }
+        // Hosted agents in it have no connection to close: their visits end here.
+        if (endHostedVisits) endHostedVisits(name, 'session_ended')
         clearTimeout(room.unloadTimer)
         room.guard.destroy(); room.awareness.destroy(); room.doc.destroy()
         if (rooms.get(name) === room) rooms.delete(name)
@@ -1211,18 +1578,58 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
   const hosted = new Map()
   try { for (const [k, v] of Object.entries(JSON.parse(fs.readFileSync(hostedFile, 'utf8')))) hosted.set(k, v) } catch {}
   let hostedTimer = null
+  const writeHosted = () => {
+    hostedTimer = null
+    const cutoff = Date.now() - 30 * DAY
+    for (const [k, v] of hosted) if ((v.seenAt || 0) < cutoff) hosted.delete(k)
+    try { fs.writeFileSync(hostedFile, JSON.stringify(Object.fromEntries(hosted))) } catch {}
+  }
   const saveHosted = () => {
     if (!hostedFile || hostedTimer) return
-    hostedTimer = setTimeout(() => {
-      hostedTimer = null
-      const cutoff = Date.now() - 30 * DAY
-      for (const [k, v] of hosted) if ((v.seenAt || 0) < cutoff) hosted.delete(k)
-      try { fs.writeFileSync(hostedFile, JSON.stringify(Object.fromEntries(hosted))) } catch {}
-    }, 2000)
+    hostedTimer = setTimeout(writeHosted, 2000)
     hostedTimer.unref()
   }
   webhooks = hostedWebhooks({ hosted, saveHosted, log, fetch: opts.webhookFetch, delays: opts.webhookDelays })
   for (const room of rooms.values()) webhooks.watch(room)
+  // Hosted agents' visits, for the audit trail. With no connection to open and close, a
+  // visit starts at the first tool call it's let in for, and ends when it leaves, is
+  // removed, its session ends, or it goes quiet for HOSTED_ONLINE_MS (ended at its last call).
+  const openVisit = (h) => (h && h.visit && presence && presence.open.has(h.visit.start) ? h.visit : null)
+  const hostedVisitStart = (id, room, { name, tool, owner }) => {
+    const h = hosted.get(id)
+    if (!h || !presence) return
+    const open = openVisit(h)
+    if (open && open.room === room.name) return
+    if (open) presence.visitEnd(open, 'left')
+    h.visit = presence.visitStart({ room: room.name, account: id, name, owner: !!owner, via: 'hosted', tool })
+    saveHosted()
+  }
+  const hostedVisitEnd = (id, reason, at) => {
+    const h = hosted.get(id)
+    const open = openVisit(h)
+    if (!open) return
+    presence.visitEnd(open, reason, at)
+    delete h.visit
+    saveHosted()
+  }
+  endHostedVisits = (roomName, reason) => { for (const [id, h] of hosted) if (h.room === roomName) hostedVisitEnd(id, reason) }
+  const sweepHostedVisits = () => {
+    const cutoff = Date.now() - HOSTED_ONLINE_MS
+    for (const [id, h] of hosted) if (openVisit(h) && (h.seenAt || 0) < cutoff) hostedVisitEnd(id, 'idle', h.seenAt)
+  }
+  sweepHosted = sweepHostedVisits
+  // Hosted agents waiting to be let in are back on the owner's list when their room loads,
+  // without having to call a tool first; one the owner turns away is told on its next call.
+  adoptHosted = (room) => {
+    room.hostedVisit = (id) => { const h = hosted.get(id); const v = openVisit(h); return v && v.room === room.name ? v : null }
+    room.onHostedGone = (id, reason) => { const h = hosted.get(id); if (h && h.room === room.name) hostedVisitEnd(id, reason) }
+    for (const [id, h] of hosted) if (h.room === room.name && h.pending && !h.denied) room.restoreHosted(id, h)
+    room.onHostedDenied = (id) => {
+      const h = hosted.get(id)
+      if (h && h.room === room.name && h.pending) { h.denied = true; saveHosted() }
+    }
+  }
+  for (const room of rooms.values()) adoptHosted(room)
 
   // Files shared in chat are stored on the relay, not in the synced project.
   const filesDir = path.join(dataDir || fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-relay-')), 'files')
@@ -1306,7 +1713,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       const pass = httpPass(req)
       if (!pass) return text(401, SIGN_IN)
       const workspaces = features && features.on() && pass.kind === 'agent' ? { apiUrl: cfg.apiUrl, pass: String(req.headers['x-quilt-pass']), fetch: apiFetch } : null
-      return handleHostedMcp({ req, res, pass, workspaces, relay: { getRoom, roomEnded, refused, hosted, saveHosted, webhooks, log, endedMessage: ENDED_MESSAGE, updates } })
+      return handleHostedMcp({ req, res, pass, workspaces, relay: { getRoom, roomEnded, refused, hosted, saveHosted, webhooks, log, endedMessage: ENDED_MESSAGE, updates, visitStart: hostedVisitStart, visitEnd: hostedVisitEnd } })
         .catch((err) => { log(`mcp error: ${err.message}`); if (!res.headersSent) text(500, 'mcp error') })
     }
     const mm = url.pathname.match(/^\/mcp\/([A-Za-z0-9_-]{20,64})$/)
@@ -1330,6 +1737,8 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         .finally(() => { if (room && !room.conns.size && room.onEmpty) room.onEmpty() })
       return
     }
+    // Chat links: GET pages a chat-only AI opens to read and talk (chat-links.js).
+    if (url.pathname.startsWith('/c/') && handleChatLink(req, res, url, { getRoom, roomEnded, refused, dropIfUnused, endedMessage: ENDED_MESSAGE, fetchFile: opts.chatFetch || ((u) => fetchPublicFile(u)) })) return
     const bm = url.pathname.match(/^\/blobs\/([A-Za-z0-9_-]{1,64})\/([a-f0-9]{32})\/(upload|download|data)$/)
     if (bm) {
       const [, name, id, action] = bm
@@ -1480,6 +1889,8 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       // the relay's: ws closes the socket itself once the error has a listener.
       ws.on('error', (err) => log(`[${name}] dropping ${person}: ${err.message}`))
       ws.features = features
+      // Which app or AI tool this is ("Quilt app", "Cursor"), for the audit trail; the app says so if it knows.
+      ws.tool = header('x-quilt-tool').replace(/[^\w .()/+-]/g, '').trim().slice(0, 40)
       if (pass) { ws.passKey = passKey; trackPass(ws, pass) }
       ipConns.set(ip, (ipConns.get(ip) || 0) + 1)
       ws.isAlive = true
@@ -1500,10 +1911,12 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
 
   const heartbeat = setInterval(() => {
     for (const ws of wss.clients) {
-      if (!ws.isAlive) { ws.terminate(); continue }
+      if (!ws.isAlive) { ws.endReason = 'disconnected'; ws.terminate(); continue }
       ws.isAlive = false
       ws.ping()
     }
+    for (const room of rooms.values()) if (!room.ended) room.sweepClaims()
+    if (sweepHosted) sweepHosted()
   }, 30000)
 
   // Delete rooms nobody has opened for a while (hosted relays shouldn't grow forever).
@@ -1544,6 +1957,8 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         rooms, // exposed for tests
         store, // exposed for tests
         presence, // exposed for tests
+        hosted, // exposed for tests
+        sweepHosted: () => sweepHosted && sweepHosted(), // exposed for tests: ends quiet hosted agents' visits now
         features, // exposed for tests
         sweep,
         close: async () => {
@@ -1551,17 +1966,22 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
           clearInterval(sweeper)
           features?.stop()
           updates.stop()
+          // A join or a denial in the last moments before a deploy is kept.
+          if (hostedTimer) { clearTimeout(hostedTimer); writeHosted() }
           // Rooms are saved first, synchronously: Fly's kill timeout is about as long as
           // presence gets to reach the accounts API, so a hung or slow API must never be
           // able to delay saving a room's data.
-          for (const ws of wss.clients) ws.terminate()
+          for (const ws of wss.clients) { ws.endReason = 'relay_restart'; ws.terminate() }
           for (const room of rooms.values()) room.destroy()
           rooms.clear()
           wss.close()
           // Every open visit ends now (even ones no `leave` got to yet), and the queue
           // gets one last, bounded try at the accounts API.
           if (presence) await presence.close()
-          await new Promise((resolve) => httpServer.close(() => resolve()))
+          // An upload or download still in flight would otherwise hold close() open forever.
+          const closed = new Promise((resolve) => httpServer.close(() => resolve()))
+          httpServer.closeAllConnections()
+          await closed
         }
       })
     })

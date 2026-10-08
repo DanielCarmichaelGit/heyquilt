@@ -13,11 +13,12 @@ import { pipeline } from 'node:stream/promises'
 import { runSession, decodeInvite, newConn, readConfig, recentSessions, forgetRecent, rememberWorkspace, forgetWorkspace } from './runner.js'
 import { MAX_SHARED_FILE_BYTES } from './protocol.js'
 import { getSettings, saveSettings, unsupportedRelay, relayUrl } from './settings.js'
+import { PICKUP_MODES, pickupMode } from './tasks.js'
 import * as gitops from './git.js'
 import { installedEditors, openIn } from './editors.js'
 import { migrateDir } from './legacy.js'
 import { writePrivateJson } from './private-file.js'
-import { readAccount, saveAccount, clearAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession, createAgentInvite, listAgents, listAccessTypes, listCollaborators, listGrants, putGrant, deleteGrant, inviteToSession, listSessionInvites, cancelSessionInvite, listWorkspaces, listOrgs, createWorkspace, getWorkspace, updateWorkspace, deleteWorkspace, putWorkspaceMember, removeWorkspaceMember, getAgentPlacement, putAgentPlacement, listOrgAgents, putWorkspaceAgent, deleteWorkspaceAgent, createWorkspaceAgentInvite, excludeSessionAgent, listExcludedSessionAgents, listSessionAgents, includeSessionAgent, setSessionWorkspace, announceSessionStarted, announceWhenReported, listWorkspaceFiles, createWorkspaceFile, confirmWorkspaceFile, workspaceFileDownload, updateWorkspaceFile, deleteWorkspaceFile, createWorkspaceFolder, listWorkspaceFileVersions } from './account.js'
+import { readAccount, saveAccount, clearAccount, clearAccountIf, resumeAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession, createAgentInvite, listAgents, listAccessTypes, listCollaborators, listGrants, putGrant, deleteGrant, inviteToSession, listSessionInvites, cancelSessionInvite, listWorkspaces, listOrgs, createWorkspace, getWorkspace, updateWorkspace, deleteWorkspace, putWorkspaceMember, removeWorkspaceMember, getAgentPlacement, putAgentPlacement, listOrgAgents, putWorkspaceAgent, deleteWorkspaceAgent, createWorkspaceAgentInvite, excludeSessionAgent, listExcludedSessionAgents, listSessionAgents, includeSessionAgent, setSessionWorkspace, announceSessionStarted, announceWhenReported, listWorkspaceFiles, createWorkspaceFile, confirmWorkspaceFile, workspaceFileDownload, updateWorkspaceFile, deleteWorkspaceFile, createWorkspaceFolder, listWorkspaceFileVersions } from './account.js'
 import { effectiveAccess, builtinType } from './session-access.js'
 import { cleanSessionName, BAD_SESSION_NAME, SESSION_NAME_MAX } from './session-name.js'
 import { personPasses } from './pass-source.js'
@@ -27,7 +28,7 @@ import { currentVersion, localReleases, latestRelease, compareVersions, download
 import { createReporter } from './report.js'
 import { contentDisposition } from './api/file-paths.js'
 
-const TOOL_NAMES = ['Claude Code', 'Cursor', 'Codex', 'Windsurf', 'GitHub Copilot', 'Zed', 'Aider', 'Other']
+const TOOL_NAMES = ['Claude Code', 'Cursor', 'Codex', 'xAI', 'Windsurf', 'GitHub Copilot', 'Zed', 'Aider', 'Other']
 const MAX_WS_FILE_BYTES = 500 * 1024 * 1024
 const COLOR_RE = /^#[0-9a-f]{6}$/i
 const THEMES = ['light', 'dark', 'system']
@@ -50,7 +51,8 @@ function profile () {
     summarize: !!s.summarize,
     preferLocal: !!s.preferLocal,
     theme: THEMES.includes(s.theme) ? s.theme : 'light',
-    report: s.report !== false
+    report: s.report !== false,
+    aiTasks: pickupMode(s.aiTasks)
   }
 }
 
@@ -76,6 +78,10 @@ function updateProfile (b) {
     patch.theme = b.theme === 'light' ? undefined : b.theme
   }
   if ('report' in b) patch.report = b.report ? undefined : false
+  if ('aiTasks' in b) {
+    if (!PICKUP_MODES.includes(b.aiTasks)) throw httpError(400, 'Pick Off, Assigned to it, or Assigned and unassigned.')
+    patch.aiTasks = b.aiTasks === 'off' ? undefined : b.aiTasks
+  }
   saveSettings(patch) // undefined values clear a setting
   return profile()
 }
@@ -98,6 +104,7 @@ export const STATIC = {
   '/common.js': ['common.js', 'text/javascript; charset=utf-8'],
   '/mark.js': ['mark.js', 'text/javascript; charset=utf-8'],
   '/invite.js': ['invite.js', 'text/javascript; charset=utf-8'],
+  '/agent-guide.js': ['agent-guide.js', 'text/javascript; charset=utf-8'],
   '/access-form.js': ['access-form.js', 'text/javascript; charset=utf-8'],
   '/session.js': ['session.js', 'text/javascript; charset=utf-8'],
   '/chat.js': ['chat.js', 'text/javascript; charset=utf-8'],
@@ -106,12 +113,15 @@ export const STATIC = {
   '/tree.js': ['tree.js', 'text/javascript; charset=utf-8'],
   '/fileview.js': ['fileview.js', 'text/javascript; charset=utf-8'],
   '/merges.js': ['merges.js', 'text/javascript; charset=utf-8'],
+  '/catchup.js': ['catchup.js', 'text/javascript; charset=utf-8'],
   '/home.js': ['home.js', 'text/javascript; charset=utf-8'],
   '/signin.js': ['signin.js', 'text/javascript; charset=utf-8'],
-  '/git.js': ['git.js', 'text/javascript; charset=utf-8'],
+  '/changes.js': ['changes.js', 'text/javascript; charset=utf-8'],
   '/releases.js': ['releases.js', 'text/javascript; charset=utf-8'],
   '/feed-convs.js': ['feed-convs.js', 'text/javascript; charset=utf-8'],
   '/board.js': ['board.js', 'text/javascript; charset=utf-8'],
+  '/schedule.js': ['schedule.js', 'text/javascript; charset=utf-8'],
+  '/branches.js': ['branches.js', 'text/javascript; charset=utf-8'],
   '/workspaces.js': ['workspaces.js', 'text/javascript; charset=utf-8'],
   '/agent-place.js': ['agent-place.js', 'text/javascript; charset=utf-8'],
   '/agent-kinds.js': ['agent-kinds.js', 'text/javascript; charset=utf-8'],
@@ -122,12 +132,13 @@ export const STATIC = {
 // The page's Content-Security-Policy: scripts only from our own files (no inline script or
 // event handlers, the second line of defence against injected markup), fonts and the event
 // stream from this server, inline style attributes allowed since the UI sets them, and
-// Google's favicon service (plus its gstatic.com redirect hosts) for provider logos.
+// Google's favicon service (plus its gstatic.com redirect hosts) for provider logos,
+// and https images so ticket notes can show linked screenshots.
 const CSP = [
   "default-src 'self'",
   "script-src 'self'",
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: https://www.google.com https://*.gstatic.com",
+  "img-src 'self' data: https: https://www.google.com https://*.gstatic.com",
   "font-src 'self'",
   "connect-src 'self'",
   "object-src 'none'",
@@ -165,6 +176,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
   let link = null // signing in: what startLink returned, plus { state, error }
   let signedOutReason = null // 'revoked' once the API turned this computer's token away
   let checkedToken = false // asked the API about the saved token since the app started
+  let resumeTried = false // tried signing back in with this computer's key since the app started
   let workspacesOn = false // cached result of the last GET /api/workspaces probe
 
   const accountPasses = () => {
@@ -175,27 +187,55 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     return passes
   }
 
-  /** Forgets this computer's sign-in and stops its sessions. 'revoked': the API turned the token away. */
-  async function signedOut (reason) {
+  /**
+   * Forgets this computer's sign-in and stops its sessions. 'revoked': this computer isn't
+   * linked any more. `token`: the one turned away; a newer sign-in saved since is kept.
+   */
+  async function signedOut (reason, token) {
     // Forget the sign-in first, so a start can't pick it up again while sessions stop.
     passes = null
-    clearAccount()
+    if (token) clearAccountIf(token)
+    else clearAccount()
     for (const id of [...runs.keys()]) await stop(id)
     signedOutReason = reason
     broadcast('signed-out', { reason })
   }
 
+  /**
+   * This computer's token was turned away (or it has none): sign back in with its key. The
+   * new sign-in, or null once the API says this computer isn't linked. Offline, the saved
+   * sign-in stands (`fallback`).
+   */
+  async function resume (fallback = null) {
+    try {
+      const back = await resumeAccount()
+      if (back) { passes = null; signedOutReason = null }
+      return back
+    } catch {
+      return fallback
+    }
+  }
+
   async function accountState () {
     let account = readAccount()
+    // No sign-in saved (lost, or another app's sign-out): a linked computer just carries on.
+    if (!account && !resumeTried) {
+      resumeTried = true
+      account = await resume()
+      if (account) checkedToken = true
+    }
     if (account && !checkedToken) {
       checkedToken = true
       try {
-        // Picks up a name changed on heyquilt.com, and notices a computer signed out from there.
+        // Picks up a name changed on heyquilt.com, and notices a computer unlinked there.
         const fresh = { ...account, account: accountFromProfile(await fetchMe({ token: account.token })) }
         saveAccount(fresh)
         account = fresh
       } catch (err) {
-        if (err.status === 401) { await signedOut('revoked'); account = null }
+        if (err.status === 401) {
+          const back = await resume(account)
+          if (!back) { await signedOut('revoked', account.token); account = null } else account = back
+        }
         // Anything else (offline): keep the saved sign-in.
       }
     }
@@ -210,6 +250,17 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
   /** Starts linking this computer; the website approves it, and we collect the token in the background. */
   async function beginLink () {
     if (readAccount()) throw httpError(409, 'Already signed in.')
+    // A computer linked before signs straight back in: no browser, no approving it again.
+    try {
+      if (await resumeAccount({ asked: true })) {
+        link = null
+        passes = null
+        signedOutReason = null
+        checkedToken = true
+        broadcast('signed-in', {})
+        return accountState()
+      }
+    } catch {}
     const identity = loadIdentity()
     const mine = { ...await startLink({ identity }), state: 'waiting', error: null }
     link = mine
@@ -251,14 +302,9 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
   }
   const summary = (id) => {
     const r = runs.get(id)
-    return { id, dir: r.run.dir, invite: r.run.invite, viewInvite: r.run.viewInvite, status: r.run.session.status(), logs: r.logs.slice(-80), git: hostsGit(r), workspace: readConfig(r.run.dir)?.workspace || '' }
+    return { id, dir: r.run.dir, invite: r.run.invite, viewInvite: r.run.viewInvite, status: r.run.session.status(), logs: r.logs.slice(-80), workspace: readConfig(r.run.dir)?.workspace || '' }
   }
   const pushStatus = (id) => runs.has(id) && broadcast('session', summary(id))
-  // Git lives only on the host's computer (sync never writes inside .git), so
-  // only a session you started, on a folder that's a repo, gets git actions.
-  // Git lives with the session's owner. Sessions without an owner (older
-  // clients) fall back to "didn't join it from an invite".
-  const hostsGit = (r) => gitops.hostsGit(r.run.session, { joined: r.joined })
 
   async function start ({ mode, dir, tool, invite, prefer, repo, branch, newBranch, base, workspace }) {
     const me = profile()
@@ -304,7 +350,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       conn = newConn()
     }
 
-    const entry = { logs: [], joined: mode === 'join' }
+    const entry = { logs: [] }
     const log = (line) => {
       entry.logs.push({ ts: Date.now(), line })
       if (entry.logs.length > 200) entry.logs.shift()
@@ -413,25 +459,6 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     return { name }
   }
 
-  /** The session's folder, if this app may run git in it. */
-  const gitDir = (id) => {
-    get(id)
-    const r = runs.get(id)
-    if (!hostsGit(r)) throw httpError(400, r.joined ? 'Only the person who started this session can use git here.' : 'This folder isn\'t a git repository.')
-    return r.run.dir
-  }
-  // One git action at a time per session; the reply includes the new status.
-  const gitAction = async (id, fn) => {
-    const dir = gitDir(id)
-    const r = runs.get(id)
-    if (r.gitBusy) throw httpError(409, 'Git is still busy with the last action.')
-    r.gitBusy = true
-    try {
-      const result = await fn(dir)
-      return { ...result, status: await gitops.status(dir) }
-    } finally { r.gitBusy = false }
-  }
-
   // Agent invites and the list of your agents come from the accounts API, as this computer's account.
   // A 401 there is checked against /v1/me before it counts: only a token the API no longer knows
   // signs the app out (an older API that doesn't take the app's token for these yet just errors).
@@ -445,7 +472,11 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       let revoked = false
       try { await fetchMe({ token: account.token }) } catch (e) { revoked = e.status === 401 }
       if (!revoked) throw httpError(502, `Quilt's accounts service turned this down: ${err.message}`)
-      await signedOut('revoked')
+      // The token is gone, maybe not the link: sign back in with this computer's key and go again.
+      let back
+      try { back = await resumeAccount() } catch (e) { throw httpError(502, `Couldn't sign this computer back in: ${e.message}`) }
+      if (back) { passes = null; signedOutReason = null; return fn(back.token) }
+      await signedOut('revoked', account.token)
       throw Object.assign(httpError(401, SIGNED_OUT_MESSAGE), { signedOut: true })
     }
   }
@@ -474,6 +505,11 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
   const owned = (id) => {
     const s = get(id)
     if (!s.isOwner) throw httpError(403, 'Only the session owner can do that.')
+    return s
+  }
+  const admitter = (id) => {
+    const s = get(id)
+    if (!s.canAdmit) throw httpError(403, 'You cannot let people into this session.')
     return s
   }
   const typeById = async (token, typeId) => {
@@ -653,21 +689,18 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       const mergeId = String(b.id || '')
       const { prompt } = s.prepareMergeSend(mergeId)
       const app = String(b.app || '')
-      const mergePath = s.mergeList().find((m) => m.id === mergeId)?.path || mergeId
-      // The headless run can take minutes; openIn returns once it's started, and logs how it went when it's done.
-      const { copied, started } = await openIn(app, s.root, {
-        prompt,
-        onDone: (result) => s.log(result.ok
-          ? `Claude Code finished merging ${mergePath}; a session opened`
-          : 'Claude Code could not run; the prompt is on your clipboard')
-      })
-      return { copied, started, app }
+      const { copied } = await openIn(app, s.root, { prompt })
+      return { copied, app }
     },
     'POST /api/sessions/:id/stop': (b, id) => stop(id).then(() => ({ ok: true })),
     'POST /api/sessions/:id/say': (b, id) => get(id).say(b.text, { to: b.to || null }),
     'POST /api/sessions/:id/focus': (b, id) => { get(id).setFocus(b.text); return { ok: true } },
     'POST /api/sessions/:id/claim': (b, id) => get(id).claim(b.pattern, b.note),
     'POST /api/sessions/:id/release': async (b, id) => ({ released: await get(id).release(b.pattern) }),
+    'POST /api/sessions/:id/clear-claims': async (b, id) => ({ released: await get(id).clearInactiveClaims() }),
+    'POST /api/sessions/:id/request-file': (b, id) => get(id).requestFile(b.path, { title: b.title, description: b.description }),
+    'POST /api/sessions/:id/withdraw-request': async (b, id) => ({ withdrawn: await get(id).withdrawRequest(b.request) }),
+    'POST /api/sessions/:id/handoff': (b, id) => get(id).handoff(b.path, { to: b.to, context: b.context }),
     'POST /api/sessions/:id/attach-from-workspace': async (b, id) => {
       const s = get(id)
       const workspace = (readConfig(s.root) || {}).workspace
@@ -690,20 +723,33 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     'POST /api/sessions/:id/tasks': (b, id) => ({ task: get(id).addTask(b), tasks: get(id).taskList() }),
     'POST /api/sessions/:id/tasks/update': (b, id) => ({ task: get(id).updateTask(b), tasks: get(id).taskList() }),
     'POST /api/sessions/:id/tasks/delete': (b, id) => { get(id).deleteTask(b.id); return { tasks: get(id).taskList() } },
+    'POST /api/sessions/:id/tasks/comment': (b, id) => ({ ...get(id).commentTask(b), tasks: get(id).taskList() }),
     'GET /api/sessions/:id/feed': (b, id, url) => {
       const s = get(id)
       return { entries: s.agentFeedFor(url.searchParams.get('who') || s.name) }
     },
     'GET /api/sessions/:id/tree': (b, id) => get(id).tree(),
+    'GET /api/sessions/:id/changes': (b, id) => get(id).changes(),
+    'POST /api/sessions/:id/catch-up/dismiss': (b, id) => { const r = get(id).dismissCatchUp(); pushStatus(id); return r },
+    // Commits pushed or merged elsewhere: fetch and bring them in now (they also come in by themselves).
+    'POST /api/sessions/:id/branches/sync': async (b, id) => { const r = await get(id).syncBranchNow(); pushStatus(id); return r },
     'GET /api/sessions/:id/file': (b, id, url) => {
       const f = get(id).readShared(url.searchParams.get('path'))
       if (!f) throw httpError(404, 'That file is not in this session.')
       return f
     },
-    'POST /api/sessions/:id/members/approve': async (b, id) => b.typeId ? approveAs(id, b) : (await get(id).approve(b.key, { role: b.role, scopes: b.scopes }), { ok: true }),
-    'POST /api/sessions/:id/members/deny': async (b, id) => (await get(id).deny(b.key), { ok: true }),
+    'POST /api/sessions/:id/members/approve': async (b, id) => {
+      if (b.typeId) return approveAs(id, b) // access types: owner only (their types / grants)
+      await admitter(id).approve(b.key, { role: b.role, scopes: b.scopes })
+      return { ok: true }
+    },
+    'POST /api/sessions/:id/members/deny': async (b, id) => (await admitter(id).deny(b.key), { ok: true }),
+    'POST /api/sessions/:id/admit-by': async (b, id) => (await owned(id).setAdmitBy(b.admitBy), { ok: true, admitBy: b.admitBy }),
     'POST /api/sessions/:id/members/set': async (b, id) => (await get(id).setMember(b.key, { role: b.role, scopes: b.scopes }), { ok: true }),
     'POST /api/sessions/:id/members/remove': (b, id) => removeMember(id, b.key),
+    // Owner only: a link a chat-only AI (ChatGPT, claude.ai, Grok…) works through (chat-links.js).
+    'POST /api/sessions/:id/chat-link': (b, id) => get(id).createChatLink({ name: b.name || 'Chat AI', minutes: b.minutes }),
+    'POST /api/sessions/:id/chat-link/extend': (b, id) => get(id).extendChatLink(String(b.key || ''), b.minutes),
     // Agents kept out of this session (removing one in a workspace does it), and letting one back in.
     'GET /api/sessions/:id/agents/excluded': (b, id) => { const s = owned(id); return asAccount(async (token) => ({ agents: await listExcludedSessionAgents({ token, room: s.room }) })) },
     // The session's People (workspaces on): the agents its workspace invites, Don't invite (a
@@ -743,15 +789,8 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     'GET /api/github/status': () => gitops.ghStatus(),
     'GET /api/github/repos': async (b, id, url) => ({ repos: await gitops.listRepos({ limit: url.searchParams.get('limit') || 100 }) }),
     'GET /api/github/branches': (b, id, url) => gitops.listBranches(url.searchParams.get('repo')),
-    'GET /api/sessions/:id/git': (b, id) => gitops.status(gitDir(id)),
-    'POST /api/sessions/:id/git/pull': (b, id) => gitAction(id, (dir) => gitops.pull(dir, { base: b.base })),
-    'POST /api/sessions/:id/git/commit': (b, id) => gitAction(id, async (dir) => {
-      const r = await gitops.commit(dir, b.message)
-      get(id).resolveCommitRequests({ hash: r.hash })
-      return r
-    }),
     'POST /api/sessions/:id/commit-request': (b, id) => get(id).requestCommit(b.message),
-    'POST /api/sessions/:id/git/pr': (b, id) => gitAction(id, (dir) => gitops.pushAndOpenPr(dir, { title: b.title, body: b.body, base: b.base })),
+    'POST /api/sessions/:id/commit-request/done': (b, id) => { const done = get(id).resolveCommitRequests({ ids: b.id ? [String(b.id)] : null }); pushStatus(id); return { done } },
     'GET /api/fs': (b, id, url) => listDir(url.searchParams.get('path') || os.homedir()),
     // Reply first, then shut down, so the page hears back before we exit.
     'POST /api/shutdown': () => {
@@ -1007,7 +1046,10 @@ function listDir (p) {
 /** The AI coding tool this person most likely uses, from what it has left in their home folder. */
 function detectTool () {
   const home = os.homedir()
-  const found = [['.claude', 'Claude Code'], ['.cursor', 'Cursor'], ['.codex', 'Codex'], ['.codeium/windsurf', 'Windsurf']]
+  // Prefer real usage markers. ~/.claude alone is not enough: Quilt's hooks write
+  // settings there for every session, which made Cursor / xAI / Grok users look like
+  // Claude Code. Transcripts live under .claude/projects.
+  const found = [['.claude/projects', 'Claude Code'], ['.cursor', 'Cursor'], ['.codex', 'Codex'], ['.codeium/windsurf', 'Windsurf']]
     .map(([dir, tool]) => {
       try { return { tool, used: fs.statSync(path.join(home, dir)).mtimeMs } } catch { return null }
     })

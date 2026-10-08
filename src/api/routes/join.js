@@ -1,6 +1,8 @@
 // An AI opening an agent invite link. A GET without a name only explains, so
 // link previews and scanners never use the invite up; a POST, or a GET with
 // name, provider and type, uses it once and hands back the agent's first keys.
+// An agent that already joined once gives its agentId (public, like a person's id)
+// and comes back as itself instead of as a new agent with the same name.
 import { HttpError, Raw, cleanName, stripInvisible } from '../http.js'
 import { hashToken } from '../tokens.js'
 import { parsePublicKey } from '../../identity.js'
@@ -8,6 +10,8 @@ import { joinInstructions, joinNext } from '../join-text.js'
 import { inviteStatus } from './agent-invites.js'
 
 const MAX_DESCRIPTION = 180
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const NEW_AGENT = 'leave agentId out to join as a new agent'
 const GONE = {
   used: 'this invite was already used; ask for a new one',
   expired: 'this invite has expired; ask for a new one',
@@ -40,6 +44,44 @@ export function joinRoutes ({ store, now, apiUrl, limitJoin, agentAuth, log = ()
     }
   }
 
+  // The agent coming back, when the join names one (agentId is optional). The invite is
+  // what lets it in: the id only has to name an agent of the invite's person or org.
+  async function returning (src, invite) {
+    const id = src.agentId
+    if (id == null || id === '') return null
+    if (typeof id !== 'string' || !UUID.test(id)) throw new HttpError(400, `agentId must be the id Quilt gave you when you first joined; ${NEW_AGENT}`)
+    const agent = await store.agentById(id.toLowerCase())
+    if (!agent) throw new HttpError(404, `no agent has that agentId; ${NEW_AGENT}`)
+    const home = invite.orgId ? agent.orgId === invite.orgId : agent.ownerUserId === invite.ownerUserId
+    if (!home) throw new HttpError(403, `that agent belongs to someone else, and this invite can't bring it back; ${NEW_AGENT}`)
+    return agent
+  }
+
+  // A returning org agent gets the invite's role and teams; teams it has and the invite
+  // doesn't name are left as they are.
+  async function rejoinOrg (invite, agent) {
+    let m = await store.memberByAgent(invite.orgId, agent.id)
+    if (!m) m = await store.addAgentMember({ orgId: invite.orgId, agentId: agent.id, roleId: invite.roleId })
+    else if (invite.roleId && m.roleId !== invite.roleId) await store.setMemberRole(m.id, invite.roleId)
+    const mine = new Set((await store.teamsOfMember(m.id)).map((x) => x.teamId))
+    for (const x of invite.teams) {
+      if (!await store.teamById(invite.orgId, x.teamId)) continue
+      if (mine.has(x.teamId)) await store.setTeamAccess(x.teamId, m.id, x.access, x.scopes)
+      else await store.addTeamMember({ teamId: x.teamId, memberId: m.id, access: x.access, scopes: x.scopes })
+    }
+  }
+
+  const reply = (agent, keys, resumeKey, rejoined) => ({
+    ...keys,
+    resumeKey,
+    rejoined,
+    api: apiUrl,
+    refresh: `${apiUrl}/v1/agents/token`,
+    resume: `${apiUrl}/v1/agents/resume`,
+    mcp: `${apiUrl}/mcp`,
+    next: joinNext({ name: agent.name, agentId: agent.id, apiUrl, hasKey: !!agent.publicKey, rejoined })
+  })
+
   async function join (token, src) {
     const invite = await inviteFor(token)
     const status = statusOf(invite)
@@ -47,12 +89,28 @@ export function joinRoutes ({ store, now, apiUrl, limitJoin, agentAuth, log = ()
     if (status !== 'waiting') throw new HttpError(410, GONE[status])
     // Everything the agent sent is checked first, so a typo never burns the invite.
     const p = profile(src)
-    if (p.publicKey && await store.agentByPublicKey(p.publicKey)) throw new HttpError(409, 'that publicKey already belongs to an agent')
+    const back = await returning(src, invite)
+    const owner = p.publicKey && await store.agentByPublicKey(p.publicKey)
+    if (owner && owner.id !== back?.id) throw new HttpError(409, 'that publicKey already belongs to an agent')
     // Claim first, so two joins racing on one link can't both make an agent.
     if (!await store.claimAgentInvite(invite.id)) throw new HttpError(410, GONE.used)
+    const { resumeKey, resumeHash } = agentAuth.newResumeKey()
+    if (back) {
+      // Its keys from before keep working until they run out, like a person signing in
+      // on a second computer; its old resume key is replaced by this one.
+      try {
+        const agent = await store.rejoinAgent(back.id, { ...p, resumeHash })
+        if (invite.orgId) await rejoinOrg(invite, agent)
+        await store.setInviteAgent(invite.id, agent.id, true)
+        return reply(agent, await agentAuth.mintKeys(agent.id), resumeKey, true)
+      } catch (err) {
+        await store.releaseAgentInvite(invite.id).catch(() => {})
+        throw err
+      }
+    }
     let agent
     try {
-      agent = await store.createAgent({ ...p, ownerUserId: invite.ownerUserId, orgId: invite.orgId, invitedBy: invite.createdBy })
+      agent = await store.createAgent({ ...p, resumeHash, ownerUserId: invite.ownerUserId, orgId: invite.orgId, invitedBy: invite.createdBy })
       if (invite.orgId) {
         const m = await store.addAgentMember({ orgId: invite.orgId, agentId: agent.id, roleId: invite.roleId })
         for (const x of invite.teams) {
@@ -70,8 +128,7 @@ export function joinRoutes ({ store, now, apiUrl, limitJoin, agentAuth, log = ()
         await store.putAgentPlacement({ agentId: agent.id, reach: 'all', workspaceIds: [], sessions: 'all', access: 'edit', scopes: [], updatedBy: `person:${invite.createdBy}` })
       }
       await store.setInviteAgent(invite.id, agent.id)
-      const keys = await agentAuth.mintKeys(agent.id)
-      return { ...keys, api: apiUrl, refresh: `${apiUrl}/v1/agents/token`, mcp: `${apiUrl}/mcp`, next: joinNext({ name: agent.name, apiUrl, hasKey: !!agent.publicKey }) }
+      return reply(agent, await agentAuth.mintKeys(agent.id), resumeKey, false)
     } catch (err) {
       // Undo the half-made agent and reopen the link, so the AI can simply try again.
       // But if the agent couldn't be deleted, it may still be half-wired into the org
@@ -99,7 +156,7 @@ export function joinRoutes ({ store, now, apiUrl, limitJoin, agentAuth, log = ()
     ['GET', /^\/v1\/join\/([^/]+)$/, async (req, body, [token]) => {
       limitJoin(req)
       const q = new URL(req.url, 'http://x').searchParams
-      // Only a GET that names the agent uses the invite.
+      // Only a GET that names the agent uses the invite (agentId alone doesn't).
       if (['name', 'provider', 'type'].some((k) => q.has(k))) return join(token, Object.fromEntries(q))
       const invite = await inviteFor(token)
       const status = statusOf(invite)

@@ -42,6 +42,9 @@ the commit, so the history stays in one place.
 | [029](029-repo-and-ci-hygiene.md) | CI skips the website; .dockerignore ships 970 MB; stale secrets, lockfiles, dirs and issue statuses | Open, medium |
 | [030](030-mail-dns-and-headers.md) | Mail DNS incomplete (no DMARC/SPF on hq); Fly apps send no hardening headers | Open, low |
 | [035](035-sync-data-loss-edge-cases.md) | Sync edge cases: case-only collisions, delete-vs-edit race, `.quilt/` committable, 1 s rescan cost, more | Open, medium |
+| [036](036-app-crash-leaves-agents-working.md) | App crash or shutdown mid-session leaves agents working blind; no last-ditch "pause" signal | Open, high |
+| [037](037-agent-join-writes-claude-hooks.md) | Agent join writes Claude Code hooks into the shared project for non-Claude agents | Open, medium · **Assignee: Brandon** |
+| [038](038-local-only-coworking-unsolved.md) | A local-only free tier has no answer for coworking between people, identity or tracking | Open, product decision |
 
 Issues 009 to 035 come from the full audit of 2026-10-01 (relay, sync client, accounts API, Supabase, website, desktop app, deploy and docs). 009, 010 and 031 and the highs (011, 013, 014, 015, 021, 032, 033, 034) are fixed; 012 is done on GitHub.
 

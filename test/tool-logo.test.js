@@ -47,6 +47,7 @@ test('each known TOOLS name has a distinct favicon domain', () => {
     ['Claude Code', 'anthropic.com'],
     ['Cursor', 'cursor.com'],
     ['Codex', 'openai.com'],
+    ['xAI', 'x.ai'],
     ['Windsurf', 'windsurf.com'],
     ['GitHub Copilot', 'github.com'],
     ['Zed', 'zed.dev'],
@@ -63,4 +64,13 @@ test('each known TOOLS name has a distinct favicon domain', () => {
     srcs.push(src)
   }
   assert.equal(new Set(srcs).size, srcs.length)
+})
+
+test('xAI / Grok resolve to xAI favicon', () => {
+  assert.equal(resolveToolKey('xAI'), 'xAI')
+  assert.equal(resolveToolKey('grok'), 'xAI')
+  assert.equal(resolveToolKey('Grok'), 'xAI')
+  const html = toolLogo('xAI')
+  assert.match(html, /domain=x\.ai/)
+  assert.match(html, /aria-label="xAI"/)
 })

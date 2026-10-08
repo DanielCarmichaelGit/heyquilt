@@ -1,14 +1,17 @@
-// The session task board: three columns. Task ids and titles come from the
+// The session task board: four columns. Task ids and titles come from the
 // shared room, so every string is escaped. Column ids match src/tasks.js.
-import { I, esc } from './common.js'
+import { I, esc, ago } from './common.js'
+import { markdown } from './feed.js'
+import { cronToText } from './schedule.js'
 
 // Arms stay inside the view box so a round stroke isn't clipped into a plus.
 const CLOSE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round"><path d="M7 7l10 10M17 7 7 17"/></svg>'
 
 const COLUMNS = [
   { id: 'todo', name: 'To do', moves: [{ column: 'doing', name: 'In progress', label: 'Start', icon: 'arrowRight' }] },
-  { id: 'doing', name: 'In progress', moves: [{ column: 'todo', name: 'To do', label: 'To do', icon: 'arrowLeft' }, { column: 'done', name: 'Done', label: 'Done', icon: 'check' }] },
-  { id: 'done', name: 'Done', moves: [{ column: 'doing', name: 'In progress', label: 'Reopen', icon: 'arrowLeft' }] }
+  { id: 'doing', name: 'In progress', moves: [{ column: 'todo', name: 'To do', label: 'To do', icon: 'arrowLeft' }, { column: 'qa', name: 'QA', label: 'QA', icon: 'arrowRight' }] },
+  { id: 'qa', name: 'QA', moves: [{ column: 'doing', name: 'In progress', label: 'Reopen', icon: 'arrowLeft' }, { column: 'done', name: 'Done', label: 'Done', icon: 'check' }] },
+  { id: 'done', name: 'Done', moves: [{ column: 'qa', name: 'QA', label: 'Reopen', icon: 'arrowLeft' }] }
 ]
 
 export function renderBoard (tasks, me, people = [], assignTo = '') {
@@ -88,10 +91,72 @@ function filesHtml (files) {
   }).join('')}</ul>`
 }
 
+function noteFields (t) {
+  const qa = String(t?.qaNotes || '').trim()
+  const verified = String(t?.verified || '').trim()
+  const sections = []
+  if (qa) sections.push({ label: 'QA notes', text: qa })
+  if (verified) sections.push({ label: 'Done notes', text: verified })
+  return sections
+}
+
+/** Full ticket notes and comments for the notes modal. Markdown is rendered; raw HTML is escaped. */
+export function taskNotesModalHtml (t) {
+  const sections = noteFields(t)
+  const notes = sections.map((s) => `<section class="task-notes-sec"><h4>${esc(s.label)}</h4><div class="task-notes-body md">${markdown(s.text)}</div></section>`).join('')
+  const comments = Array.isArray(t?.comments) ? t.comments : []
+  const thread = comments.length
+    ? `<ol class="task-comments">${comments.map((c) => `<li class="task-comment"><div class="task-comment-head"><b>${esc(c.by)}</b> <span>${esc(ago(c.ts))}</span></div><div class="md">${markdown(c.text)}</div></li>`).join('')}</ol>`
+    : '<p class="lead">No comments yet.</p>'
+  const col = COLUMNS.find((c) => c.id === t?.column)?.name || ''
+  return `<div class="card modal task-notes-modal" role="dialog" aria-modal="true" aria-labelledby="task-notes-title">
+    <h3 id="task-notes-title">${esc(t?.title || 'Task')}</h3>
+    ${col ? `<p class="lead">${esc(col)}</p>` : ''}
+    ${notes}
+    <section class="task-notes-sec"><h4>Comments</h4>${thread}</section>
+    <form class="task-comment-form">
+      <textarea class="task-comment-text" rows="2" maxlength="2000" placeholder="Add a comment: a work note, a handoff, why it went to whom" aria-label="Comment on ${esc(t?.title || 'this task')}"></textarea>
+      <div class="actions"><button type="button" class="btn" data-close-notes>Close</button><button type="submit" class="btn primary">Comment</button></div>
+    </form>
+  </div>`
+}
+
+function notesButton (t) {
+  const n = Array.isArray(t.comments) ? t.comments.length : 0
+  const has = noteFields(t).length || n
+  const label = `Notes and comments${n ? ` (${n})` : ''}`
+  return `<button type="button" class="task-icon task-notes-btn${has ? ' on' : ''}" data-task-notes title="${esc(label)}" aria-label="${esc(label)} on ${esc(t.title)}">${has && !n ? I.eye : I.chat}${n ? `<span class="task-count">${n}</span>` : ''}</button>`
+}
+
+function recurButton (t) {
+  const on = !!t.recurring
+  const when = on && t.cron ? cronToText(t.cron) : ''
+  const title = on ? (when ? `Recurring: ${when}` : 'Recurring') : 'Make recurring'
+  return `<button type="button" class="task-icon task-recur${on ? ' on' : ''}" data-task-recur aria-pressed="${on ? 'true' : 'false'}" title="${esc(title)}" aria-label="${esc(title)} for ${esc(t.title)}">${I.repeat}</button>`
+}
+
+function recurHtml (t) {
+  if (!t.recurring) return ''
+  const read = t.cron ? cronToText(t.cron) : 'Add a schedule'
+  return `<form class="task-cron-form">
+    <div class="task-cron-row">
+      <input class="task-cron" value="${esc(t.cron || '')}" placeholder="daily at 9, or 0 9 * * *" aria-label="Repeat schedule for ${esc(t.title)}" maxlength="80" autocomplete="off">
+      <button type="submit" class="task-cron-set">Set</button>
+    </div>
+    <span class="task-cron-read">${esc(read)}</span>
+  </form>`
+}
+
 function verifiedHtml (t) {
   if (t.column !== 'done' || !t.verified) return ''
   const v = String(t.verified).replace(/\s+/g, ' ').trim()
   return `<p class="task-verified" title="${esc(v)}">${esc(v.length > 160 ? `${v.slice(0, 157)}…` : v)}</p>`
+}
+
+function qaNotesHtml (t) {
+  if (t.column !== 'qa' || !t.qaNotes) return ''
+  const v = String(t.qaNotes).replace(/\s+/g, ' ').trim()
+  return `<p class="task-qa-notes" title="${esc(v)}">${esc(v.length > 160 ? `${v.slice(0, 157)}…` : v)}</p>`
 }
 
 function card (t, col, me, people) {
@@ -104,13 +169,17 @@ function card (t, col, me, people) {
     <div class="task-main">
       <button type="button" class="task-title">${esc(t.title)}</button>
       <div class="task-tools">
+        ${notesButton(t)}
+        ${recurButton(t)}
         <button type="button" class="task-icon" data-task-edit title="Edit" aria-label="Edit task">${I.pencil}</button>
         <button type="button" class="task-icon task-x" data-task-delete title="Remove" aria-label="Remove task">${CLOSE}</button>
       </div>
     </div>
     <select class="task-assign" aria-label="Assign ${esc(t.title)}">${assignOptions(t, me, people)}</select>
+    ${recurHtml(t)}
     ${filesHtml(t.files)}
     ${verifiedHtml(t)}
+    ${qaNotesHtml(t)}
     <form class="task-file-form">
       <input class="task-file" placeholder="Add a file…" aria-label="Add a file to ${esc(t.title)}" maxlength="240" autocomplete="off">
     </form>

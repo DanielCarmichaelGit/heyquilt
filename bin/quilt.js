@@ -18,6 +18,7 @@ Usage:
   quilt serve [--port 4321] [--data ./quilt-data]   Run a relay server (see docs/hosting.md)
   quilt api [--port 8787] [--memory]                   Run the accounts API (needs SUPABASE_URL etc.; --memory for local testing)
   quilt agent join <link> --name <name>               Join Quilt as an agent with an invite link from the website
+                       [--agent-id <id>]              (an agent that joined before comes back as itself)
   quilt agent whoami --name <name>                    Show who a joined agent is
   quilt join                                          Rejoin this folder's last session, or start a new one
   quilt join <invite-link>                            Join a partner's session in this folder
@@ -33,6 +34,8 @@ Usage:
   quilt focus <what you're doing>                     Tell collaborators what you're working on
   quilt claim <path|glob> [reason]                    Mark files as yours for now
   quilt release <path|glob|*>                         Release a claim
+  quilt chat-link [name] [--minutes N]                Owner: a link for a chat-only AI (ChatGPT, claude.ai, Grok); 10 minutes
+  quilt chat-link extend <name> <minutes>             Owner: keep a chat link working for that long from now
   quilt invite                                        Print this session's invite code
   quilt stop                                          Shut down everything quilt is running (relay, app, syncs)
   quilt doctor [folder] [--watch 30]                  Check what quilt can see of your Claude Code / Cursor chats
@@ -75,6 +78,16 @@ async function main () {
     case 'claim': return simple('/claim', { pattern: argv[0], note: argv.slice(1).join(' ') }, (r) =>
       `claimed ${argv[0]}` + (r.overlapping?.length ? `\nwarning: overlaps ${r.overlapping.map((c) => `${c.by}'s ${c.pattern}`).join(', ')}` : ''))
     case 'release': return simple('/release', { pattern: argv[0] || '*' }, (r) => `released ${r.released} claim(s)`)
+    case 'chat-link': {
+      if (argv[0] === 'extend') {
+        if (!argv[1] || !Number(argv[2])) fail('usage: quilt chat-link extend <name> <minutes>')
+        return simple('/chat-link/extend', { who: argv[1], minutes: Number(argv[2]) }, (r) => `${r.name}'s chat link now works until ${new Date(r.expiresAt).toLocaleString()}.`)
+      }
+      const i = argv.indexOf('--minutes')
+      const minutes = i >= 0 ? Number(argv[i + 1]) : undefined
+      const name = argv.filter((a, k) => !(i >= 0 && (k === i || k === i + 1))).join(' ')
+      return simple('/chat-link', { name, minutes }, (r) => `Chat link for ${r.name}, until ${new Date(r.expiresAt).toLocaleTimeString()}:\n\n  ${r.url}\n\nPaste it into ChatGPT, claude.ai or Grok with "Open this link and follow it to join our Quilt session."\nAnyone with it can act as ${r.name}. Extend it with \`quilt chat-link extend ${r.name} <minutes>\`; once it runs out, make a new one.`)
+    }
     case 'invite': return invite()
     case 'stop': return stopAll()
     case 'doctor': {
@@ -83,6 +96,8 @@ async function main () {
       const dir = argv.find((a, k) => !a.startsWith('--') && !(i >= 0 && k === i + 1))
       return (await import('../src/doctor.js')).doctor({ dir, watchSeconds: secs })
     }
+    case '-v': case '--version': case 'version':
+      console.log(`quilt ${(await import('../src/releases.js')).currentVersion()}`); return
     case undefined: case '-h': case '--help': case 'help':
       process.stdout.write(HELP); return
     default:
@@ -167,17 +182,17 @@ async function apiCmd () {
 }
 
 async function agentCmd () {
-  const usage = 'usage: quilt agent join <link> --name <name> [--provider <p>] [--type <t>] [--description <d>]\n       quilt agent whoami --name <name>'
+  const usage = 'usage: quilt agent join <link> --name <name> [--agent-id <id>] [--provider <p>] [--type <t>] [--description <d>]\n       quilt agent whoami --name <name>'
   const [sub, ...rest] = argv
   let parsed = { values: {}, positionals: [] }
   try {
-    parsed = parseArgs({ args: rest, allowPositionals: true, options: { name: { type: 'string' }, provider: { type: 'string' }, type: { type: 'string' }, description: { type: 'string' } } })
+    parsed = parseArgs({ args: rest, allowPositionals: true, options: { name: { type: 'string' }, 'agent-id': { type: 'string' }, provider: { type: 'string' }, type: { type: 'string' }, description: { type: 'string' } } })
   } catch { fail(usage) }
   const { values, positionals } = parsed
   if (!values.name || !((sub === 'join' && positionals[0]) || sub === 'whoami')) fail(usage)
   const { agentJoin, agentWhoami, describeAgent } = await import('../src/agent-join.js')
   try {
-    if (sub === 'join') await agentJoin({ link: positionals[0], name: values.name, provider: values.provider, type: values.type, description: values.description })
+    if (sub === 'join') await agentJoin({ link: positionals[0], name: values.name, agentId: values['agent-id'], provider: values.provider, type: values.type, description: values.description })
     else console.log(describeAgent(await agentWhoami({ name: values.name })))
   } catch (err) {
     fail(err.message)
@@ -195,8 +210,10 @@ async function join () {
   })
   const { runSession, decodeInvite, newConn, readConfig, personsFolder, agentCopyFolder } = await import('../src/runner.js')
   const { sessionPasses } = await import('../src/pass-source.js')
-  const { clearAccount } = await import('../src/account.js')
-  // Every session signs in: as this computer's account, or as a saved agent.
+  const { clearAccount, readAccount, resumeAccount } = await import('../src/account.js')
+  // Every session signs in: as this computer's account, or as a saved agent. A computer
+  // linked before signs itself back in when its sign-in was lost.
+  if (!values.agent && !readAccount()) await resumeAccount().catch(() => null)
   let auth
   try { auth = sessionPasses({ agent: values.agent || null }) } catch (err) { fail(err.message) }
   const whyStopped = (err) => {
@@ -235,11 +252,26 @@ async function join () {
   console.log(`quilt: syncing ${dir}`)
   let run
   try {
+    let tool = values.tool || saved.tool
+    if (!tool && auth.kind === 'agent') {
+      try {
+        const { agentWhoami } = await import('../src/agent-join.js')
+        const { toolLabel } = await import('../src/agents/common.js')
+        const me = await agentWhoami({ name: auth.name })
+        const provider = me?.agent?.provider
+        if (provider) {
+          const labeled = toolLabel(provider)
+          const known = new Set(['Claude Code', 'Cursor', 'Codex', 'xAI', 'Windsurf', 'Zed', 'GitHub Copilot', 'Aider'])
+          if (known.has(labeled)) tool = labeled
+          else tool = labeled || tool
+        }
+      } catch {}
+    }
     run = await runSession({
       dir,
       conn,
       name: auth.name,
-      tool: values.tool || saved.tool,
+      tool,
       prefer: values.prefer === 'local' ? 'local' : 'remote',
       kind: auth.kind,
       passes: auth.passes,
@@ -272,6 +304,7 @@ async function ui () {
   const { values } = parseArgs({ args: argv, options: { port: { type: 'string' }, 'no-open': { type: 'boolean' }, preview: { type: 'boolean' } } })
   const { startUi } = await import('../src/ui-server.js')
   const { registerProcess, stopProcesses } = await import('../src/procs.js')
+  ;(await import('../src/integrations.js')).registerOnStart((line) => console.log(line))
   const app = await startUi({
     port: Number(values.port || 7420),
     preview: !!values.preview,
@@ -294,11 +327,14 @@ async function ui () {
 
 async function login () {
   const { values } = parseArgs({ args: argv, options: { 'no-browser': { type: 'boolean' } } })
-  const { readAccount, saveAccount, startLink, waitForLink, accountFromProfile } = await import('../src/account.js')
+  const { readAccount, saveAccount, startLink, waitForLink, accountFromProfile, resumeAccount } = await import('../src/account.js')
   const { loadIdentity } = await import('../src/identity.js')
   const current = readAccount()
   if (current) return console.log(`Already signed in as ${current.account.name} (${current.account.email}). Run quilt logout first to switch accounts.`)
   const identity = loadIdentity()
+  // Linked before: signs straight back in, no browser.
+  const back = await resumeAccount({ identity, asked: true }).catch(() => null)
+  if (back) return console.log(`Signed in as ${back.account.name} (${back.account.email}).`)
   let link
   try { link = await startLink({ identity }) } catch (err) { fail(err.message) }
   console.log(`To sign in, open this page and approve this computer:\n\n  ${link.verificationUrl}\n\nCheck it shows the code ${link.userCode}. Waiting…`)
@@ -308,6 +344,7 @@ async function login () {
   const account = accountFromProfile(r.profile)
   saveAccount({ token: r.token, account, signedInAt: Date.now() })
   console.log(`Signed in as ${account.name} (${account.email}).`)
+  ;(await import('../src/integrations.js')).registerOnStart((line) => console.log(line))
 }
 
 async function logout () {
@@ -342,8 +379,7 @@ async function doSetup () {
   const changed = setup(process.cwd())
   if (!changed.length) return console.log('already set up')
   console.log('updated:\n' + changed.map((c) => `  - ${c}`).join('\n'))
-  console.log('\nRestart your AI tool (or reload MCP servers) to pick up the "quilt" MCP server.')
-  console.log('Other tools: point them at AGENTS.md, or have them run `quilt status`.')
+  console.log('\nAn AI tool that was already open picks up the "quilt" MCP server when it restarts.')
 }
 
 async function daemonOrFail () {
@@ -378,9 +414,12 @@ function splitRecipient (args) {
 }
 
 async function say () {
+  const flag = (f) => { const i = argv.indexOf(f); if (i === -1) return false; argv.splice(i, 1); return true }
+  const everyone = flag('--everyone')
+  const also = flag('--also')
   const { to, rest } = splitRecipient(argv)
-  if (!rest.length) fail('usage: quilt say [@name] <message>')
-  await simple('/say', { text: rest.join(' '), to }, (r) =>
+  if (!rest.length) fail('usage: quilt say [@name] <message>  (a message to everyone names who it is for with @Name, or add --everyone)')
+  await simple('/say', { text: rest.join(' '), to, everyone, also }, (r) =>
     to ? `sent to ${to}${r.recipientOnline ? '' : ' (offline, they will see it when they reconnect)'}` : 'sent')
 }
 
@@ -481,7 +520,8 @@ async function chat () {
         print('  unknown command')
       } else {
         const { to, rest } = splitRecipient(line.split(' '))
-        const r = await call(d, 'POST', '/say', { text: rest.join(' '), to })
+        // A person typing here, not an AI: what they send needs no @Name.
+        const r = await call(d, 'POST', '/say', { text: rest.join(' '), to, everyone: true })
         if (to && !r.recipientOnline) print(`  (${to} is offline; they'll see it when they reconnect)`)
       }
     } catch (err) {

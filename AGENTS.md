@@ -3,7 +3,8 @@
 ## Verifying a change
 
 Every agent reads this when it picks up a ticket and must run these checks before moving
-it to Done. Say what you ran and what you saw in `verified`.
+it to QA. Put a description of the changes and how you self-validated them in `qaNotes`
+when moving to QA. Moving to Done still needs `verified` (what you ran and what you saw).
 
 - `npm test` passes (note the count). Two tests fail on main today for unrelated reasons;
   anything else failing is yours.

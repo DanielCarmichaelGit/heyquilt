@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 // Publishes a Quilt release, notes included, so no version ships without them.
 //
-//   npm run release                 check, test, build Mac + Windows, tag, push, create the GitHub release
+//   npm run release                 check, test, tag and push: GitHub builds every platform and
+//                                   publishes the release (.github/workflows/release.yml), so this
+//                                   works from any machine, a cloud one included
 //   npm run release -- --dry-run    show what would happen
 //   npm run release -- --notes      print the GitHub release body for this version and stop
 //   npm run release -- --notes-only update the notes of the existing GitHub release for this version
+//   npm run release -- --local      the old way: build Mac + Windows here (a Mac) and publish with gh;
+//                                   no Linux builds
 //   npm run release -- --skip-tests / --skip-build   (when they just ran)
 //
 // Before running: bump "version" in package.json (npm version patch --no-git-tag-version)
@@ -51,9 +55,21 @@ if (branch !== 'main') fail(`release from main (you are on ${branch})`)
 if (sh('git', ['status', '--porcelain'])) fail('commit or stash your changes first')
 if (sh('git', ['tag', '-l', tag])) fail(`${tag} already exists; bump package.json and RELEASES.md`)
 sh('git', ['fetch', 'origin', 'main', '--tags'])
+if (sh('git', ['rev-list', '--count', 'HEAD..origin/main']) !== '0') fail('main is behind origin/main: git pull first, so the release has everything on main')
 if (sh('git', ['rev-list', '--count', 'origin/main..HEAD']) !== '0') console.log('note: main has commits origin does not; they are pushed with the tag')
 
 if (!args.has('--skip-tests')) run('npm', ['test'])
+
+if (!args.has('--local')) {
+  // GitHub builds Mac, Windows and Linux from the tag and publishes the release.
+  run('git', ['tag', '-a', tag, '-m', `Quilt ${version}`])
+  run('git', ['push', 'origin', 'main', tag])
+  console.log(`\n${dry ? 'Would push' : 'Pushed'} ${tag}. GitHub is building Quilt ${version} for Mac, Windows and Linux and publishes it when every build is done (about 15 minutes):`)
+  console.log(`  https://github.com/${REPO}/actions/workflows/release.yml`)
+  console.log('Open apps on older versions offer to update within about ten minutes of that.')
+  process.exit(0)
+}
+
 if (!args.has('--skip-build')) {
   run('npm', ['run', 'dist:mac'])
   run('npm', ['run', 'dist:win'])

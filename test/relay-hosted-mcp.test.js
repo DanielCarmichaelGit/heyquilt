@@ -88,8 +88,29 @@ test('joining puts the agent on the owner\'s list; the owner lets it in and it b
   const status = out(await call('quilt_status'))
   assert.match(status, /You are Grok-Bot in a live quilt session \(room hm-1\)/)
   assert.match(status, /- Carl \(Claude Code\)/)
+  // It has no live connection, but it's online: the owner's people list shows it.
+  const peer = await waitFor(() => carl.status().peers.find((p) => p.name === 'Grok-Bot'))
+  assert.equal(peer.kind, 'agent')
+  assert.equal(peer.hosted, true)
+  assert.ok(Date.now() - peer.lastSeen < 60 * 1000, 'with when it last checked in')
+  const member = carl.members.find((m) => m.key === GROK)
+  assert.equal(member.http, true, 'the member list marks it as over HTTP')
   // Joining again while a member is just a no-op.
   assert.match(out(await call('quilt_join_session', { invite: 'https://join.heyquilt.com/hm-1#s' })), /Joined room hm-1 as Grok-Bot \(editor\)/)
+})
+
+test('a hosted agent sees the session\'s branches: which folder is on which, and how each stands against its upstream', async () => {
+  // Carl's folder is no git repository here: what a git folder tells the room is set by hand.
+  carl.conn.awareness.setLocalStateField('git', {
+    branch: 'main', key: 'main', sha: 'a'.repeat(40), held: null, on: 'main',
+    upstream: { name: 'origin/main', url: 'https://github.com/x/y.git', behind: 2, ahead: 0, diverged: false, conflicts: 1, waiting: null },
+    repo: { worktrees: [{ name: '.', branch: 'main' }, { name: 'billing', branch: 'billing' }], branches: [{ name: 'billing', upstream: null, ahead: 0, behind: 0, author: 'Sam', ts: Date.now() - 5 * 60000, subject: 'Plans' }] }
+  })
+  const listed = await waitFor(async () => { const t = out(await call('quilt_branches')); return t.includes('`billing`') && t })
+  assert.match(listed, /`main` · on it: Carl's folder \(2 behind origin\/main; 1 file clash with the session's work\)\n/)
+  assert.match(listed, /`billing` · on it: worktree `billing` · last commit 5m ago by Sam: Plans/)
+  assert.match(listed, /come into the session by themselves/)
+  assert.match(out(await call('quilt_status')), /## Branches\n(- .*\n)*- `main` · on it: Carl/)
 })
 
 test('moving a task to In progress reminds the agent to grok → plan → build → test', async () => {
@@ -145,6 +166,27 @@ test('picking up a task briefs the agent: files, their recent changes, claims an
   fs.rmSync(path.join(carlDir, 'AGENTS.md'))
 })
 
+test('the agent comments on a task and reads it in full; the owner sees the comment and answers on the task', async () => {
+  const added = out(await call('quilt_add_task', { title: 'Plan the launch' }))
+  const id = added.split('\n').find((l) => /^[0-9a-f]{16}$/.test(l.trim())).trim()
+  const c = await call('quilt_comment_task', { id, text: 'Giving the copy to Carl: he wrote the last launch post.' })
+  assert.ok(!c.isError, out(c))
+  assert.match(out(c), /^Comment added to "Plan the launch" \(1 on it now\)\./)
+  const seen = await (async () => { for (let i = 0; i < 200; i++) { const t = carl.taskList().find((x) => x.id === id && x.comments.length); if (t) return t; await new Promise((r) => setTimeout(r, 25)) } })()
+  assert.ok(seen, 'the owner sees it')
+  assert.equal(seen.comments[0].text, 'Giving the copy to Carl: he wrote the last launch post.')
+  const agent = seen.comments[0].by
+  carl.commentTask({ id, text: 'Fine, draft due Friday.' })
+  await waitFor(async () => /Comments \(2\)/.test(out(await call('quilt_task', { id }))))
+  const full = out(await call('quilt_task', { id }))
+  assert.match(full, new RegExp(`^Plan the launch\nid: ${id}\nColumn: To do\nAssigned to: nobody`))
+  assert.match(full, new RegExp(`- ${agent} \\(\\d+s ago\\): Giving the copy to Carl.*\n- Carl \\(\\d+s ago\\): Fine, draft due Friday\\.`))
+  // Picking it up shows the comments in the briefing.
+  assert.match(out(await call('quilt_move_task', { id, column: 'doing' })), /Comments on the task \(latest last\):\n- you \[\d+s ago\]: Giving the copy to Carl.*\n- Carl \[\d+s ago\]: Fine, draft due Friday\./)
+  assert.ok((await call('quilt_task', { id: 'ffffffffffffffff' })).isError)
+  assert.ok((await call('quilt_comment_task', { id: 'ffffffffffffffff', text: 'x' })).isError)
+})
+
 test('the agent reads what the owner has, and what it writes lands on the owner\'s disk', async () => {
   assert.equal(out(await call('quilt_read_file', { path: 'README.md' })), '# Project\n')
   assert.match(out(await call('quilt_read_file', { path: 'missing.txt' })), /no file called missing.txt/)
@@ -165,6 +207,23 @@ test('the agent reads what the owner has, and what it writes lands on the owner\
   assert.match(carl.takeNotices()[0], /hello\.md was undone: it is claimed by Grok-Bot \(editing\)/)
   assert.match(out(await call('quilt_release', { pattern: 'hello.md' })), /Released hello\.md/)
   await waitFor(() => !carl.claimFor('hello.md'))
+
+  // Chat never blocks a file: the write goes through, and the agent is told what was said about it (once).
+  carl.say('I am rewriting brief.md, hold off for now')
+  const wrote = await waitFor(async () => { const t = out(await call('quilt_write_file', { path: 'brief.md', content: 'brief\n' })); return /What people said/.test(t) && t })
+  assert.match(wrote, /^(Created|Updated) brief\.md/)
+  assert.match(wrote, /- Carl, just now, about brief\.md: "I am rewriting brief\.md, hold off for now" \(you have not replied\)/)
+  assert.doesNotMatch(out(await call('quilt_write_file', { path: 'brief.md', content: 'brief!\n' })), /What people said/, 'once')
+  // An unanswered direct message holds up writes and claims until the agent answers.
+  carl.say('Grok-Bot, are you around?', { to: 'Grok-Bot' })
+  const held = await waitFor(async () => { const t = out(await call('quilt_claim', { pattern: 'docs/**' })); return /^Not yet/.test(t) && t })
+  assert.match(held, /Carl sent you a direct message \(id \w+\): "Grok-Bot, are you around\?"/)
+  assert.match(held, /Then call quilt_claim again/)
+  assert.ok(!carl.claimFor('docs/x.md'), 'nothing claimed')
+  await call('quilt_message', { to: 'Carl', text: 'Here. Sorry, I will leave brief.md to you.' })
+  assert.match(out(await call('quilt_write_file', { path: 'brief.md', content: 'brief\n' })), /Updated brief\.md/)
+  await call('quilt_release', { pattern: 'brief.md' })
+  await waitFor(() => !carl.claimFor('brief.md'))
 
   fs.writeFileSync(path.join(carlDir, 'notes.txt'), 'owner notes')
   await waitFor(async () => out(await call('quilt_read_file', { path: 'notes.txt' })) === 'owner notes')
@@ -201,8 +260,11 @@ test('the chronology records hosted and local changes with diffs, and is queryab
 })
 
 test('messages, shares and claims reach the owner, and claims are respected', async () => {
-  await call('quilt_message', { text: 'hello from the cloud' })
-  await waitFor(() => carl.chat.toArray().some((m) => m.by === 'Grok-Bot' && m.text === 'hello from the cloud'))
+  const bare = await call('quilt_message', { text: 'hello from the cloud' })
+  assert.equal(bare.isError, true, 'a message that names nobody is refused')
+  assert.match(out(bare), /^Not sent: this message names nobody.*@Carl/)
+  await call('quilt_message', { text: '@Carl hello from the cloud' })
+  await waitFor(() => carl.chat.toArray().some((m) => m.by === 'Grok-Bot' && m.text === '@Carl hello from the cloud'))
   await call('quilt_share', { request: 'Write the docs', summary: 'Plan: a README section.' })
   await waitFor(() => carl.agentFeedFor('Grok-Bot').length === 2)
 
@@ -226,8 +288,8 @@ test('quilt_inbox shows mentions, direct messages and tasks handed to the hosted
   const task = carl.addTask({ title: 'Write the usage section', assignee: 'Grok-Bot', files: ['README.md'] })
   await waitFor(async () => /Write the usage section/.test(out(await call('quilt_tasks'))))
   const inbox = out(await call('quilt_inbox'))
-  assert.match(inbox, /- Carl mentioned you in chat: @Grok-Bot the README needs a usage section/)
-  assert.match(inbox, /- Carl sent you a direct message: between us: keep it short/)
+  assert.match(inbox, /- Carl mentioned you in chat \(id \w+\): @Grok-Bot the README needs a usage section/)
+  assert.match(inbox, /- Carl sent you a direct message \(id \w+\): between us: keep it short/)
   assert.match(inbox, new RegExp(`- Carl handed you a task: "Write the usage section" \\(id ${task.id}\\)\\. Files: README\\.md`))
   assert.doesNotMatch(inbox, /nothing for the bot here/)
   assert.doesNotMatch(inbox, /hello from the cloud/, 'its own messages')
@@ -262,7 +324,7 @@ test('a hosted agent subscribes a webhook and is POSTed mentions, direct message
 
   carl.say('between us, via webhook', { to: 'Grok-Bot' })
   carl.say('nothing for the bot')
-  await call('quilt_message', { text: '@Grok-Bot talking to myself' })
+  await call('quilt_message', { text: '@Grok-Bot talking to myself', everyone: true })
   const task = carl.addTask({ title: 'Webhook task', assignee: 'Grok-Bot', files: ['README.md'] })
   await waitFor(() => posts.length === 3)
   await sleep(50)
@@ -270,8 +332,8 @@ test('a hosted agent subscribes a webhook and is POSTed mentions, direct message
   assert.deepEqual(bodies()[2].task, { id: task.id, title: 'Webhook task', column: 'todo', assignee: 'Grok-Bot', forAi: false, tool: '', files: ['README.md'] })
   // quilt_inbox still has everything the webhook carried.
   const inbox = out(await call('quilt_inbox'))
-  assert.match(inbox, /mentioned you in chat: @Grok-Bot now via webhook/)
-  assert.match(inbox, /direct message: between us, via webhook/)
+  assert.match(inbox, /mentioned you in chat \(id \w+\): @Grok-Bot now via webhook/)
+  assert.match(inbox, /direct message \(id \w+\): between us, via webhook/)
   assert.match(inbox, /handed you a task: "Webhook task"/)
 
   // A receiver that is down for a moment gets the POST again.
@@ -282,7 +344,9 @@ test('a hosted agent subscribes a webhook and is POSTed mentions, direct message
   assert.equal(new Set(posts.slice(3).map((p) => p.init.headers['x-quilt-delivery'])).size, 1, 'the same delivery id on every try')
 
   // Only the events asked for; a secret of its own; joining again keeps the subscription.
-  assert.doesNotMatch(out(await call('quilt_webhook_subscribe', { url: 'https://hooks.example.com/grok2', secret: 'my-own-secret-of-16+', events: ['chat.dm'] })), /shown once/)
+  const keyed = out(await call('quilt_webhook_subscribe', { url: 'https://hooks.example.com/grok2', secret: 'my-own-secret-of-16+', events: ['chat.dm'], bearer: 'crsr_sender_key' }))
+  assert.doesNotMatch(keyed, /shown once/)
+  assert.match(keyed, /with your bearer key in the Authorization header/)
   assert.match(out(await call('quilt_join_session', { invite: 'https://join.heyquilt.com/hm-1#s' })), /Joined room hm-1/)
   carl.say('@Grok-Bot not sent')
   carl.say('sent', { to: 'Grok-Bot' })
@@ -291,6 +355,8 @@ test('a hosted agent subscribes a webhook and is POSTed mentions, direct message
   assert.equal(posts.length, 7)
   assert.equal(bodies()[6].event, 'chat.dm')
   assert.equal(verifyWebhook('my-own-secret-of-16+', posts[6].init.headers['x-quilt-timestamp'], posts[6].init.body, posts[6].init.headers['x-quilt-signature']), true)
+  assert.equal(posts[6].init.headers.authorization, 'Bearer crsr_sender_key', 'the receiver key rides along')
+  assert.equal('authorization' in posts[0].init.headers, false)
 
   assert.match(out(await call('quilt_webhook_unsubscribe')), /Webhook removed/)
   assert.match(out(await call('quilt_webhook_unsubscribe')), /had no webhook/)
@@ -320,6 +386,7 @@ test('an agent that sends an old image is told to update in every answer; quilt_
 })
 
 test('the owner can limit the agent to folders, make it a viewer, or remove it', async () => {
+  await call('quilt_message', { text: '@Carl got all your messages.' }) // answered, so writes are not held for that
   await carl.setMember(GROK, { scopes: ['docs'] })
   await waitFor(async () => /only change files in docs/.test(out(await call('quilt_write_file', { path: 'src/x.js', content: 'x' }))))
   assert.match(out(await call('quilt_write_file', { path: 'docs/guide.md', content: 'guide' })), /Created docs\/guide.md/)
@@ -390,3 +457,4 @@ test('the relay tells the accounts API which session a hosted agent is in', asyn
   const other = await fetch(`${http}/mcp`, { method: 'POST', headers: { 'x-quilt-pass': hostedPass({ sub: 'agent-new', name: 'New' }), 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }) })
   assert.equal(other.headers.get('x-quilt-room'), null, 'in no session')
 })
+

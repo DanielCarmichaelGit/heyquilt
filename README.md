@@ -32,11 +32,12 @@ within milliseconds. Your agents can also see what the other agents are doing.
   WebSockets, and only lets in people signed in to heyquilt.com. If your
   connection drops, keep working: Quilt keeps a local copy of the shared state
   and merges your offline edits line by line when you reconnect, like git.
-  Overlapping edits go to your own AI to combine; real conflicts land in the
-  **Merges** bar for everyone to settle.
+  Edits to the same lines land in the **Merges** bar for the people involved
+  to settle.
 - **Watch each other's AI, live.** The app shows your partner's AI conversation
   as it happens: their prompts, the AI's replies, and one-line actions like
-  "Edited src/app.ts" or "Ran npm test". This works for Claude Code and Cursor.
+  "Edited src/app.ts" or "Ran npm test". Quilt reads Claude Code's and Cursor's
+  chats by itself; any other MCP agent shares the same feed with `quilt_share`.
   Next to it are a live file tree (who's editing what, what's claimed) and
   read-only file tabs where changed lines light up.
 - **Agents coordinate, and can join by themselves.** An MCP server gives each
@@ -44,8 +45,8 @@ within milliseconds. Your agents can also see what the other agents are doing.
   are working, *claim* files and message each other. With an invite link, an
   agent can even join (or start) a session on its own. Tools without MCP can
   use the `quilt` CLI or read `.quilt/STATUS.md`.
-- **Cloud AIs too.** An AI with no computer of its own (ChatGPT, Grok, claude.ai,
-  anything that can use an MCP server over HTTP) joins through Quilt's hosted
+- **Cloud AIs too.** An AI with no computer of its own that can use an MCP
+  server over HTTP (a bot, a cloud routine, your own agent) joins through Quilt's hosted
   MCP at `api.heyquilt.com/mcp` with the access key it got from an agent
   invite. It joins a session from the invite link, you let it in, and it reads
   and writes the shared files like everyone else.
@@ -53,14 +54,28 @@ within milliseconds. Your agents can also see what the other agents are doing.
   sessions, the people and agents in them, and files, in one place. Agents
   can work in them too: invite one as a global, workspace or session agent,
   and a workspace's agents are invited to its new sessions for you to let in.
+- **AIs in a chat window, with nothing to set up.** ChatGPT, claude.ai, Grok and
+  other AIs you only talk to in a chat can join through a *chat link*: the session
+  owner (or whoever may let people in) makes one in **Invite → A chat AI** (or
+  `quilt chat-link`), pastes it into
+  the chat, and the AI works by opening links. It can read and send messages, read
+  and add tasks, read files, and add pictures, PDFs, office documents and notes as
+  new files. It can't change existing files. It shows in the session as its own
+  member and works for 10 minutes: the owner, or whoever may let people in, extends
+  it from the people menu (or
+  `quilt chat-link extend <name> <minutes>`) while it still works. Once it runs
+  out, or the owner removes it, a new link is needed.
 
 ## Quick start
 
 ### Download the app
 
 Get Quilt for [Mac (Apple silicon)](https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/quilt-mac-arm64.dmg),
-[Mac (Intel)](https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/quilt-mac-x64.dmg) or
-[Windows](https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/quilt-windows-x64.exe), and open it.
+[Mac (Intel)](https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/quilt-mac-x64.dmg),
+[Windows](https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/quilt-windows-x64.exe) or
+Linux ([x86_64](https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/quilt-linux-x86_64.AppImage),
+[ARM](https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/quilt-linux-arm64.AppImage): an
+AppImage, `chmod +x` it), and open it.
 Everything happens in the app: start a session, send the invite link, and
 partners click it to join. Closing the window keeps your sessions syncing from
 the menu bar; quit from there when you're done.
@@ -72,8 +87,22 @@ The app isn't signed by Apple yet, so the first time you open it macOS may say
 it can't check it. Open **System Settings → Privacy & Security** and click
 **Open Anyway**.
 
-To let your AI tools use Quilt (its MCP server and the `quilt` command),
-choose **Quilt → Install the Quilt Command…** in the menu bar.
+Your AI tools can use Quilt as soon as the app opens: it connects every one it
+finds (see [Your AI tools are connected already](#the-terminal-way)). To type
+`quilt` in a terminal yourself, choose **Quilt → Install the Quilt Command…**.
+
+### On a server or cloud machine
+
+A Linux machine with no desktop (a server, a cloud VM, a container, an agent's sandbox)
+gets the command line with its own Node.js, so nothing else needs installing:
+
+```bash
+curl -fsSL https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/install.sh | sh
+quilt login
+```
+
+Run the same line again to update. Agents on that machine find Quilt's MCP server by
+themselves (see below), and `quilt join <invite>` syncs a project there.
 
 ### From source
 
@@ -132,21 +161,33 @@ quilt join <invite-link> --tool cursor
 Keep `quilt join` running in a terminal while you work. It logs who joined,
 what they're touching, claims, and messages.
 
-**4. Connect your AI tools** (once per project, by either of you; it syncs):
+**Your AI tools are connected already.** Whenever the app, `quilt login`,
+`quilt ui` or a session starts, Quilt adds its MCP server to every AI tool it
+finds on the computer: Claude Code, Claude Desktop, Cursor, Windsurf, Codex,
+VS Code (GitHub Copilot, Cline, Roo Code), Gemini CLI, GitHub Copilot CLI, Zed,
+opencode, Kiro, Amp, Junie and Continue. It writes each tool's own settings with
+this install's full path, so nothing depends on your PATH or on files in the
+project, and it keeps them current when the app moves or updates. A tool that
+was already open picks Quilt up when it restarts. A settings file Quilt can't
+edit safely (JSON with comments, say) is left alone and named in the log.
+`quilt setup` does the same on demand, and adds pairing etiquette to `CLAUDE.md`
+and `AGENTS.md`.
 
-```bash
-quilt setup
-```
+**Quilt's rules are enforced, in every tool.** They aren't instructions an agent
+may skip:
 
-This registers the `quilt` MCP server in `.mcp.json` (Claude Code) and
-`.cursor/mcp.json` (Cursor), and adds pairing etiquette to `CLAUDE.md` and
-`AGENTS.md` ("check what your partner is doing before you start; don't edit
-claimed files; re-read files before editing"). Restart or reload your tool to
-pick up the MCP server.
+- An edit to a file someone else holds (claims it) is undone (Quilt watches the
+  disk). Only claims block files; chat never does.
+- Before an agent changes a file, it is shown what people said about that file in
+  chat, so it works with what was asked or planned in mind.
+- While someone who messaged or mentioned the agent is waiting for an answer, every
+  tool that moves work on (claims, tasks, focus, merges, commits, `quilt_set_work`)
+  refuses with who is waiting, until the agent answers with `quilt_message`.
+- Hosted agents write through Quilt's tools, so their writes are refused outright.
 
-Claude Code also gets Quilt's hooks (in your own `.claude/settings.local.json`,
-written whenever a session starts for the folder): every file is claimed for you
-the moment Claude edits it, and those claims are released when Claude finishes.
+Claude Code and Cursor also get Quilt's hooks (in your own `.claude/settings.local.json`,
+which Cursor reads too), and Gemini CLI gets them in its user settings: they refuse such
+an edit before it happens instead of undoing it after.
 See [Claims](#claims).
 
 ## Commands
@@ -171,7 +212,7 @@ See [Claims](#claims).
 | `quilt messages` / `quilt messages --all` / `--with bob` | Unread messages / history / one conversation |
 | `quilt history [path] [--by name] [--since 2h] [--diff]` | Who changed what, when, and for which task |
 | `quilt get <message-id> [dest]` | Download a shared file again |
-| `quilt setup` | Wire up MCP + agent instructions |
+| `quilt setup` | Connect every AI tool on this computer now, and add agent instructions to the project |
 | `quilt mcp` | The MCP server itself (your AI tool launches this) |
 | `quilt doctor [--watch 30]` | Check what Quilt can see of your Claude Code / Cursor chats (safe to share: no chat text) |
 
@@ -182,11 +223,14 @@ See [Claims](#claims).
 | `quilt_join_session` | Join a session from an invite link, as a Quilt agent saved with `quilt agent join` |
 | `quilt_start_session` | Start a new session for a folder, as that agent, and get an invite link |
 | `quilt_leave_session` / `quilt_session_info` | Leave; or see the folder, your name, who's online, and the invite |
-| `quilt_status` | Collaborators, their focus, recently edited files, claims, messages |
+| `quilt_status` | Collaborators, their focus, recently edited files, what each person has changed, claims, messages |
 | `quilt_partner_feed` | Read what a collaborator's AI is doing (prompts, replies, actions) |
 | `quilt_history` | The chronology: who changed which file, when, the diff, and for which task; filter by path, person, task or time |
 | `quilt_list_files` | Shared files with recent editors and claims |
 | `quilt_set_focus` | Announce the current task |
+| `quilt_share` | Share what you're working on (the request, your plan, what you did, files changed): it reaches partners' feeds and the task board, and holds off commits while you work |
+| `quilt_before_edit` | Before changing files: whether each one is yours to edit (free ones are claimed for you; held ones are refused, with who to ask), and what people said about them in chat lately |
+| `quilt_set_work` | Say you're working or done; "done" releases the files claimed for you, and is refused until you've answered everyone who wrote to you |
 | `quilt_claim` / `quilt_release` | Claim or release files by hand (Quilt claims files for you as your AI edits them) |
 | `quilt_message` | Message everyone, or one person with `to` |
 | `quilt_read_messages` | Read unread (or recent) messages, including received files |
@@ -202,6 +246,12 @@ See [Claims](#claims).
 | `quilt_workspace_webhook` / `quilt_workspace_webhook_off` | Be told when a session starts in one of your workspaces, with its link; or stop that |
 
 Any MCP-capable tool works: Claude Code, Cursor, Windsurf, Codex, Zed, and so on.
+Quilt registers the server with each of them by itself (see above).
+
+Mentions, direct messages and handed-over tasks reach any agent without polling:
+subscribe to the `quilt://inbox` resource (standard MCP; you're notified when it
+changes), or have them POSTed to a webhook. Claude Code started with the quilt
+channel gets each one as a turn.
 Point its MCP config at the command `quilt` with args `["mcp"]`.
 
 ## Watching each other's AI
@@ -235,11 +285,32 @@ follow edits, so nobody has to remember:
 - **A partner's edit to your file is undone** and put back the way you have it. Their
   AI hears about it with its next Quilt tool call: who holds the file and why, and to
   send you a direct message saying what it wanted to change rather than retry.
-- **Claude Code gets the nicer version** through hooks in your own
-  `.claude/settings.local.json`: the edit is refused before it happens, the holder's
-  Claude sees the message after its next edit, and if it tries to finish with an
-  unanswered one it is asked to reply first. Hook claims end when Claude finishes
-  its turn; a crashed Claude's leftovers are released by the next session.
+- **Every MCP agent is checked before it edits, too.** `quilt_before_edit` refuses
+  a file someone else holds, claims a free one, and shows what people said about
+  those files in chat lately (marking any it hasn't replied to). Every
+  Quilt answer starts with the direct messages, mentions and tasks that arrived
+  since the last one. `quilt_set_work` "done" and moving a task to Done are refused
+  while someone who wrote to the agent is still waiting for a reply. An agent that
+  never says it's done stops counting as working once its files have been quiet
+  for five minutes, so commits aren't held up.
+- **Claude Code, Cursor and Gemini CLI get the same rules automatically** through
+  their own hooks (`quilt hook`, set up by Quilt: `.claude/settings.local.json` in the
+  session folder, which Cursor reads too, and `~/.gemini/settings.json`): an edit to a
+  file someone else holds is refused before it happens, chat about the file is shown
+  before the edit, the AI sees new messages after its next edit, and if it tries to
+  finish with an unanswered one, or a file someone is queued for, it is asked to deal
+  with that first. Hook claims end when the AI finishes its turn; a crashed one's
+  leftovers are released by the next session.
+- **The file queue moves without the AI.** A file Quilt claimed for your AI that
+  someone waits for is handed on by Quilt, with what your AI was doing as context,
+  two minutes after your AI stops (or after five quiet minutes when Quilt can't see
+  it working), if your AI didn't hand it on itself.
+- **Picking up tasks.** In Settings, "Let my AI pick up tasks by itself" (off, tasks
+  assigned to it, or those then unassigned ones): as your AI finishes (`quilt_set_work`
+  done, a task to QA or Done, or the end of its turn in a tool with hooks), it is handed
+  the next To do task and starts it.
+- **Hosted agents** (on `api.heyquilt.com/mcp`) are told what people said about a
+  file in chat when they write it.
 - **Hosted agents** (on `api.heyquilt.com/mcp`) are claimed for when they write a
   file and let go after ten quiet minutes; a write to someone else's file is refused
   with the same advice.
@@ -319,6 +390,9 @@ Each POST is JSON, `{ event, id, room, to, by, text, ts, task? }`, with the
 headers `x-quilt-event`, `x-quilt-delivery` (the same id on every try),
 `x-quilt-timestamp` and `x-quilt-signature: sha256=<HMAC-SHA256(secret,
 "<timestamp>.<body>")>`. The agent gives a secret or gets one back, shown once.
+A receiver that wants a key of its own on every call (a Grok Bot routine's
+webhook trigger, say) gets it as `Authorization: Bearer <key>`: pass it as
+`bearer`.
 A receiver that is down or answers 5xx is tried again a few times; whatever was
 POSTed is still in `quilt_inbox`. `events` narrows the subscription; calling
 again replaces it; `quilt_webhook_unsubscribe` ends it.
@@ -374,6 +448,39 @@ The library tools read and write the workspace's files (images, video,
 documents, data), so agents put what they make there with a note instead of
 in chat. A hosted agent can write up to 2 MB per call (text or base64); an
 agent on a computer can also send a project file of up to 500 MB.
+### Apps: Pipedream, Zapier, Make, n8n
+
+An automation app joins as an agent of yours, with an **app key** (`qk_`) instead
+of an invite. On heyquilt.com, open **Agents**, then **Connect an app**: Quilt
+adds an agent named for the app and shows its key once. The key signs that agent
+in like an access key but never runs out; it works until you revoke it there
+(each agent can have up to 10, each revoked on its own, and revoking the agent
+revokes them all).
+
+The app sends the key as `Authorization: Bearer <key>` to the hosted MCP at
+`https://api.heyquilt.com/mcp`, one JSON-RPC request per tool call, no session
+set up first:
+
+```bash
+curl -s https://api.heyquilt.com/mcp \
+  -H "Authorization: Bearer $QUILT_APP_KEY" \
+  -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"quilt_join_session","arguments":{"invite":"https://join.heyquilt.com/<room>#<secret>"}}}'
+```
+
+Every hosted agent tool works this way (`quilt_message`, `quilt_tasks`,
+`quilt_add_task`, `quilt_move_task`, `quilt_read_file`, `quilt_write_file`,
+`quilt_history`, `quilt_claim` and the rest; `tools/list` names them all), and
+`quilt_webhook_subscribe` turns mentions, direct messages and tasks into POSTs
+to the app (see [Webhooks](#webhooks-an-agent-sets-up-its-own-push)). The agent
+is in one session at a time: `quilt_join_session` again moves it.
+
+The **Quilt app for Pipedream** wraps this: paste the key when you connect
+Quilt, then use its actions (Join Session, Send Message, Read Messages, Get
+Inbox, List/Add/Move/Assign Task, Read/Write File, Share Update, Get Session
+Status, Call Tool for any other tool) and its instant trigger, **New Mention,
+Message or Task**. Quilt keeps one webhook per agent, so give each trigger its
+own agent.
 
 ### Agents are told to update
 
@@ -431,10 +538,13 @@ relay for now.
   session's version wins and yours is copied to `.quilt/conflicts/<time>/`.
   Use `--prefer local` to push your versions instead.
 
-**Git:** the working tree is shared, but `.git` isn't. The simplest workflow
-is that one person commits and pushes. Avoid `git checkout`, `reset`, `stash`
-and `rebase` during a session unless you've agreed on it: they rewrite files,
-and the changes sync to everyone.
+**Git:** the working tree is shared, but `.git` isn't, and Quilt never commits,
+pulls, pushes or opens a PR for you — that's still yours to run, on your own
+machine. A `git stash`, `reset --hard` or `checkout -- .` reverts your files
+as git does, and the session's work comes back onto them a moment later
+(your stash keeps your copy); commits you pull are merged into the session's
+work line by line. Checking out another branch pauses that folder until
+you're back on the one the session syncs.
 
 ## Security
 
@@ -474,10 +584,14 @@ Every release ships with notes, and the app tells people when it's out of date.
 2. Add a `## <version> — <date>` section at the top of `RELEASES.md` saying what
    changed, one bold-led bullet per change. `npm test` fails if the top section
    doesn't match package.json, so a release can't go out without notes.
-3. Commit on `main`, then `npm run release`. It runs the tests, builds the Mac and
-   Windows apps, tags `v<version>`, pushes, and creates the GitHub release with the
-   notes from `RELEASES.md` as its body (`--dry-run` to see the steps first,
-   `--notes` to print the body, `--notes-only` to fix the notes of a published release).
+3. Commit on `main`, then `npm run release`. It runs the tests, tags `v<version>` and
+   pushes. GitHub then builds every platform on its own machines
+   (`.github/workflows/release.yml`): the Mac DMGs, the Windows installer, the Linux
+   AppImages and the Linux command-line bundles with `install.sh`. It publishes the
+   release with the notes from `RELEASES.md` as its body, about 15 minutes later. So
+   any machine can release, a cloud one included. (`--dry-run` shows the steps first,
+   `--notes` prints the body, `--notes-only` fixes the notes of a published release,
+   and `--local` builds Mac and Windows on this Mac and publishes with `gh`, as before.)
 
 The app checks GitHub's latest release every ten minutes. Older versions show a bar
 across the top with an **Update Quilt** button (a Download link in a browser), and
@@ -486,10 +600,14 @@ newer release opens the notes by itself once, even while the app is open, and th
 for a new version open the first time it runs. Update Quilt downloads the build for this
 computer and installs it: on a Mac it mounts the DMG and swaps the app in place (asking
 for an administrator only if the Applications folder needs one), on Windows it runs the
-installer; then Quilt restarts. The builds are unsigned, so this is done by hand in
+installer, and on Linux it swaps the AppImage file in place; then Quilt restarts. The builds are unsigned, so this is done by hand in
 `desktop/updater.js` rather than with Electron's updater.
 
 Layout: `src/ui/` + `src/ui-server.js` (the app), `src/runner.js` (start/stop a session), `src/server.js` (relay), `src/connection.js` (client protocol +
 reconnect), `src/session.js` (folder ⇄ CRDT sync, presence, claims, chat),
 `src/control.js` (local API for CLI/MCP), `src/mcp.js`, `src/setup.js`,
 `bin/quilt.js` (CLI).
+
+## License
+
+Quilt is proprietary, paid software. The source is visible here but is not open source: you may not copy, clone, fork, modify, redistribute, self-host or build on it. See [LICENSE](LICENSE).

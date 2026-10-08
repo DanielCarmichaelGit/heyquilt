@@ -1,23 +1,27 @@
-// The session view lives here: file tree on the left, a partner's live AI chat, a
+// The session workspace: file tree on the left, a partner's live AI chat, a
 // shared file, or the task board in the middle, and the team chat on the right.
-import { TOKEN, I, state, $, esc, basename, bytes, clock, avatar, toast, api, ask, remember, recall, toolsOf, busyPeople, NO_POSTING, ACCOUNT_KEY, loadAccessTypes, typeOptions, accessLine } from './common.js'
+import { TOKEN, I, state, $, esc, basename, bytes, clock, ago, avatar, toast, api, ask, remember, recall, toolsOf, busyPeople, NO_POSTING, ACCOUNT_KEY, loadAccessTypes, typeOptions, accessLine } from './common.js'
 import { openInvite, renderTabs, markRead } from './app.js'
 import { renderFeed } from './feed.js'
 import { conversations } from './feed-convs.js'
 import { renderTree, openTreeMenu, closeTreeMenu, claimFolder } from './tree.js'
 import { renderFileView } from './fileview.js'
-import { gitMarkup, bindGit, unbindGit, renderGitButton, gitFilesChanged, gitSessionChanged } from './git.js'
+import { changesMarkup, bindChanges, unbindChanges, changesChanged } from './changes.js'
 import { quiltMark } from './mark.js'
 import { openSettings } from './home.js'
-import { fileCardHref, renderable, textHtml, mentionAt, mentionCandidates, completeMention } from './chat.js'
-import { renderBoard } from './board.js'
+import { fileCardHref, renderable, textHtml, mentionAt, mentionCandidates, completeMention, ALL_AGENTS, foldPersonas, aiOwners, shownName, ownAiChatter } from './chat.js'
+import { renderBoard, taskNotesModalHtml } from './board.js'
 import { accessFormValues, accessSaveBody, grantsLoading, grantsLoaded, grantsFailed } from './access-form.js'
 import { renderMergeBar, bindMerges, renderMergeView } from './merges.js'
 import { workspaceFilePicker } from './files.js'
 import { sessionAgentsHtml } from './agent-place.js'
+import { renderCatchUp, bindCatchUp } from './catchup.js'
+import { branchMenuHtml, upstreamText, needsHand } from './branches.js'
 
 let current = null // session id being shown
 let timers = []
+let holdNoteTimer = null // shows the "git is busy" note once a hold has lasted HOLD_NOTE_MS
+const HOLD_NOTE_MS = 1000 // a `git add` holds for a moment: no note flashing by for it
 let grantLoad = grantsLoading() // this session's grants (the owner's view, from the API), for the Access sections
 let wsAgents = { id: null, agents: [] } // the agents this session's workspace invites (workspaces on), for its People
 let mounted = null // AbortController for document-level listeners of this mount
@@ -25,10 +29,10 @@ let mounted = null // AbortController for document-level listeners of this mount
 // ------------------------------------------------------------ layout state --
 // Per session: mode ('ai' | 'files' | 'merge'), open tabs per mode, expanded folders.
 function ws (id) {
-  if (!state.sv.has(id)) {
+  if (!state.ws.has(id)) {
     let saved = null
     try { saved = JSON.parse(recall(`ws-${id}`, 'null')) } catch {}
-    state.sv.set(id, {
+    state.ws.set(id, {
       mode: 'ai',
       aiTabs: [],
       aiSel: null,
@@ -42,7 +46,7 @@ function ws (id) {
       drawer: null
     })
   }
-  return state.sv.get(id)
+  return state.ws.get(id)
 }
 
 function saveWs (id) {
@@ -54,11 +58,20 @@ function saveWs (id) {
 const sum = () => state.sessions.get(current)
 const me = () => sum()?.status.me.name
 
+/** Who is here as people see them: each person's AI sessions as one "<person>'s AI". */
+const peopleHere = (st) => foldPersonas(st.peers || [])
+
+/** Whose AI session each name in this session is (chat.js aiOwners). */
+function owners (s) {
+  const st = s.status
+  return aiOwners({ peers: st.peers, messages: renderable(state.messages.get(current)), people: [st.me?.name, ...(st.peers || []).map((p) => p.name), ...(st.members || []).map((m) => m.name)] })
+}
+
 function personInfo (name) {
   const st = sum().status
   if (name === st.me.name) return { ...st.me, online: st.connected, isMe: true }
   const p = st.peers.find((x) => x.name === name)
-  return p ? { ...p, online: true } : { name, online: false, agent: null }
+  return p ? { ...p, online: p.hosted ? 'http' : true } : { name, online: false, agent: null }
 }
 
 // ------------------------------------------------------------------ mount --
@@ -69,18 +82,26 @@ export function mountSession (id) {
 
   $('#app').innerHTML = `
   <div class="ws" id="ws">
-    <header class="sv-top">
+    <header class="ws-top">
       <button class="brand" data-go="home" aria-label="Home">${quiltMark({ sew: 'first' })}</button>
       <nav class="tabs" id="tabs" aria-label="Sessions"></nav>
       <span class="spacer"></span>
+      <span class="relay-problem" id="relay-problem" role="status" hidden></span>
       <span class="access-pill" id="access-pill" hidden></span>
-      <button class="commit-chip" id="commit-chip" hidden></button>
+      <div class="commit-wrap" id="commit-wrap">
+        <button class="commit-chip" id="commit-chip" aria-haspopup="true" aria-expanded="false" aria-controls="commit-panel" hidden></button>
+        <div class="popover commit-panel" id="commit-panel" role="dialog" aria-label="Commit requests" hidden></div>
+      </div>
       <button class="btn sm ghost icon narrow-only" id="toggle-tree" title="Files" aria-label="Show files">${I.tree}</button>
       <div class="people" id="people">
         <button class="people-btn" id="people-btn" aria-haspopup="true" aria-expanded="false" aria-controls="people-menu"></button>
         <div class="popover people-menu" id="people-menu" role="dialog" aria-label="People in this session" hidden></div>
       </div>
-      ${gitMarkup()}
+      ${changesMarkup()}
+      <div class="branch-wrap" id="branch-wrap" hidden>
+        <button type="button" class="branch-label" id="branch-label" aria-haspopup="true" aria-expanded="false" aria-controls="branch-menu"></button>
+        <div class="popover branch-menu" id="branch-menu" role="dialog" aria-label="Branches" hidden></div>
+      </div>
       ${openInMarkup()}
       <button class="btn sm ghost" id="tasks-btn" type="button" aria-pressed="false" title="Tasks">${I.board}<span class="wide-only">Tasks</span><span class="tasks-n" id="tasks-count" hidden></span></button>
       <button class="btn sm primary" id="invite-btn">${I.link}<span class="wide-only">Invite</span></button>
@@ -96,20 +117,24 @@ export function mountSession (id) {
         </div>
       </div>
     </header>
-    <div class="sv-body" id="sv-body">
-      <aside class="sv-tree" aria-label="Project files">
-        <div class="pane-head"><span>Files</span><span class="hint" id="file-count"></span></div>
+    <div class="ws-body" id="ws-body">
+      <aside class="ws-tree" aria-label="Project files">
+        <div class="pane-head">
+          <button type="button" class="tree-collapse wide-tree" id="collapse-tree" title="Collapse files" aria-expanded="true" aria-controls="tree">${I.arrowLeft}</button>
+          <span class="pane-title">Files</span><span class="hint" id="file-count"></span>
+        </div>
         <div class="tree-scroll" id="tree"></div>
       </aside>
-      <main class="sv-main">
+      <main class="ws-main">
+        <div class="requests catchup" id="catchup" role="region" aria-label="While you were away" hidden></div>
         <div class="requests" id="requests" hidden></div>
         <div class="requests merges" id="merges" hidden></div>
-        <div class="sv-mainbar" id="mainbar" hidden>
-          <div class="sv-tabs" id="main-tabs" role="tablist"></div>
+        <div class="ws-mainbar" id="mainbar" hidden>
+          <div class="ws-tabs" id="main-tabs" role="tablist"></div>
         </div>
-        <div class="sv-content" id="main"></div>
+        <div class="ws-content" id="main"></div>
       </main>
-      <aside class="sv-chat" id="chat-pane" aria-label="Chat">
+      <aside class="ws-chat" id="chat-pane" aria-label="Chat">
         <div class="chat-head"><h3>Chat</h3><span class="hint" id="chat-sub"></span></div>
         <div class="messages" id="messages"></div>
         <div class="drop">Drop files to send</div>
@@ -133,9 +158,11 @@ export function mountSession (id) {
   bindTop()
   bindAccess()
   for (const el of [$('#merges'), $('#main')]) bindMerges(el, { sessionId: () => current, onCompare: openMerge, editors: editorsByPreference })
-  bindGit(id, mounted.signal)
+  bindChanges(id, mounted.signal, { onOpen: openFile })
+  bindCatchUp($('#catchup'), { sessionId: () => current, onOpen: openFile })
   bindMain()
   bindTreeEvents()
+  applyTreeCollapsed()
   bindChat()
   bindBoard()
   renderTop()
@@ -160,11 +187,12 @@ export function mountSession (id) {
 export function sessionUnmount () {
   for (const t of timers) clearInterval(t)
   timers = []
+  clearTimeout(holdNoteTimer)
   if (mounted) mounted.abort()
   mounted = null
   closeTreeMenu()
-  unbindGit()
   pendingAssign = ''
+  unbindChanges()
   current = null
 }
 
@@ -182,6 +210,7 @@ export function sessionUpdated (id) {
   if (ws(id).mode === 'ai') renderMain()
   if (ws(id).mode === 'tasks') paintBoard()
   scheduleTree()
+  changesChanged()
 }
 
 export function sessionMessage (id) {
@@ -216,7 +245,7 @@ export function sessionFeed (id, entries) {
 export function sessionFileChanged (id, { path }) {
   if (id !== current) return
   scheduleTree()
-  gitFilesChanged()
+  changesChanged()
   const w = ws(id)
   if (w.mode === 'merge' && shownMerge()?.path === path) refreshFile(path, false)
   if (w.fileTabs.includes(path)) {
@@ -232,6 +261,7 @@ function autoOpenNewPeople (id) {
   let changed = false
   let grew = false
   for (const p of sum().status.peers) {
+    if (p.persona) continue // an AI session working through someone's app has no AI chat of its own to show
     if (w.autoOpened.includes(p.name)) continue
     w.autoOpened.push(p.name)
     grew = true
@@ -299,15 +329,13 @@ function bindTop () {
   bindOpenIn()
   $('#ask-commit').onclick = askForCommit
   $('#rename-btn').onclick = renameSession
-  $('#commit-chip').onclick = () => {
-    if (sum().git) $('#git-btn')?.click()
-    else toast($('#commit-chip').title)
-  }
+  bindCommitChip()
   $('#leave-btn').onclick = async () => {
     if (!await ask({ title: 'Leave this session?', message: 'Quilt stops syncing this folder. Your files stay where they are, and you can rejoin later.', ok: 'Leave', danger: true })) return
     await api('POST', `/api/sessions/${current}/stop`).catch((err) => toast(err.message))
   }
   $('#settings-btn').onclick = () => openSettings()
+  bindBranchMenu()
   const moreBtn = $('#more-btn')
   const moreMenu = $('#more-menu')
   const setMore = (open) => { moreMenu.hidden = !open; moreBtn.setAttribute('aria-expanded', String(open)) }
@@ -348,6 +376,14 @@ function bindTop () {
       } catch (err) { toast(err.message); e.target.checked = !on }
       return
     }
+    if (e.target.matches('[data-admit-by]')) {
+      const admitBy = e.target.value
+      try {
+        await api('POST', `/api/sessions/${current}/admit-by`, { admitBy })
+        toast(admitBy === 'owner' ? 'Only you can let people in' : admitBy === 'editors' ? 'Anyone who can edit may let people in' : 'Anyone in the session may let people in')
+      } catch (err) { toast(err.message); renderPeopleMenu({ force: true }) }
+      return
+    }
     if (!e.target.matches('[data-summarize]')) return
     const on = e.target.checked
     try {
@@ -379,8 +415,8 @@ function bindTop () {
   })
   menu.addEventListener('change', async (e) => {
     const f = e.target.closest('.pm-member.edit')
-    // Access types are saved with Save (below), not on every change.
-    if (!f || f.classList.contains('pm-access')) return
+    // Access types are saved with Save (below), not on every change; a chat link's time with Extend.
+    if (!f || f.classList.contains('pm-access') || f.classList.contains('pm-chat')) return
     try {
       await api('POST', `/api/sessions/${current}/members/set`, { key: f.dataset.key, role: f.role.value, ...(f.scopes ? { scopes: parseScopes(f.scopes.value) } : {}) })
       toast('Access updated')
@@ -391,6 +427,19 @@ function bindTop () {
     grantLoad = grantsLoading()
     renderPeopleMenu({ force: true })
     loadGrants()
+  })
+  menu.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-extend-chat]')
+    if (!b) return
+    const f = b.closest('.pm-chat')
+    b.disabled = true
+    try {
+      const r = await api('POST', `/api/sessions/${current}/chat-link/extend`, { key: f.dataset.key, minutes: Number(f.minutes.value) })
+      toast(`${r.name}: ${chatTimeLeft(r.expiresAt)}`)
+      // The menu doesn't redraw under a focused row: show the new time now, and let it redraw.
+      f.querySelector('.pm-now').textContent = chatTimeLeft(r.expiresAt)
+      b.blur()
+    } catch (err) { toast(err.message) } finally { b.disabled = false }
   })
   menu.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-remove]')
@@ -460,10 +509,17 @@ function toggleDrawer (which) {
 function openDrawer (which) {
   const w = ws(current)
   w.drawer = which
-  $('#sv-body').dataset.drawer = which || ''
+  $('#ws-body').dataset.drawer = which || ''
+}
+
+/** The title and dot before a member's name: green when connected, blue when an agent over HTTP checked in lately. */
+function memberDot (m) {
+  const [title, color] = m.http ? ['Online over HTTP (checked in within 30 minutes)', 'var(--http)'] : m.online ? ['Online', 'var(--ok)'] : ['Offline', 'var(--faint)']
+  return `title="${title}"><span class="dot" style="background:${color}"></span>`
 }
 
 function agentLine (p) {
+  if (p.hosted) return `<span class="ai-state http" title="Connected over HTTP: shown as here for 30 minutes after each check-in">Over HTTP · ${p.lastSeen ? `checked in ${ago(p.lastSeen) === 'now' ? 'just now' : `${ago(p.lastSeen)} ago`}` : 'checked in lately'}</span>`
   const a = p.agent
   if (!a || (!a.tool && a.status !== 'unavailable' && a.sharing !== false)) return p.online ? 'No AI activity found yet' : ''
   if (a.sharing === false) return `<span class="ai-state paused">${p.isMe ? 'You paused sharing' : 'Paused sharing'}</span>`
@@ -472,26 +528,106 @@ function agentLine (p) {
   return `<span class="ai-state">${a.tool ? `${esc(a.tool)} idle` : 'AI idle'}</span>`
 }
 
+// ------------------------------------------------------------- branches --
+let branchSyncing = false
+
+function renderBranchMenu () {
+  const st = sum().status
+  $('#branch-menu').innerHTML = branchMenuHtml({ git: st.git, branches: st.branches || [], me: st.me.name, syncing: branchSyncing })
+}
+
+function bindBranchMenu () {
+  const btn = $('#branch-label')
+  const menu = $('#branch-menu')
+  const set = (open) => {
+    menu.hidden = !open
+    btn.setAttribute('aria-expanded', String(open))
+    if (open) renderBranchMenu()
+  }
+  btn.onclick = () => set(menu.hidden)
+  menu.addEventListener('keydown', (e) => { if (e.key === 'Escape') { set(false); btn.focus() } })
+  document.addEventListener('mousedown', (e) => { if (!menu.hidden && !$('#branch-wrap').contains(e.target)) set(false) }, { signal: mounted.signal })
+  menu.addEventListener('click', async (e) => {
+    if (!e.target.closest('[data-branch-sync]') || branchSyncing) return
+    branchSyncing = true
+    renderBranchMenu()
+    const id = current
+    try { await api('POST', `/api/sessions/${id}/branches/sync`) } catch (err) { toast(err.message) } finally {
+      branchSyncing = false
+      if (id === current && !menu.hidden) renderBranchMenu()
+    }
+  })
+}
+
 function renderTop () {
   if (!current || !$('#people-btn')) return
   renderTabs()
-  renderGitButton()
   const st = sum().status
-  const people = [st.me, ...st.peers]
+  const g = st.git
+  const label = $('#branch-label')
+  if (label) {
+    $('#branch-wrap').hidden = !g
+    if (g) {
+      // Paused on another branch: said at once. Git busy: only once it has lasted a moment.
+      const held = g.hold ? Date.now() - g.hold.since : 0
+      const note = g.hold && (g.hold.kind === 'switching' || held >= HOLD_NOTE_MS)
+      clearTimeout(holdNoteTimer)
+      if (g.hold && !note) holdNoteTimer = setTimeout(renderTop, HOLD_NOTE_MS - held + 20)
+      const tag = note ? (g.hold.kind === 'switching' ? `paused · you're on ${esc(g.hold.to || '?')}` : g.hold.conflict ? 'paused: resolve the git conflict' : 'syncing paused: git is busy') : ''
+      const up = g.upstream
+      const behind = !tag && up && (up.behind || up.diverged) ? `<span class="tag${needsHand(up) ? ' warn' : ''}">${needsHand(up) ? 'needs a pull' : `${up.behind} behind`}</span>` : ''
+      label.innerHTML = `${I.branch}<span class="branch-name">${esc(g.key)}</span>${tag ? `<span class="tag" title="${tag}">${tag}</span>` : ''}${behind}`
+      label.title = g.hold ? (g.hold.kind === 'switching' ? `This session syncs ${g.key}. Sync resumes when you're back on it.` : g.hold.conflict ? `git left a conflict in ${g.hold.conflict.join(', ')} on this computer. Resolve it and git add it; Quilt then shares your resolution.` : 'Quilt waits for git to finish, then catches up.') : `This folder is on ${g.key}${up ? `, ${upstreamText(up)}` : ''}. Click for every branch in the session.`
+      if (!$('#branch-menu').hidden) renderBranchMenu()
+    }
+  }
+  const people = [st.me, ...peopleHere(st)]
   const shown = people.slice(0, 4)
   $('#people-btn').innerHTML = `<span class="stack">${shown.map((p, i) => `<span style="z-index:${10 - i}">${avatar(p.name, p.color)}</span>`).join('')}</span>
-    <span class="count">${people.length}</span><span class="conn ${st.connected ? 'ok' : 'warn'}" title="${st.connected ? 'Connected' : 'Reconnecting…'}"></span>`
+    <span class="count">${people.length}</span><span class="conn ${st.connected ? 'ok' : 'warn'}" title="${st.connected ? 'Connected' : esc(st.problem || 'Reconnecting…')}"></span>`
   $('#people-btn').setAttribute('aria-label', `${people.length} ${people.length === 1 ? 'person' : 'people'} in this session${st.connected ? '' : ', reconnecting'}`)
+  // Why we're offline, when we know: otherwise "Reconnecting…" can go on silently forever.
+  const problem = $('#relay-problem')
+  if (problem) {
+    problem.hidden = st.connected || !st.problem
+    problem.textContent = st.connected ? '' : (st.problem || '')
+    problem.title = problem.textContent ? `${problem.textContent}. Quilt keeps retrying.` : ''
+  }
   if (!$('#people-menu').hidden) renderPeopleMenu()
   renderAccess()
+  renderCatchUp($('#catchup'), st.catchUp, { colors: new Map([st.me, ...st.peers].map((p) => [p.name, p.color])) })
   renderMerges()
   renderCommitChip()
   $('#rename-btn').hidden = !st.access?.owner
   renderTaskButton()
-  $('#chat-sub').textContent = st.peers.length ? `with ${st.peers.map((p) => p.name).join(', ')}` : 'just you so far'
+  $('#chat-sub').textContent = st.peers.length ? `with ${peopleHere(st).map((p) => p.sessions && p.mine ? 'your AI' : p.name).join(', ')}` : 'just you so far'
 }
 
 // ---------------------------------------------------------- commit timing --
+function bindCommitChip () {
+  const wrap = $('#commit-wrap')
+  const chip = $('#commit-chip')
+  const panel = $('#commit-panel')
+  const setOpen = (open) => {
+    panel.hidden = !open
+    chip.setAttribute('aria-expanded', String(open))
+    if (open) renderCommitPanel()
+  }
+  chip.onclick = () => setOpen(panel.hidden)
+  wrap.addEventListener('keydown', (e) => { if (e.key === 'Escape') { setOpen(false); chip.focus() } })
+  document.addEventListener('mousedown', (e) => { if (!wrap.contains(e.target)) setOpen(false) }, { signal: mounted.signal })
+  panel.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-done]')
+    if (!b) return
+    b.disabled = true
+    try {
+      const id = b.dataset.done === 'all' ? null : b.dataset.done
+      const r = await api('POST', `/api/sessions/${current}/commit-request/done`, id ? { id } : {})
+      toast(r.done === 1 ? 'Marked done' : `Marked ${r.done} done`)
+    } catch (err) { toast(err.message); b.disabled = false }
+  })
+}
+
 function renderCommitChip () {
   const chip = $('#commit-chip')
   if (!chip) return
@@ -500,17 +636,28 @@ function renderCommitChip () {
   const open = (st.commits || []).filter((r) => r.state === 'open')
   const busy = busyPeople(st)
   chip.hidden = !open.length
-  if (!open.length) return
+  if (!open.length) { $('#commit-panel').hidden = true; return }
   chip.className = `commit-chip${busy.length ? '' : ' ready'}`
   chip.innerHTML = busy.length
     ? `${I.branch}<span>Commit requested · waiting on ${busy.length}</span>`
     : `${I.branch}<span>Ready to commit</span>`
   chip.title = `${open.map((r) => `${r.by}: ${r.message}`).join('\n')}${busy.length ? `\nStill working: ${busy.join(', ')}` : ''}`
-  gitSessionChanged()
+  if (!$('#commit-panel').hidden) renderCommitPanel()
+}
+
+/** Open requests, each with a Done button, and Mark all done. */
+function renderCommitPanel () {
+  const panel = $('#commit-panel')
+  if (!panel) return
+  const open = (sum().status.commits || []).filter((r) => r.state === 'open')
+  panel.innerHTML = open.length
+    ? `<ul class="commit-reqs">${open.map((r) => `<li><b>${esc(r.by)}</b><div>${esc(r.message)}</div><button type="button" class="btn sm ghost" data-done="${esc(r.id)}">Done</button></li>`).join('')}</ul>
+       <div class="commit-foot"><button type="button" class="btn sm" data-done="all">Mark all done</button></div>`
+    : '<p class="hint">No open commit requests.</p>'
 }
 
 async function askForCommit () {
-  const message = await ask({ title: 'Ask for a commit', message: 'The host commits once everyone\'s AI is idle.', ok: 'Ask', input: { label: 'What is the commit for?', placeholder: 'Pricing page and download button' } })
+  const message = await ask({ title: 'Ask for a commit', message: 'Everyone sees the request until someone commits and marks it done.', ok: 'Ask', input: { label: 'What is the commit for?', placeholder: 'Pricing page and download button' } })
   if (!message) return
   try {
     await api('POST', `/api/sessions/${current}/commit-request`, { message: message.trim() })
@@ -523,7 +670,7 @@ const roleLabel = (r) => r === 'owner' ? 'Owner' : r === 'viewer' ? 'View only' 
 const scopesText = (scopes) => (scopes || []).join(', ')
 const parseScopes = (text) => String(text || '').split(',').map((x) => x.trim()).filter(Boolean)
 
-/** The access pill, the owner's request bar, and the "waiting to be let in" screen. */
+/** The access pill, the request bar for anyone who may let people in, and the waiting screen. */
 function renderAccess () {
   const st = sum().status
   const acc = st.access || {}
@@ -542,17 +689,19 @@ function renderAccess () {
   const bar = $('#requests')
   if (!bar) return
   const waiting = st.waiting || []
-  // Don't redraw while the owner is filling in a request (the type picker is a button, see
+  // Don't redraw while someone is filling in a request (the type picker is a button, see
   // startDropdowns), only once they've let someone in or denied them.
   const active = document.activeElement
   if (bar.contains(active) && !active.closest('[type=submit],[data-deny]')) return
   bar.hidden = !waiting.length
+  // Access types (and their grants) belong to the owner; others who may admit pick a role.
+  const asType = !!(state.accessTypes && acc.owner)
   bar.innerHTML = waiting.map((p) => `
     <form class="request" data-key="${esc(p.key)}">
       ${avatar(p.name, null)}
       <div class="rq-main"><b>${esc(p.name)}</b>${p.kind === 'agent' ? `<span class="tag bot">${I.bot}agent</span>` : ''}
         <span class="hint">wants to join · invited to ${p.invitedAs === 'viewer' ? 'view' : 'edit'}</span></div>
-      ${state.accessTypes
+      ${asType
         ? `<select class="input" name="typeId" aria-label="Let ${esc(p.name)} in as" title="What they may do: an access type">${typeOptions()}</select>`
         : `<select class="input" name="role" aria-label="Role for ${esc(p.name)}">
         <option value="editor" ${p.invitedAs !== 'viewer' ? 'selected' : ''}>Can edit</option>
@@ -624,9 +773,18 @@ function fullMerge (m) {
 function renderMerges () {
   const bar = $('#merges')
   if (!bar) return
-  renderMergeBar(bar, { merges: sum().status.merges || [], me: me(), editors: editorsByPreference(), viewer: isViewer() })
+  const merges = sum().status.merges || []
+  renderMergeBar(bar, { merges, me: me(), editors: editorsByPreference(), viewer: isViewer() })
   const w = ws(current)
-  if (w.mode === 'merge' && w.mergeSel) renderMain()
+  if (w.mode !== 'merge' || !w.mergeSel) return
+  // The same file can conflict again after its record was settled: the compare
+  // tab then follows the new open record instead of showing the old one.
+  const shown = merges.find((m) => m.id === w.mergeSel)
+  if (shown && shown.state === 'done') {
+    const next = merges.find((m) => m.path === shown.path && m.state !== 'done')
+    if (next) { w.mergeSel = next.id; saveWs(current); renderMainBar() }
+  }
+  renderMain()
 }
 
 function openMerge (id) {
@@ -649,12 +807,21 @@ function membersHtml (st) {
   const list = (st.members || []).filter((m) => m.role !== 'owner')
   if (!acc.owner) {
     return list.length || st.members?.length ? `<div class="pm-section"><div class="pm-title">Access</div>
-      ${(st.members || []).map((m) => `<div class="pm-member"><span class="nm">${esc(m.name)}${m.kind === 'agent' ? ' (agent)' : ''}</span><span class="tag">${roleLabel(m.role)}</span>${m.scopes && m.scopes.length ? `<span class="hint">${esc(scopesText(m.scopes))}</span>` : ''}</div>`).join('')}</div>` : ''
+      ${(st.members || []).map((m) => m.chat && acc.canAdmit ? chatMemberRow(m, { remove: false }) : `<div class="pm-member"><span class="nm">${esc(m.name)}${m.kind === 'agent' ? ' (agent)' : ''}</span><span class="tag">${roleLabel(m.role)}</span>${m.scopes && m.scopes.length ? `<span class="hint">${esc(scopesText(m.scopes))}</span>` : ''}</div>`).join('')}</div>` : ''
   }
+  const admitBy = st.admitBy || acc.admitBy || 'owner'
+  const admitOpts = [
+    ['owner', 'Only the owner'],
+    ['editors', 'Anyone who can edit'],
+    ['members', 'Anyone in the session']
+  ].map(([v, label]) => `<option value="${v}" ${admitBy === v ? 'selected' : ''}>${label}</option>`).join('')
   return `<div class="pm-section"><div class="pm-title">Who can get in</div>
-    ${list.length ? list.map((m) => state.accessTypes && ACCOUNT_KEY.test(m.key) ? accessForm(m) : `
+    <label class="pm-admit"><span>Who can let people in</span>
+      <select class="input" name="admitBy" data-admit-by aria-label="Who can let people into this session">${admitOpts}</select>
+    </label>
+    ${list.length ? list.map((m) => m.chat ? chatMemberRow(m) : state.accessTypes && ACCOUNT_KEY.test(m.key) ? accessForm(m) : `
       <form class="pm-member edit" data-key="${esc(m.key)}">
-        <span class="nm" title="${m.online ? 'Online' : 'Offline'}"><span class="dot" style="background:${m.online ? 'var(--ok)' : 'var(--faint)'}"></span>${esc(m.name)}${m.kind === 'agent' ? ' (agent)' : ''}</span>
+        <span class="nm" ${memberDot(m)}${esc(m.name)}${m.kind === 'agent' ? ' (agent)' : ''}</span>
         <select class="input" name="role" aria-label="Role for ${esc(m.name)}">
           <option value="editor" ${m.role === 'editor' ? 'selected' : ''}>Can edit</option>
           <option value="viewer" ${m.role === 'viewer' ? 'selected' : ''}>View only</option>
@@ -678,6 +845,36 @@ async function loadSessionAgents () {
   if (!$('#people-menu').hidden) renderPeopleMenu({ force: true })
 }
 
+/** How long a chat link still works, e.g. "8 min left (until 14:32)", or "Ran out". */
+export function chatTimeLeft (expiresAt, now = Date.now()) {
+  const ms = (expiresAt || 0) - now
+  if (ms <= 0) return 'Ran out: make a new link to keep going'
+  const min = Math.ceil(ms / 60000)
+  const left = min < 60 ? `${min} min` : min < 2880 ? `${Math.round(min / 60)} h` : `${Math.round(min / 1440)} days`
+  const until = new Date(expiresAt).toLocaleString(undefined, min < 1440 ? { hour: 'numeric', minute: '2-digit' } : { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+  return `${left} left (until ${until})`
+}
+
+/** A chat AI let in with a chat link: how long it still works, a way to extend it, and (for the owner) remove. */
+function chatMemberRow (m, { remove = true } = {}) {
+  const name = esc(m.name)
+  const live = (m.expiresAt || 0) > Date.now()
+  return `
+      <form class="pm-member edit pm-chat" data-key="${esc(m.key)}">
+        <span class="nm" ${memberDot(m)}${name} (chat link)</span>
+        <span class="hint pm-now">${esc(chatTimeLeft(m.expiresAt))}</span>
+        ${live ? `<select class="input" name="minutes" aria-label="Keep ${name}'s link working for">
+          <option value="10">10 more minutes</option>
+          <option value="60" selected>1 more hour</option>
+          <option value="480">8 more hours</option>
+          <option value="1440">1 more day</option>
+          <option value="10080">1 more week</option>
+        </select>
+        <button type="button" class="btn sm" data-extend-chat>Extend</button>` : ''}
+        ${remove ? `<button type="button" class="btn sm ghost icon" data-remove title="Remove ${name}" aria-label="Remove ${name}">${I.x}</button>` : ''}
+      </form>`
+}
+
 /**
  * The owner's "Access" section for one person: their access type, and how it's narrowed
  * for them here (view only, folders taken away, no posting). It never widens the type.
@@ -690,7 +887,7 @@ function accessForm (m) {
   const name = esc(m.name)
   return `
       <form class="pm-member edit pm-access" data-key="${esc(m.key)}">
-        <span class="nm" title="${m.online ? 'Online' : 'Offline'}"><span class="dot" style="background:${m.online ? 'var(--ok)' : 'var(--faint)'}"></span>${name}${m.kind === 'agent' ? ' (agent)' : ''}</span>
+        <span class="nm" ${memberDot(m)}${name}${m.kind === 'agent' ? ' (agent)' : ''}</span>
         <span class="hint pm-now">${esc(accessLine(m))}</span>
         ${ready ? '' : `<span class="hint pm-load ${v.state === 'error' ? 'warn' : ''}" role="status">${esc(v.message)}</span>`}
         <select class="input" name="typeId" aria-label="Access type for ${name}" ${off}>${typeOptions(ready ? v.typeId : '')}</select>
@@ -746,24 +943,38 @@ function renderPeopleMenu ({ force = false } = {}) {
       <button class="pm-open" data-person="${esc(p.name)}" title="Open ${p.isMe ? 'your' : `${esc(p.name)}'s`} AI chat">${avatar(p.name, p.color, p.online)}
         <span class="pm-main">
           <span class="pm-name">${esc(p.isMe ? `${p.name} (you)` : p.name)}${p.kind === 'agent' ? `<span class="tag bot">${I.bot}agent</span>` : ''}${toolsOf(p).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</span>
+          ${p.persona ? `<span class="pm-sub">${p.mine ? 'One of your AI sessions' : `One of ${esc(p.of)}'s AI sessions`}</span>` : ''}
           ${p.focus && !p.isMe ? `<span class="pm-sub">${esc(p.focus)}</span>` : ''}
           ${editing}
-          <span class="pm-sub">${agentLine(p)}</span>
+          ${p.persona ? '' : `<span class="pm-sub">${agentLine(p)}</span>`}
         </span></button>
       ${p.isMe ? '' : `<button class="btn sm ghost" data-dm="${esc(p.name)}">Message</button>`}
     </div>`
   }
-  const others = st.peers.length
-    ? st.peers.map((p) => row(personInfo(p.name))).join('')
+  // A person's AI sessions are one row, "Daniel's AI", with each session under it.
+  const aiRow = (g) => `<div class="pm-row">
+      <div class="pm-open">${avatar(g.name, null, true)}
+        <span class="pm-main">
+          <span class="pm-name">${esc(g.mine ? 'Your AI' : g.name)}<span class="tag bot">${I.bot}AI</span>${g.agents.map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</span>
+          <span class="pm-sub">${g.sessions.length === 1 ? 'One chat' : `${g.sessions.length} chats`}. Messages go to the one active last.</span>
+          ${g.sessions.map((x) => `<span class="pm-sub" title="${esc(x.name)}">· ${esc(x.focus || x.name.split(' · ').slice(1).join(' · ') || x.tool || 'AI')}${x.tool && x.focus ? ` <span class="hint">(${esc(x.tool)})</span>` : ''}</span>`).join('')}
+        </span></div>
+      <button class="btn sm ghost" data-dm="${esc(g.name)}">Message</button>
+    </div>`
+  const here = peopleHere(st)
+  const myAi = here.find((p) => p.sessions && p.mine)
+  const others = here.some((p) => p !== myAi)
+    ? here.filter((p) => p !== myAi).map((p) => p.sessions ? aiRow(p) : row(personInfo(p.name))).join('')
     : '<div class="pm-empty">Nobody else is here yet. Use <b>Invite</b> to bring someone in.</div>'
   menu.innerHTML = `
-    <div class="pm-head"><span>People</span><span class="pm-count">${st.peers.length + 1} here</span></div>
+    <div class="pm-head"><span>People</span><span class="pm-count">${here.length + 1} here</span></div>
     <div class="pm-section">
       <div class="pm-title">You</div>
       <div class="pm-card">
         ${row(self)}
         <form class="pm-focus"><input class="input" id="focus-input" placeholder="What are you working on?" aria-label="Your focus" value="${esc(typing ?? st.me.focus ?? '')}"></form>
       </div>
+      ${myAi ? `<div class="pm-card">${aiRow(myAi)}</div>` : ''}
       ${shareLine}
     </div>
     <div class="pm-section">
@@ -887,11 +1098,11 @@ function renderMainBar () {
   el.innerHTML = w.aiTabs.map((name) => {
     const p = personInfo(name)
     const working = p.agent && p.agent.sharing !== false && p.agent.status === 'working'
-    return `<div class="sv-tab${aiOn(name) ? ' on' : ''}" role="tab" aria-selected="${aiOn(name)}" tabindex="0" data-kind="ai" data-tab="${esc(name)}" title="${esc(p.isMe ? 'Your AI chat' : `${name}'s AI chat`)}">
+    return `<div class="ws-tab${aiOn(name) ? ' on' : ''}" role="tab" aria-selected="${aiOn(name)}" tabindex="0" data-kind="ai" data-tab="${esc(name)}" title="${esc(p.isMe ? 'Your AI chat' : `${name}'s AI chat`)}">
       ${avatar(name, p.color, p.online)}<span class="nm">${esc(p.isMe ? 'Your AI' : `${name}'s AI`)}</span>${working ? '<span class="pulse" title="AI is working"></span>' : ''}
       <button class="x" data-kind="ai" data-close="${esc(name)}" aria-label="Close ${esc(name)}">${I.x}</button></div>`
-  }).join('') + (w.aiTabs.length && w.fileTabs.length ? '<span class="sv-tab-sep"></span>' : '') +
-  w.fileTabs.map((path) => `<div class="sv-tab${fileOn(path) ? ' on' : ''}" role="tab" aria-selected="${fileOn(path)}" tabindex="0" data-kind="file" data-tab="${esc(path)}" title="${esc(path)}">
+  }).join('') + (w.aiTabs.length && w.fileTabs.length ? '<span class="ws-tab-sep"></span>' : '') +
+  w.fileTabs.map((path) => `<div class="ws-tab${fileOn(path) ? ' on' : ''}" role="tab" aria-selected="${fileOn(path)}" tabindex="0" data-kind="file" data-tab="${esc(path)}" title="${esc(path)}">
       <span class="ico">${I.file}</span><span class="nm">${esc(basename(path))}</span>${w.stale[path] ? '<span class="changed" title="Changed"></span>' : ''}
       <button class="x" data-kind="file" data-close="${esc(path)}" aria-label="Close ${esc(basename(path))}">${I.x}</button></div>`).join('') +
   (w.mergeSel ? mergeTabHtml(w) : '')
@@ -902,7 +1113,7 @@ function mergeTabHtml (w) {
   const m = shownMerge()
   const on = w.mode === 'merge'
   const name = m ? `Merge ${basename(m.path)}` : 'Merge'
-  return `${w.aiTabs.length || w.fileTabs.length ? '<span class="sv-tab-sep"></span>' : ''}<div class="sv-tab${on ? ' on' : ''}" role="tab" aria-selected="${on}" tabindex="0" data-kind="merge" data-tab="${esc(w.mergeSel)}" title="${esc(m ? `Compare the two versions of ${m.path}` : 'Merge')}">
+  return `${w.aiTabs.length || w.fileTabs.length ? '<span class="ws-tab-sep"></span>' : ''}<div class="ws-tab${on ? ' on' : ''}" role="tab" aria-selected="${on}" tabindex="0" data-kind="merge" data-tab="${esc(w.mergeSel)}" title="${esc(m ? `Compare the two versions of ${m.path}` : 'Merge')}">
       <span class="ico">${I.branch}</span><span class="nm">${esc(name)}</span>
       <button class="x" data-kind="merge" data-close="${esc(w.mergeSel)}" aria-label="Close merge">${I.x}</button></div>`
 }
@@ -927,11 +1138,12 @@ function renderTaskButton () {
 function editingTask () {
   const el = document.activeElement
   if (!el?.closest) return false
-  return !!el.closest('.task-edit, .task-assign, .task-file, .task-file-form, .task-add-assign')
+  return !!el.closest('.task-edit, .task-assign, .task-file, .task-file-form, .task-cron, .task-cron-form, .task-add-assign')
 }
 
 function taskPeople (st) {
-  return [st.me, ...(st.peers || [])].filter((p) => p && p.name).map((p) => ({
+  // A person's AI sessions are assigned as "their AI" (forAi), not one by one.
+  return [st.me, ...(st.peers || [])].filter((p) => p && p.name && !p.persona).map((p) => ({
     name: p.name,
     tool: p.tool && p.tool !== 'unknown' ? p.tool : '',
     agent: p.kind === 'agent'
@@ -946,6 +1158,51 @@ function assignmentFromValue (value, st) {
   const saved = (st.tasks || []).find((t) => t.assignee === assignee && !!t.forAi === forAi)
   const live = person?.tool && person.tool !== 'unknown' ? person.tool : ''
   return { assignee, forAi, tool: forAi ? (live || saved?.tool || '') : '' }
+}
+
+// Board scroll survives a repaint: the column row's horizontal position and
+// each column's own vertical position, keyed by column id.
+let lastBoard = { html: '', el: null }
+function boardScroll (root) {
+  const cols = root?.querySelector('.board-cols')
+  if (!cols) return null
+  const lists = {}
+  for (const col of cols.querySelectorAll('.board-col')) {
+    const list = col.querySelector('.board-list')
+    if (list) lists[col.dataset.column] = list.scrollTop
+  }
+  return { left: cols.scrollLeft, top: cols.scrollTop, lists }
+}
+
+function restoreBoardScroll (root, scroll) {
+  if (!scroll) return
+  const cols = root?.querySelector('.board-cols')
+  if (!cols) return
+  cols.scrollLeft = scroll.left
+  cols.scrollTop = scroll.top
+  for (const col of cols.querySelectorAll('.board-col')) {
+    const list = col.querySelector('.board-list')
+    const top = scroll.lists[col.dataset.column]
+    if (list && typeof top === 'number') list.scrollTop = top
+  }
+}
+
+// A plain mouse wheel only scrolls up and down. Over the board's headers,
+// gaps or a column too short to scroll, turn that into sideways movement so
+// the column row can be reached without a trackpad or the scrollbar.
+function boardWheel (e) {
+  if (e.ctrlKey || e.defaultPrevented) return
+  const cols = e.target.closest?.('.board-cols')
+  if (!cols || cols.scrollWidth <= cols.clientWidth + 1) return
+  if (getComputedStyle(cols).overflowX === 'visible') return
+  const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY
+  if (!dy || Math.abs(e.deltaX) >= Math.abs(dy) || e.shiftKey) return
+  const list = e.target.closest('.board-list')
+  if (list && list.scrollHeight > list.clientHeight + 1) return
+  // Stacked phone layout scrolls vertically; leave it alone.
+  if (cols.scrollHeight > cols.clientHeight + 1) return
+  e.preventDefault()
+  cols.scrollLeft += dy
 }
 
 function paintBoard ({ force = false } = {}) {
@@ -1007,6 +1264,7 @@ function beginEdit (btn) {
 
 function bindBoard () {
   const el = $('#main')
+  el.addEventListener('wheel', boardWheel, { passive: false })
   el.addEventListener('focusout', () => {
     setTimeout(() => { if (!editingTask() && boardDirty) paintBoard() }, 0)
   })
@@ -1021,6 +1279,15 @@ function bindBoard () {
     catch (err) { toast(err.message); paintBoard({ force: true }) }
   })
   el.addEventListener('submit', async (e) => {
+    if (e.target.classList.contains('task-cron-form')) {
+      e.preventDefault()
+      const input = e.target.querySelector('input')
+      const id = e.target.closest('.task')?.dataset.task
+      if (!id || !input) return
+      try { await changeTasks('/update', { id, cron: input.value }) }
+      catch (err) { toast(err.message) }
+      return
+    }
     if (e.target.classList.contains('task-file-form')) {
       e.preventDefault()
       const input = e.target.querySelector('input')
@@ -1066,6 +1333,22 @@ function bindBoard () {
       catch (err) { toast(err.message) }
       return
     }
+    const notes = e.target.closest('[data-task-notes]')
+    if (notes) {
+      const id = notes.closest('.task')?.dataset.task
+      const task = (sum()?.status.tasks || []).find((t) => t.id === id)
+      if (task) openTaskNotes(task)
+      return
+    }
+    const recur = e.target.closest('[data-task-recur]')
+    if (recur) {
+      const id = recur.closest('.task')?.dataset.task
+      const task = (sum()?.status.tasks || []).find((t) => t.id === id)
+      if (!id || !task) return
+      try { await changeTasks('/update', { id, recurring: !task.recurring }) }
+      catch (err) { toast(err.message) }
+      return
+    }
     if (e.target.closest('[data-task-delete]')) {
       const id = e.target.closest('.task')?.dataset.task
       if (!id) return
@@ -1079,7 +1362,7 @@ function bindBoard () {
   })
   el.addEventListener('dragstart', (e) => {
     const card = e.target.closest?.('.task')
-    if (!card || e.target.closest('.task-icon, .task-move, .task-assign, .task-files, .task-file-form, .task-file-x, input, select')) { e.preventDefault(); return }
+    if (!card || e.target.closest('.task-icon, .task-move, .task-assign, .task-files, .task-file-form, .task-cron-form, .task-file-x, input, select')) { e.preventDefault(); return }
     draggingTask = true
     e.dataTransfer.setData('text/plain', card.dataset.task)
     e.dataTransfer.effectAllowed = 'move'
@@ -1118,9 +1401,17 @@ function renderMain () {
   const w = ws(current)
   const st = sum().status
   if (w.mode === 'tasks') {
-    el.innerHTML = renderBoard(st.tasks || [], me(), taskPeople(st), pendingAssign)
+    const html = renderBoard(st.tasks || [], me(), taskPeople(st), pendingAssign)
+    // Status ticks arrive every few seconds. Re-rendering an unchanged board
+    // would throw away hover, selection and scroll for nothing.
+    if (html === lastBoard.html && lastBoard.el && el.firstElementChild === lastBoard.el) return
+    const scroll = boardScroll(el)
+    el.innerHTML = html
+    lastBoard = { html, el: el.firstElementChild }
+    restoreBoardScroll(el, scroll)
     return
   }
+  lastBoard = { html: '', el: null }
   if (st.access && st.access.state === 'pending') {
     el.innerHTML = `<div class="main-empty">
       <div class="ill">${I.lock}</div>
@@ -1267,7 +1558,76 @@ function renderTreePane () {
   $('#file-count').textContent = tree ? `${tree.files.length}` : ''
 }
 
+function openTaskNotes (task, { instant = false } = {}) {
+  document.querySelector('.task-notes-back')?.remove()
+  const back = document.createElement('div')
+  back.className = 'modal-back task-notes-back'
+  back.innerHTML = taskNotesModalHtml(task)
+  document.body.appendChild(back)
+  const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+  const close = () => {
+    if (back.dataset.closing) return
+    back.dataset.closing = '1'
+    back.classList.remove('is-open')
+    if (reduce) { back.remove(); return }
+    let finished = false
+    const finish = () => { if (finished) return; finished = true; back.remove() }
+    back.addEventListener('transitionend', (e) => { if (e.target === back) finish() })
+    setTimeout(finish, 280)
+  }
+  back.addEventListener('mousedown', (e) => { if (e.target === back) close() })
+  back.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); close() } })
+  back.querySelector('[data-close-notes]').onclick = close
+  const form = back.querySelector('.task-comment-form')
+  const box = back.querySelector('.task-comment-text')
+  box.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); form.requestSubmit() } })
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault()
+    const text = box.value.trim()
+    if (!text) return
+    try {
+      await changeTasks('/comment', { id: task.id, text })
+      const now = (sum()?.status.tasks || []).find((t) => t.id === task.id)
+      box.value = ''
+      // Drawn again with the new comment, the box ready for another.
+      if (now) openTaskNotes(now, { instant: true })
+    } catch (err) { toast(err.message) }
+  })
+  ;(task.comments?.length || task.qaNotes || task.verified ? back.querySelector('[data-close-notes]') : box).focus()
+  if (reduce || instant) back.classList.add('is-open')
+  else requestAnimationFrame(() => requestAnimationFrame(() => back.classList.add('is-open')))
+  if (instant) back.querySelector('.task-comment-text').focus()
+}
+
+function applyTreeCollapsed () {
+  const body = $('#ws-body')
+  const btn = $('#collapse-tree')
+  if (!body || !current) return
+  const collapsed = !!ws(current).treeCollapsed
+  body.classList.toggle('tree-collapsed', collapsed)
+  const scroll = $('#tree')
+  if (scroll) {
+    scroll.toggleAttribute('inert', collapsed)
+    scroll.setAttribute('aria-hidden', collapsed ? 'true' : 'false')
+  }
+  if (!btn) return
+  btn.setAttribute('aria-expanded', String(!collapsed))
+  btn.title = collapsed ? 'Expand files' : 'Collapse files'
+  btn.setAttribute('aria-label', collapsed ? 'Expand files' : 'Collapse files')
+  btn.innerHTML = collapsed ? I.arrowRight : I.arrowLeft
+}
+
+function toggleTreeCollapsed () {
+  if (!current) return
+  const w = ws(current)
+  w.treeCollapsed = !w.treeCollapsed
+  saveWs(current)
+  applyTreeCollapsed()
+}
+
 function bindTreeEvents () {
+  const collapse = $('#collapse-tree')
+  if (collapse) collapse.onclick = () => toggleTreeCollapsed()
   const el = $('#tree')
   el.addEventListener('click', (e) => {
     const more = e.target.closest('[data-more]')
@@ -1319,11 +1679,33 @@ function showTreeMenu (anchor, path, kind) {
     path,
     kind,
     me: me(),
+    owner: !!sum()?.status.access?.owner,
     claim: claimCovering(path, kind),
     onOpen: () => openFile(path),
     onClaim: (note) => claimPath(path, note),
-    onRelease: () => releasePattern(claimCovering(path, kind).pattern)
+    onRelease: () => releasePattern(claimCovering(path, kind).pattern),
+    onClearAway: clearAwayClaims,
+    onRequest: (req) => fileQueue('request-file', { path, ...req }, `Asked for ${path}`),
+    onWithdraw: (request) => fileQueue('withdraw-request', { request }, 'Request withdrawn'),
+    onHandoff: (h) => fileQueue('handoff', { path: claimCovering(path, kind).pattern, ...h }, `Handed off ${path}`)
   })
+}
+
+/** The file queue from the ⋯ menu: ask for a file, take a request back, or hand a file on. */
+async function fileQueue (route, body, done) {
+  try {
+    await api('POST', `/api/sessions/${current}/${route}`, body)
+    toast(done)
+    loadTree()
+  } catch (err) { toast(err.message) }
+}
+
+async function clearAwayClaims () {
+  try {
+    const { released } = await api('POST', `/api/sessions/${current}/clear-claims`, {})
+    toast(released ? `Released ${released} claim${released === 1 ? '' : 's'}` : 'No claims to release')
+    loadTree()
+  } catch (err) { toast(err.message) }
 }
 
 async function claimPath (path, note) {
@@ -1464,7 +1846,7 @@ function updatePlaceholder () {
   const input = $('#msg-input')
   if (!input) return
   if (mayNotPost()) { input.placeholder = NO_POSTING; return }
-  const who = state.to ? state.to : 'everyone'
+  const who = state.to ? (state.to === `${me()}'s AI` ? 'your AI' : state.to) : 'everyone'
   input.placeholder = state.pending.length ? `Add a note for ${who} (optional)…` : `Message ${who}…`
 }
 
@@ -1472,27 +1854,33 @@ function renderRecipients () {
   const s = sum()
   const sel = $('#to-select')
   if (!s || !sel) return
-  const names = new Set(s.status.peers.map((p) => p.name))
+  const who = owners(s)
+  const names = new Set(peopleHere(s.status).map((p) => p.name))
   for (const m of renderable(state.messages.get(current))) {
-    if (m.by !== s.status.me.name) names.add(m.by)
-    if (m.to && m.to !== s.status.me.name) names.add(m.to)
+    if (m.by !== s.status.me.name) names.add(shownName(m.by, who))
+    if (m.to && m.to !== s.status.me.name) names.add(shownName(m.to, who))
   }
   if (state.to) names.add(state.to)
-  const online = new Set(s.status.peers.map((p) => p.name))
+  const online = new Set(peopleHere(s.status).map((p) => p.name))
   sel.innerHTML = '<option value="">Everyone</option>' + [...names].sort().map((n) =>
-    `<option value="${esc(n)}" ${n === state.to ? 'selected' : ''}>${esc(n)} (direct${online.has(n) ? '' : ', offline'})</option>`).join('')
+    `<option value="${esc(n)}" ${n === state.to ? 'selected' : ''}>${esc(n === `${s.status.me.name}'s AI` ? 'Your AI' : n)} (direct${online.has(n) ? '' : ', offline'})</option>`).join('')
   sel.value = state.to
   sel.closest('.to').hidden = names.size === 0
   updatePlaceholder()
 }
 
-/** Everyone who can be mentioned in this session: members, people online, and whoever has written. */
+/**
+ * Everyone who can be mentioned in this session: members, people online, and whoever has written,
+ * and @Agents (every agent at once) while an agent other than me is connected.
+ */
 function mentionNames (s) {
   const names = new Set()
+  const who = owners(s)
   if (s.status.me?.name) names.add(s.status.me.name)
-  for (const p of s.status.peers || []) if (p.name) names.add(p.name)
+  for (const p of peopleHere(s.status)) if (p.name) names.add(p.name)
   for (const m of s.status.members || []) if (m.name) names.add(m.name)
-  for (const m of renderable(state.messages.get(current))) { if (m.by) names.add(m.by); if (m.to) names.add(m.to) }
+  for (const m of renderable(state.messages.get(current))) { if (m.by) names.add(shownName(m.by, who)); if (m.to) names.add(shownName(m.to, who)) }
+  if ((s.status.peers || []).some((p) => p.kind === 'agent' && p.name !== s.status.me?.name)) names.add(ALL_AGENTS)
   return [...names]
 }
 
@@ -1548,7 +1936,9 @@ function renderMessages (incoming = false, force = false) {
   const s = sum()
   if (!el || !s) return
   const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-  const list = renderable(state.messages.get(current)) // peers can push anything into the room
+  const who = owners(s)
+  // A person's AI sessions working things out among themselves isn't shown: only what they say to people.
+  const list = renderable(state.messages.get(current)).filter((m) => !ownAiChatter(m, who)) // peers can push anything into the room
   const name = s.status.me.name
   const colors = new Map(s.status.peers.map((p) => [p.name, p.color]))
   colors.set(name, s.status.me.color)
@@ -1556,12 +1946,13 @@ function renderMessages (incoming = false, force = false) {
   el.innerHTML = list.length
     ? list.map((m) => {
       const mine = m.by === name
-      const dm = m.to ? `<span class="dm">${mine ? `to ${esc(m.to)}` : 'direct'}</span>` : ''
+      const by = shownName(m.by, who)
+      const dm = m.to ? `<span class="dm">${mine || who.has(m.by) ? `to ${esc(m.to === name ? 'you' : m.to === `${name}'s AI` ? 'your AI' : shownName(m.to, who))}` : 'direct'}</span>` : ''
       const file = m.file ? `<a class="file-card" href="${fileCardHref(current, m.id, TOKEN)}" download="${esc(m.file.name)}">
           <span class="fi">${I.file}</span><span style="min-width:0"><div class="fn">${esc(m.file.name)}</div><div class="fs">${bytes(m.file.size)} · ${mine ? 'sent' : 'download'}</div></span></a>` : ''
-      return `<div class="msg${mine ? ' mine' : ''}">${mine ? '' : avatar(m.by, colors.get(m.by))}
-        <div style="min-width:0"><div class="head"><b>${mine ? 'You' : esc(m.by)}</b>${dm}<span>${esc(clock(m.ts))}</span></div>
-        <div class="bubble">${m.text ? `<div class="text">${textHtml(m.text, names, name)}</div>` : ''}${file}</div></div></div>`
+      return `<div class="msg${mine ? ' mine' : ''}">${mine ? '' : avatar(by, colors.get(m.by))}
+        <div style="min-width:0"><div class="head"><b${by !== m.by ? ` title="${esc(m.by)}"` : ''}>${mine ? 'You' : esc(by === `${name}'s AI` ? 'Your AI' : by)}</b>${dm}<span>${esc(clock(m.ts))}</span></div>
+        <div class="bubble">${m.text ? `<div class="text">${textHtml(m.text, names, name, { meAgent: s.status.me.kind === 'agent' })}</div>` : ''}${file}</div></div></div>`
     }).join('')
     : '<div class="day-empty"><div><b>Say hi.</b></div><div class="hint">Messages, direct messages and files you share appear here. Drop a file on this panel to send it.</div></div>'
   if (force || nearBottom || (incoming && list[list.length - 1]?.by === name)) el.scrollTop = el.scrollHeight

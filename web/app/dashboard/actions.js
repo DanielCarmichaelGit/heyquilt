@@ -56,6 +56,32 @@ export async function revokeAgent (formData) {
   refresh(AGENTS)
 }
 
+// App keys (qk_) are shown once, so they come back to the form rather than through a redirect.
+// Connecting an app makes a new agent for it with its first key; an agent of yours can get more.
+export async function connectApp (prev, formData) {
+  const user = await requireUser(AGENTS)
+  const name = String(formData.get('name') || '').trim()
+  const r = await apiCall(user, 'POST', '/v1/agents/apps', { name, provider: name })
+  if (!r.ok) return { error: r.data?.error || 'Couldn’t connect the app. Try again.' }
+  refresh(AGENTS)
+  return { key: r.data.key.key, agent: r.data.agent.name, mcp: r.data.mcp }
+}
+
+export async function newAppKey (prev, formData) {
+  const user = await requireUser(AGENTS)
+  const id = String(formData.get('agentId') || '')
+  const r = await apiCall(user, 'POST', `/v1/agents/${encodeURIComponent(id)}/keys`, { name: String(formData.get('name') || '').trim() })
+  if (!r.ok) return { error: r.data?.error || 'Couldn’t make a key. Try again.' }
+  refresh(AGENTS)
+  return { key: r.data.key.key, agent: r.data.agent.name, mcp: r.data.mcp }
+}
+
+export async function revokeAppKey (formData) {
+  const user = await requireUser(AGENTS)
+  await apiCall(user, 'DELETE', `/v1/agents/${encodeURIComponent(String(formData.get('agentId')))}/keys/${encodeURIComponent(String(formData.get('id')))}`)
+  refresh(AGENTS)
+}
+
 // Where one of your agents works (workspaces on): its Available in and Joins. The answer
 // comes back to the form, which shows "Saved." or the API's reason.
 export async function saveAgentPlacement (prev, formData) {

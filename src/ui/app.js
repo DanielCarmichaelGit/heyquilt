@@ -238,14 +238,20 @@ export async function go (view) {
 }
 
 // --------------------------------------------------------------- render --
+let shuttingDown = false // one "Shut down Quilt?" at a time, however often the button is clicked
 export async function shutdown () {
-  if (!await ask({ title: 'Shut down Quilt?', message: 'This stops every session and this app. Your files stay where they are.', ok: 'Shut down', danger: true })) return
+  if (shuttingDown) return
+  shuttingDown = true
   try {
+    if (!await ask({ title: 'Shut down Quilt?', message: 'This stops every session and this app. Your files stay where they are.', ok: 'Shut down', danger: true })) return
+    $('#settings-back')?.remove()
     await api('POST', '/api/shutdown')
     state.events?.close() // don't re-render or reconnect as sessions stop
     renderLocked('quilt is shut down. You can close this tab.')
   } catch (err) {
     toast(err.message)
+  } finally {
+    shuttingDown = false
   }
 }
 
@@ -387,10 +393,16 @@ export function openInvite (id) {
     </div>` : ''}
     <div class="label inv-agent-label">Your AI</div>
     <div id="inv-agent" class="inv-agent">
-      <p class="hint">An AI that already has the Quilt command just needs the link above: tell it "Join my Quilt session: &lt;link&gt;". To add an AI that isn't registered with Quilt yet, make it an agent invite and paste the text into it. It joins as your own agent, listed in Settings.</p>
+      <p class="hint">An AI that already has the Quilt command just needs the link above: tell it "Join my Quilt session: &lt;link&gt;". To add an AI that isn't registered with Quilt yet, make it an agent invite and paste the text into it: it carries the link above too. It joins as your own agent, listed in Settings.</p>
       <button class="btn" type="button" id="inv-agent-make"${state.workspacesOn ? ' aria-haspopup="menu" aria-expanded="false"' : ''}>${I.bot}<span>Invite an AI agent</span></button>
       <p class="error" id="inv-agent-error"></p>
     </div>
+    ${s.status.access?.owner || s.status.access?.canAdmit ? `<div class="label inv-agent-label">A chat AI</div>
+    <div id="inv-chat" class="inv-agent">
+      <p class="hint">For ChatGPT, claude.ai, Grok and other AIs you use in a chat window: make a chat link and paste it into the chat. It can read and send messages, add, assign, move and comment on tasks, read files, and add pictures, documents and notes. It can't change existing files. It shows up in the session as its own member and works for 10 minutes: extend it from the people menu while it works, or make a new one after.</p>
+      <button class="btn" type="button" id="inv-chat-make">${I.link}<span>Make a chat link</span></button>
+      <p class="error" id="inv-chat-error"></p>
+    </div>` : ''}
     <div class="actions"><button class="btn primary" id="inv-done">Done</button></div>
   </div>`
   document.body.appendChild(back)
@@ -417,10 +429,25 @@ export function openInvite (id) {
     btn.disabled = true
     try {
       const inv = await api('POST', '/api/agent-invites')
-      $('#inv-agent', back).innerHTML = agentInviteHtml(agentPaste({ link: inv.link, invite: s.invite }), 'inv-agent-text')
+      $('#inv-agent', back).innerHTML = agentInviteHtml(agentPaste({ link: inv.link, session: s.invite }), 'inv-agent-text')
     } catch (err) {
       btn.disabled = false
       $('#inv-agent-error', back).textContent = err.message
+    }
+  }
+  const chatMake = $('#inv-chat-make', back)
+  if (chatMake) {
+    chatMake.onclick = async () => {
+      chatMake.disabled = true
+      try {
+        const r = await api('POST', `/api/sessions/${id}/chat-link`, {})
+        const until = new Date(r.expiresAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+        $('#inv-chat', back).innerHTML = `<p class="hint">Paste this into the chat. It works until ${esc(until)} (extend it from the people menu) and shows in the session as <b>${esc(r.name)}</b>. Anyone with it can act as ${esc(r.name)}, so only paste it there.</p>
+          <div class="codebox"><code id="inv-chat-text">${esc(`Open this link and follow it to join our Quilt session: ${r.url}`)}</code><button class="btn icon" data-copy="inv-chat-text" title="Copy" aria-label="Copy chat link">${I.copy}</button></div>`
+      } catch (err) {
+        chatMake.disabled = false
+        $('#inv-chat-error', back).textContent = err.message
+      }
     }
   }
   $('#inv-done', back).onclick = close

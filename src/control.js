@@ -5,49 +5,99 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { renderStatus } from './status.js'
-import * as gitops from './git.js'
 import { migrateDir } from './legacy.js'
 
 export async function startControl (session, extras = {}) {
   const token = crypto.randomBytes(16).toString('hex')
   const routes = {
-    'GET /status': () => ({ ...session.status(), markdown: renderStatus(session.status()) }),
-    'POST /say': (b) => session.say(b.text, { to: b.to }),
+    'GET /status': (b) => {
+      // To one of the AI sessions working through this app, "you" is that session (persona.js).
+      const st = session.status()
+      const p = session.persona(b.via)
+      if (p) st.me = { ...st.me, name: p.name, tool: p.tool || st.me.tool, kind: 'agent', persona: true, of: session.name, focus: p.focus || '' }
+      return { ...st, markdown: renderStatus(st) }
+    },
+    // An AI session (one `quilt mcp`) says hello: { via, tool, cwd, ppid } -> { name, named }.
+    'POST /persona': (b) => session.registerPersona({ via: b.via, tool: b.tool, cwd: b.cwd, ppid: b.ppid, pids: b.mcpPids }),
+    // It names itself after its work: { via, name } -> { name }.
+    'POST /persona/name': (b) => session.renamePersona(b.via, b.name, 'self'),
+    // What the person asked their AI session (a prompt hook): names a session that has no name yet.
+    'POST /persona/prompt': (b) => { session.personaPrompt(b.via, b.text); return { ok: true } },
+    // The CLI and the MCP server: what an AI sends, held to the chat rules (duties.js). A person typing in `quilt join` sends with everyone.
+    'POST /say': (b) => session.say(b.text, { to: b.to, agent: true, via: b.via ? String(b.via) : null, everyone: !!b.everyone, also: !!b.also }),
+    'POST /inbox/settle': (b) => session.settle(b.ids),
     'POST /send': (b) => session.sendFile(b.path, { to: b.to, text: b.text }),
     'POST /messages': (b) => ({ messages: session.messages({ limit: b.limit || 50, unreadOnly: !!b.unreadOnly, markRead: b.markRead !== false, withName: b.with || null }) }),
     'POST /get': async (b) => ({ path: await session.fetchFile(b.id, b.dest) }),
-    'POST /focus': (b) => { session.setFocus(b.text); return { ok: true } },
-    'POST /claim': (b) => session.claim(b.pattern, b.note),
+    'POST /focus': (b) => {
+      // An AI session's focus is its own (and names it, if it has no name yet); a person's is theirs.
+      if (session.persona(b.via)) session.personaSays(b.via, b.text)
+      else session.setFocus(b.text)
+      return { ok: true }
+    },
+    'POST /claim': (b) => session.claim(b.pattern, b.note, b.via),
     // What this person's AI should hear (an edit of its that Quilt undone); handed over once.
     'POST /notices': () => ({ notices: session.takeNotices() }),
-    'POST /release': async (b) => ({ released: await session.release(b.pattern) }),
+    'POST /release': async (b) => ({ released: await session.release(b.pattern, b.via) }),
+    // The file queue: ask for a file someone holds, hand one we hold to someone waiting, take a request back.
+    'POST /request-file': (b) => session.requestFile(b.path, { title: b.title, description: b.description, task: b.task, via: b.via }),
+    'POST /handoff': (b) => session.handoff(b.path, { to: b.to, context: b.context, via: b.via }),
+    'POST /withdraw-request': async (b) => ({ withdrawn: await session.withdrawRequest(b.request, b.via) }),
     // Who owns one path (the hooks ask before every edit). `shared` is false for paths Quilt doesn't sync.
     'POST /claim-for': (b) => {
       const rel = String(b.path || '').replace(/\\/g, '/').replace(/^\.\//, '')
       const shared = session.syncable(rel)
       const c = shared ? session.claimFor(rel) : null
-      return { path: rel, shared, claim: c ? { by: c.by, pattern: c.pattern, note: c.note } : null, mine: !!c && c.by === session.name, me: session.name, focus: session.focus || '' }
+      const me = session.actorName(b.via)
+      return { path: rel, shared, claim: c ? { by: c.by, pattern: c.pattern, note: c.note, queue: c.queue || [] } : null, mine: !!c && c.by === me, me, focus: session.focus || '' }
     },
+    // Before an agent changes files (any tool): is each one ours to edit (free ones are claimed for
+    // us), and what did people ask about them? See Session.prepareEdit and duties.js.
+    'POST /before-edit': (b) => session.prepareEdit(Array.isArray(b.paths) ? b.paths.slice(0, 100) : [], b.via),
+    // An agent finished a piece of work: let go of the claims that followed its edits.
+    'POST /finish': (b) => session.finishEditing(b.via),
+    // Who is waiting for an answer from this member (or AI session): the MCP and the hooks refuse to move work on until there's none.
+    'GET /duties': (b) => session.duties(b.via),
+    // What an MCP agent shares about its work (quilt_share): the feed, tasks and "working", for any tool.
+    'POST /share-work': (b) => {
+      session.personaSays(b.via, b.request)
+      return session.shareAgentWork({ tool: b.tool, request: b.request, summary: b.summary, files: Array.isArray(b.files) ? b.files : [] })
+    },
+    // Owner only: a link a chat-only AI works through (chat-links.js). { name, hours } -> { url, name, expiresAt }
+    'POST /chat-link': (b) => session.createChatLink({ name: b.name, minutes: b.minutes }),
+    // Owner only: how long a chat link still works. { who: name or key, minutes } -> { name, expiresAt }
+    'POST /chat-link/extend': (b) => session.extendChatLink(String(b.who || ''), b.minutes),
     'POST /agent': (b) => { session.addAgent(b.client); return { ok: true } },
     'POST /feed': (b) => ({ entries: session.agentFeedFor(b.who, { limit: Math.min(Number(b.limit) || 40, 300) }) }),
     // The chronology: { path, by, since, task, limit } (see Session.historyQuery).
     'POST /history': (b) => ({ entries: session.historyQuery(b) }),
     'GET /tree': () => session.tree(),
     'POST /sharing': (b) => ({ on: session.setAgentSharing(b.on !== false) }),
-    'GET /commits': () => ({ ...session.commitStatus({ includeMe: false }), host: gitops.hostsGit(session, { joined: !!extras.joined }) }),
+    'GET /commits': () => session.commitStatus({ includeMe: false }),
+    'GET /branches': () => ({ branches: session.status().branches, git: session.status().git }),
+    'POST /branches/sync': () => session.syncBranchNow(),
     'POST /commit-request': (b) => session.requestCommit(b.message),
-    'POST /work': (b) => ({ work: session.setWork(b.state, b.note) }),
+    'POST /commit-request/done': (b) => ({ done: session.resolveCommitRequests({ ids: b.id ? [String(b.id)] : null }) }),
+    'POST /work': (b) => {
+      if (b.state === 'working') session.personaSays(b.via, b.note)
+      return { work: session.setWork(b.state, b.note) }
+    },
     'GET /tasks': () => ({ tasks: session.taskList() }),
     // Mentions, direct messages and tasks handed to this member since sequence number `after` (agents wake on these).
-    'POST /inbox': (b) => session.inbox({ after: b.after }),
+    'POST /inbox': (b) => session.inbox({ after: b.after, all: !!b.all, via: b.via }),
     // The agent's webhook: inbox events POSTed to a URL of its own (see webhooks.js).
     'GET /webhook': () => ({ webhook: session.webhookInfo() }),
-    'POST /webhook': (b) => ({ webhook: session.setWebhook({ url: b.url, secret: b.secret, events: b.events }) }),
+    'POST /webhook': (b) => ({ webhook: session.setWebhook({ url: b.url, secret: b.secret, events: b.events, bearer: b.bearer }) }),
     'POST /webhook/clear': () => ({ had: session.clearWebhook() }),
     'POST /tasks': (b) => ({ task: session.addTask(b), tasks: session.taskList() }),
-    'POST /tasks/update': (b) => ({ task: session.updateTask(b), tasks: session.taskList() }),
+    'POST /tasks/update': (b) => {
+      const task = session.updateTask(b)
+      if (b.column === 'doing' && task) session.personaSays(b.via, task.title) // taking a task can name an AI session
+      return { task, tasks: session.taskList() }
+    },
     // What an agent gets when it picks a task up: history for its files, claims, the project's checks.
     'POST /tasks/brief': (b) => session.taskBrief(b.id),
+    'POST /tasks/comment': (b) => session.commentTask(b),
     'POST /tasks/delete': (b) => { session.deleteTask(b.id); return { tasks: session.taskList() } },
     'GET /merges': () => {
       const merges = session.mergeList()
@@ -62,15 +112,7 @@ export async function startControl (session, extras = {}) {
     },
     'POST /merges/resolve': (b) => session.resolveMerge(String(b.id || ''), { how: b.how }),
     'POST /merges/send': (b) => session.prepareMergeSend(String(b.id || '')),
-    'POST /commit': async (b) => {
-      if (!gitops.hostsGit(session, { joined: !!extras.joined })) throw new Error('Only the session host can commit: git lives on their computer. Ask for a commit with quilt_request_commit instead.')
-      const open = session.commitStatus().open
-      const message = String(b.message || '').trim() || open.map((r) => r.message).join('; ')
-      const r = await gitops.commit(session.root, message)
-      session.resolveCommitRequests({ hash: r.hash })
-      return r
-    },
-    'GET /info': () => ({ room: session.room, dir: session.root, name: session.name, kind: session.kind, invite: extras.invite || null, viewInvite: extras.viewInvite || null, access: session.access, pid: process.pid })
+    'GET /info': (b) => ({ room: session.room, dir: session.root, name: session.actorName(b.via), person: session.name, kind: session.kind, invite: extras.invite || null, viewInvite: extras.viewInvite || null, access: session.access, pid: process.pid })
   }
   const server = http.createServer(async (req, res) => {
     const reply = (code, body) => {
@@ -84,7 +126,16 @@ export async function startControl (session, extras = {}) {
     let raw = ''
     for await (const chunk of req) raw += chunk
     try {
-      reply(200, await route(raw ? JSON.parse(raw) : {}))
+      const b = raw ? JSON.parse(raw) : {}
+      // Which AI session is asking (persona.js): `via` from its MCP server, or `pids` from a hook
+      // (the session whose tool process is among the hook's parents). GETs carry it in the query.
+      const q = new URL(req.url, 'http://x').searchParams
+      if (!b.via && q.get('via')) b.via = q.get('via')
+      if (!b.pids && q.get('pids')) b.pids = q.get('pids').split(',')
+      if (!b.via && b.pids) b.via = session.personaFor(b.pids)
+      // A background poll (the inbox push loop) is not the AI at work: only real calls keep it here.
+      if (b.via && !b.poll) session.touchPersona(b.via)
+      reply(200, await route(b))
     } catch (err) {
       reply(400, { error: err.message })
     }

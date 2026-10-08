@@ -1,6 +1,6 @@
 {
   "name": "heyquilt",
-  "version": "0.3.11",
+  "version": "0.3.28",
   "description": "Real-time, tool-agnostic pair vibe coding: sync a project folder live between collaborators using any AI coding tool.",
   "author": {
     "name": "Daniel Carmichael",
@@ -18,12 +18,14 @@
     "dist:mac": "electron-builder --mac",
     "dist:win": "electron-builder --win",
     "icons": "electron desktop/make-icons.cjs",
-    "release": "node scripts/release.mjs"
+    "release": "node scripts/release.mjs",
+    "dist:linux": "electron-builder --linux",
+    "dist:cli": "node scripts/cli-bundle.mjs"
   },
   "engines": {
     "node": ">=22"
   },
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.3.0",
     "@fontsource/poppins": "^5.3.0",
@@ -49,13 +51,14 @@
     "bin",
     "src",
     "assets",
-    "RELEASES.md"
+    "RELEASES.md",
+    "LICENSE"
   ],
   "main": "desktop/main.js",
   "build": {
     "appId": "dev.quilt.app",
     "productName": "Quilt",
-    "copyright": "MIT License",
+    "copyright": "Copyright © 2026 Daniel Carmichael. All rights reserved.",
     "directories": {
       "buildResources": "desktop/build",
       "output": "dist"
@@ -69,7 +72,8 @@
       "desktop/updater.js",
       "desktop/icons/*.png",
       "package.json",
-      "RELEASES.md"
+      "RELEASES.md",
+      "LICENSE"
     ],
     "asar": true,
     "protocols": [
@@ -133,6 +137,21 @@
     "nsis": {
       "oneClick": true,
       "perMachine": false
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "artifactName": "quilt-linux-${arch}.${ext}",
+      "category": "Development",
+      "icon": "desktop/build/icon.png",
+      "synopsis": "Real-time pair coding, whatever AI tool you use"
     }
   }
 }

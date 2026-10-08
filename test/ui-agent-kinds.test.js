@@ -21,7 +21,7 @@ test('the menu: three kinds with a line each, and How agent kinds work opening t
     'data-kind="global"', '<b>Global agent</b><span>In all your workspaces, invited to their sessions</span>',
     'data-kind="workspace"', '<b>Workspace agent</b><span>In one workspace, invited to its sessions</span>',
     'data-kind="session"', '<b>Session agent</b><span>Invited to one session</span>',
-    'href="https://heyquilt.com/docs/agents" target="_blank" rel="noopener">How agent kinds work'
+    'href="https://heyquilt.com/docs/agent-kinds" target="_blank" rel="noopener">How agent kinds work'
   ]) assert.ok(html.includes(bit), bit)
   assert.equal(html.match(/role="menuitem"/g).length, 4, 'every choice is a menu item, the docs link too')
   assert.ok(!html.includes(EM_DASH))
@@ -75,7 +75,7 @@ test('each kind makes its own invite: global, the workspace\'s (with its access 
     assert.deepEqual(sent.at(-1)[2], { access: 'view', sessions: 'invited' }, 'the Add dialog\'s choices')
     const s = await kinds.makeAgentInvite('session', 's1')
     assert.deepEqual(sent.at(-1), ['POST', '/api/agent-invites', undefined], 'a plain invite, as today')
-    assert.ok(s.text.includes('quilt_join_session tool with https://join.heyquilt.com/r1#k'))
+    assert.ok(s.text.includes('join my session with this session invite link: https://join.heyquilt.com/r1#k'), 'the session kind carries its link')
     assert.equal(s.where, 'Web')
     await assert.rejects(kinds.makeAgentInvite('session', 'gone'), /not running/)
   } finally { globalThis.fetch = was; state.workspaces = []; state.sessions = new Map() }
@@ -94,7 +94,7 @@ test('with workspaces off, every Invite an agent button does exactly what it did
   // A session's Invite dialog.
   const inv = app.slice(app.indexOf("$('#inv-agent-make', back).onclick"), app.indexOf("$('#inv-done', back).onclick"))
   assert.ok(inv.includes('if (state.workspacesOn) {\n      return openKindMenu(btn, {\n        sessionId: id,'))
-  assert.ok(inv.includes("const inv = await api('POST', '/api/agent-invites')\n      $('#inv-agent', back).innerHTML = agentInviteHtml(agentPaste({ link: inv.link, invite: s.invite }), 'inv-agent-text')"), 'flag off: as before')
+  assert.ok(inv.includes("const inv = await api('POST', '/api/agent-invites')\n      $('#inv-agent', back).innerHTML = agentInviteHtml(agentPaste({ link: inv.link, session: s.invite }), 'inv-agent-text')"), 'flag off: as before')
   assert.ok(app.includes('id="inv-agent-make"$' + "{state.workspacesOn ? ' aria-haspopup=\"menu\" aria-expanded=\"false\"' : ''}>"))
   // agentInviteHtml without a kind is exactly what it was.
   assert.ok(app.includes("export function agentInviteHtml (text, id, kind = '') {\n  return `$" + '{kind}<p class="hint"><b>Paste this into your AI.</b>'))
@@ -118,7 +118,7 @@ test('with workspaces on: an Agents page in the sidebar, and Join a session inst
   const app = ui('app.js')
   assert.ok(home.includes("$" + "{state.workspacesOn ? `<button data-view=\"agents\""), 'Agents only with workspaces on')
   assert.ok(home.includes("view === 'agents' ? agentsPageHtml()") && home.includes("else if (view === 'agents') bindAgents($('#page'))"))
-  assert.ok(home.includes('https://heyquilt.com/docs/agents'))
+  assert.ok(home.includes('https://heyquilt.com/docs/agent-kinds'))
   assert.ok(app.includes("view !== 'agents' && !isWorkspace(view)"), 'the Agents view is not a session')
   // The Sessions menu is still there with workspaces off; with them on, one Join a session button.
   assert.ok(home.includes("? `<button class=\"btn primary full sessions-btn\" type=\"button\" data-join-session>$" + "{I.link}<span>Join a session</span></button>`\n    : `<div class=\"menu-wrap\" id=\"sessions-menu-wrap\">"))

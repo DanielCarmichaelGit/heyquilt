@@ -245,3 +245,76 @@ test('joining is rate-limited per address', async () => {
     for (const want of [404, 404, 429]) assert.equal((await fetch(`${limited.api.url}/v1/join/qj_nope`)).status, want)
   } finally { await limited.close() }
 })
+
+test('an agent that joined before gives its agentId with a new invite and comes back as itself', async () => {
+  const first = await join((await invite('mem')).token)
+  const id = first.body.agentId
+  assert.match(first.body.next, new RegExp(`Your agent id is ${id}\\.`), 'told its id, and to save it')
+  assert.equal(first.body.rejoined, false)
+  const { token, id: inviteId } = await invite('mem')
+  const r = await join(token, { ...PROFILE, description: 'Writes more tests', agentId: id })
+  assert.equal(r.status, 200)
+  assert.deepEqual([r.body.agentId, r.body.rejoined], [id, true])
+  assert.match(r.body.next, /Welcome back/)
+  assert.match(r.body.resumeKey, /^qs_/)
+  assert.equal((await t.store.agentById(id)).description, 'Writes more tests', 'the profile it sent now')
+  assert.equal((await t.call('GET', '/v1/agents', null, 'mem')).body.agents.filter((a) => a.name === 'Larry' && a.id === id).length, 1)
+  // Its new resume key works and the old one doesn't; its old keys still work until they run out.
+  assert.equal((await t.call('POST', '/v1/agents/resume', { resumeKey: first.body.resumeKey })).status, 401)
+  assert.equal((await t.call('GET', '/v1/agents/me', null, null, { authorization: `Bearer ${first.body.accessKey}` })).status, 200)
+  assert.equal((await t.call('POST', '/v1/agents/resume', { resumeKey: r.body.resumeKey })).status, 200)
+  const used = (await t.call('GET', '/v1/agent-invites', null, 'mem')).body.invites.find((i) => i.id === inviteId)
+  assert.deepEqual([used.status, used.usedBy.id, used.rejoined], ['used', id, true])
+  // Over GET, for AIs that can only fetch.
+  const viaGet = await t.call('GET', `/v1/join/${(await invite('mem')).token}?name=Larry&provider=Anthropic&type=coding%20agent&agentId=${id}`)
+  assert.deepEqual([viaGet.status, viaGet.body.agentId, viaGet.body.rejoined], [200, id, true])
+})
+
+test("a removed agent comes back with a new invite; someone else's, unknown or malformed agentIds are refused without burning it", async () => {
+  const first = await join((await invite('mem')).token)
+  const id = first.body.agentId
+  assert.equal((await t.call('DELETE', `/v1/agents/${id}`, null, 'mem')).status, 200)
+  const back = await join((await invite('mem')).token, { ...PROFILE, agentId: id })
+  assert.deepEqual([back.status, back.body.agentId], [200, id])
+  assert.equal((await t.store.agentById(id)).revokedAt, null)
+  const { token, id: inviteId } = await invite('admin')
+  const theirs = await join(token, { ...PROFILE, agentId: id })
+  assert.equal(theirs.status, 403)
+  assert.match(theirs.body.error, /belongs to someone else.*leave agentId out/)
+  assert.equal((await join(token, { ...PROFILE, agentId: '00000000-0000-4000-8000-000000000000' })).status, 404)
+  for (const bad of ['nope', 42, '<your-agent-id>']) assert.equal((await join(token, { ...PROFILE, agentId: bad })).status, 400, String(bad))
+  assert.equal(await statusOf('admin', inviteId), 'waiting', 'none of them used the invite')
+  const fresh = await join(token, { ...PROFILE, agentId: '' })
+  assert.equal(fresh.status, 200)
+  assert.notEqual(fresh.body.agentId, id, 'an empty agentId joins as a new agent')
+})
+
+test("a returning agent keeps its public key, and can't take another agent's", async () => {
+  const mine = generateIdentity(); const other = generateIdentity()
+  const a = await join((await invite('mem')).token, { ...PROFILE, publicKey: mine.publicKey })
+  await join((await invite('mem')).token, { ...PROFILE, name: 'Other', publicKey: other.publicKey })
+  const same = await join((await invite('mem')).token, { ...PROFILE, agentId: a.body.agentId, publicKey: mine.publicKey })
+  assert.equal(same.status, 200)
+  const kept = await join((await invite('mem')).token, { ...PROFILE, agentId: a.body.agentId })
+  assert.equal(kept.status, 200)
+  assert.equal((await t.store.agentById(a.body.agentId)).publicKey, mine.publicKey, 'leaving publicKey out keeps it')
+  assert.equal((await join((await invite('mem')).token, { ...PROFILE, agentId: a.body.agentId, publicKey: other.publicKey })).status, 409)
+})
+
+test("a returning org agent gets the new invite's role and teams and keeps the rest; another org's agent is refused", async () => {
+  const o = await makeOrg(t, 'Rejoin Bots Co')
+  const core = await t.store.createTeam({ orgId: o.org.id, name: 'Core' })
+  const web = await t.store.createTeam({ orgId: o.org.id, name: 'Web' })
+  const lead = await t.store.createRole({ orgId: o.org.id, name: 'Lead', grants: { teams: { r: true } } })
+  const path = `/v1/orgs/${o.slug}/agent-invites`
+  const first = await join((await invite('admin', path, { teams: [{ teamId: core.id }] })).token, { name: 'Bot', provider: 'OpenAI', type: 'coding agent' })
+  const id = first.body.agentId
+  const r = await join((await invite('admin', path, { roleId: lead.id, teams: [{ teamId: core.id, access: 'editor', scopes: ['src'] }, { teamId: web.id }] })).token, { name: 'Bot', provider: 'OpenAI', type: 'coding agent', agentId: id })
+  assert.deepEqual([r.status, r.body.agentId], [200, id])
+  const me = (await t.call('GET', '/v1/agents/me', null, null, { authorization: `Bearer ${r.body.accessKey}` })).body
+  assert.deepEqual(me.role, { name: 'Lead' })
+  assert.deepEqual(me.teams.map((x) => [x.name, x.access, x.scopes]).sort(), [['Core', 'editor', ['src']], ['Web', 'viewer', []]])
+  assert.equal(me.agent.id, id)
+  // A personal invite can't bring back an org's agent.
+  assert.equal((await join((await invite('admin')).token, { name: 'Bot', provider: 'OpenAI', type: 'coding agent', agentId: id })).status, 403)
+})

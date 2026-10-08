@@ -20,6 +20,7 @@ export const EVENT_OF_KIND = { mention: 'chat.mention', dm: 'chat.dm', task: 'ta
 export const MAX_URL = 2000
 export const MAX_SECRET = 200
 export const MIN_SECRET = 16
+export const MAX_BEARER = 500
 export const DELIVERY_TIMEOUT_MS = 10_000
 // Waits before the second, third and fourth tries.
 export const RETRY_DELAYS_MS = [1000, 5000, 25_000]
@@ -121,20 +122,23 @@ export const newSecret = () => crypto.randomBytes(24).toString('hex')
  * agent chose is kept (16 to 200 characters); without one, a new one is made and the
  * agent is shown it once, in the tool's answer.
  */
-export function makeSubscription ({ url, secret, events } = {}, { allowLocal = false, now = Date.now } = {}) {
+export function makeSubscription ({ url, secret, events, bearer } = {}, { allowLocal = false, now = Date.now } = {}) {
   const u = parseWebhookUrl(url, { allowLocal })
   const ev = parseWebhookEvents(events)
   let s = secret == null ? '' : String(secret)
   if (s && (s.length < MIN_SECRET || s.length > MAX_SECRET)) throw new Error(`The secret must be ${MIN_SECRET} to ${MAX_SECRET} characters (or leave it out and Quilt makes one).`)
   const made = !s
   if (made) s = newSecret()
-  return { url: u, secret: s, events: ev, since: now(), made }
+  // A key the receiver wants on every POST (a Grok Bot routine's sender key, for example), sent as Authorization: Bearer <key>.
+  const b = bearer == null ? '' : String(bearer).trim()
+  if (b.length > MAX_BEARER || /[\r\n]/.test(b)) throw new Error(`The bearer key must be one line of at most ${MAX_BEARER} characters.`)
+  return { url: u, secret: s, events: ev, since: now(), made, ...(b ? { bearer: b } : {}) }
 }
 
 /** The subscription as an agent sees it (its secret only when it was just made). */
 export function describeSubscription (sub, { showSecret = false } = {}) {
   if (!sub) return 'No webhook: Quilt only answers quilt_inbox when you ask.'
-  const lines = [`Webhook: Quilt POSTs to ${sub.url} on ${sub.events.join(', ')}.`]
+  const lines = [`Webhook: Quilt POSTs to ${sub.url} on ${sub.events.join(', ')}${sub.bearer ? ', with your bearer key in the Authorization header' : ''}.`]
   if (showSecret) lines.push(`Secret (shown once; check x-quilt-signature with it): ${sub.secret}`)
   lines.push('Each POST is JSON ({ event, id, room, to, by, text, ts, task? }) with x-quilt-event, x-quilt-delivery, x-quilt-timestamp and ' +
     'x-quilt-signature: sha256=HMAC-SHA256(secret, "<timestamp>.<body>"). Answer 2xx quickly; a failed POST is retried a few times. ' +
@@ -187,7 +191,8 @@ export async function deliverWebhook (sub, payload, { fetch = globalThis.fetch, 
           'x-quilt-event': payload.event,
           'x-quilt-delivery': delivery,
           'x-quilt-timestamp': ts,
-          'x-quilt-signature': signWebhook(sub.secret, ts, body)
+          'x-quilt-signature': signWebhook(sub.secret, ts, body),
+          ...(sub.bearer ? { authorization: `Bearer ${sub.bearer}` } : {})
         },
         body,
         redirect: 'manual',

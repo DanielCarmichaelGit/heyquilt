@@ -8,7 +8,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { newToken, hashToken, newUserCode, normalizeUserCode } from './tokens.js'
-import { parsePublicKey, verifyDeviceLink } from '../identity.js'
+import { parsePublicKey, verifyDeviceLink, verifyDeviceResume } from '../identity.js'
 import { signPass, passPublicKey, PASS_VERSION, PASS_TTL_MS } from '../passes.js'
 import { HttpError, Raw } from './http.js'
 import { DiskStore } from './file-store.js'
@@ -18,7 +18,7 @@ import { memberRoutes } from './routes/members.js'
 import { teamRoutes } from './routes/teams.js'
 import { inviteRoutes } from './routes/invites.js'
 import { agentRoutes } from './routes/agents.js'
-import { makeAgentAuth } from './agent-auth.js'
+import { makeAgentAuth, isAgentKey } from './agent-auth.js'
 import { agentInviteRoutes } from './routes/agent-invites.js'
 import { joinRoutes } from './routes/join.js'
 import { relayRoutes } from './routes/relay.js'
@@ -41,6 +41,8 @@ const LINK_TTL_MS = 10 * 60 * 1000
 const ROOM = /^[A-Za-z0-9_-]{1,64}$/
 // An approved link the app never collects stops working this long after its code expires.
 const COLLECT_GRACE_MS = 5 * 60 * 1000
+// A linked computer signing back in with its key: how far its clock may be from ours.
+const RESUME_WINDOW_MS = 10 * 60 * 1000
 const POLL_INTERVAL_S = 3
 const MAX_BODY = 16 * 1024
 // A hosted agent's MCP request (a whole file, at most) and how long it may take on the relay.
@@ -122,7 +124,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
 
   /** Who a pass is for: a linked computer's account, or an agent and the key it registered. */
   async function passHolder (req) {
-    if (bearer(req).startsWith('qa_')) {
+    if (isAgentKey(bearer(req))) {
       const { agent } = await agentAuth.agentFromRequest(req)
       // No key: a hosted agent. Its pass works over HTTPS (the relay's /mcp), never for a WebSocket.
       return { sub: agent.id, kind: 'agent', name: agent.name.slice(0, 64), key: agent.publicKey || '' }
@@ -130,6 +132,14 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
     const d = await device(req)
     const p = await store.profile(d.userId)
     return { sub: d.userId, kind: 'person', name: ((p && p.name) || 'Quilt user').slice(0, 64), key: d.publicKey }
+  }
+
+  // Resume signatures seen in the last window, so a copied one can't be used again.
+  const usedResumes = new Map() // signature -> at
+  function spendResume (signature, at) {
+    for (const [sig, t] of usedResumes) if (Math.abs(now() - t) > RESUME_WINDOW_MS) usedResumes.delete(sig)
+    if (usedResumes.has(signature)) throw new HttpError(401, 'that sign-in was already used')
+    usedResumes.set(signature, at)
   }
 
   const needPassKey = () => { if (!passKey) throw new HttpError(503, 'passes are not set up on this server') }
@@ -208,10 +218,31 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
       return { status: 'approved', token, profile: await profileWithEmail(link.userId) }
     }],
 
+    // A computer that was linked (and not unlinked since) gets a new token by signing for its
+    // key: it lost its token (or another app on it replaced it), not its link. No browser needed.
+    // 404 means it isn't linked to anyone, and has to be approved on the website.
+    ['POST', /^\/v1\/device\/resume$/, async (req, body) => {
+      limitStarts(req)
+      const key = parsePublicKey(body.publicKey)
+      if (!key) throw new HttpError(400, 'publicKey must be an Ed25519 key (spki, base64url)')
+      const at = Number(body.at)
+      if (!Number.isFinite(at) || Math.abs(now() - at) > RESUME_WINDOW_MS) throw new HttpError(400, "this computer's clock is off; check its date and time")
+      if (!verifyDeviceResume(key, at, body.signature)) throw new HttpError(401, "this computer's signature doesn't match")
+      spendResume(String(body.signature), at)
+      const d = await store.deviceByPublicKey(String(body.publicKey))
+      if (!d) throw new HttpError(404, 'this computer is not linked to an account')
+      const token = newToken('qd_')
+      await store.setDeviceToken(d.id, hashToken(token))
+      await store.touchDevice(d.id)
+      return { status: 'approved', token, profile: await profileWithEmail(d.userId) }
+    }],
+
+    // `known`: this account linked this computer's key before, so the website approves it
+    // without asking (only the computer holding the key can collect the token).
     ['GET', /^\/v1\/device\/link\/([^/]+)$/, async (req, body, [code]) => {
-      await user(req)
+      const u = await user(req)
       const link = await openLink(code)
-      return { userCode: link.userCode, deviceName: link.deviceName, platform: link.platform, expiresAt: link.expiresAt }
+      return { userCode: link.userCode, deviceName: link.deviceName, platform: link.platform, expiresAt: link.expiresAt, known: await store.userHasDevice(u.userId, link.publicKey) }
     }],
 
     ['POST', /^\/v1\/device\/approve$/, async (req, body) => {
@@ -279,7 +310,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   // Webhook deliveries in flight (the session-started hand-off), so tests can wait for them.
   const deliveries = new Set()
   const trackDelivery = (p) => { deliveries.add(p); p.finally(() => deliveries.delete(p)).catch(() => {}); return p }
-  const ctx = { store, user, person, device, bearer, now, site, apiUrl: api, mailer, log, limit: limitInvites, limitSend: limitInviteSend, limitTokens, limitJoin, agentAuth, reportKey, limitReports, relaySecret, files, maxFileBytes, workspaceQuotaBytes, maxWorkspaceFiles }
+  const ctx = { store, user, person, device, bearer, now, site, apiUrl: api, mailer, log, limit: limitInvites, limitSend: limitInviteSend, limitTokens, limitStarts, spendResume, resumeWindowMs: RESUME_WINDOW_MS, limitJoin, agentAuth, reportKey, limitReports, relaySecret, files, maxFileBytes, workspaceQuotaBytes, maxWorkspaceFiles }
   routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx), ...agentRoutes(ctx), ...agentInviteRoutes({ ...ctx, workspaces }), ...joinRoutes(ctx), ...relayRoutes(ctx), ...sessionRoutes(ctx), ...accessTypeRoutes(ctx), ...grantRoutes({ ...ctx, workspaces }), ...sessionInviteRoutes({ ...ctx, workspaces }), ...issueRoutes(ctx))
   // Always routed: with the flag off each answers a plain 404 of its own, so the app's
   // check at every launch isn't filed as a missing route.
@@ -377,7 +408,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   const forget = (map) => { if (map.size > maxStartKeys) map.delete(map.keys().next().value) }
   async function proxyMcp (req, res, send) {
     needPassKey()
-    if (!bearer(req).startsWith('qa_')) throw new HttpError(401, 'send your agent access key as "Authorization: Bearer <accessKey>"')
+    if (!isAgentKey(bearer(req))) throw new HttpError(401, 'send your agent access key (or app key) as "Authorization: Bearer <key>"')
     const { agent } = await agentAuth.agentFromRequest(req)
     limitMcp(agent.id)
     const body = ['POST', 'PUT'].includes(req.method) ? await readRaw(req, workspaces ? MAX_MCP_BODY_WORKSPACES : MAX_MCP_BODY) : undefined

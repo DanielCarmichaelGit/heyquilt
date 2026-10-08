@@ -2,6 +2,7 @@
 // updater (Squirrel) would refuse them on macOS; this does the same job by hand:
 //   macOS   download the DMG, mount it, swap the .app in place, relaunch
 //   Windows download the installer and run it (the one-click installer relaunches Quilt)
+//   Linux   download the AppImage next to the running one, swap it in, relaunch
 // Nothing here imports Electron, so the pieces can be tested on their own.
 import { execFile, spawn } from 'node:child_process'
 import fs from 'node:fs'
@@ -13,10 +14,10 @@ const run = (cmd, args) => new Promise((resolve, reject) => {
   execFile(cmd, args, { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => err ? reject(new Error(String(stderr || err.message).trim())) : resolve(stdout))
 })
 
-/** The file a download URL ends in: quilt-mac-arm64.dmg, quilt-windows-x64.exe. */
+/** The file a download URL ends in: quilt-mac-arm64.dmg, quilt-windows-x64.exe, quilt-linux-x86_64.AppImage. */
 export function updateFileName (url) {
   const name = decodeURIComponent(String(url).split(/[?#]/)[0].split('/').pop() || '')
-  return /^[\w.-]+\.(dmg|exe)$/i.test(name) ? name : null
+  return /^[\w.-]+\.(dmg|exe|AppImage)$/i.test(name) ? name : null
 }
 
 /** The .app bundle a macOS executable path lives in, or null when it isn't in one. */
@@ -103,19 +104,40 @@ function installWindows (exe, { onProgress }) {
 }
 
 /**
+ * Puts a downloaded AppImage where the running one is. An AppImage is one file, and the
+ * running copy keeps working from its own mount after it is replaced.
+ */
+function installLinux (file, { appImage, onProgress }) {
+  if (!appImage) throw new Error('Quilt updates itself only when it runs as an AppImage. Download the newest one from the releases page.')
+  onProgress({ phase: 'installing' })
+  fs.chmodSync(file, 0o755)
+  const next = `${appImage}.new`
+  // The same folder as the running one, so the swap is one rename (no copy across disks).
+  fs.copyFileSync(file, next)
+  fs.chmodSync(next, 0o755)
+  fs.renameSync(next, appImage)
+}
+
+/**
  * Downloads and installs the update at `url`, then tells the caller to relaunch.
  * `onProgress` gets { phase: 'downloading', received, total } then { phase: 'installing' }.
  * Resolves to 'relaunch' (macOS: start the new app) or 'quit' (Windows: the installer relaunches).
  */
-export async function installUpdate (url, { platform = process.platform, execPath = process.execPath, tempDir, onProgress = () => {}, fetchFn } = {}) {
+export async function installUpdate (url, { platform = process.platform, execPath = process.execPath, appImage = process.env.APPIMAGE, tempDir, onProgress = () => {}, fetchFn } = {}) {
   const name = updateFileName(url)
   if (!name) throw new Error('There is no installer for this computer.')
-  if (platform !== 'darwin' && platform !== 'win32') throw new Error('Updates install themselves on Mac and Windows only.')
+  if (platform !== 'darwin' && platform !== 'win32' && platform !== 'linux') throw new Error('Updates install themselves on Mac, Windows and Linux only.')
+  if (platform === 'linux' && !appImage) throw new Error('Quilt updates itself only when it runs as an AppImage. Download the newest one from the releases page.')
   const dir = path.join(tempDir, 'quilt-update')
   fs.rmSync(dir, { recursive: true, force: true })
   const file = await download(url, path.join(dir, name), { fetchFn, onProgress: (p) => onProgress({ phase: 'downloading', ...p }) })
   if (platform === 'darwin') {
     await installMac(file, { execPath, onProgress })
+    fs.rmSync(dir, { recursive: true, force: true })
+    return 'relaunch'
+  }
+  if (platform === 'linux') {
+    installLinux(file, { appImage, onProgress })
     fs.rmSync(dir, { recursive: true, force: true })
     return 'relaunch'
   }

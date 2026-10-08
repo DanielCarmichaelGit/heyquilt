@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { TASK_WORKFLOW, TASK_WORKFLOW_MD, pickupReminder, pickupBrief, doneRefusal, verifiedEnough, extractChecklist, pickChecklist, CHECKLIST_SCAFFOLD, verifiedLine } from '../src/agent-task-workflow.js'
+import { TASK_WORKFLOW, TASK_WORKFLOW_MD, pickupReminder, pickupBrief, doneRefusal, verifiedEnough, extractChecklist, pickChecklist, CHECKLIST_SCAFFOLD, verifiedLine, qaRefusal, qaNotesEnough, qaNotesLine } from '../src/agent-task-workflow.js'
 import { AGENT_GUIDE, setup, scaffoldChecklist } from '../src/setup.js'
 import { MCP_INSTRUCTIONS } from '../src/mcp.js'
 import { INSTRUCTIONS, HOSTED_INSTRUCTIONS } from '../src/relay-mcp.js'
@@ -13,6 +13,7 @@ const STEPS = [
   [/plan/i, 'plan'],
   [/build/i, 'build'],
   [/test/i, 'test'],
+  [/\bqa\b/i, 'qa'],
 ]
 
 function assertWorkflow (text, label) {
@@ -60,22 +61,27 @@ test('relay MCP instructions include TASK_WORKFLOW', () => {
 
 test('quilt setup writes the workflow into AGENTS.md and CLAUDE.md, and scaffolds the checklist once', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-workflow-'))
-  const changed = setup(root)
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'quilt-workflow-home-'))
+  fs.mkdirSync(path.join(home, '.cursor'))
+  const changed = setup(root, { home })
+  assert.ok(changed.some((c) => c.endsWith('(Cursor MCP server)')), 'the tools on this computer get the server')
   assert.ok(changed.some((c) => c.startsWith('AGENTS.md (Cursor')))
   assert.ok(changed.some((c) => c.startsWith('CLAUDE.md')))
   assert.ok(changed.some((c) => c.includes('Verifying a change')))
+  // MCP servers go in each AI tool's own settings on this computer, not in the (synced) project.
+  for (const f of ['.mcp.json', '.cursor/mcp.json', '.vscode/mcp.json']) assert.equal(fs.existsSync(path.join(root, f)), false, f)
   for (const file of ['AGENTS.md', 'CLAUDE.md']) {
     const text = fs.readFileSync(path.join(root, file), 'utf8')
     assert.ok(text.includes(TASK_WORKFLOW_MD), `${file} should contain TASK_WORKFLOW_MD`)
     assertWorkflow(text, file)
-    assert.match(text, /Done without evidence is refused/)
+    assert.match(text, /QA without notes is refused/)
   }
   const agents = fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf8')
   assert.ok(agents.includes(CHECKLIST_SCAFFOLD), 'the template is in AGENTS.md')
   assert.ok(agents.indexOf('<!-- quilt:end -->') < agents.indexOf('## Verifying a change'), 'outside the quilt block, so owners can edit it')
   // The owner fills it in; setup again keeps their text and does not add a second section.
   fs.writeFileSync(path.join(root, 'AGENTS.md'), agents.replace(/## Verifying a change[\s\S]*$/, '## Verifying a change\n\n- npm test\n- open the app\n'))
-  const again = setup(root)
+  const again = setup(root, { home })
   assert.ok(!again.some((c) => c.includes('Verifying a change')))
   assert.equal((fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf8').match(/## Verifying a change/g) || []).length, 1)
   assert.equal(extractChecklist(fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf8')), '- npm test\n- open the app')
@@ -143,3 +149,22 @@ test('Done needs real evidence; the refusal says what to give and quotes the che
   assert.equal(verifiedLine({}), '')
 })
 
+test('qaNotesEnough and qaRefusal gate the move to QA', () => {
+  assert.equal(qaNotesEnough(''), false)
+  assert.equal(qaNotesEnough('done'), false)
+  assert.equal(qaNotesEnough('Added QA column; npm test passed'), true)
+  const r = qaRefusal({ task: { title: 'QA column' }, checklist: '- npm test\n' })
+  assert.match(r, /^Not moved: "QA column" needs `qaNotes` before it can go to QA\./)
+  assert.match(r, /npm test/)
+  assert.match(qaRefusal({}), /this ticket needs `qaNotes`/)
+  assert.equal(qaNotesLine({ qaNotes: '  added   QA\ncolumn ' }), 'added QA column')
+  assert.equal(qaNotesLine({ qaNotes: 'x'.repeat(200) }), `${'x'.repeat(157)}…`)
+  assert.equal(qaNotesLine({}), '')
+})
+
+test('TASK_WORKFLOW steers agents to QA with qaNotes before Done', () => {
+  assert.match(TASK_WORKFLOW, /move the ticket to QA/)
+  assert.match(TASK_WORKFLOW, /qaNotes/)
+  assert.match(TASK_WORKFLOW_MD, /\*\*QA\*\*/)
+  assert.match(TASK_WORKFLOW_MD, /`qaNotes`/)
+})

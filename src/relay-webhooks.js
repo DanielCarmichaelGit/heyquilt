@@ -13,7 +13,7 @@ import { deliverEvents, makeSubscription } from './webhooks.js'
 /** The chat `me` can see: public messages, and direct ones to or from them. */
 const chatFor = (doc, me) => doc.getArray('chat').toArray().filter((m) => m && m.id && (!m.to || m.to === me || m.by === me))
 
-const scan = (doc, name, state) => scanInbox({ messages: chatFor(doc, name), tasks: readTasks(doc.getMap('tasks')), reader: { name, asAi: false } }, state)
+const scan = (doc, name, state) => scanInbox({ messages: chatFor(doc, name), tasks: readTasks(doc.getMap('tasks')), reader: { name, asAi: false, agent: true } }, state)
 
 /**
  * `hosted` is the relay's map of hosted agents (account id -> { room, ..., webhook? });
@@ -62,7 +62,7 @@ export function hostedWebhooks ({ hosted, saveHosted, log = () => {}, fetch, del
     const h = hosted.get(account)
     if (!h) throw new Error('not in a session')
     const sub = makeSubscription(given)
-    h.webhook = { url: sub.url, secret: sub.secret, events: sub.events, since: sub.since, name, state: scan(room.doc, name, null).state }
+    h.webhook = { url: sub.url, secret: sub.secret, events: sub.events, since: sub.since, name, state: scan(room.doc, name, null).state, ...(sub.bearer ? { bearer: sub.bearer } : {}) }
     saveHosted()
     return { ...h.webhook, made: sub.made }
   }

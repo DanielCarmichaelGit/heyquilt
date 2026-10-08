@@ -1,11 +1,13 @@
-// Shared task board for a session: three columns, stored as plain objects in
+// Shared task board for a session: four columns, stored as plain objects in
 // the Y.Doc so everyone (and every AI) sees the same list.
 import crypto from 'node:crypto'
 import { isSafeRelPath } from './pathrules.js'
+import { parseSchedule, canonicalCron, cronToText } from './ui/schedule.js'
 
 export const COLUMNS = [
   { id: 'todo', name: 'To do' },
   { id: 'doing', name: 'In progress' },
+  { id: 'qa', name: 'QA' },
   { id: 'done', name: 'Done' }
 ]
 export const COLUMN_IDS = new Set(COLUMNS.map((c) => c.id))
@@ -17,6 +19,7 @@ const MAX_ASSIGNEE = 80
 const MAX_TOOL = 40
 const MAX_CONV = 200
 const MAX_VERIFIED = 1000
+const MAX_QA_NOTES = MAX_VERIFIED
 // An edit from an AI chat only becomes a task when it just happened. Older
 // lines are the reader's backfill of an earlier conversation.
 export const AUTO_TASK_MS = 2 * 60 * 1000
@@ -130,14 +133,20 @@ export function publicTask (value) {
   if (conv == null) return null
   const verified = storedVerified(value.verified)
   if (verified == null) return null
-  return { id: value.id, title, column: value.column, by: value.by, order: value.order, ts: value.ts, ...who, files, conv, verified }
+  const qaNotes = storedQaNotes(value.qaNotes)
+  if (qaNotes == null) return null
+  const recurring = storedRecurring(value.recurring)
+  if (recurring == null) return null
+  const cron = canonicalCron(value.cron)
+  if (cron == null) return null
+  return { id: value.id, title, column: value.column, by: value.by, order: value.order, ts: value.ts, ...who, files, conv, verified, qaNotes, recurring, cron }
 }
 
 /** What an agent said it ran and saw before moving the task to Done. Newlines kept, control chars dropped. */
 export function cleanVerified (text) {
   return String(text ?? '').replace(/\r\n?/g, '\n').split('\n')
     .map((line) => line.replace(INVISIBLE, ' ').replace(/[ \t]+/g, ' ').trim())
-    .join('\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, MAX_VERIFIED)
+    .join('\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, MAX_VERIFIED).trimEnd()
 }
 
 // Missing means no evidence was given. A value that is present must already be cleaned.
@@ -145,6 +154,26 @@ function storedVerified (v) {
   if (v == null || v === '') return ''
   if (typeof v !== 'string' || v.length > MAX_VERIFIED) return null
   if (v !== cleanVerified(v)) return null
+  return v
+}
+
+/** What an agent wrote about its changes and self-validation when moving the task to QA. */
+export function cleanQaNotes (text) {
+  // Trim after cutting: a cut that lands on a space would otherwise store a value that
+  // doesn't survive cleaning again, and storedQaNotes would then hide the whole task.
+  return cleanVerified(text).slice(0, MAX_QA_NOTES).trimEnd()
+}
+
+function storedQaNotes (v) {
+  if (v == null || v === '') return ''
+  if (typeof v !== 'string' || v.length > MAX_QA_NOTES) return null
+  if (v !== cleanQaNotes(v)) return null
+  return v
+}
+
+function storedRecurring (v) {
+  if (v == null) return false
+  if (typeof v !== 'boolean') return null
   return v
 }
 
@@ -244,7 +273,7 @@ function orderBefore (tasks, column, beforeId) {
 export function addTask (doc, map, { title, by, assignee = '', forAi = false, tool = '', files = [], column = 'todo', conv = '' }, origin) {
   const clean = cleanTitle(title)
   if (!clean) throw new Error('say what the task is')
-  if (!COLUMN_IDS.has(column)) throw new Error('pick To do, In progress, or Done')
+  if (!COLUMN_IDS.has(column)) throw new Error('pick To do, In progress, QA, or Done')
   const who = assignmentFields({ assignee, forAi, tool, files })
   const { valid, junk } = split(map)
   const dropping = []
@@ -265,6 +294,9 @@ export function addTask (doc, map, { title, by, assignee = '', forAi = false, to
     files: who.files || [],
     conv: cleanConv(conv),
     verified: '',
+    qaNotes: '',
+    recurring: false,
+    cron: '',
     order: nextOrder(valid, column),
     ts: Date.now()
   }
@@ -277,10 +309,11 @@ export function addTask (doc, map, { title, by, assignee = '', forAi = false, to
 }
 
 /**
- * Changes a task's title, column, place, assignee, files or verified evidence.
- * `before` is a task id to insert ahead of. Leaving Done clears `verified`.
+ * Changes a task's title, column, place, assignee, files, verified evidence, QA notes, or repeat schedule.
+ * `before` is a task id to insert ahead of. Leaving Done clears `verified`; leaving QA clears `qaNotes`.
+ * `cron` is 5-field cron or a phrase such as "daily at 9". A schedule turns `recurring` on.
  */
-export function updateTask (doc, map, { id, title, column, before, assignee, forAi, tool, files, verified } = {}, origin) {
+export function updateTask (doc, map, { id, title, column, before, assignee, forAi, tool, files, verified, qaNotes, recurring, cron } = {}, origin) {
   const { valid } = split(map)
   const cur = valid.find((t) => t.id === id)
   if (!cur) throw new Error('no such task')
@@ -291,7 +324,7 @@ export function updateTask (doc, map, { id, title, column, before, assignee, for
     if (!clean) throw new Error('say what the task is')
     if (clean !== cur.title) { next.title = clean; changed = true }
   }
-  if (column !== undefined && !COLUMN_IDS.has(column)) throw new Error('pick To do, In progress, or Done')
+  if (column !== undefined && !COLUMN_IDS.has(column)) throw new Error('pick To do, In progress, QA, or Done')
   const moving = column !== undefined && column !== cur.column
   const beforeId = typeof before === 'string' && before && before !== id ? before : null
   if (moving || beforeId) {
@@ -327,6 +360,22 @@ export function updateTask (doc, map, { id, title, column, before, assignee, for
     next.verified = ''
     changed = true
   }
+  if (qaNotes !== undefined) {
+    const q = cleanQaNotes(qaNotes)
+    if (q !== (cur.qaNotes || '')) { next.qaNotes = q; changed = true }
+  } else if (moving && cur.column === 'qa' && cur.qaNotes) {
+    next.qaNotes = ''
+    changed = true
+  }
+  if (recurring !== undefined) {
+    if (typeof recurring !== 'boolean') throw new Error('recurring must be true or false')
+    if (recurring !== !!cur.recurring) { next.recurring = recurring; changed = true }
+  }
+  if (cron !== undefined) {
+    const c = parseSchedule(cron)
+    if (c !== (cur.cron || '')) { next.cron = c; changed = true }
+    if (c && !next.recurring) { next.recurring = true; changed = true }
+  }
   if (!changed) return cur
   doc.transact(() => map.set(id, next), origin)
   return next
@@ -342,8 +391,10 @@ function taskLine (t, me) {
   const who = assigneeLabel(t, me)
   const files = (t.files || []).map((f) => `\`${f}\``).join(', ')
   const tail = [who ? ` → ${who}` : '', files ? ` · ${files}` : ''].join('')
+  const repeat = t.recurring ? `\n  - repeats: ${t.cron ? cronToText(t.cron) : 'again, no schedule yet'}` : ''
   const verified = t.column === 'done' && t.verified ? `\n  - verified: ${shortVerified(t.verified)}` : ''
-  return `- ${oneLine(t.title)} _(${t.by === me ? 'you' : oneLine(t.by) || 'someone'})_${tail}${verified}`
+  const qa = t.column === 'qa' && t.qaNotes ? `\n  - qa: ${shortVerified(t.qaNotes)}` : ''
+  return `- ${oneLine(t.title)} _(${t.by === me ? 'you' : oneLine(t.by) || 'someone'})_${tail}${repeat}${verified}${qa}`
 }
 
 function shortVerified (v) {
@@ -353,6 +404,37 @@ function shortVerified (v) {
 
 function openTasks (list) {
   return list.filter((t) => t.column === 'todo' || t.column === 'doing')
+}
+
+// ------------------------------------------------------------ AI pickup --
+// Each person chooses whether their AI takes work from the board by itself (Settings): "off",
+// "mine" (To do tasks assigned to it) or "any" (those, then unassigned ones). When it finishes,
+// it is handed the next one, in whatever tool it runs in.
+
+export const PICKUP_MODES = ['off', 'mine', 'any']
+export const pickupMode = (v) => PICKUP_MODES.includes(v) ? v : 'off'
+
+/**
+ * The To do task this reader's AI should start next, or null: none while it still has one In
+ * progress. `reader` is { name, asAi }.
+ */
+export function nextTask (tasks, reader, mode) {
+  mode = pickupMode(mode)
+  if (mode === 'off' || !reader?.name) return null
+  const list = listed(tasks)
+  if (list.some((t) => t.column === 'doing' && assignedToReader(t, reader))) return null
+  const todo = list.filter((t) => t.column === 'todo')
+  return todo.find((t) => assignedToReader(t, reader)) || (mode === 'any' ? todo.find((t) => !t.assignee) : null) || null
+}
+
+/** What an AI is told when it finishes and the board has its next task; '' for none. */
+export function renderNextTask (task) {
+  if (!task) return ''
+  const take = task.assignee
+    ? `Start it now: quilt_move_task (id ${task.id}, column "doing") gives you the briefing.`
+    : `It is unassigned: take it with quilt_assign_task (id ${task.id}, assignee "me", to_ai true), then quilt_move_task (column "doing") for the briefing, and start.`
+  return `Your next task, from the board (this person lets their AI pick up work by itself): ${task.id} "${oneLine(task.title)}"${task.files?.length ? ` [${task.files.join(', ')}]` : ''}. ${take} ` +
+    'If you cannot take it on now, say why in chat (quilt_message) instead.'
 }
 
 /**
@@ -494,8 +576,10 @@ function agentLine (t) {
   const who = assigneeLabel(t, '')
   const files = (t.files || []).join(', ')
   const tail = [who ? `  → ${who}` : '', files ? `  [${files}]` : ''].join('')
+  const repeat = t.recurring ? `\n    repeats: ${t.cron ? cronToText(t.cron) : 'again, no schedule yet'}` : ''
   const verified = t.column === 'done' && t.verified ? `\n    verified: ${shortVerified(t.verified)}` : ''
-  return `- ${t.id}  ${oneLine(t.title)}  (${oneLine(t.by) || 'someone'})${tail}${verified}`
+  const qa = t.column === 'qa' && t.qaNotes ? `\n    qa: ${shortVerified(t.qaNotes)}` : ''
+  return `- ${t.id}  ${oneLine(t.title)}  (${oneLine(t.by) || 'someone'})${tail}${repeat}${verified}${qa}`
 }
 
 /**
@@ -505,7 +589,7 @@ function agentLine (t) {
 export function formatTasks (tasks, reader) {
   const list = listed(tasks)
   const board = () => {
-    if (!list.length) return 'No tasks yet. The board has three columns: To do, In progress, and Done.'
+    if (!list.length) return 'No tasks yet. The board has four columns: To do, In progress, QA, and Done.'
     return COLUMNS.map((col) => {
       const items = list.filter((t) => t.column === col.id)
       const lines = items.length ? items.map(agentLine) : ['- Nothing.']

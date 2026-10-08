@@ -1,7 +1,8 @@
 // Your sessions on the dashboard: where you've been, your time there, and who you
 // worked with (activity.js does the sums). Only sessions you were in, and only people
 // who were there at the same time as you.
-import { HttpError } from '../http.js'
+import { HttpError, Raw } from '../http.js'
+import { auditTrail, auditCsv, MAX_ACTIONS } from '../audit.js'
 import { summarize, collaborators, myVisits, isTimeZone, weekStart, monthStart, MAX_SESSIONS } from '../activity.js'
 import { cleanSessionName, BAD_SESSION_NAME } from '../../session-name.js'
 
@@ -59,6 +60,30 @@ export function sessionRoutes ({ store, now, person }) {
       if (session.ownerAccount !== account) throw new HttpError(403, 'Only the session owner can rename it.')
       const renamed = await store.renameSession(room, name, now())
       return { session: { room, name: renamed.name } }
+    }],
+
+    // The audit trail, for the owner only: every visit, how it came in, why it ended, and
+    // what it did. ?format=csv for a spreadsheet; ?from= and ?to= (epoch ms) narrow it.
+    ['GET', /^\/v1\/me\/sessions\/([^/]+)\/audit$/, async (req, body, [room]) => {
+      const account = await me(req)
+      const { session, visits } = await mine(account, room)
+      if (session.ownerAccount !== account) throw new HttpError(403, 'Only the session owner can see its audit trail.')
+      const q = new URL(req.url, 'http://x').searchParams
+      const t = now()
+      const num = (k, d) => { const n = Number(q.get(k)); return q.has(k) && Number.isFinite(n) ? n : d }
+      const from = num('from', 0)
+      const to = num('to', t + 1)
+      const inWindow = visits.filter((v) => v.startedAt < to && (v.endedAt == null || v.endedAt >= from))
+      const actions = await store.actionsInRoom(room, { from, to, limit: MAX_ACTIONS + 1 })
+      const truncated = actions.length > MAX_ACTIONS
+      const revoked = new Map()
+      for (const acc of new Set(inWindow.filter((v) => v.kind === 'agent').map((v) => v.account))) {
+        const agent = await store.agentById(acc.slice('agent:'.length)).catch(() => null)
+        if (agent && agent.revokedAt != null) revoked.set(acc, agent.revokedAt)
+      }
+      const trail = auditTrail({ visits: inWindow, actions: actions.slice(0, MAX_ACTIONS), revoked })
+      if (q.get('format') === 'csv') return new Raw(200, auditCsv(trail), 'text/csv; charset=utf-8')
+      return { session: { room, name: session.name }, from, to, truncated, visits: trail }
     }],
 
     // People and agents you've worked with, for invites (most recent first, at most 30).

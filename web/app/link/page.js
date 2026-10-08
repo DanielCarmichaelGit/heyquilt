@@ -12,10 +12,18 @@ export default async function LinkPage ({ searchParams }) {
   const code = String(q.code || '')
   const user = await requireUser(`/link?code=${encodeURIComponent(code)}`)
   let body
-  if (q.done === 'approved') body = <><h2>Computer linked</h2><p className='muted'>The Quilt app is signed in now.</p><div className='row'><a className='btn primary' href='quilt://open'>Open Quilt</a></div></>
-  else if (q.done === 'denied') body = <><h2>Not linked</h2><p className='muted'>That computer won't be signed in.</p></>
+  let done = q.done
+  // A computer this account linked before (its key, not just its name): approve it without
+  // asking again. Only the computer holding that key can collect the sign-in.
+  const first = !done && code ? await apiCall(user, 'GET', `/v1/device/link/${encodeURIComponent(code)}`) : null
+  if (first?.ok && first.data.known) {
+    const a = await apiCall(user, 'POST', '/v1/device/approve', { userCode: first.data.userCode, approve: true })
+    if (a.ok) done = 'approved'
+  }
+  if (done === 'approved') body = <><h2>Computer linked</h2><p className='muted'>The Quilt app is signed in now.</p><div className='row'><a className='btn primary' href='quilt://open'>Open Quilt</a></div></>
+  else if (done === 'denied') body = <><h2>Not linked</h2><p className='muted'>That computer won't be signed in.</p></>
   else {
-    const r = code ? await apiCall(user, 'GET', `/v1/device/link/${encodeURIComponent(code)}`) : { ok: false, status: 404 }
+    const r = first || (code ? await apiCall(user, 'GET', `/v1/device/link/${encodeURIComponent(code)}`) : { ok: false, status: 404 })
     if (!r.ok) {
       const errorMsg = r.status === 410 ? 'It expired or was already used.' : (r.status === 0 || r.status >= 500) ? 'Quilt is having trouble right now. Try again in a minute.' : 'Check the code in the Quilt app, or start signing in again there.'
       body = <><h2>That code didn't work</h2><p className='muted'>{errorMsg}</p>{q.done === 'failed' && <p className='notice bad'>Something went wrong. Try again.</p>}</>

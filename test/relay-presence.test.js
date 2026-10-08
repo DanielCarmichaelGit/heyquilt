@@ -247,7 +247,7 @@ test('end to end: two accounts in one session see each other on their dashboards
   assert.ok(hers.people[0].togetherMs > 0)
 })
 
-test('a hosted agent (HTTP only, no connection) works with presence on, and records no visit yet', async (t) => {
+test('a hosted agent (HTTP only, no connection) has a visit from its first call once let in, with what it did, ended when it is removed', async (t) => {
   const api = collector()
   const srv = await relay(t, { presenceOptions: { fetch: api.fetch } })
   const r = room()
@@ -264,7 +264,83 @@ test('a hosted agent (HTTP only, no connection) works with presence on, and reco
     await admin(o, { op: 'remove', key: 'agent:agent-grok' })
     assert.match(await call('quilt_leave_session'), /Left room/)
     await srv.presence.flush()
-    // Only the owner's visit and the rename: hosted agents are not reported as visits (yet).
-    assert.deepEqual(api.events.map((e) => [e.type, e.account || e.name]), [['start', 'person:user-olive'], ['name', 'hosted']])
+    // Its visit starts with its first call once let in, lists what it did (never contents), and ends when it is removed.
+    const seen = api.events.map((e) => [e.type, e.account || e.name, e.via || e.action || e.reason || '', e.target || ''])
+    assert.deepEqual(seen, [
+      ['start', 'person:user-olive', 'app', ''],
+      ['start', 'agent:agent-grok', 'hosted', ''],
+      ['act', 'agent:agent-grok', 'tool', 'quilt_write_file a.txt'],
+      ['act', 'agent:agent-grok', 'claimed', 'a.txt'],
+      ['act', 'agent:agent-grok', 'created', 'a.txt'],
+      ['name', 'hosted', '', ''],
+      ['end', 'agent:agent-grok', 'removed', '']
+    ])
+    const grokStart = api.events.find((e) => e.type === 'start' && e.account === 'agent:agent-grok')
+    assert.ok(api.events.filter((e) => e.type === 'act').every((e) => e.start === grokStart.id), 'acts belong to its visit')
+    assert.ok(api.events.every((e) => !('content' in e)), 'no contents')
   } finally { await grok.close() }
+})
+
+test("a hosted agent's claims show it present, and go when it leaves the session", async (t) => {
+  const srv = await relay(t)
+  const r = room()
+  const o = await connect(srv, r, { ...as('Olive', 'user-olive'), viewSecret: 'v' })
+  const pass = signPass({ v: 1, sub: 'agent-duncan', kind: 'agent', name: 'Duncan', key: '', exp: Date.now() + PASS_TTL_MS }, PASS_KEYS.privateKey)
+  const duncan = new Client({ name: 'duncan', version: '1.0.0' })
+  await duncan.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${srv.port}/mcp`), { requestInit: { headers: { 'x-quilt-pass': pass } } }))
+  try {
+    const call = async (name, args = {}) => (await duncan.callTool({ name, arguments: args })).content.map((c) => c.text).join('\n')
+    assert.match(await call('quilt_join_session', { invite: `https://join.heyquilt.com/${r}#s` }), /Asked to join/)
+    await admin(o, { op: 'approve', key: 'agent:agent-duncan' })
+    assert.match(await call('quilt_claim', { pattern: 'src/mcp.js' }), /Claimed/)
+    const rm = srv.rooms.get(r)
+    assert.deepEqual(rm.claimList().map((c) => [c.byId, c.active]), [['agent:agent-duncan', true]])
+    assert.match(await call('quilt_leave_session'), /Left room/)
+    assert.deepEqual(rm.claimList(), [])
+  } finally { await duncan.close() }
+})
+
+test('the file queue between two hosted agents: ask, be told, hand off with context, then edit', async (t) => {
+  const srv = await relay(t)
+  const r = room()
+  const o = await connect(srv, r, { ...as('Olive', 'user-olive'), viewSecret: 'v' })
+  const clients = []
+  const agentClient = async (sub, name) => {
+    const pass = signPass({ v: 1, sub, kind: 'agent', name, key: '', exp: Date.now() + PASS_TTL_MS }, PASS_KEYS.privateKey)
+    const c = new Client({ name: sub, version: '1.0.0' })
+    await c.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${srv.port}/mcp`), { requestInit: { headers: { 'x-quilt-pass': pass } } }))
+    clients.push(c)
+    const call = async (tool, args = {}) => {
+      const res = await c.callTool({ name: tool, arguments: args })
+      return { text: res.content.map((x) => x.text).join('\n'), error: !!res.isError }
+    }
+    assert.match((await call('quilt_join_session', { invite: `https://join.heyquilt.com/${r}#s` })).text, /Asked to join/)
+    await admin(o, { op: 'approve', key: `agent:${sub}` })
+    return call
+  }
+  const ann = await agentClient('agent-ann', 'Ann')
+  const bob = await agentClient('agent-bob', 'Bob')
+  assert.match((await ann('quilt_write_file', { path: 'src/mcp.js', content: 'v1' })).text, /Created src\/mcp\.js/)
+  const refused = await bob('quilt_write_file', { path: 'src/mcp.js', content: 'bob' })
+  assert.equal(refused.error, true)
+  assert.match(refused.text, /claimed by Ann.*quilt_request_file \(path "src\/mcp\.js"/s)
+  const asked = await bob('quilt_request_file', { path: 'src/mcp.js', title: 'Working on handoff for task 7', description: 'Add the tool and its tests.' })
+  assert.match(asked.text, /number 1 in the queue for src\/mcp\.js \(held by Ann\)/)
+  // Every answer Ann gets now says Bob is waiting, and she can't let go of the file or finish.
+  const told = await ann('quilt_write_file', { path: 'src/mcp.js', content: 'v2' })
+  assert.match(told.text, /📥 Waiting in the file queue for files you hold:\n- src\/mcp\.js: Bob \(for src\/mcp\.js\): "Working on handoff for task 7" — Add the tool and its tests\./)
+  const rel = await ann('quilt_release', { pattern: 'src/mcp.js' })
+  assert.equal(rel.error, true)
+  assert.match(rel.text, /Not yet: people are waiting/)
+  assert.match((await ann('quilt_inbox')).text, /Bob asked for src\/mcp\.js in its file queue/)
+  // Ann's inbox message from Bob asks for no reply: her other tools aren't held up.
+  assert.equal((await ann('quilt_claim', { pattern: 'docs/**' })).error, false)
+  const h = await ann('quilt_handoff', { path: 'src/mcp.js', context: 'v2 adds the tool; tests still to write.' })
+  assert.match(h.text, /Handed src\/mcp\.js to Bob with your context/)
+  assert.doesNotMatch(h.text, /📥/, 'nobody waiting any more')
+  assert.match((await bob('quilt_inbox')).text, /Ann handed you src\/mcp\.js, which you asked for: it is yours to edit now\. .*My context: v2 adds the tool; tests still to write\./s)
+  assert.match((await bob('quilt_write_file', { path: 'src/mcp.js', content: 'bob v3' })).text, /Updated src\/mcp\.js/)
+  assert.equal((await bob('quilt_move_task', { id: 'nope', column: 'doing' })).error, true) // not blocked by a reply owed to Ann
+  assert.doesNotMatch((await bob('quilt_move_task', { id: 'nope', column: 'doing' })).text, /waiting for an answer/)
+  await Promise.all(clients.map((c) => c.close()))
 })

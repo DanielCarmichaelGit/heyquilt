@@ -5,7 +5,7 @@
 import { I, esc, api, state, basename, COLORS } from './common.js'
 import { agentPaste } from './invite.js'
 
-export const DOCS_URL = 'https://heyquilt.com/docs/agents'
+export const DOCS_URL = 'https://heyquilt.com/docs/agent-kinds'
 export const KINDS = [
   ['global', 'Global agent', 'In all your workspaces, invited to their sessions', 'globe'],
   ['workspace', 'Workspace agent', 'In one workspace, invited to its sessions', 'grid'],
@@ -60,16 +60,16 @@ function choices (kind, { workspaceId, sessionId }) {
 
 /** Makes the invite for `kind` (at `id` for a workspace or session): { text, where }. */
 export async function makeAgentInvite (kind, id, workspaceBody) {
-  if (kind === 'global') return { text: agentPaste({ link: (await api('POST', '/api/agent-invites', { global: true })).link }), where: '' }
+  if (kind === 'global') return { text: agentPaste({ link: (await api('POST', '/api/agent-invites', { global: true })).link, invitedToSessions: true }), where: '' }
   if (kind === 'workspace') {
     const w = (state.workspaces || []).find((x) => x.id === id)
     const { link } = await api('POST', `/api/workspaces/${encodeURIComponent(id)}/agent-invites`, workspaceBody ? workspaceBody() : { access: 'edit', sessions: 'all' })
-    return { text: agentPaste({ link }), where: w?.name || 'this workspace' }
+    return { text: agentPaste({ link, invitedToSessions: true }), where: w?.name || 'this workspace' }
   }
   const s = state.sessions.get(id)
   if (!s) throw new Error('That session is not running any more.')
   const { link } = await api('POST', '/api/agent-invites')
-  return { text: agentPaste({ link, invite: s.invite }), where: s.status?.sessionName || basename(s.dir) }
+  return { text: agentPaste({ link, session: s.invite }), where: s.status?.sessionName || basename(s.dir) }
 }
 
 let open = null

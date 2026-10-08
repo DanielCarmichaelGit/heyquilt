@@ -129,8 +129,8 @@ test('the owner can change roles live, deny, and remove people', async () => {
   write(dir, 'notes.txt', 'now I can edit\n')
   await waitFor(() => owner.files.get('notes.txt')?.toString() === 'now I can edit\n')
 
-  // Nobody but the owner can let people in.
-  await assert.rejects(vic.approve('whatever'), /only the session owner/)
+  // Nobody but the owner can let people in (default admitBy).
+  await assert.rejects(vic.approve('whatever'), /cannot let people into this session/)
 
   const dDir = tmp('denied')
   const denied = new Session({ dir: dDir, server, room: r, secret: EDIT, name: 'dana', identity: generateIdentity() })

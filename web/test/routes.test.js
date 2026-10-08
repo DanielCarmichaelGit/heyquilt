@@ -53,8 +53,8 @@ after(() => { server?.kill(); apiSrv?.close() })
 const get = (path) => fetch(base + path, { redirect: 'manual' })
 
 test('public pages render', async () => {
-  for (const path of ['/', '/pricing', '/join/room-abc', '/docs/agents']) assert.equal((await get(path)).status, 200, path)
-  assert.match(await (await get('/docs/agents')).text(), /Agent kinds[\s\S]*Global agent[\s\S]*Workspace agent[\s\S]*Session agent/)
+  for (const path of ['/', '/pricing', '/terms', '/docs', '/docs/git', '/docs/agents', '/docs/agent-kinds', '/blog', '/blog/we-took-the-ai-out-of-merging', '/blog/teaching-ais-to-take-turns', '/blog/everyones-ai-work-at-once', '/join/room-abc']) assert.equal((await get(path)).status, 200, path)
+  assert.match(await (await get('/docs/agent-kinds')).text(), /Agent kinds[\s\S]*Global agent[\s\S]*Workspace agent[\s\S]*Session agent/)
 
   const missing = await get('/no-such-page')
   assert.equal(missing.status, 404)
@@ -63,9 +63,9 @@ test('public pages render', async () => {
 
 // A dynamic homepage runs a Netlify function on every visit (and a cold start can take a second);
 // a prerendered one is served straight from the CDN.
-test('the homepage and pricing are prerendered at build time', () => {
+test('the homepage, pricing and docs are prerendered at build time', () => {
   const manifest = JSON.parse(readFileSync(new URL('../.next/prerender-manifest.json', import.meta.url)))
-  for (const path of ['/', '/pricing', '/docs/agents']) assert.ok(manifest.routes[path], `${path} is static`)
+  for (const path of ['/', '/pricing', '/docs', '/docs/git', '/docs/agents', '/docs/agent-kinds', '/blog', '/blog/we-took-the-ai-out-of-merging', '/blog/teaching-ais-to-take-turns', '/blog/everyones-ai-work-at-once']) assert.ok(manifest.routes[path], `${path} is static`)
 })
 
 test('the homepage serves sized WebP screenshots, lazily below the fold, and both downloads before hydration', async () => {
@@ -80,7 +80,7 @@ test('the homepage serves sized WebP screenshots, lazily below the fold, and bot
 // The proxy redirects signed-out people before routing, so check the pages really exist too.
 test('Computers, Agents, Access types and each session have their own pages under the dashboard', () => {
   const pages = Object.keys(JSON.parse(readFileSync(new URL('../.next/server/app-paths-manifest.json', import.meta.url))))
-  for (const page of ['/dashboard/page', '/dashboard/workspaces/page', '/dashboard/workspaces/[id]/page', '/dashboard/computers/page', '/dashboard/agents/page', '/dashboard/access/page', '/dashboard/sessions/[room]/page']) assert.ok(pages.includes(page), page)
+  for (const page of ['/dashboard/page', '/dashboard/workspaces/page', '/dashboard/workspaces/[id]/page', '/dashboard/computers/page', '/dashboard/agents/page', '/dashboard/access/page', '/dashboard/sessions/[room]/page', '/dashboard/sessions/[room]/audit/page']) assert.ok(pages.includes(page), page)
 })
 
 // Static images skip the proxy: it would run getClaims() and could add Set-Cookie, which stops CDN caching.
@@ -91,13 +91,19 @@ test('screenshots are served without running the proxy (no Set-Cookie)', async (
 })
 
 test('private pages send signed-out people to sign in, and come back after', async () => {
-  for (const path of ['/dashboard', '/dashboard/workspaces', '/dashboard/workspaces/abc', '/dashboard/computers', '/dashboard/agents', '/dashboard/access', '/dashboard/sessions/room-abc', '/settings', '/link?code=AAAA-BBBB', '/reset', '/org/acme', '/org/acme/people', '/org/acme/roles', '/org/acme/teams', '/org/acme/workspaces', '/org/acme/workspaces/abc', '/org/acme/invites', '/org/acme/settings', '/invite/qi_test']) {
+  for (const path of ['/dashboard', '/dashboard/workspaces', '/dashboard/workspaces/abc', '/dashboard/computers', '/dashboard/agents', '/dashboard/access', '/dashboard/sessions/room-abc', '/dashboard/sessions/room-abc/audit', '/settings', '/link?code=AAAA-BBBB', '/reset', '/org/acme', '/org/acme/people', '/org/acme/roles', '/org/acme/teams', '/org/acme/invites', '/org/acme/settings', '/invite/qi_test']) {
     const res = await get(path)
     assert.equal(res.status, 307, path)
     const to = new URL(res.headers.get('location'), base)
     assert.equal(to.pathname, '/signin')
     assert.equal(to.searchParams.get('next'), path)
   }
+})
+
+test("the audit trail's CSV never goes to someone signed out", async () => {
+  const res = await get('/dashboard/sessions/room-abc/audit/csv')
+  assert.ok([303, 307].includes(res.status), String(res.status))
+  assert.equal(new URL(res.headers.get('location'), base).pathname, '/signin')
 })
 
 test('/orgs/new redirects to the org sign-up page (orgs are only made by signing up as one)', async () => {

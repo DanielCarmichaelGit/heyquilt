@@ -58,11 +58,10 @@ test('app routes ws: views through the shell and loads workspaces at boot', () =
 
 test('no em dashes', () => { for (const f of ['workspaces.js', 'home.js', 'app.js', 'app.css']) assert.ok(!ui(f).includes(EM_DASH), f) })
 
-test('the session view no longer calls itself a workspace in code', () => {
-  assert.ok(!ui('session.js').includes('state.ws.'), 'the session view no longer calls itself a workspace')
-  assert.ok(!ui('app.css').includes('.ws-tab'))
-  assert.ok(!ui('session.js').includes('ws-content') && !ui('app.css').includes('.ws-content'), 'ws- is the workspaces screens\' prefix')
-  assert.ok(ui('session.js').includes('<div class="sv-content" id="main">') && ui('app.css').includes('.sv-content {'))
+test('the session view keeps main\'s names: workspace screens use other ws- names, so sessions are unchanged', () => {
+  assert.ok(ui('session.js').includes('state.ws.') && ui('session.js').includes('<div class="ws-content" id="main">'))
+  for (const name of ['.ws-body', '.ws-tree', '.ws-main', '.ws-chat', '.ws-content', '.ws-tabs', '.ws-top']) assert.ok(ui('app.css').includes(name), name)
+  assert.ok(!/\bsv-(body|tree|main|chat|content|tabs|top)\b/.test(ui('session.js') + ui('app.css')), 'no second set of session names')
 })
 
 test('the settings dialog focuses its name field so Escape closes it, and people cards keep access beside the name', () => {
@@ -216,7 +215,7 @@ test('the workspace page lists agents from the API\'s agents, with their cards w
 test('the Add dialog: agents of the workspace\'s owner, the every-session switch, and Invite a new agent (the kinds menu)', () => {
   const h = ui('home.js')
   const dlg = h.slice(h.indexOf('function workspaceInviteDialog'), h.indexOf('/** The GitHub side'))
-  for (const bit of ['Also invite to every new session in this workspace', 'Invite a new agent', 'openKindMenu(invite, {', 'workspaceId: id,', "workspaceBody: () => ({ access: $('#wi-access', back).value, sessions: joins() })", "agentInviteHtml(text, 'wi-paste', kindLineHtml(kind, where))", 'data-wi-invite-agent', '/api/orgs/$' + '{encodeURIComponent(org.slug)}/agents', "api('GET', '/api/agents')", '/agent-invites`', "account.startsWith('agent:') ? { sessions: ownAgents.has(account) || !ownKnown ? joins() : 'invited' } : {}", "agentInviteHtml(agentPaste({ link }), 'wi-paste')"]) assert.ok(dlg.includes(bit), bit)
+  for (const bit of ['Also invite to every new session in this workspace', 'Invite a new agent', 'openKindMenu(invite, {', 'workspaceId: id,', "workspaceBody: () => ({ access: $('#wi-access', back).value, sessions: joins() })", "agentInviteHtml(text, 'wi-paste', kindLineHtml(kind, where))", 'data-wi-invite-agent', '/api/orgs/$' + '{encodeURIComponent(org.slug)}/agents', "api('GET', '/api/agents')", '/agent-invites`', "account.startsWith('agent:') ? { sessions: ownAgents.has(account) || !ownKnown ? joins() : 'invited' } : {}", "agentInviteHtml(agentPaste({ link, invitedToSessions: joins() === 'all' }), 'wi-paste')"]) assert.ok(dlg.includes(bit), bit)
 })
 
 test('agent-place.js is served, and has no em dashes', () => {

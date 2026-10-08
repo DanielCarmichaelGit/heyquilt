@@ -139,13 +139,14 @@ export class HistoryLog {
    * @param {string} [c.after]  text after
    * @param {string} [c.detail] "N bytes" for binaries; derived from the diff otherwise
    * @param {{id:string,title:string}|null} [c.task] the task this change was for
+   * @param {boolean} [c.pulled] a git pull brought this change (it is not the person's own edit)
    * @param {number} [c.ts]
    */
-  record ({ by, path, kind, before, after, detail, task, ts = Date.now() }) {
+  record ({ by, path, kind, before, after, detail, task, pulled = false, ts = Date.now() }) {
     const key = `${by}\0${path}`
     const burst = this.bursts.get(key)
     const text = typeof before === 'string' || typeof after === 'string'
-    const foldable = kind === 'edited' && burst && ts - burst.ts < this.burstMs && text
+    const foldable = kind === 'edited' && burst && ts - burst.ts < this.burstMs && text && !pulled && !burst.pulled
     const base = foldable ? burst.before : (before ?? '')
     const diff = text ? lineDiff(base, after ?? '') : ''
     const c = text ? counts(diff) : { added: 0, removed: 0 }
@@ -160,6 +161,7 @@ export class HistoryLog {
       removed: c.removed,
       detail: text ? `+${c.added} -${c.removed}` : String(detail || ''),
       task: task && task.id ? { id: String(task.id), title: String(task.title || '') } : null,
+      ...(pulled ? { pulled: true } : {}),
       diff
     }
     this.doc.transact(() => {
@@ -173,7 +175,7 @@ export class HistoryLog {
       this.trim()
     }, this.origin)
     if (kind === 'deleted') this.bursts.delete(key)
-    else this.bursts.set(key, { id: entry.id, kind: entry.kind, before: base, from: entry.from, ts })
+    else this.bursts.set(key, { id: entry.id, kind: entry.kind, before: base, from: entry.from, ts, pulled })
     return entry
   }
 
@@ -254,7 +256,7 @@ export function formatHistory (list, { withDiff = false, now = Date.now() } = {}
     const span = e.from && e.ts - e.from > 60000 ? ` over ${Math.round((e.ts - e.from) / 60000)}m` : ''
     const what = e.detail ? ` (${e.detail})` : ''
     const task = e.task ? ` for "${e.task.title}" [${e.task.id}]` : ''
-    out.push(`[${ago(e.ts, now)}] ${e.by} ${e.kind} ${e.path}${what}${span}${task}`)
+    out.push(`[${ago(e.ts, now)}] ${e.by} ${e.kind} ${e.path}${what}${e.pulled ? ' by pulling from git' : ''}${span}${task}`)
     if (withDiff && e.diff) out.push(e.diff, '')
   }
   return out.join('\n').replace(/\n+$/, '')

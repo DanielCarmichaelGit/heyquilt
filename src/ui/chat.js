@@ -26,13 +26,17 @@ export function fileCardHref (session, id, token) {
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
+/** @Agents mentions every agent in the session at once (ALL_AGENTS in src/inbox.js). */
+export const ALL_AGENTS = 'Agents'
+
 /**
  * A message's text as HTML: escaped, with every @Name of `names` (the session's
  * members, any case, whole names only) marked up as a mention, and one of `me` marked
  * as mine. The rule is the one agents wake on (`mentioned` in src/inbox.js): the @
  * starts a word, so an email address is not a mention, and the name ends one.
+ * `meAgent`: the reader is an agent, so an @Agents mention is theirs too.
  */
-export function textHtml (text, names = [], me = '') {
+export function textHtml (text, names = [], me = '', { meAgent = false } = {}) {
   const t = String(text ?? '')
   const list = [...new Set((names || []).map((n) => String(n || '').trim()).filter(Boolean))].sort((a, b) => b.length - a.length)
   if (!list.length || !t.includes('@')) return esc(t)
@@ -42,7 +46,7 @@ export function textHtml (text, names = [], me = '') {
   for (const m of t.matchAll(re)) {
     const start = m.index + m[1].length
     const name = m[2].slice(1)
-    const mine = !!me && name.toLowerCase() === String(me).toLowerCase()
+    const mine = (!!me && name.toLowerCase() === String(me).toLowerCase()) || (meAgent && name.toLowerCase() === ALL_AGENTS.toLowerCase())
     out += esc(t.slice(last, start)) + `<span class="mention${mine ? ' me' : ''}">${esc(m[2])}</span>`
     last = start + m[2].length
   }
@@ -83,4 +87,77 @@ export function completeMention (text, at, name) {
   const rest = t.slice(end)
   const head = `${t.slice(0, at.start)}@${name}${rest.startsWith(' ') ? '' : ' '}`
   return { text: head + rest, caret: head.length + (rest.startsWith(' ') ? 1 : 0) }
+}
+
+// One name for all of a person's AI sessions. People see "Daniel's AI" rather than each chat
+// ("Daniel · file-queue", "Daniel · Claude Code 3"), and can write to it: the session of theirs
+// active most recently answers (src/session.js leadPersona).
+export const AI_SUFFIX = '\'s AI'
+
+/** "Daniel's AI": every AI session working through Daniel's app, as one name. */
+export const aiName = (person) => `${String(person || '').trim()}${AI_SUFFIX}`
+
+/**
+ * Peers as people see them: the AI sessions of each person (persona: true, of: person) folded
+ * into one "<person>'s AI" entry listing them under `sessions`. Order is kept (first seen wins).
+ */
+export function foldPersonas (peers) {
+  const out = []
+  const groups = new Map()
+  for (const p of peers || []) {
+    if (!p || !p.persona || !p.of) { out.push(p); continue }
+    let g = groups.get(p.of)
+    if (!g) {
+      g = { name: aiName(p.of), kind: 'agent', aiOf: p.of, ...(p.mine ? { mine: true } : {}), tool: '', agents: [], focus: '', editing: [], sessions: [] }
+      groups.set(p.of, g)
+      out.push(g)
+    }
+    g.sessions.push({ name: p.name, tool: p.tool || '', focus: p.focus || '' })
+    if (p.tool && !g.agents.includes(p.tool)) g.agents.push(p.tool)
+  }
+  return out
+}
+
+const PERSONA_SEP = ' · ' // src/persona.js: "Daniel · file-queue"
+const firstName = (n) => String(n || '').trim().split(/\s+/)[0] || ''
+
+/**
+ * Whose AI session each name is, for showing it as "<person>'s AI": from the session's peers
+ * (persona: true, of), messages that say (m.of), and, for older messages, a name of the form
+ * "<first name> · <label>" whose first name is one of `people`. Returns name -> person.
+ */
+export function aiOwners ({ peers = [], messages = [], people = [] } = {}) {
+  const owners = new Map()
+  for (const p of peers || []) if (p && p.persona && typeof p.of === 'string' && p.of) owners.set(p.name, p.of)
+  // Messages come from the room, so m.of is believed only for a name its person's AI sessions get.
+  for (const m of messages || []) if (m && typeof m.of === 'string' && m.of && typeof m.by === 'string' && m.by.startsWith(firstName(m.of) + PERSONA_SEP)) owners.set(m.by, m.of)
+  const byFirst = new Map()
+  for (const n of people || []) if (typeof n === 'string' && n && !n.includes(PERSONA_SEP)) byFirst.set(firstName(n), byFirst.has(firstName(n)) ? null : n)
+  const guess = (name) => {
+    if (typeof name !== 'string' || owners.has(name) || !name.includes(PERSONA_SEP)) return
+    const person = byFirst.get(name.split(PERSONA_SEP)[0].trim())
+    if (person) owners.set(name, person)
+  }
+  for (const m of messages || []) { guess(m && m.by); guess(m && m.to) }
+  return owners
+}
+
+/** A name as people see it: one of someone's AI sessions is "<person>'s AI". */
+export const shownName = (name, owners) => owners && owners.has(name) ? aiName(owners.get(name)) : name
+
+/**
+ * True when a message is one of a person's AI sessions writing to another of their own (by
+ * name, or as "<person>'s AI"): their working out among themselves, which the chat leaves out.
+ */
+export function ownAiChatter (m, owners) {
+  const of = owners && m && owners.get(m.by)
+  if (!of) return false
+  const sibling = (n) => n === aiName(of) || (owners.get(n) === of && n !== m.by)
+  if (m.to) return sibling(m.to)
+  const text = String(m.text || '')
+  // Longest names first, so "@Daniel · y" is that session and not a mention of Daniel.
+  const names = [...new Set([...owners.keys(), ...owners.values(), aiName(of)])].sort((a, b) => b.length - a.length)
+  const re = new RegExp(`(^|[^\\w@])@(${names.map(escapeRe).join('|')})(?![\\w-])`, 'giu')
+  const hit = [...text.matchAll(re)].map((x) => names.find((n) => n.toLowerCase() === x[2].toLowerCase()))
+  return hit.length > 0 && hit.every(sibling)
 }

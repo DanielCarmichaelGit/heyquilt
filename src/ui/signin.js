@@ -30,6 +30,8 @@ async function begin (onSignedIn) {
   btn.disabled = true
   try {
     const acc = await api('POST', '/api/account/start')
+    // A computer linked before is signed straight back in: nothing to approve.
+    if (acc.signedIn) return onSignedIn()
     window.open(acc.link.verificationUrl, '_blank', 'noopener')
     waiting(acc.link, onSignedIn)
   } catch (err) {

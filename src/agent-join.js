@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { quiltHome } from './legacy.js'
-import { generateIdentity } from './identity.js'
+import { generateIdentity, signAgentResume } from './identity.js'
 import { writePrivateJson } from './private-file.js'
 
 export const DEFAULTS = { provider: 'Quilt CLI', type: 'command-line agent' }
@@ -87,30 +87,70 @@ function load (file, name) {
   }
 }
 
-/** Uses an invite link once and saves the agent's keys. */
-export async function agentJoin ({ link, name, provider = DEFAULTS.provider, type = DEFAULTS.type, description = '', dir, fetch: fetchImpl = globalThis.fetch, log = console.log }) {
+/** The agent saved under this name, or null when there is none (or it can't be read). */
+function savedOrNull (file) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return null }
+}
+
+/**
+ * Uses an invite link once and saves the agent's keys. An agent that joined before comes
+ * back as itself: with `agentId`, or with the id saved under this name on this computer
+ * (then it keeps its own key too). Without either it joins as a new agent.
+ */
+export async function agentJoin ({ link, name, agentId, provider = DEFAULTS.provider, type = DEFAULTS.type, description = '', dir, fetch: fetchImpl = globalThis.fetch, log = console.log }) {
   const file = agentFile(name, dir)
   const { api, token } = parseJoinLink(link)
-  // The agent's own Ed25519 key, for joining sessions in later versions.
-  const identity = generateIdentity()
-  const r = await send(fetchImpl, api, 'POST', `/v1/join/${token}`, { name, provider, type, description, publicKey: identity.publicKey })
+  const before = savedOrNull(file)
+  const id = agentId || (before?.api === api ? before.agentId : undefined)
+  // The agent's own Ed25519 key, for joining sessions. A returning agent keeps the one it has.
+  const identity = id && before?.agentId === id && before.identity ? before.identity : generateIdentity()
+  const r = await send(fetchImpl, api, 'POST', `/v1/join/${token}`, { name, provider, type, description, publicKey: identity.publicKey, ...(id ? { agentId: id } : {}) })
   if (!r.ok) throw new Error(r.body?.error || `Couldn't join Quilt (${r.status}).`)
-  const saved = { name, api, agentId: r.body.agentId, accessKey: r.body.accessKey, accessExpiresAt: r.body.accessExpiresAt, refreshKey: r.body.refreshKey, refreshExpiresAt: r.body.refreshExpiresAt, identity }
+  const saved = { name, api, agentId: r.body.agentId, accessKey: r.body.accessKey, accessExpiresAt: r.body.accessExpiresAt, refreshKey: r.body.refreshKey, refreshExpiresAt: r.body.refreshExpiresAt, resumeKey: r.body.resumeKey, identity }
   save(file, saved)
-  log(`Joined Quilt as ${name}. Keys saved in ${file}`)
+  log(`${r.body.rejoined ? 'Joined Quilt again as' : 'Joined Quilt as'} ${name} (agent id ${saved.agentId}: public, keep it to come back as yourself with a new invite). Keys saved in ${file}`)
   return saved
 }
 
 async function refresh (saved, file, fetchImpl) {
   const r = await send(fetchImpl, saved.api, 'POST', '/v1/agents/token', { refreshKey: saved.refreshKey }, null, { signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS) })
-  if (!r.ok) throw Object.assign(new Error(r.body?.error || `Couldn't refresh the agent's keys (${r.status}).`), { status: r.status })
-  const next = { ...saved, accessKey: r.body.accessKey, accessExpiresAt: r.body.accessExpiresAt, refreshKey: r.body.refreshKey, refreshExpiresAt: r.body.refreshExpiresAt }
+  if (r.status === 401 && canResume(saved)) return resume(saved, file, fetchImpl, r)
+  if (!r.ok) throw refused(r, `Couldn't refresh the agent's keys (${r.status}).`)
+  return keep(saved, file, r.body)
+}
+
+/**
+ * The refresh key was turned away: most often a refresh the API made whose reply never
+ * arrived (the computer slept or went offline), so the key we kept was already spent and
+ * the API revoked the agent's keys. The agent signs for the key it joined with and gets
+ * new ones. `turnedAway` is the refresh's reply, the error to give if this fails too.
+ */
+async function resume (saved, file, fetchImpl, turnedAway) {
+  // The resume key every agent gets when it joins; agents saved before resume keys sign
+  // with their own key instead (the API's clock, not a test's: it has to be close to it).
+  const at = Date.now()
+  const body = saved.resumeKey ? { resumeKey: saved.resumeKey } : { agentId: saved.agentId, at, signature: signAgentResume(saved.identity, saved.agentId, at) }
+  const r = await send(fetchImpl, saved.api, 'POST', '/v1/agents/resume', body, null, { signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS) })
+  if (r.ok) return keep(saved, file, r.body)
+  // An API without resume, or that doesn't know the agent: the refresh's answer says what happened.
+  if (r.status === 404) throw refused(turnedAway, `Couldn't refresh the agent's keys (${turnedAway.status}).`)
+  // Revoked by a person, a signature that doesn't match, or a clock that's off: signed out.
+  if (r.status === 400 || r.status === 401) throw Object.assign(refused(r, `Couldn't sign the agent back in (${r.status}).`), { status: 401 })
+  throw refused(r, `Couldn't sign the agent back in (${r.status}).`)
+}
+
+const canResume = (saved) => !!(saved.resumeKey || saved.identity)
+
+const refused = (r, fallback) => Object.assign(new Error(r.body?.error || fallback), { status: r.status })
+
+function keep (saved, file, body) {
+  const next = { ...saved, accessKey: body.accessKey, accessExpiresAt: body.accessExpiresAt, refreshKey: body.refreshKey, refreshExpiresAt: body.refreshExpiresAt }
   // Save straight away: the old refresh key is spent, and using it again would revoke the agent.
   save(file, next)
   return next
 }
 
-/** A saved agent's file: { name, api, agentId, accessKey, refreshKey, …, identity }. */
+/** A saved agent's file: { name, api, agentId, accessKey, refreshKey, …, resumeKey, identity }. */
 export function readAgent ({ name, dir }) {
   return load(agentFile(name, dir), name)
 }
@@ -196,10 +236,29 @@ export async function agentAccess ({ name, dir, fetch: fetchImpl = globalThis.fe
   })
 }
 
+/**
+ * The API turned `accessKey` away before it ran out (its keys were revoked): signs back in
+ * with the agent's key. Resolves to the saved agent with new keys, the keys another process
+ * already got, or null for an agent saved with neither a resume key nor a key of its own.
+ */
+export async function agentResume ({ name, dir, accessKey, fetch: fetchImpl = globalThis.fetch }) {
+  const file = agentFile(name, dir)
+  return withLock(file, () => {
+    const latest = load(file, name)
+    if (latest.accessKey !== accessKey) return latest
+    if (!canResume(latest)) return null
+    return resume(latest, file, fetchImpl, { status: 401, body: { error: "This agent's keys were revoked. Invite it again." } })
+  })
+}
+
 /** Who the agent is, refreshing its keys first when the access key has (nearly) run out. */
 export async function agentWhoami ({ name, dir, fetch: fetchImpl = globalThis.fetch, now = Date.now }) {
   const saved = await agentAccess({ name, dir, fetch: fetchImpl, now })
-  const r = await send(fetchImpl, saved.api, 'GET', '/v1/agents/me', null, saved.accessKey)
+  let r = await send(fetchImpl, saved.api, 'GET', '/v1/agents/me', null, saved.accessKey)
+  if (r.status === 401) {
+    const back = await agentResume({ name, dir, accessKey: saved.accessKey, fetch: fetchImpl })
+    if (back) r = await send(fetchImpl, back.api, 'GET', '/v1/agents/me', null, back.accessKey)
+  }
   if (!r.ok) throw new Error(r.body?.error || `Couldn't reach Quilt (${r.status}).`)
   return r.body
 }
@@ -225,6 +284,8 @@ export function pickAgent ({ agent, dir } = {}) {
 export function describeAgent (me) {
   const where = me.agent.kind === 'org' ? `an agent in ${me.agent.org.name}` : 'your personal agent'
   const lines = [`${me.agent.name} (${me.agent.provider}, ${me.agent.type}): ${where}`]
+  // Public: what the agent gives with a new invite to come back as itself.
+  if (me.agent.id) lines.push(`Agent id: ${me.agent.id}`)
   if (me.role) lines.push(`Role: ${me.role.name}`)
   for (const t of me.teams) lines.push(`Team ${t.name}: ${t.access}${t.scopes.length ? `, folders ${t.scopes.join(', ')}` : ''}`)
   return lines.join('\n')

@@ -27,6 +27,7 @@ test('quilt agent join uses the link once and saves its keys privately', async (
   assert.equal(fs.statSync(file).mode & 0o777, 0o600)
   const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'))
   assert.deepEqual([onDisk.agentId, onDisk.api, !!onDisk.identity.privateKey, onDisk.refreshKey], [saved.agentId, t.api.url, true, saved.refreshKey])
+  assert.match(onDisk.resumeKey, /^qs_/, 'its resume key, like every agent')
   const agent = await t.store.agentById(saved.agentId)
   assert.deepEqual([agent.name, agent.provider, agent.type, agent.publicKey], ['larry', DEFAULTS.provider, DEFAULTS.type, onDisk.identity.publicKey])
 })
@@ -36,7 +37,7 @@ test('quilt agent whoami says who the agent is, refreshing an expired access key
   const saved = await agentJoin({ link: await newLink(), name: 'whoami-bot', provider: 'Anthropic', type: 'coding', dir, log: () => {} })
   const me = await agentWhoami({ name: 'whoami-bot', dir })
   assert.deepEqual([me.agent.id, me.agent.kind], [saved.agentId, 'personal'])
-  assert.equal(describeAgent(me), 'whoami-bot (Anthropic, coding): your personal agent')
+  assert.equal(describeAgent(me), `whoami-bot (Anthropic, coding): your personal agent\nAgent id: ${saved.agentId}`)
   const file = agentFile('whoami-bot', dir)
   fs.writeFileSync(file, JSON.stringify({ ...saved, accessExpiresAt: Date.now() - 1 }))
   await agentWhoami({ name: 'whoami-bot', dir })
@@ -45,7 +46,58 @@ test('quilt agent whoami says who the agent is, refreshing an expired access key
   assert.ok(after.accessExpiresAt > Date.now())
   // The old refresh key is spent: using it again revokes the agent's keys.
   assert.equal((await t.call('POST', '/v1/agents/token', { refreshKey: saved.refreshKey })).status, 401)
-  await assert.rejects(agentWhoami({ name: 'whoami-bot', dir }), /revoked/)
+  assert.equal((await t.call('GET', '/v1/agents/me', null, null, { authorization: `Bearer ${after.accessKey}` })).status, 401, 'its keys are revoked')
+  // The agent itself holds the key it joined with, so it signs back in with new keys.
+  assert.equal((await agentWhoami({ name: 'whoami-bot', dir })).agent.id, saved.agentId)
+  assert.notEqual(JSON.parse(fs.readFileSync(file, 'utf8')).accessKey, after.accessKey)
+})
+
+test("a refresh whose reply never arrived doesn't lock the agent out", async () => {
+  const dir = tmp()
+  const saved = await agentJoin({ link: await newLink(), name: 'sleepy', dir, log: () => {} })
+  const file = agentFile('sleepy', dir)
+  const expired = { ...saved, accessExpiresAt: Date.now() - 1 }
+  fs.writeFileSync(file, JSON.stringify(expired))
+  // The API swaps the keys, but the reply is lost (the computer went to sleep): the file keeps the spent key.
+  let lose = true
+  const flaky = async (url, opts) => {
+    const res = await fetch(url, opts)
+    if (lose && url.endsWith('/v1/agents/token')) { lose = false; throw new TypeError('fetch failed', { cause: { code: 'ETIMEDOUT' } }) }
+    return res
+  }
+  await assert.rejects(agentAccess({ name: 'sleepy', dir, fetch: flaky }), /fetch failed/)
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).refreshKey, saved.refreshKey, 'the new keys never arrived')
+  // The retry spends the key a second time, which revokes its keys; it signs back in with its own key.
+  const back = await agentAccess({ name: 'sleepy', dir, fetch: flaky })
+  assert.ok(back.accessExpiresAt > Date.now())
+  assert.equal((await agentWhoami({ name: 'sleepy', dir })).agent.id, saved.agentId)
+  const keys = await t.store.listAgentKeys(saved.agentId)
+  assert.equal(keys.filter((k) => !k.revokedAt).length, 1, 'only the new pair works')
+})
+
+test('a revoked access key that has not run out yet signs back in too', async () => {
+  const dir = tmp()
+  const saved = await agentJoin({ link: await newLink(), name: 'early', dir, log: () => {} })
+  for (const k of await t.store.listAgentKeys(saved.agentId)) await t.store.revokeFamily(k.familyId)
+  assert.equal((await agentWhoami({ name: 'early', dir })).agent.id, saved.agentId)
+  assert.notEqual(JSON.parse(fs.readFileSync(agentFile('early', dir), 'utf8')).accessKey, saved.accessKey)
+})
+
+test('an agent saved before resume keys signs back in with its own key', async () => {
+  const dir = tmp()
+  const { resumeKey, ...saved } = await agentJoin({ link: await newLink(), name: 'older', dir, log: () => {} })
+  assert.ok(resumeKey)
+  fs.writeFileSync(agentFile('older', dir), JSON.stringify(saved))
+  for (const k of await t.store.listAgentKeys(saved.agentId)) await t.store.revokeFamily(k.familyId)
+  assert.equal((await agentWhoami({ name: 'older', dir })).agent.id, saved.agentId)
+})
+
+test('an agent a person revoked stays signed out', async () => {
+  const dir = tmp()
+  const saved = await agentJoin({ link: await newLink(), name: 'gone', dir, log: () => {} })
+  await t.store.revokeAgent(saved.agentId)
+  fs.writeFileSync(agentFile('gone', dir), JSON.stringify({ ...saved, accessExpiresAt: Date.now() - 1 }))
+  await assert.rejects(agentWhoami({ name: 'gone', dir }), (err) => err.status === 401 && /revoked/i.test(err.message))
 })
 
 test('describeAgent lists an org agent, its role and its teams', () => {
@@ -244,4 +296,19 @@ test('a slow refresh is waited for, not cut off: the timeouts nest', () => {
   assert.equal(refreshTimeoutMs, 120 * 1000)
   assert.ok(lockWaitMs > refreshTimeoutMs, 'another process waits out a whole refresh')
   assert.ok(lockMaxAgeMs > lockWaitMs, 'a live holder is never taken for stale')
+})
+
+test('quilt agent join with a new invite comes back as the agent saved under that name, or the one --agent-id names', async () => {
+  const dir = tmp()
+  const lines = []
+  const first = await agentJoin({ link: await newLink(), name: 'comeback', dir, log: (l) => lines.push(l) })
+  assert.match(lines[0], new RegExp(`agent id ${first.agentId}`))
+  const again = await agentJoin({ link: await newLink(), name: 'comeback', dir, log: (l) => lines.push(l) })
+  assert.equal(again.agentId, first.agentId)
+  assert.deepEqual(again.identity, first.identity, 'keeps its own key')
+  assert.match(lines[1], /Joined Quilt again as comeback/)
+  // On another computer, with nothing saved: --agent-id.
+  const elsewhere = await agentJoin({ link: await newLink(), name: 'comeback', agentId: first.agentId, dir: tmp(), log: () => {} })
+  assert.equal(elsewhere.agentId, first.agentId)
+  assert.equal((await t.store.agentById(first.agentId)).publicKey, elsewhere.identity.publicKey, 'the new computer brings its own key')
 })

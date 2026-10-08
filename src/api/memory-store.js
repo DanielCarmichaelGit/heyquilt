@@ -23,12 +23,12 @@ const checkViolation = (what) => Object.assign(new Error(what), { code: '23514' 
 const tooManyFolders = (scopes) => { if (scopes.length > 20) throw checkViolation('at most 20 folders') }
 
 export function createMemoryStore ({ now = Date.now } = {}) {
-  const links = new Map(); const devices = new Map(); const profiles = new Map(); const agents = new Map()
+  const links = new Map(); const devices = new Map(); const profiles = new Map(); const agents = new Map(); const resumeHashes = new Map() // resume key hash -> agent id
   const users = new Map(); const orgs = new Map(); const roles = new Map(); const members = new Map()
   const teams = new Map(); const teamMembers = new Map(); const invites = new Map(); const requests = new Map()
-  const agentInvites = new Map(); const keyRows = new Map()
+  const agentInvites = new Map(); const keyRows = new Map(); const appKeys = new Map()
   const events = new Map(); const issues = new Map()
-  const relaySessions = new Map(); const visits = new Map(); const seenEvents = new Map()
+  const relaySessions = new Map(); const visits = new Map(); const seenEvents = new Map(); const actions = new Map()
   const accessTypes = new Map(); const grants = new Map(); const sessionInvites = new Map()
   const workspaces = new Map(); const workspaceMembers = new Map()
   const workspaceFiles = new Map(); const workspaceFileVersions = new Map()
@@ -64,7 +64,9 @@ export function createMemoryStore ({ now = Date.now } = {}) {
   // placement, any workspace's say over it, session keep-outs and its webhook go too.
   const dropAgent = (id) => {
     agents.delete(id)
+    for (const [h, a] of resumeHashes) if (a === id) resumeHashes.delete(h)
     for (const [k, key] of keyRows) if (key.agentId === id) keyRows.delete(k)
+    for (const [k, key] of appKeys) if (key.agentId === id) appKeys.delete(k)
     for (const [k, m] of members) if (m.agentId === id) dropMember(k)
     for (const i of agentInvites.values()) if (i.usedByAgentId === id) i.usedByAgentId = null
     agentPlacements.delete(id)
@@ -82,6 +84,9 @@ export function createMemoryStore ({ now = Date.now } = {}) {
   }
   // Grants, invites and agent keep-outs go with their session (on delete cascade).
   const dropOrphans = () => {
+    // What visits did goes with them (on delete cascade).
+    const live = new Set(all(visits, () => true).map((v) => v.eventStartId))
+    for (const [id, a] of actions) if (!live.has(a.visitStartId)) actions.delete(id)
     for (const [k, g] of grants) if (!relaySessions.has(g.room)) grants.delete(k)
     for (const [id, i] of sessionInvites) if (!relaySessions.has(i.room)) sessionInvites.delete(id)
     for (const [k, e] of sessionAgentExclusions) if (!relaySessions.has(e.room)) sessionAgentExclusions.delete(k)
@@ -124,6 +129,13 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     async setDeviceToken (id, tokenHash) { devices.get(id).tokenHash = tokenHash },
     async deviceByToken (h) { const d = [...devices.values()].find((x) => x.tokenHash === h && !x.revokedAt); return d ? { ...d } : null },
     async touchDevice (id) { devices.get(id).lastSeenAt = now() },
+    // The linked (not unlinked) computer holding this key: the most recently seen, if more than one account linked it.
+    async deviceByPublicKey (publicKey) {
+      const d = [...devices.values()].filter((x) => x.publicKey === publicKey && !x.revokedAt).sort((a, b) => b.lastSeenAt - a.lastSeenAt)[0]
+      return d ? { ...d } : null
+    },
+    // Whether this account has linked this key before (unlinked since or not).
+    async userHasDevice (userId, publicKey) { return [...devices.values()].some((x) => x.userId === userId && x.publicKey === publicKey) },
     async revokeDevice (id) { Object.assign(devices.get(id), { revokedAt: now(), tokenHash: null }) },
     async profile (userId) { const p = profiles.get(userId); return p ? { ...p } : null },
     // 'personal' or 'org': set once at sign-up, and the only thing POST /v1/orgs checks.
@@ -135,13 +147,17 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     },
     // Agents hold their own keys; at most a public key is kept here. Mirrors
     // agents_one_home (a person's or an org's, never both) and the unique public_key.
-    async createAgent ({ name, provider, type, description = '', publicKey = null, ownerUserId = null, orgId = null, invitedBy = null }) {
+    async createAgent ({ name, provider, type, description = '', publicKey = null, resumeHash = null, ownerUserId = null, orgId = null, invitedBy = null }) {
       if ((ownerUserId == null) === (orgId == null)) throw Object.assign(new Error('an agent belongs to one person or one org'), { code: '23514' })
       if (publicKey && all(agents, (a) => a.publicKey === publicKey).length) throw duplicatePublicKey()
       const row = { id: uuid(), name, provider, type, description, publicKey, ownerUserId, orgId, invitedBy, createdAt: now(), lastUsedAt: null, revokedAt: null }
-      agents.set(row.id, row); return copy(row)
+      agents.set(row.id, row)
+      // Kept apart from the row, like the database never selecting it with the agent.
+      if (resumeHash) resumeHashes.set(resumeHash, row.id)
+      return copy(row)
     },
     async agentById (id) { return copy(agents.get(id)) },
+    async agentByResume (hash) { return copy(agents.get(resumeHashes.get(hash))) },
     async agentByPublicKey (publicKey) { return publicKey ? copy(all(agents, (a) => a.publicKey === publicKey)[0]) : null },
     async listPersonalAgents (userId) {
       return all(agents, (a) => a.ownerUserId === userId && !a.revokedAt).sort((a, b) => a.createdAt - b.createdAt).map(copy)
@@ -157,7 +173,19 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       if (!a || a.revokedAt) return false
       a.revokedAt = now()
       for (const k of keyRows.values()) if (k.agentId === id && !k.revokedAt) k.revokedAt = now()
+      for (const k of appKeys.values()) if (k.agentId === id && !k.revokedAt) k.revokedAt = now()
       return true
+    },
+    // An agent coming back with a new invite: its new profile and resume key, and back
+    // from revoked. A publicKey left out keeps the one it has.
+    async rejoinAgent (id, { name, provider, type, description = '', publicKey = null, resumeHash }) {
+      const a = agents.get(id)
+      if (!a) throw fkViolation('agent', 'does not exist')
+      if (publicKey && all(agents, (x) => x.publicKey === publicKey && x.id !== id).length) throw duplicatePublicKey()
+      Object.assign(a, { name, provider, type, description, revokedAt: null }, publicKey ? { publicKey } : {})
+      for (const [h, agentId] of resumeHashes) if (agentId === id) resumeHashes.delete(h)
+      if (resumeHash) resumeHashes.set(resumeHash, id)
+      return copy(a)
     },
     // Only for undoing a half-finished join.
     async deleteAgent (id) { dropAgent(id) },
@@ -166,7 +194,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     async createAgentInvite ({ tokenHash, ownerUserId = null, orgId = null, createdBy = null, roleId = null, teams = [], expiresAt, workspaceId = null, workspaceAccess = null, workspaceSessions = null, global = false }) {
       if ((ownerUserId == null) === (orgId == null) || (roleId && !orgId)) throw checkViolation('an invite is for one person or one org')
       if (!roleInOrg(roleId, orgId)) throw fkViolation('role', 'is not in this org')
-      const row = { id: uuid(), tokenHash, ownerUserId, orgId, createdBy, roleId, teams: copy(teams), expiresAt, workspaceId, workspaceAccess, workspaceSessions, global: !!global, usedAt: null, usedByAgentId: null, cancelledAt: null, createdAt: now() }
+      const row = { id: uuid(), tokenHash, ownerUserId, orgId, createdBy, roleId, teams: copy(teams), expiresAt, workspaceId, workspaceAccess, workspaceSessions, global: !!global, usedAt: null, usedByAgentId: null, rejoined: false, cancelledAt: null, createdAt: now() }
       agentInvites.set(row.id, row); return copy(row)
     },
     async agentInviteByToken (h) { return copy(all(agentInvites, (i) => i.tokenHash === h)[0]) },
@@ -182,13 +210,31 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       i.usedAt = now(); return true
     },
     // Undoes a claim when making the agent failed, so the link can be tried again.
-    async releaseAgentInvite (id) { const i = agentInvites.get(id); if (i) Object.assign(i, { usedAt: null, usedByAgentId: null }) },
-    async setInviteAgent (id, agentId) { agentInvites.get(id).usedByAgentId = agentId },
+    async releaseAgentInvite (id) { const i = agentInvites.get(id); if (i) Object.assign(i, { usedAt: null, usedByAgentId: null, rejoined: false }) },
+    async setInviteAgent (id, agentId, rejoined = false) { Object.assign(agentInvites.get(id), { usedByAgentId: agentId, rejoined }) },
     // Check-and-set: only a waiting invite is cancelled.
     async cancelAgentInvite (id) {
       const i = agentInvites.get(id)
       if (!i || i.usedAt || i.cancelledAt || i.expiresAt <= now()) return false
       i.cancelledAt = now(); return true
+    },
+
+    // App keys (qk_): hashes only, and they don't run out.
+    async createAgentAppKey ({ agentId, name, keyHash }) {
+      if (!agents.has(agentId)) throw fkViolation('agent', 'does not exist')
+      const row = { id: uuid(), agentId, name, keyHash, createdAt: now(), lastUsedAt: null, revokedAt: null }
+      appKeys.set(row.id, row); return copy(row)
+    },
+    async agentAppKeyByHash (h) { return copy(all(appKeys, (k) => k.keyHash === h)[0]) },
+    async listAgentAppKeys (agentId) {
+      return all(appKeys, (k) => k.agentId === agentId && !k.revokedAt).sort((a, b) => a.createdAt - b.createdAt).map(copy)
+    },
+    async touchAgentAppKey (id) { const k = appKeys.get(id); if (k) k.lastUsedAt = now() },
+    // Only a key of this agent, and only once.
+    async revokeAgentAppKey (agentId, id) {
+      const k = appKeys.get(id)
+      if (!k || k.agentId !== agentId || k.revokedAt) return false
+      k.revokedAt = now(); return true
     },
 
     // Agent keys: hashes only.
@@ -248,12 +294,16 @@ export function createMemoryStore ({ now = Date.now } = {}) {
             s.lastActiveAt = Math.max(s.lastActiveAt, e.at)
           }
           if (!all(visits, (v) => v.eventStartId === e.id).length) {
-            const v = { id: uuid(), eventStartId: e.id, room: e.room, account: e.account, accountName: e.name || '', kind: e.account.split(':')[0], startedAt: e.at, endedAt: null }
+            const v = { id: uuid(), eventStartId: e.id, room: e.room, account: e.account, accountName: e.name || '', kind: e.account.split(':')[0], startedAt: e.at, endedAt: null, via: e.via || null, tool: e.tool || null, endReason: null }
             visits.set(v.id, v)
           }
         } else if (e.type === 'end') {
-          for (const v of visits.values()) if (v.eventStartId === e.start && v.endedAt == null) v.endedAt = Math.max(v.startedAt, e.at)
+          for (const v of visits.values()) if (v.eventStartId === e.start && v.endedAt == null) Object.assign(v, { endedAt: Math.max(v.startedAt, e.at), endReason: e.reason || null })
           if (s) s.lastActiveAt = Math.max(s.lastActiveAt, e.at)
+        } else if (e.type === 'act') {
+          // An act whose visit never arrived (its start was dropped from a full queue) is skipped.
+          const v = all(visits, (x) => x.eventStartId === e.start)[0]
+          if (v && !actions.has(e.id)) actions.set(e.id, { id: e.id, visitStartId: v.eventStartId, room: v.room, account: v.account, action: e.action, target: e.target || '', at: e.at })
         } else if (e.type === 'name') {
           if (!s) relaySessions.set(e.room, { room: e.room, name: e.name, ownerAccount: null, createdAt: e.at, lastActiveAt: e.at, renamedAt: null, workspaceId: null, workspaceLinkedBy: null })
           else if (s.renamedAt == null) s.name = e.name
@@ -281,6 +331,11 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       return copy(s)
     },
     // Mirrors prune_activity.
+    // What was done in a session in [from, to), oldest first, at most `limit` (actions_in_room).
+    async actionsInRoom (room, { from, to, limit }) {
+      return all(actions, (a) => a.room === room && a.at >= from && a.at < to)
+        .sort((a, b) => a.at - b.at).slice(0, limit).map(copy) // stable: ties keep arrival order
+    },
     async pruneActivity ({ before, seenBefore }) {
       for (const [id, v] of visits) if (v.endedAt != null && v.endedAt < before) visits.delete(id)
       for (const [room, s] of relaySessions) if (s.lastActiveAt < before && !all(visits, (v) => v.room === room).length) relaySessions.delete(room)

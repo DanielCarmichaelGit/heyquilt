@@ -41,7 +41,7 @@ async function relay (t, api) {
 function connect (srv, r, { name, sub, kind = 'person', tool = '', viewSecret }) {
   const identity = generateIdentity()
   const pass = makePass({ identity, name, sub, kind })
-  const q = new URLSearchParams({ secret: 's', name: 'n', key: identity.publicKey, kind: kind === 'agent' ? 'agent' : 'human', features: 'large-files', pass })
+  const q = new URLSearchParams({ secret: 's', name: 'n', key: identity.publicKey, kind: kind === 'agent' ? 'agent' : 'human', features: 'large-files,branches', pass })
   if (viewSecret) q.set('viewSecret', viewSecret)
   const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/${r}?${q}`, { headers: tool ? { 'x-quilt-tool': tool } : {} })
   ws.binaryType = 'arraybuffer'

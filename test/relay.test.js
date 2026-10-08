@@ -133,7 +133,7 @@ test('too many connections from one address are refused', async (t) => {
   defer(() => srv.close())
   const open = () => new Promise((resolve) => {
     const id = generateIdentity()
-    const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/cap?secret=s&name=n${Math.random()}&key=${id.publicKey}`)
+    const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/cap?secret=s&name=n${Math.random()}&key=${id.publicKey}&features=large-files,branches`)
     ws.on('open', () => resolve({ ws, status: 101 }))
     ws.on('unexpected-response', (req, res) => resolve({ status: res.statusCode }))
   })
@@ -238,7 +238,7 @@ test('new sessions are rate-limited per address; joining existing ones is not', 
   const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, maxNewRoomsPerHour: 2 })
   const id = generateIdentity()
   const open = (room) => new Promise((resolve) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/${room}?secret=s&name=a&key=${id.publicKey}`)
+    const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/${room}?secret=s&name=a&key=${id.publicKey}&features=large-files,branches`)
     ws.on('open', () => { ws.close(); resolve('open') })
     ws.on('unexpected-response', (req, res) => resolve(res.statusCode))
   })
@@ -395,7 +395,7 @@ test('a client that sends more than the relay accepts is dropped, not fatal', as
   const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, maxRoomBytes: 4000 })
   defer(() => srv.close())
   const id = generateIdentity()
-  const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/big?secret=s&name=n&key=${id.publicKey}`)
+  const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/big?secret=s&name=n&key=${id.publicKey}&features=large-files,branches`)
   await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject) })
   const closed = new Promise((resolve) => ws.on('close', (code) => resolve(code)))
   ws.on('error', () => {})
@@ -463,7 +463,7 @@ test('a connection refused with 429 keeps trying and gets in once a slot frees u
   const defer = cleanups(t)
   const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, maxConnsPerIp: 1 })
   defer(() => srv.close())
-  const holder = new WebSocket(`ws://127.0.0.1:${srv.port}/x?secret=s&name=h&key=${generateIdentity().publicKey}`)
+  const holder = new WebSocket(`ws://127.0.0.1:${srv.port}/x?secret=s&name=h&key=${generateIdentity().publicKey}&features=large-files,branches`)
   await new Promise((resolve, reject) => { holder.on('open', resolve); holder.on('error', reject) })
   const warnings = []
   const c = new Connection({ server: `ws://127.0.0.1:${srv.port}`, room: 'x', secret: 's', name: 'dana', identity: generateIdentity(), doc: new Y.Doc() })
@@ -569,7 +569,7 @@ test('a session whose metadata is unreadable is refused and left on disk, not de
   assert.equal(intact(), true, 'the sweep leaves what it cannot read')
   assert.ok(logs.some((m) => /\[r3\].*could not read/.test(m)), `and says so: ${logs.join(' | ')}`)
 
-  const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/r3?secret=s&name=n&key=${generateIdentity().publicKey}`)
+  const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/r3?secret=s&name=n&key=${generateIdentity().publicKey}&features=large-files,branches`)
   ws.on('error', () => {})
   const status = await new Promise((resolve) => {
     ws.on('open', () => resolve(101))

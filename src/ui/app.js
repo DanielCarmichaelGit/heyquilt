@@ -341,7 +341,7 @@ export function openInvite (id) {
     </div>` : ''}
     <div class="label inv-agent-label">Your AI</div>
     <div id="inv-agent" class="inv-agent">
-      <p class="hint">An AI that already has the Quilt command just needs the link above: tell it "Join my Quilt session: &lt;link&gt;". To add an AI that isn't registered with Quilt yet, make it an agent invite and paste the text into it, then send it the link above. It joins as your own agent, listed in Settings.</p>
+      <p class="hint">An AI that already has the Quilt command just needs the link above: tell it "Join my Quilt session: &lt;link&gt;". To add an AI that isn't registered with Quilt yet, make it an agent invite and paste the text into it: it carries the link above too. It joins as your own agent, listed in Settings.</p>
       <button class="btn" type="button" id="inv-agent-make">${I.bot}<span>Invite an AI agent</span></button>
       <p class="error" id="inv-agent-error"></p>
     </div>
@@ -369,7 +369,7 @@ export function openInvite (id) {
     btn.disabled = true
     try {
       const inv = await api('POST', '/api/agent-invites')
-      $('#inv-agent', back).innerHTML = agentInviteHtml(agentPaste({ link: inv.link }), 'inv-agent-text')
+      $('#inv-agent', back).innerHTML = agentInviteHtml(agentPaste({ link: inv.link, session: s.invite }), 'inv-agent-text')
     } catch (err) {
       btn.disabled = false
       $('#inv-agent-error', back).textContent = err.message

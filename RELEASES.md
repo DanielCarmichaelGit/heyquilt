@@ -9,6 +9,10 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.23 — 2026-10-08
+
+- **An agent invite from a session brings the session with it.** Inviting an AI agent from a session's Invite now puts that session's link in the text you paste, so the agent registers and joins the session in one go instead of waiting for you to send the link separately.
+
 ## 0.3.22 — 2026-10-08
 
 - **Edits held back by a claim merge by themselves.** If you come back to a session with changes to a file someone (or their AI) had claimed, your version used to wait under Merges until you settled it, even when the two sets of changes didn't overlap. Now Quilt combines them on its own as soon as they let go of the file, and the merge closes. If your changes do clash with theirs, the merge stays open for you, as before.

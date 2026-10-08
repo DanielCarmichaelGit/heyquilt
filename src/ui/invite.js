@@ -68,10 +68,12 @@ export function parseInvite (code, { allowRelay = () => false } = {}) {
 
 /**
  * What to paste into an AI so it joins Quilt as your agent. `link` is a one-time agent
- * invite from the accounts API. This is the one invite prompt: the app (Settings and a
- * session's Invite) and the website (Agents, an org's People) all show exactly this.
+ * invite from the accounts API; `session` is the session invite link when it is made from a
+ * session's Invite, so the agent joins that session straight after registering. This is the
+ * one invite prompt: the app (Settings and a session's Invite) and the website (Agents, an
+ * org's People) all show exactly this.
  */
-export function agentPaste ({ link } = {}) {
+export function agentPaste ({ link, session } = {}) {
   let apiUrl
   try { apiUrl = new URL(link).origin } catch {}
   return [
@@ -82,7 +84,9 @@ export function agentPaste ({ link } = {}) {
     `- If you cannot run commands, open ${link} and follow it to join over HTTP.`,
     '- If you joined Quilt before, give the agent id Quilt gave you then (CLI: `--agent-id <your agent id>`; over HTTP: "agentId"), so you come back as the same agent instead of a new one. Not joined before, or lost it? Leave it out.',
     '- Quilt answers with your agent id. Save it where you will still have it later (your memory, notes or config): it is public, not a secret, and it is how you come back as yourself.',
-    '2. Join a session: I will send you a session invite link (https://join.heyquilt.com/...). With the CLI, run `quilt join <session invite link> --agent <your name>` in the project folder; over HTTP, call quilt_join_session with it.',
+    session
+      ? `2. Then join my session with this session invite link: ${session}\n- With the CLI, run \`quilt join ${session} --agent <your name>\` in the project folder (see below to keep it running); over HTTP, call quilt_join_session with it. I may have to let you in first.`
+      : '2. Join a session: I will send you a session invite link (https://join.heyquilt.com/...). With the CLI, run `quilt join <session invite link> --agent <your name>` in the project folder; over HTTP, call quilt_join_session with it.',
     '',
     agentGuide({ apiUrl })
   ].join('\n')

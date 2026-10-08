@@ -340,11 +340,15 @@ test('status lists the session\'s branches with who is on each, yours first; act
   assert.match(md, /`main`.*default/)
   assert.match(md, /`feature-x`.*alice/)
   await waitFor(() => /alice switched to `feature-x`/.test(renderStatus(B.status())))
+  // No direct call to any test-only refresh: creating the branch is what the real watcher
+  // (watchGit's 'ref' event, wired into checkUpstream/refreshRepo) picks up by itself.
   git(dirA, 'branch', 'local-only')
-  A.refreshLocalBranches()
-  await waitFor(() => A.status().git.others.includes('local-only') && !A.status().git.others.includes('feature-x'))
+  await waitFor(() => A.status().git.others.includes('local-only') && !A.status().git.others.includes('feature-x'), 10000)
   B.requestCommit('ready on main')
   await waitFor(() => A.status().commits.some((r) => r.message === 'ready on main' && r.branch === 'main'))
+  const mdCommit = renderStatus(A.status())
+  assert.match(mdCommit, /## Commit requests/)
+  assert.match(mdCommit, /bob asked for a commit on `main`: ready on main/)
   write(dirA, 'feature.txt', 'x\n')
   await waitFor(() => B.status().activity.some((x) => x.path === 'feature.txt' && x.branch === 'feature-x'))
 })

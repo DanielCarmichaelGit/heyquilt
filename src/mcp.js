@@ -15,6 +15,7 @@ import { findDaemon, call as rawCall } from './control.js'
 import { parentPids } from './hooks.js'
 import { renderMessage, renderStatus } from './status.js'
 import { branchesMarkdown, upstreamLine, describeBranchSync } from './branches.js'
+import { DEFAULT_KEY } from './branchdocs.js'
 import { formatTasks, columnName, assigneeLabel, renderNextTask } from './tasks.js'
 import { formatTaskDetails, MAX_COMMENT } from './task-comments.js'
 import { runSession, decodeInvite, newConn, readConfig, runningElsewhere, personsFolder, agentCopyFolder, forgetWorkspace } from './runner.js'
@@ -739,7 +740,7 @@ export async function runMcp () {
   const describeCommits = (c) => {
     const lines = []
     lines.push(c.ready ? '✅ Everyone else\'s AI is idle: a good moment to commit.' : `⏳ Still working: ${c.busy.map((b) => b.why).join('; ')}`)
-    if (c.open.length) lines.push('Open commit requests:', ...c.open.map((r) => `- ${r.by}: ${r.message}`))
+    if (c.open.length) lines.push('Open commit requests:', ...c.open.map((r) => `- ${r.by}${r.branch && r.branch !== DEFAULT_KEY ? ` asked for a commit on \`${r.branch}\`` : ''}: ${r.message}`))
     else lines.push('No open commit requests.')
     lines.push('When a commit is made, mark the requests done with quilt_commit_request_done.')
     return lines.join('\n')

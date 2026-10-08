@@ -5,6 +5,7 @@ import { branchesMarkdown } from './branches.js'
 import { taskMarkdown } from './tasks.js'
 import { mergeAction } from './merges.js'
 import { catchUpMarkdown } from './catchup.js'
+import { DEFAULT_KEY } from './branchdocs.js'
 
 /** A shell word for a path (quoted only when it needs to be). */
 const shellWord = (p) => /^[\w./@+-]+$/.test(p) ? p : `'${p.replace(/'/g, "'\\''")}'`
@@ -69,6 +70,17 @@ export function renderStatus (st, { asAi = false, mentionYours = false } = {}) {
   if (st.branches && st.branches.length) {
     out.push('## Branches')
     out.push(branchesMarkdown(st.branches, { limit: 6 }))
+    out.push('')
+  }
+
+  const openCommits = (st.commits || []).filter((r) => r.state === 'open')
+  if (openCommits.length) {
+    out.push('## Commit requests')
+    for (const r of openCommits) {
+      const who = r.by === st.me.name ? 'you' : r.by
+      const branch = r.branch && r.branch !== DEFAULT_KEY ? ` on \`${r.branch}\`` : ''
+      out.push(`- ${ago(r.ts)}: ${who} asked for a commit${branch}: ${r.message}`)
+    }
     out.push('')
   }
 

@@ -117,7 +117,6 @@ export class Session extends EventEmitter {
     this.doc = new Y.Doc()
     this.branch = null // the branch this folder syncs, as the relay names it (∅: the room's default, for a folder without git)
     this.branchList = [] // the session's branches, from the relay: [{ key, by, at, base, default, hosted }]
-    this.localBranches = [] // this repo's own branches (refs/heads), for the branch menu
     this.legacyState = false // state.json from before branch documents: its state.bin is the room's old single document
     this.bindBranchDoc(new Y.Doc())
     this.uploading = new Map() // path -> hash being uploaded
@@ -2436,15 +2435,6 @@ export class Session extends EventEmitter {
     }).catch(() => {})
   }
 
-  /** This repo's own branches (refs/heads) again, for status().git.others: which the session has no copy of yet. */
-  refreshLocalBranches () {
-    repoBranches(this.root).then((r) => {
-      if (!r || this.stopped) return
-      this.localBranches = r.branches.map((b) => b.name)
-      this.scheduleStatusWrite()
-    }).catch(() => {})
-  }
-
   /** What this folder tells the room about git: its branch, its upstream, the repository's branches and worktrees. */
   gitSummary () {
     if (!this.git) return null
@@ -4706,7 +4696,8 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
           .sort((a, b) => b[1] - a[1])
           .map(([p, ts]) => ({ path: p, secondsAgo: Math.round((now - ts) / 1000) })),
         git,
-        // The branch document their folder is on, from their own git presence (mid-switch: where they're headed).
+        // The branch document their folder is on: from their git presence (mid-switch, where they're headed),
+        // or, for a folder without git (cleanGit(s.git) is then null), the plain `branch` field announceBranch sets.
         branch: (git && (git.on || git.key)) || (typeof s.branch === 'string' ? s.branch : null)
       })
     }
@@ -4760,7 +4751,7 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
       chat: this.messages({ limit: 20, markRead: false }),
       unread: this.unreadCount(),
       fileCount: this.files.size + this.blobs.size,
-      git: this.git ? { branch: this.git.branch, key: this.git.key, hold: this.hold ? { kind: this.hold.kind, since: this.hold.since, to: this.hold.to || null, conflict: this.hold.conflict || null, waiting: this.hold.waiting || null } : null, pull: this.pull, upstream: this.upstream, repo: this.repo, others: this.localBranches.filter((b) => !this.branchList.some((x) => x.key === b)) } : null,
+      git: this.git ? { branch: this.git.branch, key: this.git.key, hold: this.hold ? { kind: this.hold.kind, since: this.hold.since, to: this.hold.to || null, conflict: this.hold.conflict || null, waiting: this.hold.waiting || null } : null, pull: this.pull, upstream: this.upstream, repo: this.repo, others: (this.repo ? this.repo.branches.map((b) => b.name) : []).filter((b) => !this.branchList.some((x) => x.key === b)) } : null,
       branches: branchBoard([{ name: this.name, git: this.gitSummary() }, ...peers.map((p) => ({ name: p.name, git: p.git, persona: !!p.persona }))], this.branchList)
     }
   }

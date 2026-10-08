@@ -10,6 +10,7 @@ import { startServer } from '../src/server.js'
 import { Session } from '../src/session.js'
 import { generateIdentity } from '../src/identity.js'
 import { startControl, call } from '../src/control.js'
+import { renderStatus } from '../src/status.js'
 
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-cm-${n}-`))
 async function waitFor (fn, ms = 5000) {
@@ -45,6 +46,8 @@ test('commit requests, busy people, and marking them done', async () => {
   guest.requestCommit('login works end to end')
   await waitFor(() => host.commitStatus().open.length === 1)
   assert.equal(host.commitStatus().open[0].by, 'gus')
+  assert.equal(host.commitStatus().open[0].branch, 'main', 'the request names the branch it was asked for on')
+  assert.match(renderStatus(host.status()), /## Commit requests\n- .*: gus asked for a commit on `main`: login works end to end/)
   guest.setWork('done')
   await waitFor(() => host.commitStatus().ready)
   await waitFor(() => fs.readFileSync(path.join(hostDir, 'app.js'), 'utf8') === 'v2\n')

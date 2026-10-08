@@ -354,6 +354,20 @@ class ChatPage {
     this.log = changeLog(room)
   }
 
+  /**
+   * Chat links have no branch of their own: files are the session's active branch's. The default
+   * branch may always start; any other new branch only for a link that may add files.
+   */
+  get branch () {
+    if (!this._branch) {
+      const key = this.room.activeBranch()
+      this._branch = this.room.branchDoc(key, { by: this.me, editor: this.room.resolveKey(key) === this.room.defaultKey || this.access.role !== 'viewer' })
+    }
+    return this._branch
+  }
+
+  get bdoc () { return this.branch.doc }
+
   get chat () { return this.doc.getArray('chat') }
 
   get taskMap () { return this.doc.getMap('tasks') }
@@ -758,7 +772,7 @@ class ChatPage {
     if (Object.keys(patch).length === 1) return { code: 400, body: `Say what to change: &assignee=, &to_ai=1, &column= or &title=. ${this.url('update', { id: cur.id, assignee: '<name>' })}${this.menu()}` }
     const no = this.boardRefusal('open the update link again')
     if (no) return no
-    const checklist = () => pickChecklist(this.doc.getMap('files').get('AGENTS.md')?.toString(), this.doc.getMap('files').get('CLAUDE.md')?.toString())
+    const checklist = () => pickChecklist(this.bdoc.getMap('files').get('AGENTS.md')?.toString(), this.bdoc.getMap('files').get('CLAUDE.md')?.toString())
     const refusalText = (s) => s.replace(/`qaNotes`/g, '&qaNotes=').replace(/`verified`/g, '&verified=')
     if (column === 'qa' && cur.column !== 'qa' && !qaNotesEnough(patch.qaNotes)) return { code: 400, body: refusalText(qaRefusal({ task: cur, checklist: checklist() })) + this.menu() }
     if (column === 'done' && cur.column !== 'done' && !verifiedEnough(patch.verified)) return { code: 400, body: refusalText(doneRefusal({ task: cur, checklist: checklist() })) + this.menu() }
@@ -786,8 +800,8 @@ class ChatPage {
 
   files (under) {
     const pre = under ? cleanPath(under).replace(/\/+$/, '') + '/' : ''
-    const f = this.doc.getMap('files')
-    const b = this.doc.getMap('blobs')
+    const f = this.bdoc.getMap('files')
+    const b = this.bdoc.getMap('blobs')
     const paths = [...new Set([...f.keys(), ...b.keys()])].filter((p) => isSafeRelPath(p) && (!pre || p.startsWith(pre))).sort()
     const shown = paths.slice(0, 400).map((p) => `- ${p}${b.has(p) ? ' (binary)' : ''}`)
     const body = (paths.length ? shown.join('\n') + (paths.length > 400 ? `\n… and ${paths.length - 400} more (use ?under=<folder>)` : '') : 'No files.') + this.menu()
@@ -797,13 +811,13 @@ class ChatPage {
   readFile (p) {
     const rel = cleanPath(p)
     if (!rel || !isSafeRelPath(rel)) return { code: 400, body: `Say which file: ${this.url('file', { path: 'README.md' })}` }
-    const t = this.doc.getMap('files').get(rel)
+    const t = this.bdoc.getMap('files').get(rel)
     if (t) {
       const s = t.toString()
       const cut = s.length > MAX_READ
       return { body: cut ? `${s.slice(0, MAX_READ)}\n… (${s.length - MAX_READ} more characters not shown)` : s, data: { path: rel, text: s.slice(0, MAX_READ), truncated: cut } }
     }
-    if (this.doc.getMap('blobs').has(rel)) return { code: 400, body: `${rel} is a binary file; it can't be shown as text.` }
+    if (this.bdoc.getMap('blobs').has(rel)) return { code: 400, body: `${rel} is a binary file; it can't be shown as text.` }
     return { code: 404, body: `There is no file called ${rel}.${this.menu()}` }
   }
 
@@ -811,10 +825,10 @@ class ChatPage {
   placeRefusal (rel) {
     const why = addRefusal(rel)
     if (why) return { code: 400, body: `${why}.` }
-    if (this.doc.getMap('files').has(rel) || this.doc.getMap('blobs').has(rel)) return { code: 409, body: `${rel} already exists, and chat links only add new files. Pick another name.` }
+    if (this.bdoc.getMap('files').has(rel) || this.bdoc.getMap('blobs').has(rel)) return { code: 409, body: `${rel} already exists, and chat links only add new files. Pick another name.` }
     const refusal = changeRefusal(this.access, rel)
     if (refusal) return { code: 403, body: `The session owner says ${refusal}.` }
-    const claim = (this.room.claimList ? this.room.claimList() : []).find((c) => c.by !== this.me && globMatcher(c.pattern)(rel))
+    const claim = (this.room.claimList ? this.room.claimList(this.branch.key) : []).find((c) => c.by !== this.me && globMatcher(c.pattern)(rel))
     if (claim) return { code: 409, body: `${rel} is in ${claim.pattern}, which ${claim.by} has claimed${claim.note ? ` (${claim.note})` : ''}. Put it somewhere else, or ask them with the "say" link.` }
     return this.writable() ? { code: 403, body: this.writable() } : null
   }
@@ -849,12 +863,12 @@ class ChatPage {
     const kind = ADDABLE[extOf(rel)]
     if (!kind.is(buf)) return { code: 400, body: `That isn't a real .${extOf(rel)} file (its contents say otherwise), so it was not added.${this.menu()}` }
     if (buf.length > CHAT_ADD_MAX_BYTES) return { code: 413, body: `That file is larger than ${CHAT_ADD_MAX_BYTES / 1024 / 1024} MB.` }
-    const files = this.doc.getMap('files')
-    const blobs = this.doc.getMap('blobs')
+    const files = this.bdoc.getMap('files')
+    const blobs = this.bdoc.getMap('blobs')
     const activity = this.doc.getArray('activity')
-    const history = this.room.historyLog || (this.room.historyLog = new HistoryLog(this.doc, this.doc.getArray('history'), { origin: ORIGIN }))
+    const history = this.branch.historyLog || (this.branch.historyLog = new HistoryLog(this.bdoc, this.bdoc.getArray('history'), { origin: ORIGIN }))
     const detail = kind.text ? `${buf.toString('utf8').split('\n').length} lines` : `${buf.length} bytes`
-    this.doc.transact(() => {
+    this.bdoc.transact(() => this.doc.transact(() => {
       if (kind.text) {
         const t = new Y.Text()
         t.insert(0, buf.toString('utf8'))
@@ -862,10 +876,10 @@ class ChatPage {
       } else {
         blobs.set(rel, { hash: crypto.createHash('sha1').update(buf).digest('hex'), data: buf.toString('base64') })
       }
-      activity.push([{ by: this.me, path: rel, kind: 'created', detail, ts: Date.now() }])
+      activity.push([{ by: this.me, path: rel, kind: 'created', detail, branch: this.branch.key, ts: Date.now() }])
       if (activity.length > ACTIVITY_CAP) activity.delete(0, activity.length - ACTIVITY_CAP)
       history.record({ by: this.me, path: rel, kind: 'created', detail, ...(kind.text ? { before: '', after: buf.toString('utf8') } : {}) })
-    }, ORIGIN)
+    }, ORIGIN), ORIGIN)
     return { body: `Added ${rel} (${detail}, ${from}). Everyone in the session has it now.${this.menu()}`, data: { path: rel, detail } }
   }
 }

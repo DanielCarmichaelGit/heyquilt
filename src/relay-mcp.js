@@ -123,19 +123,31 @@ function sessionTools (server, ctx) {
     if (!n || !r || !Array.isArray(r.content)) return r
     return { ...r, content: [...r.content, { type: 'text', text: `📥 ${n}` }] }
   }
+  // Files, claims and history are a branch's: the agent's own (hosted agents can choose one), or the session's active branch.
+  const branchOf = (room) => ctx.branch ? ctx.branch(room) : room.activeBranch ? room.activeBranch() : null
+  // The branch document the agent works on (its store entry), or null for a room without branch documents.
+  // The session's default branch may always start; any other new branch only for someone who may change files.
+  const branchEntry = (room) => {
+    if (!room.branchDoc) return null
+    const key = branchOf(room)
+    const editor = room.resolveKey(key) === room.defaultKey || ctx.access(room)?.role !== 'viewer'
+    return room.branchDoc(key, { by: me, editor })
+  }
   const tool = (name, def, fn) => server.registerTool(name, def, async (args) => stale(await ctx.withSession((room) => {
     // The audit trail: which tool, on what (a path, a pattern or a task id; never contents).
-    const who = ctx.who(room)
-    if (who && who.id && room.audit) {
+    const caller = ctx.who(room)
+    if (caller && caller.id && room.audit) {
       const a = args || {}
       const on = [a.path, a.pattern, a.id, a.under].find((x) => typeof x === 'string' && x)
-      room.audit(who.id, 'tool', on ? `${name} ${on}` : name)
+      room.audit(caller.id, 'tool', on ? `${name} ${on}` : name)
     }
     const doc = room.doc
-    const parts = { room, doc, feed: doc.getArray('agentFeed'), chat: doc.getArray('chat'), activity: doc.getArray('activity'), files: doc.getMap('files'), blobs: doc.getMap('blobs') }
+    const branch = branchEntry(room)
+    const fdoc = branch ? branch.doc : doc
+    const parts = { room, doc, fdoc, branch, feed: doc.getArray('agentFeed'), chat: doc.getArray('chat'), activity: doc.getArray('activity'), files: fdoc.getMap('files'), blobs: fdoc.getMap('blobs') }
     // Changes the tool makes to the session (files, chat, the board) go in this agent's audit trail.
     const prev = room.auditAs
-    room.auditAs = who && who.id
+    room.auditAs = caller && caller.id
     try { return queueNote(room, fn(args || {}, parts)) } finally { room.auditAs = prev }
   })))
   if (ctx.updates) {
@@ -167,7 +179,9 @@ function sessionTools (server, ctx) {
     for (const p of peers(room)) if (p.persona) members.push({ name: p.name, git: null, persona: true })
     return branchBoard(members)
   }
-  const claimsOf = (room) => room.claimList ? room.claimList() : []
+  const claimsOf = (room) => room.claimList ? room.claimList(branchOf(room)) : []
+  // Claims are per branch: who the agent is, on the branch it works on.
+  const who = (room) => ({ ...ctx.who(room), branch: branchOf(room) })
   // The rules every agent is held to (duties.js), enforced here because hosted agents work through these tools.
   const seen = (doc) => doc.getArray('chat').toArray().filter(visible)
   // Messages this agent settled as needing no reply (quilt_inbox no_reply), kept with its inbox.
@@ -195,27 +209,30 @@ function sessionTools (server, ctx) {
   // Claims follow this agent's writes: a file it changes that nobody holds is claimed for it, and let
   // go when it hasn't written the file for a while (it has no end of turn Quilt can see).
   const autoHeld = new Map() // `${roomId}\0${rel}` -> timer
-  const roomKey = (room) => room.id || room.name || ''
+  const roomKey = (room) => `${room.id || room.name || ''}\0${branchOf(room)}` // claims held per branch
   const autoClaim = (room, rel) => {
     const key = `${roomKey(room)}\0${rel}`
+    const branch = branchOf(room) // released on this branch, even if the agent has moved on since
     clearTimeout(autoHeld.get(key))
     if (!autoHeld.has(key)) {
-      try { room.claimRequest({ ...ctx.who(room), talk: ctx.access(room)?.talk !== false }, { op: 'claim', pattern: rel, note: 'editing' }) } catch { return false }
+      try { room.claimRequest({ ...who(room), talk: ctx.access(room)?.talk !== false }, { op: 'claim', pattern: rel, note: 'editing' }) } catch { return false }
       room.broadcastClaims()
     }
     const timer = setTimeout(() => {
       autoHeld.delete(key)
-      if (!claimsOf(room).some((c) => c.pattern === rel && c.by === me)) return
-      try { room.claimRequest(ctx.who(room), { op: 'release', pattern: rel }); room.broadcastClaims() } catch {}
+      if (!(room.claimList ? room.claimList(branch) : []).some((c) => c.pattern === rel && c.by === me)) return
+      try { room.claimRequest({ ...ctx.who(room), branch }, { op: 'release', pattern: rel }); room.broadcastClaims() } catch {}
     }, HOSTED_AUTO_CLAIM_QUIET_MS)
     if (timer.unref) timer.unref()
     autoHeld.set(key, timer)
     return true
   }
-  // One chronology writer per room, shared by every hosted agent's connection.
+  // One chronology writer per branch document, shared by every hosted agent's connection.
   const historyOf = (room) => {
-    if (!room.historyLog) room.historyLog = new HistoryLog(room.doc, room.doc.getArray('history'), { origin: AGENT })
-    return room.historyLog
+    const b = branchEntry(room) || room
+    const doc = b.doc
+    if (!b.historyLog) b.historyLog = new HistoryLog(doc, doc.getArray('history'), { origin: AGENT })
+    return b.historyLog
   }
 
   tool('quilt_history', {
@@ -584,7 +601,7 @@ function sessionTools (server, ctx) {
       path: z.string().min(1).max(500).describe('Relative path, e.g. src/app.ts'),
       content: z.string().max(MAX_WRITE_BYTES).describe('The whole new contents of the file')
     }
-  }, ({ path: p, content }, { room, doc, files, blobs, activity }) => {
+  }, ({ path: p, content }, { room, doc, fdoc, branch, files, blobs, activity }) => {
     { const w = waitRefusal(doc, 'quilt_write_file'); if (w) return fail(w) }
     const err = writable(room)
     if (err) return fail(err)
@@ -603,7 +620,7 @@ function sessionTools (server, ctx) {
     if (Buffer.byteLength(content, 'utf8') > MAX_WRITE_BYTES) return fail('That file is too big to write here (1 MB at most).')
     let detail = ''
     let existed = false
-    doc.transact(() => {
+    fdoc.transact(() => doc.transact(() => {
       existed = files.has(rel) || blobs.has(rel)
       blobs.delete(rel)
       let ytext = files.get(rel)
@@ -611,10 +628,10 @@ function sessionTools (server, ctx) {
       const before = ytext.toString()
       detail = applyTextDiff(ytext, content)
       const kind = existed ? 'edited' : 'created'
-      activity.push([{ by: me, path: rel, kind, detail, ts: Date.now() }])
+      activity.push([{ by: me, path: rel, kind, detail, ...(branch ? { branch: branch.key } : {}), ts: Date.now() }])
       if (activity.length > ACTIVITY_CAP) activity.delete(0, activity.length - ACTIVITY_CAP)
       historyOf(room).record({ by: me, path: rel, kind, before, after: content, task: currentTask(readTasks(taskMap(doc)), me) })
-    }, AGENT)
+    }, AGENT), AGENT)
     // What people said about this file in chat, so the agent works with it in mind (each message once).
     const box = toldAbout()
     const said = chatAbout([rel], { messages: seen(doc), me }).filter((m) => m.id && !box.told.includes(m.id))
@@ -638,7 +655,7 @@ function sessionTools (server, ctx) {
     if (err) return fail(err)
     try {
       // Someone who may not post keeps their claim but not its note, which everyone reads.
-      const r = room.claimRequest({ ...ctx.who(room), talk: ctx.access(room)?.talk !== false }, { op: 'claim', pattern: pattern.trim(), note: note || '' })
+      const r = room.claimRequest({ ...who(room), talk: ctx.access(room)?.talk !== false }, { op: 'claim', pattern: pattern.trim(), note: note || '' })
       if (r.ok === false) return fail(r.error || 'Could not claim that.')
       const key = `${roomKey(room)}\0${pattern.trim()}`
       clearTimeout(autoHeld.get(key)); autoHeld.delete(key) // claimed on purpose now: kept until released
@@ -657,7 +674,7 @@ function sessionTools (server, ctx) {
     if (pattern && waited.length) return fail(renderQueued(queuedFor(waited, me), 'release the rest'))
     const released = []
     for (const c of mine.filter((x) => !x.queue.length)) {
-      try { room.claimRequest(ctx.who(room), { op: 'release', pattern: c.pattern }); released.push(c.pattern) } catch {}
+      try { room.claimRequest(who(room), { op: 'release', pattern: c.pattern }); released.push(c.pattern) } catch {}
       const key = `${roomKey(room)}\0${c.pattern}`
       clearTimeout(autoHeld.get(key)); autoHeld.delete(key)
     }
@@ -678,7 +695,7 @@ function sessionTools (server, ctx) {
     const err = writable(room)
     if (err) return fail(err)
     try {
-      const r = room.claimRequest({ ...ctx.who(room), talk: ctx.access(room)?.talk !== false }, { op: 'request', path: cleanPath(p), title, description: description || '', task })
+      const r = room.claimRequest({ ...who(room), talk: ctx.access(room)?.talk !== false }, { op: 'request', path: cleanPath(p), title, description: description || '', task })
       room.broadcastClaims()
       return text(`Asked for ${cleanPath(p)}: you are number ${r.position} in the queue for ${r.pattern} (held by ${r.holder}). ${r.holder} is told; you will be handed it with their context. Carry on with other work.`)
     } catch (e) { return fail(e.message) }
@@ -694,7 +711,7 @@ function sessionTools (server, ctx) {
     }
   }, ({ path: p, context, to }, { room }) => {
     try {
-      const r = room.claimRequest(ctx.who(room), { op: 'handoff', pattern: cleanPath(p), context, to: to || '' })
+      const r = room.claimRequest(who(room), { op: 'handoff', pattern: cleanPath(p), context, to: to || '' })
       const key = `${roomKey(room)}\0${r.pattern}`
       clearTimeout(autoHeld.get(key)); autoHeld.delete(key)
       room.broadcastClaims()
@@ -709,7 +726,7 @@ function sessionTools (server, ctx) {
     const rel = cleanPath(p)
     const mine = claimsOf(room).flatMap((c) => c.queue).filter((r) => r.by === me && r.path === rel)
     let n = 0
-    for (const r of mine) n += room.claimRequest(ctx.who(room), { op: 'withdraw', request: r.id }).withdrawn || 0
+    for (const r of mine) n += room.claimRequest(who(room), { op: 'withdraw', request: r.id }).withdrawn || 0
     if (n) room.broadcastClaims()
     return text(n ? `Withdrew your request for ${rel}.` : `You had not asked for ${rel}.`)
   })

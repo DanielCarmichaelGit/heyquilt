@@ -305,8 +305,11 @@ export class Session extends EventEmitter {
     this.history = new HistoryLog(doc, doc.getArray('history'), { origin: LOCAL })
   }
 
-  /** A change to this branch's files and the room's record of it, made together (each document sends its own update). */
-  transact (fn, origin = LOCAL) { this.bdoc.transact(() => this.doc.transact(fn, origin), origin) }
+  /**
+   * A change to this branch's files and the room's record of it, made together (each document sends its own
+   * update). The branch's goes first: the relay takes an activity entry for a file only once the file is there.
+   */
+  transact (fn, origin = LOCAL) { this.doc.transact(() => this.bdoc.transact(fn, origin), origin) }
 
   /** The relay's list of the session's branches. */
   setBranches (list) {

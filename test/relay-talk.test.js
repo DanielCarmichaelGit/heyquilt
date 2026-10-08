@@ -83,12 +83,21 @@ test('a file sent in chat is refused', async () => {
 test('changes that arrive together: only the refused ones are undone', async () => {
   const rm = srv.rooms.get(room)
   const ws = [...rm.access].find(([, a]) => a.name === 'Quinn')[0]
+  // Files are in the branch's document, chat and the activity log in the room's: each has its own fork.
+  const be = rm.store.get(ws.branch)
   const fork = new Y.Doc()
   Y.applyUpdate(fork, Y.encodeStateAsUpdate(rm.doc))
-  const change = (fn) => { const sv = Y.encodeStateVector(fork); fork.transact(fn); return Y.encodeStateAsUpdate(fork, sv) }
+  const bfork = new Y.Doc()
+  Y.applyUpdate(bfork, Y.encodeStateAsUpdate(be.doc))
+  const changeOf = (d) => (fn) => { const sv = Y.encodeStateVector(d); d.transact(fn); return Y.encodeStateAsUpdate(d, sv) }
+  const change = changeOf(fork)
+  const bchange = changeOf(bfork)
   const post = (id) => () => fork.getArray('chat').push([{ id, by: 'Quinn', to: null, text: id, ts: Date.now() }])
+  // A log entry (no id of its own, as apps write them): told apart by its ts.
+  const logged = (ts) => () => fork.getArray('activity').push([{ by: 'Quinn', path: 'README.md', kind: 'edited', detail: '+1 -0', ts }])
+  const hasLog = (arr, ts) => arr.toArray().some((x) => x && x.ts === ts && x.by === 'Quinn')
   const mine = (arr, id) => arr.toArray().some((x) => x && x.id === id)
-  const edit = (text) => () => fork.getMap('files').get('README.md').insert(0, text)
+  const edit = (text) => () => bfork.getMap('files').get('README.md').insert(0, text)
 
   // Two refused changes.
   const a = change(post('a1'))
@@ -98,22 +107,23 @@ test('changes that arrive together: only the refused ones are undone', async () 
   await waitFor(() => !mine(rm.chat, 'a1') && !mine(rm.feed, 'b1'))
   assert.equal(rm.guard.undoStack.length, 0)
 
-  // One refused and one allowed, as two updates.
+  // One refused and one allowed, as two updates (the edit is the branch document's).
   Y.applyUpdate(rm.doc, change(post('c1')), ws)
-  Y.applyUpdate(rm.doc, change(edit('one ')), ws)
+  Y.applyUpdate(be.doc, bchange(edit('one ')), ws)
   await waitFor(() => owner.files.get('README.md')?.toString().startsWith('one '))
   await wait(50)
   assert.equal(mine(rm.chat, 'c1'), false)
-  assert.equal(rm.files.get('README.md').toString().startsWith('one '), true, 'the allowed edit stays')
+  assert.equal(be.files.get('README.md').toString().startsWith('one '), true, 'the allowed edit stays')
   assert.equal(rm.guard.undoStack.length, 0)
 
-  // One refused and one allowed, combined into one update.
-  Y.applyUpdate(rm.doc, change(() => { post('d1')(); edit('two ')() }), ws)
-  await waitFor(() => owner.files.get('README.md')?.toString().startsWith('two '))
+  // One refused and one allowed, combined into one update: a post and the log entry for their edit.
+  const ts = Date.now() + 12345
+  Y.applyUpdate(rm.doc, change(() => { post('d1')(); logged(ts)() }), ws)
+  await waitFor(() => hasLog(owner.activity, ts))
   await wait(50)
   assert.equal(mine(rm.chat, 'd1'), false, 'the post is undone')
   assert.equal(mine(owner.chat, 'd1'), false)
-  assert.equal(rm.files.get('README.md').toString().startsWith('two one '), true, 'the allowed edit stays')
+  assert.equal(hasLog(rm.doc.getArray('activity'), ts), true, 'the allowed log entry stays')
   assert.equal(rm.guard.undoStack.length, 0)
 })
 

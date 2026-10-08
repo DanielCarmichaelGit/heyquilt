@@ -72,3 +72,6 @@ export function labelFromFile (rel) {
   const base = String(rel || '').split('/').filter(Boolean).pop() || ''
   return cleanLabel(base.replace(/\.[A-Za-z0-9]+$/, ''))
 }
+
+// "Daniel's AI": all of a person's AI sessions as one name (pure, shared with the app).
+export { AI_SUFFIX, aiName, foldPersonas } from './ui/chat.js'

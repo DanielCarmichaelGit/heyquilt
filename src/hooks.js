@@ -24,6 +24,7 @@ import { describeEvent } from './inbox.js'
 import { renderQueued, renderChatAbout, heldRefusal } from './duties.js'
 import { renderNextTask } from './tasks.js'
 import { quiltShellCommand } from './integrations.js'
+import { foldPersonas } from './persona.js'
 
 // Tools that change files: Claude Code's, Cursor's (it reads Claude Code's hook settings and
 // matches its own tool names against them) and Gemini CLI's.
@@ -156,7 +157,8 @@ async function sessionStart (api, state, say, name) {
   // Only what arrives from now on is for this Claude; what came before is for quilt_inbox.
   const { seq } = await api('POST', '/inbox', { after: 0 }).catch(() => ({ seq: 0 }))
   state.update((s) => { s.after = seq || 0 })
-  const who = st.peers.length ? st.peers.map((p) => p.name + (p.kind === 'agent' ? ' (AI agent)' : '')).join(', ') : 'nobody else yet'
+  // A person's AI sessions are one name to people: "Daniel's AI (3 sessions)".
+  const who = st.peers.length ? foldPersonas(st.peers).map((p) => p.sessions ? `${p.name} (${p.sessions.length === 1 ? 'one AI session' : `${p.sessions.length} AI sessions`}${p.mine ? ', you among them' : ''})` : p.name + (p.kind === 'agent' ? ' (AI agent)' : '')).join(', ') : 'nobody else yet'
   const parts = [
     `This folder is in a live Quilt session (room ${st.room}) with ${who}. Files can change underneath you at any time; re-read a file right before editing it.`,
     'Quilt claims each file for you the moment you edit it, and releases those claims when you finish. ' +
@@ -164,7 +166,8 @@ async function sessionStart (api, state, say, name) {
     'Ask for it in its file queue with quilt_request_file (a title like "Working on <what> for <task>" and up to 300 characters on your plan), then carry on with other work: you are told when it is handed to you, with their context. ' +
     'When someone asks for a file you hold, finish your change, then hand it off with quilt_handoff and your context; you cannot finish before you do.',
     'Messages from collaborators, mentions of you and tasks handed to you are shown to you as you work; answer with quilt_message and take a task with quilt_move_task.',
-    'You are a member of your own in the session, apart from your person and their other AI sessions, named after your work (your git branch, or the first thing you say you are doing); rename yourself with quilt_name_session.'
+    'You are a member of your own in the session, apart from your person and their other AI sessions, named after your work (your git branch, or the first thing you say you are doing); rename yourself with quilt_name_session. ' +
+    'People see all of a person\'s AI sessions as one, "<person>\'s AI": write to another person\'s AI by that name, and what is written to your person\'s AI reaches whichever of their sessions was active last.'
   ]
   const duties = await api('GET', '/duties').catch(() => ({}))
   if (duties.pickup && duties.pickup !== 'off') parts.push(`This person lets you pick up work from the task board by yourself (${duties.pickup === 'any' ? 'tasks assigned to you, then unassigned ones' : 'tasks assigned to you'}): when you finish, you are handed the next one.`)

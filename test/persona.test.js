@@ -109,6 +109,42 @@ test('an AI session writing to its own person reaches the person, not that perso
   assert.equal(dana.inbox().events[0].by, 'Bob')
 })
 
+test("a person's AI sessions are one name to people: \"<person>'s AI\" reaches the session active last, once", async (t) => {
+  const { dana, bob } = await pair(t)
+  dana.registerPersona({ via: 'aaaaaaaa', tool: 'Claude Code', cwd: tmp('x') })
+  dana.registerPersona({ via: 'bbbbbbbb', tool: 'Codex', cwd: tmp('y') })
+  dana.persona('aaaaaaaa').seenAt = Date.now() - 60 * 1000
+  dana.persona('bbbbbbbb').seenAt = Date.now() // Codex was active last
+  await waitFor(() => bob.status().peers.filter((p) => p.persona).length === 2)
+  // People write to "Dana Smith's AI": a mention, and a direct message only Dana's app shows.
+  bob.say("@Dana Smith's AI which branch has the fix?")
+  bob.say('and is it pushed?', { to: "Dana Smith's AI" })
+  await waitFor(() => dana.inbox({ via: 'bbbbbbbb' }).events.length === 2)
+  await new Promise((r) => setTimeout(r, 200))
+  assert.equal(dana.inbox({ via: 'aaaaaaaa' }).events.length, 0, 'answered once, by the session active last')
+  assert.equal(dana.inbox().events.length, 0, 'not for the person')
+  assert.ok(dana.messages({ markRead: false }).some((m) => m.to === "Dana Smith's AI"), 'Dana sees what was written to her AI')
+  // What a session says carries its person, so people see it as from "Dana Smith's AI".
+  const r = dana.say('@Bob the fix is on main', { agent: true, via: 'bbbbbbbb' })
+  assert.equal(r.of, 'Dana Smith')
+  assert.throws(() => dana.say('note to self', { agent: true, via: 'bbbbbbbb', to: "Dana Smith's AI" }), /that is you/)
+  // Another person's AI may address Dana's AI by that name.
+  bob.registerPersona({ via: 'dddddddd', tool: 'Cursor', cwd: tmp('z') })
+  await waitFor(() => bob.status().peers.some((p) => p.persona))
+  assert.doesNotThrow(() => bob.say("@Dana Smith's AI thanks, pulling now", { agent: true, via: 'dddddddd' }))
+  // Dana writes to her own AI from her app: the session active last is woken; her other sessions writing to it are not heard.
+  dana.say('rebase the docs branch please', { to: "Dana Smith's AI" })
+  await waitFor(() => dana.inbox({ via: 'bbbbbbbb' }).events.some((e) => /docs branch/.test(e.text)))
+  dana.say("@Dana Smith's AI I'm on it too", { agent: true, via: 'aaaaaaaa', also: true })
+  dana.say('@Dana · Codex leave session.js to me', { agent: true, via: 'aaaaaaaa', also: true })
+  await new Promise((r) => setTimeout(r, 200))
+  assert.ok(!dana.inbox({ via: 'bbbbbbbb' }).events.some((e) => e.by === 'Dana · Claude Code'), 'sibling sessions do not wake each other')
+  // With none of Dana's AI sessions live, it waits for the person's AI.
+  for (const p of dana.personas.values()) p.seenAt = 0
+  bob.say("@Dana Smith's AI one more thing")
+  await waitFor(() => dana.inbox().events.some((e) => /one more thing/.test(e.text)))
+})
+
 test("an AI session's claims are its own: another session of the same person is refused, the person's own disk is not", async (t) => {
   const { dana, bob, dirA, dirB, room } = await pair(t)
   dana.registerPersona({ via: 'aaaaaaaa', tool: 'Claude Code', cwd: tmp('x') })

@@ -26,7 +26,8 @@ import { getSettings } from './settings.js'
 import { HistoryLog, queryHistory, parseSince, currentTask } from './history.js'
 import { historyMarks, awayChanges, mergeCatchUp, emptyCatchUp } from './catchup.js'
 import { Inbox } from './inbox.js'
-import { personaName, cleanLabel, labelFromBranch, labelFromText, labelFromFile, gitBranch } from './persona.js'
+import { personaName, cleanLabel, labelFromBranch, labelFromText, labelFromFile, gitBranch, aiName } from './persona.js'
+import { aiOwners, ownAiChatter } from './ui/chat.js'
 import { chatAbout, waitingOn, queuedFor, renderQueueNotice, askForIt, answered, addressees, unaddressed, sentByAnother, renderRepeat } from './duties.js'
 import { makeSubscription, deliverEvents } from './webhooks.js'
 import { pickChecklist } from './agent-task-workflow.js'
@@ -520,7 +521,8 @@ export class Session extends EventEmitter {
           }
         }
       }
-      this.scanInbox({ quiet: tr.origin === LOCAL })
+      // What the person writes here (to "<them>'s AI", or one of their AI sessions) wakes that session.
+      this.scanInbox({ quiet: tr.origin === LOCAL, personas: false })
       this.scheduleStatusWrite()
     })
     this.activity.observe(() => this.scheduleStatusWrite())
@@ -2893,20 +2895,22 @@ export class Session extends EventEmitter {
         for (const x of st.personas) if (x && typeof x.name === 'string') own.push(x.name)
       }
     }
-    return { name: this.name, asAi: this.kind !== 'agent', agent: this.kind === 'agent', own }
+    // With no AI session of ours live, what is written to "<me>'s AI" waits here for the next one.
+    const aliases = this.kind !== 'agent' && !this.leadPersona() ? [aiName(this.name)] : []
+    return { name: this.name, aliases, asAi: this.kind !== 'agent', agent: this.kind === 'agent', own }
   }
 
   /**
    * Looks for new mentions, direct messages and handed-over tasks. `quiet` takes
    * stock without waking anyone (our own changes, and everything there before we were ready).
    */
-  scanInbox ({ quiet = false } = {}) {
+  scanInbox ({ quiet = false, personas = quiet } = {}) {
     let events
     try {
       const messages = this.chat.toArray().filter((m) => this.canSee(m))
       const tasks = this.taskList()
       // Each AI session's own inbox: what is said and handed to it by name.
-      for (const p of this.personas.values()) p.inbox.scan({ messages, tasks, reader: this.personaReader(p) }, { quiet: quiet || !this.ready })
+      for (const p of this.personas.values()) p.inbox.scan({ messages, tasks, reader: this.personaReader(p) }, { quiet: personas || !this.ready })
       events = this.inboxTracker.scan({
         messages,
         tasks,
@@ -2931,7 +2935,7 @@ export class Session extends EventEmitter {
     const r = (p ? p.inbox : this.inboxTracker).since(after)
     if (all) return r
     const msgs = this.chat.toArray().filter((m) => this.canSee(m))
-    const me = p ? [p.name, ...p.aliases] : this.name
+    const me = p ? [p.name, ...p.aliases, aiName(this.name)] : [this.name, aiName(this.name)]
     const open = (e) => (e.kind !== 'dm' && e.kind !== 'mention') || e.queue ||
       (!this.settledIds.has(e.id) && !answered(msgs, me, e.by, e.ts))
     return { ...r, events: r.events.filter(open) }
@@ -2950,6 +2954,7 @@ export class Session extends EventEmitter {
   memberNames (me = this.name) {
     const names = new Set(this.peerNames())
     if (me !== this.name) names.add(this.name) // an AI session may write to its own person
+    for (const p of this.status().peers) if (p.persona && p.of && !p.mine) names.add(aiName(p.of)) // "Brandon's AI"
     for (const m of this.chat.toArray()) if (m && this.canSee(m)) { if (m.by) names.add(m.by); if (m.to) names.add(m.to) }
     names.delete(me)
     return [...names].filter((n) => typeof n === 'string' && n)
@@ -3116,7 +3121,7 @@ export class Session extends EventEmitter {
   /** Whether a name is this member's or one of its AI sessions' (now or before a rename). */
   isMine (name) {
     if (!name) return false
-    if (name === this.name) return true
+    if (name === this.name || name === aiName(this.name)) return true
     for (const p of this.personas.values()) if (p.name === name || p.aliases.includes(name)) return true
     return false
   }
@@ -3130,7 +3135,24 @@ export class Session extends EventEmitter {
     return !!c && !!p && (c.by === p.name || p.aliases.includes(c.by))
   }
 
-  personaReader (p) { return { name: p.name, aliases: p.aliases, asAi: false, agent: true, of: this.name } }
+  /**
+   * How an AI session reads the inbox. What is written to "<person>'s AI" goes to one session
+   * only, the one of ours active most recently, so a question is answered once.
+   */
+  personaReader (p) {
+    const aliases = p === this.leadPersona() ? [...p.aliases, aiName(this.name)] : p.aliases
+    // Its sibling sessions here don't wake it: they work for the same person.
+    const own = [...this.personas.values()].filter((q) => q !== p).flatMap((q) => [q.name, ...q.aliases])
+    return { name: p.name, aliases, asAi: false, agent: true, of: this.name, own }
+  }
+
+  /** The AI session of ours that answers for "<person>'s AI": the live one heard from last, or null. */
+  leadPersona () {
+    const now = Date.now()
+    let lead = null
+    for (const p of this.personas.values()) if (now - p.seenAt < PERSONA_AWAY_MS && (!lead || p.seenAt > lead.seenAt)) lead = p
+    return lead
+  }
 
   /** Renames an AI session ("self": it chose; "text": from what it said it does). The old name still reaches it. */
   renamePersona (via, label, how = 'self') {
@@ -3231,7 +3253,7 @@ export class Session extends EventEmitter {
     if (!text && !file) throw new Error('message is empty')
     to = to ? String(to).trim() : null
     const by = this.actorName(via) // an AI session speaks under its own name
-    if (to === by) throw new Error('that is you')
+    if (to === by || (to && via && this.persona(via) && to === aiName(this.name))) throw new Error('that is you')
     const names = agent ? this.memberNames(by) : []
     const targets = agent ? addressees(text, to, names) : []
     if (agent && !file) {
@@ -3243,6 +3265,7 @@ export class Session extends EventEmitter {
       if (hit) throw new Error(renderRepeat(hit, now))
     }
     const msg = { id: crypto.randomBytes(8).toString('hex'), by, to, text, ts: Date.now() }
+    if (this.persona(via)) msg.of = this.name // people see it as from "<person>'s AI"
     if (file) msg.file = file
     this.doc.transact(() => {
       this.chat.push([msg])
@@ -3251,7 +3274,7 @@ export class Session extends EventEmitter {
     this.markRead([msg.id])
     if (via) this.aiSent.push({ via: String(via), targets, text, ts: msg.ts })
     this.scheduleStatusWrite()
-    const online = !to || this.peerNames().includes(to)
+    const online = !to || this.peerNames().includes(to) || this.status().peers.some((p) => p.persona && p.of && aiName(p.of) === to)
     return { ...this.describeMessage(msg), recipientOnline: online }
   }
 
@@ -3365,7 +3388,11 @@ export class Session extends EventEmitter {
 
   unreadCount () {
     const read = this.readIds()
-    return this.chat.toArray().filter((m) => this.canSee(m) && m.by !== this.name && !read.has(m.id)).length
+    const list = this.chat.toArray().filter((m) => this.canSee(m))
+    // A person's AI sessions writing to each other isn't shown in the chat, so it isn't unread either.
+    const owners = aiOwners({ messages: list, people: [this.name, ...(this.members || []).map((m) => m && m.name)] })
+    for (const p of this.personas.values()) owners.set(p.name, this.name)
+    return list.filter((m) => m.by !== this.name && !read.has(m.id) && !ownAiChatter(m, owners)).length
   }
 
   readIds () {

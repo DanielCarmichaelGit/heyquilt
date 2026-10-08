@@ -9,7 +9,7 @@ import { renderFileView } from './fileview.js'
 import { changesMarkup, bindChanges, unbindChanges, changesChanged } from './changes.js'
 import { quiltMark } from './mark.js'
 import { openSettings } from './home.js'
-import { fileCardHref, renderable, textHtml, mentionAt, mentionCandidates, completeMention, ALL_AGENTS } from './chat.js'
+import { fileCardHref, renderable, textHtml, mentionAt, mentionCandidates, completeMention, ALL_AGENTS, foldPersonas, aiOwners, shownName, ownAiChatter } from './chat.js'
 import { renderBoard, taskNotesModalHtml } from './board.js'
 import { accessFormValues, accessSaveBody, grantsLoading, grantsLoaded, grantsFailed } from './access-form.js'
 import { renderMergeBar, bindMerges, renderMergeView } from './merges.js'
@@ -54,6 +54,15 @@ function saveWs (id) {
 
 const sum = () => state.sessions.get(current)
 const me = () => sum()?.status.me.name
+
+/** Who is here as people see them: each person's AI sessions as one "<person>'s AI". */
+const peopleHere = (st) => foldPersonas(st.peers || [])
+
+/** Whose AI session each name in this session is (chat.js aiOwners). */
+function owners (s) {
+  const st = s.status
+  return aiOwners({ peers: st.peers, messages: renderable(state.messages.get(current)), people: [st.me?.name, ...(st.peers || []).map((p) => p.name), ...(st.members || []).map((m) => m.name)] })
+}
 
 function personInfo (name) {
   const st = sum().status
@@ -554,7 +563,7 @@ function renderTop () {
       if (!$('#branch-menu').hidden) renderBranchMenu()
     }
   }
-  const people = [st.me, ...st.peers]
+  const people = [st.me, ...peopleHere(st)]
   const shown = people.slice(0, 4)
   $('#people-btn').innerHTML = `<span class="stack">${shown.map((p, i) => `<span style="z-index:${10 - i}">${avatar(p.name, p.color)}</span>`).join('')}</span>
     <span class="count">${people.length}</span><span class="conn ${st.connected ? 'ok' : 'warn'}" title="${st.connected ? 'Connected' : esc(st.problem || 'Reconnecting…')}"></span>`
@@ -573,7 +582,7 @@ function renderTop () {
   renderCommitChip()
   $('#rename-btn').hidden = !st.access?.owner
   renderTaskButton()
-  $('#chat-sub').textContent = st.peers.length ? `with ${st.peers.map((p) => p.name).join(', ')}` : 'just you so far'
+  $('#chat-sub').textContent = st.peers.length ? `with ${peopleHere(st).map((p) => p.sessions && p.mine ? 'your AI' : p.name).join(', ')}` : 'just you so far'
 }
 
 // ---------------------------------------------------------- commit timing --
@@ -912,17 +921,30 @@ function renderPeopleMenu ({ force = false } = {}) {
       ${p.isMe ? '' : `<button class="btn sm ghost" data-dm="${esc(p.name)}">Message</button>`}
     </div>`
   }
-  const others = st.peers.length
-    ? st.peers.map((p) => row(personInfo(p.name))).join('')
+  // A person's AI sessions are one row, "Daniel's AI", with each session under it.
+  const aiRow = (g) => `<div class="pm-row">
+      <div class="pm-open">${avatar(g.name, null, true)}
+        <span class="pm-main">
+          <span class="pm-name">${esc(g.mine ? 'Your AI' : g.name)}<span class="tag bot">${I.bot}AI</span>${g.agents.map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</span>
+          <span class="pm-sub">${g.sessions.length === 1 ? 'One chat' : `${g.sessions.length} chats`}. Messages go to the one active last.</span>
+          ${g.sessions.map((x) => `<span class="pm-sub" title="${esc(x.name)}">· ${esc(x.focus || x.name.split(' · ').slice(1).join(' · ') || x.tool || 'AI')}${x.tool && x.focus ? ` <span class="hint">(${esc(x.tool)})</span>` : ''}</span>`).join('')}
+        </span></div>
+      <button class="btn sm ghost" data-dm="${esc(g.name)}">Message</button>
+    </div>`
+  const here = peopleHere(st)
+  const myAi = here.find((p) => p.sessions && p.mine)
+  const others = here.some((p) => p !== myAi)
+    ? here.filter((p) => p !== myAi).map((p) => p.sessions ? aiRow(p) : row(personInfo(p.name))).join('')
     : '<div class="pm-empty">Nobody else is here yet. Use <b>Invite</b> to bring someone in.</div>'
   menu.innerHTML = `
-    <div class="pm-head"><span>People</span><span class="pm-count">${st.peers.length + 1} here</span></div>
+    <div class="pm-head"><span>People</span><span class="pm-count">${here.length + 1} here</span></div>
     <div class="pm-section">
       <div class="pm-title">You</div>
       <div class="pm-card">
         ${row(self)}
         <form class="pm-focus"><input class="input" id="focus-input" placeholder="What are you working on?" aria-label="Your focus" value="${esc(typing ?? st.me.focus ?? '')}"></form>
       </div>
+      ${myAi ? `<div class="pm-card">${aiRow(myAi)}</div>` : ''}
       ${shareLine}
     </div>
     <div class="pm-section">
@@ -1090,7 +1112,8 @@ function editingTask () {
 }
 
 function taskPeople (st) {
-  return [st.me, ...(st.peers || [])].filter((p) => p && p.name).map((p) => ({
+  // A person's AI sessions are assigned as "their AI" (forAi), not one by one.
+  return [st.me, ...(st.peers || [])].filter((p) => p && p.name && !p.persona).map((p) => ({
     name: p.name,
     tool: p.tool && p.tool !== 'unknown' ? p.tool : '',
     agent: p.kind === 'agent'
@@ -1776,7 +1799,7 @@ function updatePlaceholder () {
   const input = $('#msg-input')
   if (!input) return
   if (mayNotPost()) { input.placeholder = NO_POSTING; return }
-  const who = state.to ? state.to : 'everyone'
+  const who = state.to ? (state.to === `${me()}'s AI` ? 'your AI' : state.to) : 'everyone'
   input.placeholder = state.pending.length ? `Add a note for ${who} (optional)…` : `Message ${who}…`
 }
 
@@ -1784,15 +1807,16 @@ function renderRecipients () {
   const s = sum()
   const sel = $('#to-select')
   if (!s || !sel) return
-  const names = new Set(s.status.peers.map((p) => p.name))
+  const who = owners(s)
+  const names = new Set(peopleHere(s.status).map((p) => p.name))
   for (const m of renderable(state.messages.get(current))) {
-    if (m.by !== s.status.me.name) names.add(m.by)
-    if (m.to && m.to !== s.status.me.name) names.add(m.to)
+    if (m.by !== s.status.me.name) names.add(shownName(m.by, who))
+    if (m.to && m.to !== s.status.me.name) names.add(shownName(m.to, who))
   }
   if (state.to) names.add(state.to)
-  const online = new Set(s.status.peers.map((p) => p.name))
+  const online = new Set(peopleHere(s.status).map((p) => p.name))
   sel.innerHTML = '<option value="">Everyone</option>' + [...names].sort().map((n) =>
-    `<option value="${esc(n)}" ${n === state.to ? 'selected' : ''}>${esc(n)} (direct${online.has(n) ? '' : ', offline'})</option>`).join('')
+    `<option value="${esc(n)}" ${n === state.to ? 'selected' : ''}>${esc(n === `${s.status.me.name}'s AI` ? 'Your AI' : n)} (direct${online.has(n) ? '' : ', offline'})</option>`).join('')
   sel.value = state.to
   sel.closest('.to').hidden = names.size === 0
   updatePlaceholder()
@@ -1804,10 +1828,11 @@ function renderRecipients () {
  */
 function mentionNames (s) {
   const names = new Set()
+  const who = owners(s)
   if (s.status.me?.name) names.add(s.status.me.name)
-  for (const p of s.status.peers || []) if (p.name) names.add(p.name)
+  for (const p of peopleHere(s.status)) if (p.name) names.add(p.name)
   for (const m of s.status.members || []) if (m.name) names.add(m.name)
-  for (const m of renderable(state.messages.get(current))) { if (m.by) names.add(m.by); if (m.to) names.add(m.to) }
+  for (const m of renderable(state.messages.get(current))) { if (m.by) names.add(shownName(m.by, who)); if (m.to) names.add(shownName(m.to, who)) }
   if ((s.status.peers || []).some((p) => p.kind === 'agent' && p.name !== s.status.me?.name)) names.add(ALL_AGENTS)
   return [...names]
 }
@@ -1864,7 +1889,9 @@ function renderMessages (incoming = false, force = false) {
   const s = sum()
   if (!el || !s) return
   const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-  const list = renderable(state.messages.get(current)) // peers can push anything into the room
+  const who = owners(s)
+  // A person's AI sessions working things out among themselves isn't shown: only what they say to people.
+  const list = renderable(state.messages.get(current)).filter((m) => !ownAiChatter(m, who)) // peers can push anything into the room
   const name = s.status.me.name
   const colors = new Map(s.status.peers.map((p) => [p.name, p.color]))
   colors.set(name, s.status.me.color)
@@ -1872,11 +1899,12 @@ function renderMessages (incoming = false, force = false) {
   el.innerHTML = list.length
     ? list.map((m) => {
       const mine = m.by === name
-      const dm = m.to ? `<span class="dm">${mine ? `to ${esc(m.to)}` : 'direct'}</span>` : ''
+      const by = shownName(m.by, who)
+      const dm = m.to ? `<span class="dm">${mine || who.has(m.by) ? `to ${esc(m.to === name ? 'you' : m.to === `${name}'s AI` ? 'your AI' : shownName(m.to, who))}` : 'direct'}</span>` : ''
       const file = m.file ? `<a class="file-card" href="${fileCardHref(current, m.id, TOKEN)}" download="${esc(m.file.name)}">
           <span class="fi">${I.file}</span><span style="min-width:0"><div class="fn">${esc(m.file.name)}</div><div class="fs">${bytes(m.file.size)} · ${mine ? 'sent' : 'download'}</div></span></a>` : ''
-      return `<div class="msg${mine ? ' mine' : ''}">${mine ? '' : avatar(m.by, colors.get(m.by))}
-        <div style="min-width:0"><div class="head"><b>${mine ? 'You' : esc(m.by)}</b>${dm}<span>${esc(clock(m.ts))}</span></div>
+      return `<div class="msg${mine ? ' mine' : ''}">${mine ? '' : avatar(by, colors.get(m.by))}
+        <div style="min-width:0"><div class="head"><b${by !== m.by ? ` title="${esc(m.by)}"` : ''}>${mine ? 'You' : esc(by === `${name}'s AI` ? 'Your AI' : by)}</b>${dm}<span>${esc(clock(m.ts))}</span></div>
         <div class="bubble">${m.text ? `<div class="text">${textHtml(m.text, names, name, { meAgent: s.status.me.kind === 'agent' })}</div>` : ''}${file}</div></div></div>`
     }).join('')
     : '<div class="day-empty"><div><b>Say hi.</b></div><div class="hint">Messages, direct messages and files you share appear here. Drop a file on this panel to send it.</div></div>'

@@ -14,7 +14,7 @@ const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 /**
  * Which of `names` are mentioned as @Name in `text`. Case-insensitive; the @
  * must start a word (so an email address is not a mention) and the name must
- * end one (so @Dan is not a mention of Dan inside @Daniel).
+ * end one (so @Dan is not a mention of Dan inside @Daniel). @Daniel's AI is not a mention of Daniel.
  */
 export function mentioned (text, names) {
   const t = String(text || '')
@@ -22,7 +22,8 @@ export function mentioned (text, names) {
   for (const name of names || []) {
     const n = String(name || '').trim()
     if (!n) continue
-    const re = new RegExp(`(^|[^\\w@])@${escapeRe(n)}(?![\\w-])`, 'iu')
+    // "@Daniel's AI" is for Daniel's AI, not for Daniel.
+    const re = new RegExp(`(^|[^\\w@])@${escapeRe(n)}(?![\\w-])(?!'s AI(?![\\w-]))`, 'iu')
     if (re.test(t)) out.push(n)
   }
   return out

@@ -25,6 +25,7 @@ import { UpdateCheck } from './update-check.js'
 import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, qaRefusal, qaNotesEnough, qaNotesLine, pickChecklist, MAX_VERIFIED } from './agent-task-workflow.js'
 import { HistoryLog, queryHistory, parseSince, formatHistory, currentTask } from './history.js'
 import { changeRefusal, TALK_REFUSED } from './session-access.js'
+import { aiName } from './persona.js'
 import { chatAbout, renderChatAbout, waitingOn, renderUnanswered, heldRefusal, queuedFor, renderQueueNotice, renderQueued, answered, unaddressed, CHAT_RULES } from './duties.js'
 import { describeSubscription, WEBHOOK_EVENTS } from './webhooks.js'
 
@@ -178,6 +179,7 @@ function sessionTools (server, ctx) {
   // Everyone this agent could address: who is here and who has been in the chat.
   const memberNames = (room, doc) => {
     const names = new Set(peers(room).map((p) => p.name))
+    for (const p of peers(room)) if (p.persona && p.of) names.add(aiName(p.of)) // "Daniel's AI"
     for (const m of seen(doc)) { if (m.by) names.add(m.by); if (m.to) names.add(m.to) }
     names.delete(me)
     return [...names].filter((n) => typeof n === 'string' && n)

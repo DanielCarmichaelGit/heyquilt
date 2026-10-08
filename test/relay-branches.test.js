@@ -218,6 +218,7 @@ function legacyRoom (dataDir, room) {
   put(legacy, 'app.js', 'old\n')
   legacy.getArray('chat').push([{ id: 'aaaaaaaaaaaaaaaa', by: 'x', text: 'old chat', ts: 1 }])
   legacy.getMap('tasks').set('t1', { id: 't1', title: 'old task' })
+  legacy.getMap('taskComments').set('t1', [{ id: 'bbbbbbbbbbbbbbbb', by: 'x', text: 'old comment', ts: 1 }])
   fs.writeFileSync(path.join(dataDir, `${room}.ydoc`), Y.encodeStateAsUpdate(legacy))
   fs.writeFileSync(path.join(dataDir, `${room}.json`), JSON.stringify({ secretHash: crypto.createHash('sha256').update('s').digest('hex'), createdAt: Date.now(), lastActive: Date.now() }))
   return legacy
@@ -233,6 +234,7 @@ test('an old room\'s document becomes its default branch, taken by the first bra
   assert.equal(text(a.bdoc, 'app.js'), 'old\n')
   assert.equal(a.doc.getArray('chat').get(0).text, 'old chat')
   assert.equal(a.doc.getMap('tasks').get('t1').title, 'old task')
+  assert.equal(a.doc.getMap('taskComments').get('t1')[0].text, 'old comment', 'task comments also left the branch document')
   assert.equal(a.bdoc.getArray('chat').length, 0, 'the room-wide parts left the branch document')
   const room = srv.rooms.get('rb6')
   assert.equal(room.meta.layout, 2)
@@ -352,4 +354,43 @@ test('branches nobody was on for 30 days are dropped when the room loads; the ac
   assert.deepEqual(room.branchList().map((x) => x.key).sort(), ['fresh', 'main'])
   assert.equal(fs.existsSync(path.join(dataDir, 'branches', 'rb12', branchFileName('stale'))), false)
   assert.equal(room.activeBranch(), 'fresh')
+})
+
+test('a relay restarted mid-migration (branch file written, room file swapped, meta not yet saved) keeps the default branch\'s stored files out of the sweep', async (t) => {
+  const dataDir = tmp('migrate-restart')
+  const DAY = 24 * 60 * 60 * 1000
+  const id = 'c'.repeat(32)
+  // What migrateLegacy leaves behind if it crashes right after the room file is swapped,
+  // before `layout`/`branches` are saved: the branch file already has the old files and blobs...
+  const branch = new Y.Doc()
+  put(branch, 'app.js', 'old\n')
+  branch.getMap('blobs').set('big.bin', { size: 999, stored: { id } })
+  fs.mkdirSync(path.join(dataDir, 'branches', 'rb13'), { recursive: true })
+  fs.writeFileSync(path.join(dataDir, 'branches', 'rb13', branchFileName('∅')), Y.encodeStateAsUpdate(branch))
+  // ...and the room file already holds only the room-wide parts (empty files/blobs of its own).
+  fs.writeFileSync(path.join(dataDir, 'rb13.ydoc'), Y.encodeStateAsUpdate(new Y.Doc()))
+  // The room's meta still has no `layout`/`branches`, but already lists the stored file (as the
+  // normal upload path would have, before the crash) with a `ts` old enough for the sweep.
+  fs.writeFileSync(path.join(dataDir, 'rb13.json'), JSON.stringify({
+    secretHash: crypto.createHash('sha256').update('s').digest('hex'),
+    createdAt: Date.now(),
+    lastActive: Date.now(),
+    blobs: { [id]: { size: 999, ts: Date.now() - 2 * DAY } }
+  }))
+  fs.mkdirSync(path.join(dataDir, 'blobs', 'rb13'), { recursive: true })
+  fs.writeFileSync(path.join(dataDir, 'blobs', 'rb13', id), Buffer.from('stored bytes'))
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, dataDir, idleUnloadMs: 50 })
+  t.after(() => srv.close())
+  // Nobody ever joins a branch: the room is only touched over HTTP (as a presence check, or a
+  // chat-file request, would), the same as the crash-recovery scenario the review describes.
+  const res = await fetch(`http://127.0.0.1:${srv.port}/files/rb13`, { headers: { 'x-quilt-secret': 's' } })
+  await res.text()
+  const room = srv.rooms.get('rb13')
+  assert.ok(room, 'the room was loaded, running the migration\'s recovery path')
+  assert.deepEqual(room.meta.branches['∅'].stored, [id], 'the recovered entry records the branch\'s stored ids')
+  // Nothing is connected: simulate the room going idle right after that request, the same way
+  // the relay's own HTTP handlers do when they finish with nobody left in the room.
+  room.onEmpty()
+  await waitFor(() => !srv.rooms.has('rb13'), 3000)
+  assert.equal(fs.existsSync(path.join(dataDir, 'blobs', 'rb13', id)), true, 'the stored file survives the sweep because it is still a known stored id')
 })

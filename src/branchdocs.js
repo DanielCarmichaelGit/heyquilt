@@ -17,8 +17,10 @@ export const MAX_BRANCHES = 50
 export const BRANCH_IDLE_MS = 10 * 60 * 1000
 // A branch nobody has been on this long leaves the session (never the default branch).
 export const BRANCH_TTL_MS = 30 * 24 * 60 * 60 * 1000
-// What a room's document keeps for everyone, whatever branch they're on. The rest is a branch's.
-export const ROOM_TYPES = [['chat', 'array'], ['agentFeed', 'array'], ['activity', 'array'], ['commitRequests', 'map'], ['tasks', 'map']]
+// What a room's document keeps for everyone, whatever branch they're on. The rest is a branch's
+// (files, blobs, fileKeys; and merges, history, changes, which stay behind in whichever document
+// they were already in, since this list is only what moves out into the room document).
+export const ROOM_TYPES = [['chat', 'array'], ['agentFeed', 'array'], ['activity', 'array'], ['commitRequests', 'map'], ['tasks', 'map'], ['taskComments', 'map']]
 
 // eslint-disable-next-line no-control-regex
 const NOT_IN_REFS = /[\u0000- \u007f~^:?*[\\]/

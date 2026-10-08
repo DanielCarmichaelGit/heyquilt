@@ -781,8 +781,19 @@ class Room {
       this.meta.branches[DEFAULT_KEY] = { by: '', at: this.meta.createdAt || Date.now(), base: null, stored }
       this.log(`[${this.name}] moved its files into the default branch's document`)
     } else if (this.store.stored(DEFAULT_KEY) && !this.meta.branches[DEFAULT_KEY]) {
-      // Stopped after both files were written, before this was saved.
-      this.meta.branches[DEFAULT_KEY] = { by: '', at: this.meta.createdAt || Date.now(), base: null }
+      // Stopped after both files were written, before this was saved: the default branch's
+      // entry is recovered with the stored ids its document already points at, so the stored-
+      // file sweep (collectStored) never mistakes them for unused before anyone loads it. Read
+      // directly, rather than through store.load: this runs before the room's own guard exists,
+      // which wireBranch (the store's onLoad) needs.
+      let stored = []
+      try {
+        const probe = new Y.Doc()
+        Y.applyUpdate(probe, fs.readFileSync(this.store.file(DEFAULT_KEY)))
+        stored = [...probe.getMap('blobs').values()].filter((x) => x && x.stored && x.stored.id).map((x) => x.stored.id).sort()
+        probe.destroy()
+      } catch (err) { this.log(`[${this.name}] could not read the default branch while recovering: ${err.message}`) }
+      this.meta.branches[DEFAULT_KEY] = { by: '', at: this.meta.createdAt || Date.now(), base: null, stored }
     }
     if (this.meta.branches[DEFAULT_KEY] && !this.meta.defaultBranch) this.meta.defaultBranch = DEFAULT_KEY
     this.meta.layout = 2

@@ -107,6 +107,7 @@ export function renderStatus (st, { asAi = false, mentionYours = false } = {}) {
   for (const a of act) {
     const who = a.by === st.me.name ? 'you' : a.by
     if (a.kind === 'pulled') out.push(`- ${ago(a.ts)}: ${who} pulled ${a.detail || 'commits'}`)
+    else if (a.kind === 'switched') out.push(`- ${ago(a.ts)}: ${who} switched to \`${a.branch}\``)
     else out.push(`- ${ago(a.ts)}: ${who} ${a.kind} \`${a.path}\`${a.detail ? ` (${a.detail})` : ''}`)
   }
   out.push('')

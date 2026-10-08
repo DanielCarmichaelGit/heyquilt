@@ -915,6 +915,7 @@ details.choice-foot .hint { display: block; margin-top: 6px; }
 .branch-menu .br-who.ai { border-style: dashed; }
 .branch-menu .br-who.wt { color: var(--muted); }
 .branch-menu .br-who.warn { border-color: var(--warn); }
+.branch-menu .br-tag { font-size: 10.5px; padding: 1px 6px; border-radius: 9px; background: var(--panel-2); color: var(--muted); white-space: nowrap; }
 .branch-label svg { flex: none; width: 15px; height: 15px; }
 /* A long branch name (or the branch in the pause note) ends in an ellipsis; the full name is in the tooltip. */
 .branch-label .branch-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -31,13 +31,16 @@ export function cleanGit (g) {
 /**
  * One entry per branch: { name, folders: [{ name, held }] (members whose folder is on it),
  * ais: [names] (AI sessions named after it), worktrees: [names], upstream: { name, url,
- * behind, ahead, diverged, conflicts, waiting } | null, last: { author, ts, subject } | null }.
+ * behind, ahead, diverged, conflicts, waiting } | null, last: { author, ts, subject } | null,
+ * session: true when the branch has a live document in this session (a copy, whether or not
+ * anyone is on it right now), default: true for the room's default branch }.
  * Branches someone is on come first, then the rest by last commit. `members`: [{ name, git, persona? }].
+ * `sessionBranches`: the room's own branch list (Session.branchList / the relay's), [{ key, default }].
  */
-export function branchBoard (members) {
+export function branchBoard (members, sessionBranches = []) {
   const byName = new Map()
   const entry = (name) => {
-    if (!byName.has(name)) byName.set(name, { name, folders: [], ais: [], worktrees: [], upstream: null, last: null })
+    if (!byName.has(name)) byName.set(name, { name, folders: [], ais: [], worktrees: [], upstream: null, last: null, session: false, default: false })
     return byName.get(name)
   }
   for (const m of members) {
@@ -61,6 +64,14 @@ export function branchBoard (members) {
     if (!m.persona) continue
     const label = m.name.includes(' · ') ? m.name.slice(m.name.indexOf(' · ') + 3) : null
     if (label && byName.has(label)) byName.get(label).ais.push(m.name)
+  }
+  // Every branch with a live copy in the session, whether or not anyone is on it right now
+  // (it still appears here), and which one is the room's default.
+  for (const b of (Array.isArray(sessionBranches) ? sessionBranches : [])) {
+    if (!b || typeof b.key !== 'string') continue
+    const e = entry(b.key)
+    e.session = true
+    if (b.default) e.default = true
   }
   const active = (e) => e.folders.length + e.ais.length + e.worktrees.length
   return [...byName.values()].sort((a, b) => (active(b) > 0) - (active(a) > 0) || (b.last?.ts || 0) - (a.last?.ts || 0) || (a.name < b.name ? -1 : 1))
@@ -96,7 +107,13 @@ export function branchesMarkdown (board, { now = Date.now(), limit = 12 } = {}) 
       ...b.worktrees.map((w) => `worktree \`${w}\``)
     ]
     const line = upstreamLine(b.upstream)
-    const bits = [who.length ? `on it: ${who.join(', ')}` : '', who.some((w) => w.includes(`(${line})`)) ? '' : line, b.last ? `last commit ${ago(b.last.ts, now)} by ${b.last.author}: ${b.last.subject}` : ''].filter(Boolean)
+    const bits = [
+      b.default ? 'default' : '',
+      b.session ? 'in the session' : '',
+      who.length ? `on it: ${who.join(', ')}` : '',
+      who.some((w) => w.includes(`(${line})`)) ? '' : line,
+      b.last ? `last commit ${ago(b.last.ts, now)} by ${b.last.author}: ${b.last.subject}` : ''
+    ].filter(Boolean)
     out.push(`- \`${b.name}\`${bits.length ? ` · ${bits.join(' · ')}` : ''}`)
   }
   if (board.length > limit) out.push(`- …and ${board.length - limit} more`)

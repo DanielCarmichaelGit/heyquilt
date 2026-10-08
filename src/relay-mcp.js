@@ -177,7 +177,7 @@ function sessionTools (server, ctx) {
     const members = []
     for (const st of room.awareness.getStates().values()) if (st && st.name && st.git) members.push({ name: st.name, git: cleanGit(st.git) })
     for (const p of peers(room)) if (p.persona) members.push({ name: p.name, git: null, persona: true })
-    return branchBoard(members)
+    return branchBoard(members, room.branchList ? room.branchList() : [])
   }
   const claimsOf = (room) => room.claimList ? room.claimList(branchOf(room)) : []
   // Claims are per branch: who the agent is, on the branch it works on.
@@ -275,7 +275,7 @@ function sessionTools (server, ctx) {
     const cl = claimsOf(room)
     lines.push('', '## Claimed files', ...(cl.length ? cl.map((c) => `- ${c.pattern} by ${c.by}${c.note ? ` (${c.note})` : ''}${c.queue.length ? ` · waiting: ${c.queue.map((r) => `${r.by} ("${r.title}")`).join(', ')}` : ''}`) : ['- None.']))
     const acts = activity.toArray().filter(Boolean).slice(-12).reverse()
-    lines.push('', '## Recent file changes', ...(acts.length ? acts.map((x) => x.kind === 'pulled' ? `- ${x.by} pulled ${x.detail || 'commits'} (${ago(x.ts)})` : `- ${x.by} ${x.kind} ${x.path} (${ago(x.ts)})`) : ['- None yet.']))
+    lines.push('', '## Recent file changes', ...(acts.length ? acts.map((x) => x.kind === 'pulled' ? `- ${x.by} pulled ${x.detail || 'commits'} (${ago(x.ts)})` : x.kind === 'switched' ? `- ${x.by} switched to ${x.branch} (${ago(x.ts)})` : `- ${x.by} ${x.kind} ${x.path} (${ago(x.ts)})`) : ['- None yet.']))
     const msgs = chat.toArray().filter(visible).slice(-8)
     lines.push('', '## Recent messages', ...(msgs.length ? msgs.map(fmtMsg) : ['- None.']))
     lines.push('', '## Tasks', taskMarkdown(readTasks(doc.getMap('tasks')), me, { tool: ctx.tool(), asAi: false, mentionYours: true }))

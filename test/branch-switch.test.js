@@ -11,6 +11,7 @@ import { startServer } from '../src/server.js'
 import { Session } from '../src/session.js'
 import { generateIdentity } from '../src/identity.js'
 import { MAX_BRANCHES } from '../src/branchdocs.js'
+import { renderStatus } from '../src/status.js'
 
 let srv, server
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-bs-${n}-`))
@@ -320,4 +321,30 @@ test('a checkout git refuses mid-merge changes nothing', async (t) => {
   write(dirA, 'src/app.js', 'still live\n')
   await waitFor(() => read(dirB, 'src/app.js') === 'still live\n')
   assert.equal(B.status().branch, 'main')
+})
+
+test('status lists the session\'s branches with who is on each, yours first; activity and commit requests say the branch', async (t) => {
+  const { A, B, dirA } = await repos(t)
+  git(dirA, 'checkout', '-q', 'feature-x')
+  await waitFor(() => on(A, 'feature-x'), 10000)
+  await waitFor(() => {
+    const rows = B.status().branches
+    const main = rows.find((r) => r.name === 'main')
+    const fx = rows.find((r) => r.name === 'feature-x')
+    return !!main && main.session && main.default && main.folders.map((f) => f.name).join() === 'bob' &&
+      !!fx && fx.session && !fx.default && fx.folders.map((f) => f.name).join() === 'alice'
+  })
+  assert.equal(B.status().peers.find((p) => p.name === 'alice').branch, 'feature-x')
+  const md = renderStatus(B.status())
+  assert.match(md, /## Branches/)
+  assert.match(md, /`main`.*default/)
+  assert.match(md, /`feature-x`.*alice/)
+  await waitFor(() => /alice switched to `feature-x`/.test(renderStatus(B.status())))
+  git(dirA, 'branch', 'local-only')
+  A.refreshLocalBranches()
+  await waitFor(() => A.status().git.others.includes('local-only') && !A.status().git.others.includes('feature-x'))
+  B.requestCommit('ready on main')
+  await waitFor(() => A.status().commits.some((r) => r.message === 'ready on main' && r.branch === 'main'))
+  write(dirA, 'feature.txt', 'x\n')
+  await waitFor(() => B.status().activity.some((x) => x.path === 'feature.txt' && x.branch === 'feature-x'))
 })

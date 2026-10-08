@@ -42,8 +42,9 @@ export function branchMenuHtml ({ git, branches = [], me = '', syncing = false, 
     ].join('')
     const status = upstreamText(b.upstream)
     const last = b.last && b.last.ts ? `${esc(b.last.author || 'someone')} · ${esc(ago(b.last.ts, now))}` : ''
+    const tags = [b.default ? '<span class="br-tag">default</span>' : '', b.session ? '<span class="br-tag">in the session</span>' : ''].filter(Boolean).join('')
     return `<li class="br-row${git && b.name === git.key ? ' on' : ''}">
-        <div class="br-line"><span class="br-name" title="${esc(b.name)}">${esc(b.name)}</span>${who ? `<span class="br-people">${who}</span>` : ''}</div>
+        <div class="br-line"><span class="br-name" title="${esc(b.name)}">${esc(b.name)}</span>${tags}${who ? `<span class="br-people">${who}</span>` : ''}</div>
         ${status || last ? `<div class="br-meta">${[status && `<span class="${needsHand(b.upstream) ? 'warn' : ''}">${esc(status)}</span>`, last && `<span title="${esc(b.last.subject || '')}">last commit ${last}</span>`].filter(Boolean).join(' · ')}</div>` : ''}
       </li>`
   }).join('')

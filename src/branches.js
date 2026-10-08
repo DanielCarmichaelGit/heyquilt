@@ -30,7 +30,8 @@ export function cleanGit (g) {
 
 /**
  * One entry per branch: { name, folders: [{ name, held }] (members whose folder is on it),
- * ais: [names] (AI sessions named after it), worktrees: [names], upstream: { name, url,
+ * ais: [names] (AI sessions named after it), worktrees: [names], hosted: [names] (hosted agents
+ * working on it, from the room's branch list), upstream: { name, url,
  * behind, ahead, diverged, conflicts, waiting } | null, last: { author, ts, subject } | null,
  * session: true when the branch has a live document in this session (a copy, whether or not
  * anyone is on it right now), default: true for the room's default branch }.
@@ -40,7 +41,7 @@ export function cleanGit (g) {
 export function branchBoard (members, sessionBranches = []) {
   const byName = new Map()
   const entry = (name) => {
-    if (!byName.has(name)) byName.set(name, { name, folders: [], ais: [], worktrees: [], upstream: null, last: null, session: false, default: false })
+    if (!byName.has(name)) byName.set(name, { name, folders: [], ais: [], worktrees: [], hosted: [], upstream: null, last: null, session: false, default: false })
     return byName.get(name)
   }
   for (const m of members) {
@@ -72,8 +73,9 @@ export function branchBoard (members, sessionBranches = []) {
     const e = entry(b.key)
     e.session = true
     if (b.default) e.default = true
+    for (const n of (Array.isArray(b.hosted) ? b.hosted : [])) if (!e.hosted.includes(n)) e.hosted.push(n)
   }
-  const active = (e) => e.folders.length + e.ais.length + e.worktrees.length
+  const active = (e) => e.folders.length + e.ais.length + e.worktrees.length + e.hosted.length
   return [...byName.values()].sort((a, b) => (active(b) > 0) - (active(a) > 0) || (b.last?.ts || 0) - (a.last?.ts || 0) || (a.name < b.name ? -1 : 1))
 }
 
@@ -96,14 +98,15 @@ export function upstreamLine (u) {
   return `up to date with ${u.name}`
 }
 
-/** The board as markdown for an AI (quilt_status, quilt_branches). */
-export function branchesMarkdown (board, { now = Date.now(), limit = 12 } = {}) {
+/** The board as markdown for an AI (quilt_status, quilt_branches). `mine`: the caller's own branch, marked "(yours)". */
+export function branchesMarkdown (board, { now = Date.now(), limit = 12, mine = null } = {}) {
   if (!board.length) return '_No git branches: the folders in this session are not git repositories._'
   const out = []
   for (const b of board.slice(0, limit)) {
     const who = [
       ...b.folders.map((f) => `${f.name}'s folder${f.held ? ` (${f.held})` : ''}${f.upstream && (f.upstream.conflicts || f.upstream.diverged) ? ` (${upstreamLine(f.upstream)})` : ''}`),
       ...b.ais.map((n) => `AI session ${n}`),
+      ...b.hosted.map((n) => `hosted agent ${n}`),
       ...b.worktrees.map((w) => `worktree \`${w}\``)
     ]
     const line = upstreamLine(b.upstream)
@@ -114,7 +117,7 @@ export function branchesMarkdown (board, { now = Date.now(), limit = 12 } = {}) 
       who.some((w) => w.includes(`(${line})`)) ? '' : line,
       b.last ? `last commit ${ago(b.last.ts, now)} by ${b.last.author}: ${b.last.subject}` : ''
     ].filter(Boolean)
-    out.push(`- \`${b.name}\`${bits.length ? ` · ${bits.join(' · ')}` : ''}`)
+    out.push(`- \`${b.name}\`${b.name === mine ? ' (yours)' : ''}${bits.length ? ` · ${bits.join(' · ')}` : ''}`)
   }
   if (board.length > limit) out.push(`- …and ${board.length - limit} more`)
   return out.join('\n')

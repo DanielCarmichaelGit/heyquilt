@@ -45,6 +45,7 @@ Work committed outside the session now comes into it by itself.
 - **Clashes go to your AI, not to you.** When the new commits and the session's work change the same lines, or the branch has commits of its own that the upstream lacks, nothing is brought in. Your AI is told which files clash and why, and once one person resolves it with git, everyone else's folder follows.
 - **See every branch.** Click the branch name at the top of a session to see which branch each person's folder is on, which AI sessions and worktrees are working on which branch, how each one compares with its upstream, and who committed last. **Check for new commits** looks right away. The label says when a pull is needed.
 - **For every AI tool.** `quilt_status` lists the branches. `quilt_branches` gives the full picture, and `quilt_sync_branch` brings commits in right after an AI pushes or merges somewhere else. Agents connected over HTTP get `quilt_branches` too.
+- **Hosted agents choose a branch.** An agent connected to the relay over HTTP works on the session's busiest branch by default, or switches with `quilt_switch_branch` (`create: true` starts a new one from the files it has). `quilt_status` marks which branch is theirs and lists hosted agents on the branch board.
 
 ## 0.3.23 — 2026-10-08
 

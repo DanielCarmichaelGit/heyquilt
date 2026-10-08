@@ -872,6 +872,34 @@ class Room {
   }
 
   /**
+   * A hosted agent works on branch `key` from now on (quilt_switch_branch), kept per member.
+   * `create`: a new branch in the session, started from a copy of the files on the branch it
+   * is on (as `git switch -c` carries a folder's work). Returns { branch, created, from }.
+   */
+  setHostedBranch (id, key, { create = false, by = '' } = {}) {
+    if (!validBranchKey(key) || key === DEFAULT_KEY) throw new Error(`"${String(key).slice(0, 60)}" isn't a branch name.`)
+    const to = this.resolveKey(key)
+    const from = this.hostedBranch(id)
+    const exists = !!this.meta.branches[to]
+    if (!exists && !create) throw new Error(`${key} isn't in this session. Pass create: true to start it from the files on ${from}.`)
+    if (exists && create) throw new Error(`${key} is already in this session: switch to it without create.`)
+    if (!exists) {
+      if (this.full) throw new Error("This session is over its size limit, so it can't take another branch.")
+      const src = this.branchDoc(from, { by })
+      const e = this.branchDoc(to, { by, base: this.meta.branches[from] ? this.meta.branches[from].base : null })
+      e.doc.transact(() => {
+        for (const [rel, t] of src.files) { const y = new Y.Text(); y.insert(0, t.toString()); e.files.set(rel, y) }
+        for (const [rel, b] of src.blobs) e.blobs.set(rel, b)
+        for (const [k, v] of src.fileKeys) e.fileKeys.set(k, v)
+      }, 'hosted-branch')
+    }
+    this.meta.hostedBranch = { ...(this.meta.hostedBranch || {}), [id]: to }
+    this.saveMeta()
+    this.broadcastBranches()
+    return { branch: to, created: !exists, from }
+  }
+
+  /**
    * Whether a new branch may start: not over the session's branch limit or its size, and
    * (unless `editor` is false) started by someone who may change files. Shared by
    * branchRequest's join and branchDoc (hosted agents, chat links), so the same cap and

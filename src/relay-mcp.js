@@ -68,6 +68,7 @@ export const HOSTED_INSTRUCTIONS =
   'call quilt_webhook_subscribe with a URL of yours: Quilt POSTs each one there as it happens. ' +
   'You are connected over HTTP, so you show as online for 30 minutes after each tool call: while idle, call quilt_inbox at least every 30 minutes so people can see you are still there. ' +
   'HTTP is only for an agent with no computer. If you can run shell commands anywhere (a computer, a cloud machine, a sandbox), you must use the Quilt CLI there instead (`quilt agent join`, then `quilt join <invite> --agent <your name>`): files sync to disk and you show as live. ' +
+  'A session has a branch for each git branch its members work on, each with its own files: quilt_status lists them and who is on each, and you work on the busiest one until you pick another with quilt_switch_branch (create: true starts a new one from the files you have). ' +
   TASK_WORKFLOW
 
 const NOT_LINKED = 'Your user is not in a quilt session in their browser right now. Ask them to open quilt in their ' +
@@ -280,7 +281,10 @@ function sessionTools (server, ctx) {
     lines.push('', '## Recent messages', ...(msgs.length ? msgs.map(fmtMsg) : ['- None.']))
     lines.push('', '## Tasks', taskMarkdown(readTasks(doc.getMap('tasks')), me, { tool: ctx.tool(), asAi: false, mentionYours: true }))
     const br = branchesOf(room)
-    if (br.length) lines.push('', '## Branches', branchesMarkdown(br, { limit: 6 }))
+    if (br.length) {
+      lines.push('', '## Branches', branchesMarkdown(br, { limit: 6, mine: branchOf(room) }))
+      if (ctx.branch) lines.push('Work on another branch with quilt_switch_branch.')
+    }
     if (ctx.webhook) { const w = ctx.webhook.get(); lines.push('', w ? `Webhook: Quilt POSTs to ${w.url} on ${w.events.join(', ')}.` : 'No webhook: subscribe with quilt_webhook_subscribe to be told of mentions, direct messages and tasks as they happen.') }
     return text(lines.join('\n') + ctx.warn(room))
   })
@@ -905,6 +909,7 @@ export async function handleHostedMcp ({ req, res, pass, relay, workspaces = nul
     me,
     who: () => ({ name: me, id: account }),
     access: (room) => room.hostedAccess(pass),
+    branch: (room) => room.hostedBranch(account),
     tool: () => toolLabel(mcp.server.getClientVersion()?.name) || 'hosted',
     warn: () => '',
     inbox: () => {
@@ -991,6 +996,21 @@ export async function handleHostedMcp ({ req, res, pass, relay, workspaces = nul
     }
     return text(`Left room ${h.room}.`)
   })
+
+  mcp.registerTool('quilt_switch_branch', {
+    description: 'Work on another branch of the session: your file tools, claims and history then read and write that branch. quilt_status lists the branches and who is on each. create: true starts a new branch from a copy of the files on the one you are on.',
+    inputSchema: {
+      branch: z.string().min(1).max(200).describe('The branch, e.g. feature/login'),
+      create: z.boolean().optional().describe('Start it: a new branch from the files on your current one')
+    }
+  }, ({ branch, create }) => ctx.withSession((room) => {
+    try {
+      const r = room.setHostedBranch(account, String(branch).trim(), { create: !!create, by: me })
+      return text(r.created
+        ? `Started ${r.branch} from ${r.from}, with a copy of its files. Your file tools, claims and history use ${r.branch} now; people move their folders to it from the branch menu.`
+        : `You are on ${r.branch} now: your file tools, claims and history use it.`)
+    } catch (e) { return fail(e.message) }
+  }))
 
   sessionTools(mcp, ctx)
   // The library works whether or not the agent is in a session (it never touches relay.hosted).

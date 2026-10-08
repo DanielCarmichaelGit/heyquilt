@@ -37,6 +37,7 @@ import { openMerge, updateMerge, readMerges, pruneMerges, cleanName } from './me
 import { ensureQuiltIgnored } from './gitignore.js'
 import { gitDir, headKey, headRef, gitRuns, askTwice, lastCallTimedOut, busy as gitBusy, leftoverLock, STALE_LOCK_MS, indexStamp, classify, filesAt, changesBetween, commitsBetween, treeState, branchTip, watchGit, unmergedPaths, stashStamp, upstreamAdds, pullState, SETTLE_MS, BURST_PATHS, upstreamOf, fetchUpstream, isAncestor, stagedAgainst, fastForward, resetIndex, blobAt, hasFilesUnder, repoBranches } from './gitstate.js'
 import { planCatchUp, catchUpAdvice } from './upstream.js'
+import { cleanGit, branchBoard } from './branches.js'
 
 export { applyTextDiff }
 
@@ -74,6 +75,7 @@ const GIT_FAILURES_TO_SAY = 30
 const FLUSH_MS = 40 // file changes are flushed this long after the first
 // How often a folder looks for commits its branch is behind (fetching its upstream first).
 const UPSTREAM_MS = Number(process.env.QUILT_UPSTREAM_MS) || 60 * 1000
+const INDEX_WATCH_MS = 8000 // after a bring-in, how long the index is checked against what another git may write back
 
 export class Session extends EventEmitter {
   constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, summarize = null, identity = null, passes = null, startName = '', autoClaimQuietMs = AUTO_CLAIM_QUIET_MS, handoffGraceMs = HANDOFF_GRACE_MS, aiTasks = null, webhookTransport = null, pullWaitMs = PULL_WAIT_MS, bringInUpstream = true }) {
@@ -225,7 +227,8 @@ export class Session extends EventEmitter {
     this.upstreamPoll = null
     this.upstreamSaid = '' // the advice last given, so it's given once per state
     this.upstreamDeferred = null // the commit this folder let another member's folder bring in first
-    this.indexLate = null // a commit the branch moved to whose index git couldn't set yet (another git held it)
+    this.indexLate = null // the commit the last bring-in moved to: its index is checked for a few seconds (fixIndex)
+    this.indexWatchUntil = 0
     this.repo = null // every branch and worktree of the repository (repoBranches), shown to the room
     this.burstByIndex = false // the last isBurst saw the index change
     this.gitChain = Promise.resolve() // git work in this folder, one piece at a time (see gitTask)
@@ -1694,7 +1697,7 @@ export class Session extends EventEmitter {
     }
     const head = await headKey(this.root)
     if (!head || head.key !== this.git.key) return this.upstream
-    if (this.indexLate === head.sha && await resetIndex(this.root, head.sha)) { this.indexLate = null; this.gitIndex = indexStamp(this.root) }
+    await this.fixIndex()
     let up = await upstreamOf(this.root)
     if (up && fetch && up.remote && await fetchUpstream(this.root, up.remote)) up = await upstreamOf(this.root)
     this.refreshRepo()
@@ -1791,7 +1794,11 @@ export class Session extends EventEmitter {
       return
     }
     this.gitSeen = { key: branch, branch, sha: to }
-    if (moveRef && fastForward.indexLate) this.indexLate = to // the index follows at the next look
+    // The index follows at the next look if git couldn't set it, or if another git that read it
+    // just before (an AI's `git status`) writes its old copy back over it: checked for a few seconds.
+    this.indexLate = to
+    this.indexWatchUntil = Date.now() + INDEX_WATCH_MS
+    for (const ms of [500, 2000, INDEX_WATCH_MS]) setTimeout(() => this.gitTask(() => this.fixIndex()).catch(() => {}), ms).unref()
     let written = 0
     for (const [rel, key] of plan.writes) {
       try {
@@ -1822,6 +1829,36 @@ export class Session extends EventEmitter {
       this.notice(`The commits Quilt just brought in from ${upName} add ${list} to a folder the session had emptied (moved elsewhere?). Check whether they belong where the session moved the rest.`)
     }
     this.setUpstream({ ...(up || { name: upName }), sha: up ? up.sha : to, behind: 0, ahead: 0, brought: { count, files: written, at: Date.now() } })
+  }
+
+  /**
+   * Just after a bring-in, the index must be the new commit's. A git that read the index before
+   * and wrote it back after (status refreshing it) leaves the old commit's there, which reads as
+   * "the session staged a revert": set again. Only while the bring-in is recent, and only when
+   * HEAD is still where it put it: later staging is the person's.
+   */
+  async fixIndex () {
+    const sha = this.indexLate
+    if (!sha || this.stopped || !this.git) return
+    if (Date.now() > this.indexWatchUntil) { this.indexLate = null; return }
+    const head = await headKey(this.root)
+    if (!head || head.sha !== sha || this.gitBusy()) return
+    if (await stagedAgainst(this.root, sha) && await resetIndex(this.root, sha)) this.gitIndex = indexStamp(this.root)
+  }
+
+  /**
+   * Asked for by an AI (quilt_sync_branch): fetch and bring commits in now, without waiting for
+   * the next look or another member's folder. What happened: { branch, upstream, moved, busy }.
+   */
+  async syncBranchNow () {
+    if (!this.git) return { git: false }
+    if (!this.git.branch) return { git: true, branch: null }
+    // A save or a git command a moment ago: give it a few seconds to settle first.
+    for (let i = 0; i < 30 && !this.quietForUpstream() && !this.hold; i++) await new Promise((r) => setTimeout(r, 200))
+    const before = this.gitSeen && this.gitSeen.sha
+    const busy = this.hold ? this.hold.kind : this.quietForUpstream() ? null : 'files are still changing here'
+    if (!busy) await this.gitTask(() => this.checkUpstream({ fetch: true, now: true }))
+    return { git: true, branch: this.git.branch, busy, upstream: this.upstream, moved: !!(this.gitSeen && before && this.gitSeen.sha !== before) }
   }
 
   /** Whether another member's folder on this branch is first in line to bring commits in (the lowest client id). */
@@ -4048,7 +4085,8 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
         focus: s.focus || '',
         editing: Object.entries(s.editing || {})
           .sort((a, b) => b[1] - a[1])
-          .map(([p, ts]) => ({ path: p, secondsAgo: Math.round((now - ts) / 1000) }))
+          .map(([p, ts]) => ({ path: p, secondsAgo: Math.round((now - ts) / 1000) })),
+        git: cleanGit(s.git)
       })
     }
     // AI sessions working through someone's app (persona.js) are members of their own here,
@@ -4100,7 +4138,8 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
       chat: this.messages({ limit: 20, markRead: false }),
       unread: this.unreadCount(),
       fileCount: this.files.size + this.blobs.size,
-      git: this.git ? { branch: this.git.branch, key: this.git.key, hold: this.hold ? { kind: this.hold.kind, since: this.hold.since, to: this.hold.to || null, conflict: this.hold.conflict || null } : null, pull: this.pull, upstream: this.upstream, repo: this.repo } : null
+      git: this.git ? { branch: this.git.branch, key: this.git.key, hold: this.hold ? { kind: this.hold.kind, since: this.hold.since, to: this.hold.to || null, conflict: this.hold.conflict || null } : null, pull: this.pull, upstream: this.upstream, repo: this.repo } : null,
+      branches: branchBoard([{ name: this.name, git: this.gitSummary() }, ...peers.map((p) => ({ name: p.name, git: p.git, persona: !!p.persona }))])
     }
   }
 

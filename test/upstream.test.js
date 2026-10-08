@@ -75,7 +75,7 @@ test('commits pushed from outside come into the session by themselves, merged wi
   // Each folder's branch moved forward to the pushed commit; git sees only the session's own change.
   await waitFor(() => git(dirA, 'rev-parse', 'HEAD') === sha && git(dirB, 'rev-parse', 'HEAD') === sha)
   for (const dir of [dirA, dirB]) {
-    assert.equal(changed(dir), 'M src/app.js')
+    await waitFor(() => changed(dir) === 'M src/app.js')
     assert.equal(git(dir, 'diff', '--cached'), '', 'nothing staged')
     assert.match(git(dir, 'diff'), /\+line1 \(alice, not committed\)/)
     assert.doesNotMatch(git(dir, 'diff'), /pushed/)

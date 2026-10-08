@@ -1,6 +1,7 @@
 // Renders a session status snapshot as Markdown. Used for .quilt/STATUS.md,
 // `quilt status`, and the MCP `quilt_status` tool, so every tool sees the same view.
 
+import { branchesMarkdown } from './branches.js'
 import { taskMarkdown } from './tasks.js'
 import { mergeAction } from './merges.js'
 import { catchUpMarkdown } from './catchup.js'
@@ -63,6 +64,12 @@ export function renderStatus (st, { asAi = false, mentionYours = false } = {}) {
   out.push('## Tasks')
   out.push(taskMarkdown(st.tasks, st.me.name, { tool: st.me.tool, asAi, mentionYours }))
   out.push('')
+
+  if (st.branches && st.branches.length) {
+    out.push('## Branches')
+    out.push(branchesMarkdown(st.branches, { limit: 6 }))
+    out.push('')
+  }
 
   const pull = st.git && st.git.pull
   if (pull && pull.adds && pull.adds.length) {

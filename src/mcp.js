@@ -13,6 +13,7 @@ import path from 'node:path'
 import { findDaemon, call as rawCall } from './control.js'
 import { parentPids } from './hooks.js'
 import { renderMessage, renderStatus } from './status.js'
+import { branchesMarkdown, upstreamLine, describeBranchSync } from './branches.js'
 import { formatTasks, columnName, assigneeLabel, renderNextTask } from './tasks.js'
 import { formatTaskDetails, MAX_COMMENT } from './task-comments.js'
 import { runSession, decodeInvite, newConn, readConfig, runningElsewhere, personsFolder, agentCopyFolder } from './runner.js'
@@ -799,6 +800,20 @@ export async function runMcp () {
     await call(d, 'POST', '/commit-request', { message })
     return `Asked for a commit.\n${describeCommits(await call(d, 'GET', '/commits'))}`
   }, { gate: gateFor('quilt_request_commit') }))
+
+  server.registerTool('quilt_branches', {
+    description: 'The session\'s git branches: which branch each member\'s folder is on, which AI sessions and worktrees work on which branch, how each stands against its upstream (behind, ahead, diverged), and who committed last. Read it before you branch, merge or push.',
+    inputSchema: {}
+  }, () => withDaemon(async (d) => {
+    const { branches, git } = await call(d, 'GET', '/branches')
+    const here = git && git.branch ? `This folder is on \`${git.branch}\`${git.upstream ? ` (${upstreamLine(git.upstream)})` : ''}.\n\n` : ''
+    return here + branchesMarkdown(branches || [], { limit: 40 })
+  }))
+
+  server.registerTool('quilt_sync_branch', {
+    description: 'Bring commits made outside the session into it now: fetches this folder\'s upstream (say origin/main after a PR merged, or a push from a worktree) and moves the branch forward, with the session\'s uncommitted work merged in. Quilt also does this by itself about once a minute; call it right after you push or merge elsewhere. It never merges git history: a branch that has diverged, or files that clash with the session\'s work, are reported for you to resolve with git.',
+    inputSchema: {}
+  }, () => withDaemon(async (d) => describeBranchSync(await call(d, 'POST', '/branches/sync'))))
 
   server.registerTool('quilt_commit_status', {
     description: 'Is it a good moment to commit? Lists open commit requests and whose AI is still working (not counting yours).',

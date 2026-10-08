@@ -72,6 +72,8 @@ export async function startControl (session, extras = {}) {
     'GET /tree': () => session.tree(),
     'POST /sharing': (b) => ({ on: session.setAgentSharing(b.on !== false) }),
     'GET /commits': () => session.commitStatus({ includeMe: false }),
+    'GET /branches': () => ({ branches: session.status().branches, git: session.status().git }),
+    'POST /branches/sync': () => session.syncBranchNow(),
     'POST /commit-request': (b) => session.requestCommit(b.message),
     'POST /commit-request/done': (b) => ({ done: session.resolveCommitRequests({ ids: b.id ? [String(b.id)] : null }) }),
     'POST /work': (b) => {

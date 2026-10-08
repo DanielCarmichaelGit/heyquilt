@@ -72,6 +72,8 @@ const WATCH_RECHECK_MS = 80
 const RECONCILE_MS = 1000
 // Failed large-file uploads and downloads are tried again this often (and on reconnecting).
 const RETRY_MS = 30 * 1000
+// A move to a branch the relay can't load (or refused) is tried again at most this far apart.
+const MOVE_RETRY_MAX_MS = 5 * 60 * 1000
 // Large uploads and downloads each hold the whole file in memory (twice), so only this many run at once.
 const MAX_TRANSFERS = 2
 // Queued when HEAD moves, so a checkout that changes no file still runs flushPending. Never syncable (.quilt is ignored).
@@ -240,7 +242,10 @@ export class Session extends EventEmitter {
     this.following = null // the branch git moved HEAD to, which this folder is moving to (followHead)
     this.arriving = false // a move is writing the new branch onto the folder: held, but its own writes go through
     this.resumeAway = null // started on another branch than the one saved: followed once the relay has synced
-    this.pendingMove = null // a move whose new branch the relay couldn't load yet: tried again on reconnecting
+    this.pendingMove = null // a move whose new branch the relay couldn't load yet: tried again (recheckMove)
+    this.moveTries = 0 // moves in a row that didn't finish (moveFailed), for backing off
+    this.moveRetryAt = 0 // not tried again before this, unless git moves
+    this.moveSaid = null // the failure last told, so it's told once
     this.leftoverLock = null // the stamp of an index.lock left behind by a crashed git, paid no attention to
     this.settleGen = 0 // counts settleSoon calls (see onSettled)
     this.lastFileEventAt = 0 // the watcher's last event in the working tree
@@ -1140,6 +1145,8 @@ export class Session extends EventEmitter {
       // (beforeRemote) has none, and a partner typing must not hold this folder for good.
       // A move to another branch ends on its own (finishMove).
       if (paths.length && this.hold.kind !== 'switching') this.settleSoon()
+      // A move that didn't finish follows HEAD wherever git takes it next (back to the old branch resumes it).
+      else if (this.hold.kind === 'switching' && paths.includes(HEAD_CHANGED) && !this.following) this.recheckSoon()
       return
     }
     if (this.git && this.isBurst(paths)) return this.startClassify(paths)
@@ -1308,10 +1315,12 @@ export class Session extends EventEmitter {
   // ------------------------------------------------------------ branches --
   // A folder is on one branch of the session at a time, the one git has it on.
   // Quilt never switches branches itself: when a person or an agent checks out
-  // another branch in git, the folder moves to that branch's document (made
-  // from the folder the first time anyone brings the branch), and the branch it
-  // left keeps its work in the session. Nothing is synced branch on branch;
-  // what git itself carries over (uncommitted changes) lands where git puts it.
+  // another branch in git, the folder moves to that branch's document, and the
+  // branch it left keeps its work in the session. Nothing is synced branch on
+  // branch. Uncommitted work git carries over in the checkout is the old
+  // branch's (the session has it there): on a branch the session already has,
+  // Quilt writes that branch's version over it; a branch new to the session
+  // starts from the folder as git left it, carried work included.
 
   /**
    * git moved HEAD to branch `to` (a checkout in a terminal or by an agent, or while Quilt was
@@ -1322,11 +1331,74 @@ export class Session extends EventEmitter {
     this.following = to
     this.setHold('switching', { to, ...(prevHead ? { prevHead } : {}) }) // nothing more is shared on the old branch from here
     this.gitTask(() => this.moveTo(to))
-      .catch((err) => {
-        // git has moved and Quilt couldn't follow: held, so nothing of `to` reaches the old branch.
-        if (!this.pendingMove && !this.stopped) this.log(`⚠️ Couldn't move this folder to ${to} (${err.message}); it stays paused until Quilt restarts.`)
-      })
-      .finally(() => { if (this.following === to) this.following = null })
+      .catch((err) => this.moveFailed(to, err))
+      .finally(() => { this.following = null })
+  }
+
+  /**
+   * A move that didn't finish: the folder stays held (nothing of either branch reaches the
+   * other) and recheckMove tries again, less and less often, or follows git wherever it goes
+   * next. A refusal the relay will repeat (a viewer starting a branch, the branch limit) is
+   * said once, with what to do; checking the old branch out again resumes sync there.
+   */
+  moveFailed (to, err) {
+    if (this.stopped || !this.hold || this.hold.kind !== 'switching') return
+    const msg = (err && err.message) || String(err)
+    const refused = !!(this.conn && this.conn.connected) && !/did not answer|not connected|disconnected/.test(msg)
+    this.moveTries = (this.moveTries || 0) + 1
+    this.moveRetryAt = Date.now() + (refused ? MOVE_RETRY_MAX_MS : Math.min(MOVE_RETRY_MAX_MS, RETRY_MS * 2 ** (this.moveTries - 1)))
+    this.hold.waiting = refused ? 'refused' : 'retrying'
+    this.emit('hold', this.hold)
+    this.scheduleStatusWrite()
+    const said = `${to}\0${refused ? msg : ''}`
+    if (this.moveSaid === said) return
+    this.moveSaid = said
+    if (refused) {
+      const text = `The session can't take ${to}: ${msg}. This folder isn't syncing while it's on ${to}; check out ${this.branch} again in git to keep syncing there.`
+      this.log(`⚠️ ${text}`)
+      this.notice(text)
+    } else {
+      this.log(`⚠️ You're on ${to} in git, but its work in the session can't be loaded yet (${msg}). This folder waits and tries again.`)
+    }
+  }
+
+  /** While a move is unfinished: where is HEAD now? Back on the folder's branch resumes it; elsewhere is followed (backing off on the same branch). */
+  async recheckMove () {
+    if (!this.hold || this.hold.kind !== 'switching' || this.following || this.stopped) return null
+    const at = await this.headNow()
+    if (this.stopped || !at || this.following) return null
+    const m = this.pendingMove
+    const target = m ? m.to : this.hold.to
+    if (at !== this.branch && at === target && Date.now() < (this.moveRetryAt || 0)) return null // tried a moment ago
+    this.following = at
+    try {
+      if (m) return await (m.to === at ? this.finishMove(m) : this.abandonMove(m, at))
+      if (at === this.branch) return this.settleBack()
+      this.hold.to = at
+      return await this.moveTo(at)
+    } finally { this.following = null }
+  }
+
+  /** Where HEAD is: its branch, `@<sha>` when detached, or a branch with no commits yet; null when git can't say. */
+  async headNow () {
+    const head = await headKey(this.root)
+    return head ? head.key : headRef(this.root)
+  }
+
+  /** recheckMove, as git work; what fails is a move that failed again. */
+  recheckSoon () {
+    this.gitTask(() => this.recheckMove()).catch((err) => this.moveFailed(this.pendingMove ? this.pendingMove.to : this.hold && this.hold.to, err))
+  }
+
+  /** HEAD is back on the folder's branch before it moved: the trip is settled like any git work. */
+  settleBack () {
+    this.moveTries = 0
+    this.moveSaid = null
+    this.hold = { kind: 'settling', since: this.hold ? this.hold.since : Date.now(), prevHead: this.hold ? this.hold.prevHead : this.gitSeen }
+    this.emit('hold', this.hold)
+    this.scheduleStatusWrite()
+    this.settleSoon()
+    return null
   }
 
   /**
@@ -1337,18 +1409,10 @@ export class Session extends EventEmitter {
   async moveTo (to) {
     const from = this.branch
     const fromSha = this.git ? this.git.sha : null
-    // HEAD came back before the folder moved: nothing to move, the trip is settled like any git work.
-    const now = await headKey(this.root)
-    const at = now ? now.key : headRef(this.root)
+    const at = await this.headNow()
     if (this.stopped) return null
-    if (at === from) {
-      this.hold = { kind: 'settling', since: this.hold ? this.hold.since : Date.now(), prevHead: this.hold ? this.hold.prevHead : this.gitSeen }
-      this.emit('hold', this.hold)
-      this.scheduleStatusWrite()
-      this.settleSoon()
-      return null
-    }
-    if (at && at !== to) { to = at; this.following = at; if (this.hold) this.hold.to = at }
+    if (at === from) return this.settleBack()
+    if (at && at !== to) { to = at; if (this.hold) this.hold.to = at }
     const oldKeys = new Map() // path -> the old branch's version (as lastKnown keys it), to tell what git carried over
     for (const rel of this.sharedPaths()) if (this.syncable(rel)) oldKeys.set(rel, this.sharedKey(rel) ?? null)
     // What doesn't reach the relay now stays in `from`'s document kept here, and goes out when the folder is back.
@@ -1358,25 +1422,40 @@ export class Session extends EventEmitter {
     const carried = await this.carriedFrom(oldKeys, fromSha)
     if (this.stopped) return null
     this.parkLocalState(from)
+    const claims = this.claims
     const doc = new Y.Doc()
     const left = this.unparkLocalState(to, doc)
-    return this.finishMove({ from, to, doc, head: now, left, carried })
+    return this.finishMove({ from, to, doc, left, carried, claims })
   }
 
-  /** Joins the new branch's document, writes it onto the folder and goes live there. Tried again on reconnecting when the relay can't load it yet. */
+  /**
+   * Joins the new branch's document, writes it onto the folder and goes live there. HEAD is
+   * read again before and after the join: if git has moved on (a quick checkout back, or a
+   * retry long after), this move is dropped without writing anything and the folder follows
+   * HEAD from where it is. Tried again (recheckMove) when the relay can't load the branch yet.
+   */
   async finishMove (m) {
-    const { from, to, doc, head, left, carried } = m
+    const { from, to, doc, left, carried } = m
+    let at = await this.headNow()
+    if (this.stopped) return null
+    if (at !== to) return this.abandonMove(m, at)
+    let head = await headKey(this.root)
     let reply
     try {
       reply = await this.conn.joinBranch(to, doc, head && head.sha ? { base: head.sha } : {})
       await this.conn.waitForBranchSync()
     } catch (err) {
-      if (!this.pendingMove) this.log(`⚠️ You're on ${to} in git, but its work in the session can't be loaded yet (${err.message}). This folder waits and tries again.`)
       this.pendingMove = m
       throw err
     }
-    this.pendingMove = null
     if (this.stopped) return null
+    head = await headKey(this.root)
+    at = head ? head.key : headRef(this.root)
+    if (this.stopped) return null
+    if (at !== to) return this.abandonMove(m, at)
+    this.pendingMove = null
+    this.moveTries = 0
+    this.moveSaid = null
     const old = this.bdoc
     this.bindBranchDoc(doc)
     old.destroy()
@@ -1388,12 +1467,11 @@ export class Session extends EventEmitter {
     this.announceBranch()
     let entries = []
     let movedOn = null
-    try { entries = await this.arrive({ created: !!reply.created, left }) } finally {
-      // git moved again meanwhile: still held, and the folder follows on from here (below).
+    try { entries = await this.arrive({ created: !!reply.created, left, carried }) } finally {
+      // git moved again while the branch was written: still held, and the folder follows on (below).
       const ref = headRef(this.root)
-      if (ref && ref !== this.branch && !this.stopped) movedOn = ref
-      if (movedOn) this.hold.to = movedOn
-      else {
+      if (ref && ref !== this.branch && !this.stopped && this.hold) { movedOn = ref; this.hold.to = ref }
+      if (!movedOn) {
         // What git and the move wrote is accounted for: the next flush is an edit unless git moves again.
         const late = [...this.heldPaths]
         this.heldPaths.clear()
@@ -1406,11 +1484,11 @@ export class Session extends EventEmitter {
       }
     }
     if (this.stopped) return null
-    if (entries.length) {
+    if (entries.length && !movedOn) {
       this.mergeHeld(entries).then(({ conflicts }) => {
         if (conflicts) this.log(`🔀 ${conflicts} file${conflicts === 1 ? '' : 's'} you changed on ${to} clash with the session's; see Merges.`)
       }).catch((err) => this.log(`could not merge: ${err.message}`))
-    }
+    } else for (const e of entries) this.merging.delete(e.rel)
     this.saveStateNow()
     fs.rmSync(this.branchStateDir(to), { recursive: true, force: true }) // in state.bin from here
     // The upstream is the new branch's now.
@@ -1421,7 +1499,7 @@ export class Session extends EventEmitter {
     this.shareGit()
     this.refreshPull()
     this.checkUpstreamSoon({ fetch: true })
-    const note = this.moveNote({ from, to: this.branch, created: !!reply.created, carried })
+    const note = this.moveNote({ from, to: this.branch, created: !!reply.created, carried: [...carried.keys()] })
     this.log(`🔀 ${note}`)
     // Agents working in this folder hear it with their next answer; the room sees it in the activity log.
     this.notice(`This folder moved from ${from} to ${this.branch} (a checkout in git): its files are ${this.branch}'s in the session now, and ${from}'s work stays in the session on ${from}.`)
@@ -1431,20 +1509,44 @@ export class Session extends EventEmitter {
     }, LOCAL)
     this.emit('branch', this.branch)
     this.scheduleStatusWrite()
-    this.following = null
-    if (movedOn) this.followHead(movedOn)
+    if (movedOn) { this.following = movedOn; return this.moveTo(movedOn) }
     return { branch: this.branch, note }
   }
 
   /**
-   * Writes the branch document onto a folder git has just put on that branch. A document new
-   * to the session (or empty) is made from the folder instead. A path git shows as changed (work
-   * git carried over, or an edit made on this branch while Quilt wasn't looking) is merged into
-   * the document: against the version this folder had when it last left the branch (`left`),
-   * else HEAD's. Returned as entries for mergeHeld. Paths HEAD has that the document hasn't are
-   * left as git has them.
+   * git moved on before a move finished: nothing of it was written. The connection goes back
+   * to the folder's branch if the join had moved it, and the folder settles there (HEAD came
+   * back) or moves to wherever HEAD is now.
    */
-  async arrive ({ created, left = null }) {
+  async abandonMove (m, at) {
+    this.pendingMove = null
+    this.claims = m.claims
+    m.doc.destroy()
+    if (this.conn.branchKey !== this.branch) {
+      this.conn.setBranch(this.branch, this.bdoc) // a reconnect meanwhile joins it again by itself
+      try {
+        await this.conn.joinBranch(this.branch, this.bdoc)
+        await this.conn.waitForBranchSync()
+      } catch (err) { this.emit('debug', `rejoining ${this.branch}: ${err.message}`) }
+    }
+    if (this.stopped) return null
+    if (!at || at === this.branch) return this.settleBack()
+    if (this.hold) this.hold.to = at
+    return this.moveTo(at)
+  }
+
+  /**
+   * Writes the branch document onto a folder git has just put on that branch. A document new
+   * to the session (or empty) is made from the folder as git left it instead, carried work
+   * included. Otherwise what git carried over from the old branch (`carried`: path -> the
+   * old branch's version, still on disk) gets this branch's version, or HEAD's when the
+   * document hasn't the path: the old branch's work never enters this one. Any other path git
+   * shows as changed (an edit made on this branch while Quilt wasn't looking) is merged into
+   * the document: against the version this folder had when it last left the branch (`left`),
+   * else HEAD's; returned as entries for mergeHeld. A file HEAD has that the document hasn't
+   * is left as git has it, and not shared.
+   */
+  async arrive ({ created, left = null, carried = new Map() }) {
     this.lastKnown.clear()
     this.storedOnDisk.clear()
     this.known = null
@@ -1457,44 +1559,85 @@ export class Session extends EventEmitter {
       try { for (const rel of walk(this.root, this.ig)) this.ingest(rel) } finally { this.seeding = false; this.arriving = false }
       return []
     }
+    // Carried, and still as git carried it (an edit made since is this branch's, and merges).
+    const away = new Set([...carried].filter(([rel, key]) => { const d = this.readDisk(rel); return (d ? d.key : null) === key }).map(([rel]) => rel))
     const tree = await treeState(this.root, [])
     if (this.stopped) return []
     // git can't say what it changed: every path that differs from the session's is merged (a record at worst).
-    const dirty = tree
+    const dirty = (tree
       ? [...tree.dirty].filter((rel) => this.syncable(rel))
       : [...new Set([...this.sharedPaths(), ...walk(this.root, this.ig)])].filter((rel) => {
           if (!this.syncable(rel)) return false
           const disk = this.readDisk(rel)
           return !(disk && (disk.skip || disk.tooLarge)) && (disk ? disk.key : undefined) !== this.sharedKey(rel)
-        })
-    const atHead = this.git && this.git.sha && dirty.length ? await filesAt(this.root, this.git.sha, dirty) : null
+        })).filter((rel) => !away.has(rel))
+    const fromHead = [...away].filter((rel) => this.sharedKey(rel) === undefined) // the document hasn't it: HEAD's file
+    const ask = [...dirty, ...fromHead]
+    const atHead = this.git && this.git.sha && ask.length ? await filesAt(this.root, this.git.sha, ask) : null
+    const bins = new Map()
+    for (const rel of fromHead) {
+      const k = atHead ? atHead.get(rel) : null
+      if (typeof k === 'string' && k.startsWith('bin:')) bins.set(rel, await blobAt(this.root, this.git.sha, rel))
+    }
     if (this.stopped) return []
     const changed = new Set(dirty)
+    const shared = this.sharedPaths()
     this.arriving = true
-    try { this.writeBackAll([...this.sharedPaths()].filter((rel) => this.syncable(rel) && !changed.has(rel))) } finally { this.arriving = false }
+    try {
+      this.writeBackAll([...shared].filter((rel) => this.syncable(rel) && !changed.has(rel)))
+      for (const rel of fromHead) this.putHeadVersion(rel, atHead ? atHead.get(rel) : null, bins.get(rel))
+      // HEAD's files the document hasn't: git's, not this folder's change, so not shared.
+      for (const rel of walk(this.root, this.ig)) {
+        if (shared.has(rel) || changed.has(rel) || this.lastKnown.has(rel) || !this.syncable(rel)) continue
+        const disk = this.readDisk(rel)
+        if (disk && !disk.skip && !disk.tooLarge) this.lastKnown.set(rel, disk.key)
+      }
+    } finally { this.arriving = false }
     const baseOf = (rel) => left && left.has(rel) ? left.get(rel) : atHead ? atHead.get(rel) ?? undefined : undefined
     const entries = dirty.map((rel) => ({ rel, base: baseOf(rel), via: 'hold' }))
     for (const e of entries) this.merging.add(e.rel)
     return entries
   }
 
+  /** A carried path the branch's document hasn't: HEAD's file goes back (`key` from filesAt, `buf` for a binary), or none when HEAD hasn't it either. */
+  putHeadVersion (rel, key, buf) {
+    if (key === undefined) return // git couldn't read it (too large, a filter): left as it is
+    try {
+      const abs = resolveInside(this.root, rel)
+      if (key === null) {
+        fs.rmSync(abs, { force: true })
+        removeEmptyParents(this.root, path.dirname(abs))
+        this.lastKnown.delete(rel)
+        return
+      }
+      const data = key.startsWith('bin:') ? buf : key
+      if (data === null || data === undefined) return
+      fs.mkdirSync(path.dirname(abs), { recursive: true })
+      this.writeFile(rel, abs, data)
+      this.lastKnown.set(rel, key)
+    } catch (err) { this.log(`could not put ${rel} back to your last commit: ${err.message}`) }
+  }
+
   /**
-   * The paths git carried over from the old branch: changed on disk, the old document's
-   * version there, and not the old HEAD's. (git keeps uncommitted changes across a checkout.)
+   * The paths git carried over from the old branch (path -> the old branch's version): changed
+   * on disk, the old document's version there, and not the old HEAD's. (git keeps uncommitted
+   * changes across a checkout; Quilt wrote the session's work there as such.)
    */
   async carriedFrom (oldKeys, fromSha) {
+    const out = new Map()
     const tree = await treeState(this.root, [])
-    if (!tree) return []
-    // .gitignore's .quilt/ line is Quilt's own, carried on every checkout: not the person's work.
+    if (!tree) return out
+    // .gitignore's .quilt/ line is Quilt's own, carried on every checkout: not the session's work.
     const dirty = [...tree.dirty].filter((rel) => this.syncable(rel) && oldKeys.has(rel) && rel !== '.gitignore')
     const was = fromSha && dirty.length ? await filesAt(this.root, fromSha, dirty) : null
-    return dirty.filter((rel) => {
+    for (const rel of dirty) {
       const disk = this.readDisk(rel)
-      if (disk && (disk.skip || disk.tooLarge)) return false
+      if (disk && (disk.skip || disk.tooLarge)) continue
       const here = disk ? disk.key : null
       const head = was ? was.get(rel) : undefined // undefined: git couldn't read it
-      return here === oldKeys.get(rel) && head !== here
-    })
+      if (here === oldKeys.get(rel) && head !== here) out.set(rel, here)
+    }
+    return out
   }
 
   /** The session's version of each path onto the disk, over what git put there (git has that: no copy is kept). */
@@ -1547,7 +1690,7 @@ export class Session extends EventEmitter {
     const head = `You're on ${to} now (you switched in git)`
     if (created) return `${head}. ${to} is new to the session: this folder's files are its starting point, and ${from}'s work stays in the session on ${from}.`
     const list = carried.slice(0, 3).join(', ') + (carried.length > 3 ? ', …' : '')
-    const brought = carried.length ? ` git kept your uncommitted changes to ${list} from ${from}: they're ${to}'s work now.` : ''
+    const brought = carried.length ? ` git had carried ${from}'s uncommitted work in ${list} over: that stays in the session on ${from}, and ${to}'s version is on disk.` : ''
     return `${head}; the session's work there is on disk.${brought}`
   }
 
@@ -2730,7 +2873,7 @@ export class Session extends EventEmitter {
   /** Tries failed uploads, downloads and writes again. */
   retryFailed () {
     if (!this.ready || this.stopped) return
-    if (this.pendingMove && this.conn.connected) this.gitTask(() => this.pendingMove && this.finishMove(this.pendingMove)).catch(() => {})
+    if (this.hold && this.hold.kind === 'switching' && !this.following) this.recheckSoon()
     const failed = [...this.retry]
     this.retry.clear()
     for (const [rel, kind] of failed) {
@@ -4525,7 +4668,7 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
       chat: this.messages({ limit: 20, markRead: false }),
       unread: this.unreadCount(),
       fileCount: this.files.size + this.blobs.size,
-      git: this.git ? { branch: this.git.branch, key: this.git.key, hold: this.hold ? { kind: this.hold.kind, since: this.hold.since, to: this.hold.to || null, conflict: this.hold.conflict || null } : null, pull: this.pull, upstream: this.upstream, repo: this.repo } : null,
+      git: this.git ? { branch: this.git.branch, key: this.git.key, hold: this.hold ? { kind: this.hold.kind, since: this.hold.since, to: this.hold.to || null, conflict: this.hold.conflict || null, waiting: this.hold.waiting || null } : null, pull: this.pull, upstream: this.upstream, repo: this.repo } : null,
       branches: branchBoard([{ name: this.name, git: this.gitSummary() }, ...peers.map((p) => ({ name: p.name, git: p.git, persona: !!p.persona }))])
     }
   }

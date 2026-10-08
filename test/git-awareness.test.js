@@ -294,7 +294,7 @@ test('checking out another branch moves that folder to its document; coming back
   await never(() => read(dirA, 'src/app.js') !== 'line1\nline2\nline3\nline4\nline5\n', 500)
 })
 
-test('stopped on main, restarted on another branch: the folder moves there, and main\'s room work never lands on it', async (t) => {
+test('stopped on main, restarted on a new branch: the folder moves there from the folder as git left it, and later main work never lands on it', async (t) => {
   const { A, B, dirA, dirB, room } = await pairRepos(t)
   write(dirA, 'README.md', 'main work\n')
   await waitFor(() => read(dirB, 'README.md') === 'main work\n')
@@ -304,7 +304,7 @@ test('stopped on main, restarted on another branch: the folder moves there, and 
   write(dirA, 'src/app.js', 'line1\nline2 (alice, meanwhile)\nline3\nline4\nline5\n')
   const B2 = await open(t, dirB, 'bob', { room })
   await waitFor(() => B2.status().branch === 'feature' && B2.status().git.hold === null, 10000)
-  assert.equal(read(dirB, 'README.md'), 'main work\n', 'what git carried over stays where git put it')
+  assert.equal(B2.files.get('README.md')?.toString(), 'main work\n', 'a branch new to the session starts from the folder, carried work included')
   assert.equal(B2.files.get('src/app.js')?.toString(), 'feature work\n', 'the edit made on feature is feature\'s')
   await never(() => read(dirB, 'src/app.js') !== 'feature work\n' || read(dirA, 'src/app.js') !== 'line1\nline2 (alice, meanwhile)\nline3\nline4\nline5\n' || read(dirA, 'README.md') !== 'main work\n', 2000)
   assert.equal(A.status().branch, 'main')

@@ -10,6 +10,7 @@ import { execFileSync } from 'node:child_process'
 import { startServer } from '../src/server.js'
 import { Session } from '../src/session.js'
 import { generateIdentity } from '../src/identity.js'
+import { MAX_BRANCHES } from '../src/branchdocs.js'
 
 let srv, server
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-bs-${n}-`))
@@ -111,23 +112,84 @@ test('checking out main again brings the room\'s work on main, including edits m
   await waitFor(() => read(dirB, 'src/app.js') === 'back on main\n')
 })
 
-test('uncommitted work git carries over lands on the branch git puts it on; the old branch\'s work is untouched', async (t) => {
+test('on a branch the session has, what git carried over gets that branch\'s version: a partner\'s main work never reaches feature-x', async (t) => {
   const { A, B, dirA, dirB } = await repos(t)
   git(dirA, 'checkout', '-q', 'feature-x') // feature-x is in the session from here
   await waitFor(() => on(A, 'feature-x'), 10000)
   git(dirA, 'checkout', '-q', 'main')
   await waitFor(() => on(A, 'main'), 10000)
-  write(dirA, 'src/app.js', 'main work\n') // the same in both commits: git carries it over
-  await waitFor(() => read(dirB, 'src/app.js') === 'main work\n')
+  write(dirB, 'src/app.js', 'bob on main\n') // the same file in both commits: git carries Quilt's copy over
+  write(dirB, 'notes.txt', 'bob notes\n') // untracked: carried too
+  await waitFor(() => read(dirA, 'src/app.js') === 'bob on main\n' && read(dirA, 'notes.txt') === 'bob notes\n')
   git(dirA, 'checkout', '-q', 'feature-x')
   await waitFor(() => on(A, 'feature-x'), 10000)
-  assert.equal(read(dirA, 'src/app.js'), 'main work\n', 'where git put it')
-  await waitFor(() => A.files.get('src/app.js')?.toString() === 'main work\n')
-  assert.ok(A.logs.some((l) => l.includes('git kept your uncommitted changes to src/app.js from main')), A.logs.join('\n'))
-  write(dirA, 'src/app.js', 'feature edit\n')
-  await waitFor(() => A.files.get('src/app.js')?.toString() === 'feature edit\n')
-  await never(() => read(dirB, 'src/app.js') !== 'main work\n' || B.files.get('src/app.js')?.toString() !== 'main work\n', 1500)
-  assert.equal(read(dirB, 'README.md'), 'hello\n')
+  assert.equal(read(dirA, 'src/app.js'), MAIN_APP, 'feature-x\'s version is on disk')
+  assert.equal(read(dirA, 'notes.txt'), null, 'neither feature-x nor its commit has it')
+  assert.ok(A.logs.some((l) => l.includes("git had carried main's uncommitted work in")), A.logs.join('\n'))
+  await never(() => A.files.get('src/app.js')?.toString() !== MAIN_APP || A.files.has('notes.txt'), 1500)
+  assert.equal(read(dirB, 'src/app.js'), 'bob on main\n', 'main keeps it')
+  assert.equal(B.files.get('notes.txt')?.toString(), 'bob notes\n')
+  git(dirA, 'checkout', '-q', 'main')
+  await waitFor(() => on(A, 'main') && read(dirA, 'src/app.js') === 'bob on main\n' && read(dirA, 'notes.txt') === 'bob notes\n', 10000)
+})
+
+test('git checkout -b: a branch new to the session starts from the folder, its uncommitted work included', async (t) => {
+  const { A, B, dirA, dirB } = await repos(t)
+  write(dirA, 'src/app.js', 'wip\n')
+  await waitFor(() => read(dirB, 'src/app.js') === 'wip\n')
+  git(dirA, 'checkout', '-qb', 'try-it')
+  await waitFor(() => on(A, 'try-it'), 10000)
+  assert.equal(read(dirA, 'src/app.js'), 'wip\n')
+  assert.equal(A.files.get('src/app.js')?.toString(), 'wip\n')
+  await waitFor(() => A.branchList.some((b) => b.key === 'try-it'))
+  write(dirA, 'src/app.js', 'wip 2\n')
+  await waitFor(() => A.files.get('src/app.js')?.toString() === 'wip 2\n')
+  await never(() => read(dirB, 'src/app.js') !== 'wip\n', 1500)
+})
+
+test('a checkout straight back: nothing of either branch ends up in the other', async (t) => {
+  const { A, B, dirA, dirB, room } = await repos(t)
+  git(dirB, 'checkout', '-q', 'feature-x') // feature-x is in the session
+  await waitFor(() => on(B, 'feature-x'), 10000)
+  git(dirB, 'checkout', '-q', 'main')
+  await waitFor(() => on(B, 'main'), 10000)
+  write(dirB, 'src/app.js', 'main work\n')
+  await waitFor(() => read(dirA, 'src/app.js') === 'main work\n')
+  git(dirA, 'checkout', '-q', 'feature-x')
+  await waitFor(() => A.status().git.hold?.kind === 'switching', 10000) // the folder has started moving
+  git(dirA, 'checkout', '-q', 'main') // back before it got there
+  await waitFor(() => on(A, 'main') && read(dirA, 'src/app.js') === 'main work\n', 15000)
+  await never(() => !on(A, 'main'), 1500)
+  assert.equal(read(dirA, 'feature.txt'), null)
+  assert.equal(read(dirA, 'README.md'), 'hello\n')
+  assert.equal(A.files.has('feature.txt'), false)
+  assert.equal(A.files.get('README.md')?.toString(), 'hello\n')
+  assert.equal(B.files.has('feature.txt'), false)
+  const fx = srv.rooms.get(room).store.load('feature-x').doc.getMap('files')
+  assert.equal(fx.get('src/app.js')?.toString(), MAIN_APP, 'main\'s work is not in feature-x')
+  assert.equal(fx.get('feature.txt')?.toString(), 'feature\n')
+  write(dirA, 'src/app.js', 'still live\n')
+  await waitFor(() => read(dirB, 'src/app.js') === 'still live\n')
+})
+
+test('a branch the relay refuses is said once; checking the old branch back out resumes sync', async (t) => {
+  const { A, B, dirA, dirB, room } = await repos(t)
+  const r = srv.rooms.get(room)
+  let i = 0
+  while (Object.keys(r.meta.branches).length < MAX_BRANCHES) r.noteBranch(`filler-${i++}`)
+  git(dirA, 'checkout', '-q', 'feature-x')
+  await waitFor(() => A.status().git.hold?.waiting === 'refused', 10000)
+  const said = A.logs.filter((l) => l.includes("The session can't take feature-x"))
+  assert.equal(said.length, 1, A.logs.join('\n'))
+  assert.match(said[0], /check out main again in git to keep syncing there/)
+  assert.ok(A.notices.some((n) => n.includes("The session can't take feature-x")))
+  write(dirB, 'src/app.js', 'bob meanwhile\n')
+  await never(() => read(dirA, 'src/app.js') === 'bob meanwhile\n' || B.files.has('feature.txt'), 1500)
+  git(dirA, 'checkout', '-q', 'main')
+  await waitFor(() => on(A, 'main') && read(dirA, 'src/app.js') === 'bob meanwhile\n', 10000)
+  write(dirA, 'README.md', 'alice again\n')
+  await waitFor(() => read(dirB, 'README.md') === 'alice again\n')
+  assert.equal(B.files.has('feature.txt'), false)
 })
 
 test('a checkout git refuses mid-merge changes nothing', async (t) => {

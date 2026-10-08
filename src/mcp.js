@@ -494,7 +494,7 @@ export async function runMcp () {
     const d = findDaemon(joined ? joined.dir : undefined)
     if (!d) return
     const c = at(pushCursor, d)
-    const r = await call(d, 'POST', '/inbox', { after: c.seq })
+    const r = await call(d, 'POST', '/inbox', { after: c.seq, poll: true })
     c.seq = r.seq
     if (c.fresh || !r.events.length) return
     for (const uri of subscribed) await server.server.sendResourceUpdated({ uri })
@@ -512,7 +512,7 @@ export async function runMcp () {
     mimeType: 'text/markdown'
   }, async (uri) => {
     const d = findDaemon(joined ? joined.dir : undefined)
-    const r = d ? await call(d, 'POST', '/inbox', { after: 0 }).catch(() => ({ events: [] })) : { events: [] }
+    const r = d ? await call(d, 'POST', '/inbox', { after: 0, poll: true }).catch(() => ({ events: [] })) : { events: [] }
     return { contents: [{ uri: uri.href, mimeType: 'text/markdown', text: d ? (renderInbox(r.events) || 'Nothing has been waiting for you.') : NOT_RUNNING }] }
   })
   server.server.setRequestHandler(SubscribeRequestSchema, (req) => {
@@ -520,7 +520,7 @@ export async function runMcp () {
       subscribed.add(INBOX_URI)
       // Take stock now, so only what arrives from here on is announced.
       const d = findDaemon(joined ? joined.dir : undefined)
-      if (d) call(d, 'POST', '/inbox', { after: 0 }).then((r) => { const c = at(pushCursor, d); if (c.fresh || c.seq < r.seq) { c.seq = r.seq; c.fresh = false } }).catch(() => {})
+      if (d) call(d, 'POST', '/inbox', { after: 0, poll: true }).then((r) => { const c = at(pushCursor, d); if (c.fresh || c.seq < r.seq) { c.seq = r.seq; c.fresh = false } }).catch(() => {})
     }
     return {}
   })

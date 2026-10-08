@@ -8,7 +8,7 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { startServer } from '../src/server.js'
 import { Session } from '../src/session.js'
-import { personaName, cleanLabel, labelFromBranch, labelFromText, firstName } from '../src/persona.js'
+import { personaName, cleanLabel, labelFromBranch, labelFromText, labelFromFile, firstName } from '../src/persona.js'
 
 test('names: first name and a label from the branch or from what the session says it does', () => {
   assert.equal(firstName('Daniel Carmichael'), 'Daniel')
@@ -17,7 +17,9 @@ test('names: first name and a label from the branch or from what the session say
   assert.equal(labelFromBranch('HEAD'), '')
   assert.equal(labelFromBranch('claude/file-queue'), 'file-queue')
   assert.equal(labelFromText("I'm working on the hosted agent costs doc"), 'hosted agent costs')
-  assert.equal(labelFromText('Fix the login bug'), 'fix the login')
+  assert.equal(labelFromText('Fix the login bug'), 'fix login bug')
+  assert.equal(labelFromText('can you check why the build fails on CI?'), 'check build fails')
+  assert.equal(labelFromFile('src/ui/session.js'), 'session')
   assert.equal(cleanLabel('@sneaky · name\nwith lines'), 'sneaky name with lines')
   assert.ok(cleanLabel('a very long label that keeps going and going forever').length <= 32)
 })
@@ -135,14 +137,51 @@ test("an AI session's claims are its own: another session of the same person is 
   await waitFor(() => bob.claimFor('src/other.js'))
   assert.equal((await dana.finishEditing('aaaaaaaa')).released, 1)
   await waitFor(() => !bob.claimFor('src/app.js'))
-  assert.equal(bob.claimFor('src/other.js').by, 'Dana · Codex')
+  assert.equal(bob.claimFor('src/other.js').by, 'Dana · other', 'named after the first file it edits')
 })
 
 test('a hook finds its AI session by the tool process they share', async (t) => {
   const { dana } = await pair(t)
-  dana.registerPersona({ via: 'aaaaaaaa', tool: 'Claude Code', pids: [500, 400] }) // quilt mcp's parent, then the app above it
-  dana.registerPersona({ via: 'bbbbbbbb', tool: 'Claude Code', pids: [600, 400] })
-  assert.equal(dana.personaFor([700, 600, 400, 1]), 'bbbbbbbb', 'its own tool process, not the app they share')
-  assert.equal(dana.personaFor([701, 500, 400]), 'aaaaaaaa')
+  const [a, b] = [process.pid, process.ppid] // two live "tool processes", under one shared app (4321)
+  dana.registerPersona({ via: 'aaaaaaaa', tool: 'Claude Code', pids: [a, 4321] }) // quilt mcp's parent, then the app above it
+  dana.registerPersona({ via: 'bbbbbbbb', tool: 'Claude Code', pids: [b, 4321] })
+  assert.equal(dana.personaFor([700, b, 4321, 1]), 'bbbbbbbb', 'its own tool process, not the app they share')
+  assert.equal(dana.personaFor([701, a, 4321]), 'aaaaaaaa')
   assert.equal(dana.personaFor([999]), null)
+})
+
+test('names come from the first prompt; the same tool session keeps its name; ended ones free theirs; polls are not activity', async (t) => {
+  const { dana } = await pair(t)
+  // Named from what the person first asked it (a prompt hook), once.
+  dana.registerPersona({ via: 'aaaaaaaa', tool: 'Claude Code', pids: [process.pid, 4321] })
+  dana.personaPrompt('aaaaaaaa', 'can you fix the flaky upload test please')
+  assert.equal(dana.persona('aaaaaaaa').name, 'Dana · fix flaky upload')
+  dana.personaPrompt('aaaaaaaa', 'now something else')
+  assert.equal(dana.persona('aaaaaaaa').name, 'Dana · fix flaky upload')
+  // Its quilt mcp restarts (a new id, the same tool process): same session, same name, same claims.
+  const again = dana.registerPersona({ via: 'cccccccc', tool: 'Claude Code', pids: [process.pid, 4321] })
+  assert.equal(again.name, 'Dana · fix flaky upload')
+  assert.equal(dana.personas.size, 1)
+  assert.deepEqual(dana.as('cccccccc'), { as: { id: 'aaaaaaaa', label: 'fix flaky upload' } }, 'its claims stay its own on the relay')
+  // A session whose tool process ended is gone, and its name is free.
+  dana.registerPersona({ via: 'dddddddd', tool: 'Codex', pids: [2147480000, 4321] })
+  dana.publishPersonas()
+  assert.equal(dana.persona('dddddddd'), null)
+  // Without sharing their AI chat, a person's prompts name nothing.
+  dana.registerPersona({ via: 'eeeeeeee', tool: 'Cursor', pids: [process.ppid, 4321] })
+  dana.agentSharing = false
+  dana.personaPrompt('eeeeeeee', 'secret project codename')
+  assert.equal(dana.persona('eeeeeeee').name, 'Dana · Cursor')
+})
+
+test("each tool's prompt hook hands the prompt to the app, for the AI session's name", async () => {
+  const { handleHook } = await import('../src/hooks.js')
+  for (const [event, dialect] of [['UserPromptSubmit', 'claude'], ['beforeSubmitPrompt', 'cursor'], ['BeforeAgent', 'gemini']]) {
+    const calls = []
+    const r = await handleHook({ hook_event_name: event, prompt: 'fix the login bug', cwd: '/tmp' }, {
+      findDaemon: () => ({ dir: '/tmp', port: 1, token: 't' }), call: async (d, method, route, body) => { calls.push([method, route, body]); return {} }, pids: [11, 22], dialect
+    })
+    assert.deepEqual(calls, [['POST', '/persona/prompt', { text: 'fix the login bug', pids: [11, 22] }]], event)
+    assert.equal(r.exitCode, 0)
+  }
 })

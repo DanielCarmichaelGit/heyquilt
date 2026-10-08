@@ -43,6 +43,7 @@ export function hookSettings (command = hookCommand()) {
   const edits = [...CLAUDE_EDITS, ...CURSOR_EDITS].join('|')
   return {
     SessionStart: [{ hooks: [run] }],
+    UserPromptSubmit: [{ hooks: [run] }],
     PreToolUse: [{ matcher: edits, hooks: [run] }],
     PostToolUse: [{ matcher: edits, hooks: [run] }],
     Stop: [{ hooks: [run] }],
@@ -55,6 +56,7 @@ export function geminiHookSettings (command = hookCommand('gemini')) {
   const run = { type: 'command', command, timeout: 10000 }
   return {
     SessionStart: [{ hooks: [run] }],
+    BeforeAgent: [{ hooks: [run] }],
     BeforeTool: [{ matcher: GEMINI_EDITS.join('|'), hooks: [run] }],
     AfterTool: [{ matcher: GEMINI_EDITS.join('|'), hooks: [run] }],
     AfterAgent: [{ hooks: [run] }],
@@ -73,7 +75,7 @@ const claudeLike = (eventName) => ({
 
 export const DIALECTS = {
   claude: {
-    events: { SessionStart: 'start', PreToolUse: 'preEdit', PostToolUse: 'postEdit', Stop: 'stop', SessionEnd: 'end' },
+    events: { SessionStart: 'start', UserPromptSubmit: 'prompt', PreToolUse: 'preEdit', PostToolUse: 'postEdit', Stop: 'stop', SessionEnd: 'end' },
     context: (name, ctx) => claudeLike(name).context(ctx),
     deny: (name, reason) => ({ hookSpecificOutput: { hookEventName: name, permissionDecision: 'deny', permissionDecisionReason: reason } }),
     block: (name, reason) => claudeLike(name).block(reason),
@@ -81,7 +83,7 @@ export const DIALECTS = {
   },
   // Cursor runs the project's Claude Code hooks, and its own, with its own event names and answers.
   cursor: {
-    events: { sessionStart: 'start', preToolUse: 'preEdit', postToolUse: 'postEdit', stop: 'stop', sessionEnd: 'end' },
+    events: { sessionStart: 'start', beforeSubmitPrompt: 'prompt', preToolUse: 'preEdit', postToolUse: 'postEdit', stop: 'stop', sessionEnd: 'end' },
     context: (name, ctx) => ({ additional_context: ctx }),
     deny: (name, reason) => ({ permission: 'deny', user_message: reason, agent_message: reason }),
     block: (name, reason) => ({ followup_message: reason }),
@@ -89,7 +91,7 @@ export const DIALECTS = {
     none: () => ({})
   },
   gemini: {
-    events: { SessionStart: 'start', BeforeTool: 'preEdit', AfterTool: 'postEdit', AfterAgent: 'stop', SessionEnd: 'end' },
+    events: { SessionStart: 'start', BeforeAgent: 'prompt', BeforeTool: 'preEdit', AfterTool: 'postEdit', AfterAgent: 'stop', SessionEnd: 'end' },
     context: (name, ctx) => claudeLike(name).context(ctx),
     deny: (name, reason) => ({ decision: 'deny', reason }),
     block: (name, reason) => ({ decision: 'block', reason }),
@@ -139,6 +141,8 @@ export async function handleHook (event, { findDaemon: find = findDaemon, call =
   const ev = { ...event, cwd }
   switch (say.events[name]) {
     case 'start': return answer(await sessionStart(api, state, say, name))
+    // The first prompt names an AI session that has no name yet (persona.js); the prompt goes on as asked.
+    case 'prompt': await api('POST', '/persona/prompt', { text: String(event.prompt || '').slice(0, 2000) }).catch(() => {}); return answer({ exitCode: 0 })
     case 'preEdit': return answer(await preEdit(ev, d, api, state, say, name))
     case 'postEdit': return answer(await postEdit(api, state, say, name))
     case 'stop': return answer(await stop(ev, api, state, say, name))

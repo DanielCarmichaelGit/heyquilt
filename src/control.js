@@ -21,6 +21,8 @@ export async function startControl (session, extras = {}) {
     'POST /persona': (b) => session.registerPersona({ via: b.via, tool: b.tool, cwd: b.cwd, ppid: b.ppid, pids: b.mcpPids }),
     // It names itself after its work: { via, name } -> { name }.
     'POST /persona/name': (b) => session.renamePersona(b.via, b.name, 'self'),
+    // What the person asked their AI session (a prompt hook): names a session that has no name yet.
+    'POST /persona/prompt': (b) => { session.personaPrompt(b.via, b.text); return { ok: true } },
     // The CLI and the MCP server: what an AI sends, held to the chat rules (duties.js). A person typing in `quilt join` sends with everyone.
     'POST /say': (b) => session.say(b.text, { to: b.to, agent: true, via: b.via ? String(b.via) : null, everyone: !!b.everyone, also: !!b.also }),
     'POST /inbox/settle': (b) => session.settle(b.ids),
@@ -131,7 +133,8 @@ export async function startControl (session, extras = {}) {
       if (!b.via && q.get('via')) b.via = q.get('via')
       if (!b.pids && q.get('pids')) b.pids = q.get('pids').split(',')
       if (!b.via && b.pids) b.via = session.personaFor(b.pids)
-      if (b.via) session.touchPersona(b.via)
+      // A background poll (the inbox push loop) is not the AI at work: only real calls keep it here.
+      if (b.via && !b.poll) session.touchPersona(b.via)
       reply(200, await route(b))
     } catch (err) {
       reply(400, { error: err.message })

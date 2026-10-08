@@ -26,7 +26,7 @@ import { getSettings } from './settings.js'
 import { HistoryLog, queryHistory, parseSince, currentTask } from './history.js'
 import { historyMarks, awayChanges, mergeCatchUp, emptyCatchUp } from './catchup.js'
 import { Inbox } from './inbox.js'
-import { personaName, cleanLabel, labelFromBranch, labelFromText, gitBranch } from './persona.js'
+import { personaName, cleanLabel, labelFromBranch, labelFromText, labelFromFile, gitBranch } from './persona.js'
 import { chatAbout, waitingOn, queuedFor, renderQueueNotice, askForIt, answered, addressees, unaddressed, sentByAnother, renderRepeat } from './duties.js'
 import { makeSubscription, deliverEvents } from './webhooks.js'
 import { pickChecklist } from './agent-task-workflow.js'
@@ -46,6 +46,10 @@ const STILL_MARKED = 'this file has conflict markers in it; finish editing it (o
 const COLORS = ['#b9432b', '#3b6a9a', '#4a7a45', '#855a9c', '#a8701c', '#2e7a80', '#9c4f6b']
 const RECENT_MS = 2 * 60 * 1000
 const AGENT_FEED_CAP = 300
+/** Whether a process is still running (EPERM: it is, but someone else's). */
+function processAlive (pid) {
+  try { process.kill(pid, 0); return true } catch (err) { return err.code === 'EPERM' }
+}
 const PERSONA_AWAY_MS = 30 * 60 * 1000 // an AI session not heard from this long is no longer shown as here
 const AUTO_CLAIM_QUIET_MS = 5 * 60 * 1000 // a file we stopped editing this long ago is let go of
 // Our AI stopped working (its chat reader says so) while someone waits for a file it held: this long
@@ -3056,10 +3060,22 @@ export class Session extends EventEmitter {
     if (this.kind === 'agent') return { name: this.name, own: true }
     const now = Date.now()
     let p = this.personas.get(via)
+    // The same tool session again (its `quilt mcp` restarted, or a second one from the same
+    // process): it keeps its name, claims and inbox instead of becoming "… 2".
+    if (!p && chain[0]) {
+      const same = [...this.personas.values()].find((q) => q.chain && q.chain[0] === chain[0])
+      if (same) {
+        this.personas.delete(same.via)
+        for (const [rel, v] of this.autoVia) if (v === same.via) this.autoVia.set(rel, via)
+        same.via = via
+        this.personas.set(via, same)
+        p = same
+      }
+    }
     if (!p) {
       const fromBranch = labelFromBranch(gitBranch(cwd && fs.existsSync(cwd) ? cwd : this.root))
       const label = fromBranch || cleanLabel(tool) || 'AI'
-      p = { via, label, name: '', aliases: [], tool: String(tool || '').slice(0, 40), chain, named: fromBranch ? 'branch' : null, inbox: new Inbox(), seenAt: now, touchedAt: 0, focus: '' }
+      p = { via, rid: via, label, name: '', aliases: [], tool: String(tool || '').slice(0, 40), chain, named: fromBranch ? 'branch' : null, inbox: new Inbox(), seenAt: now, touchedAt: 0, focus: '' }
       p.name = this.freePersonaName(label)
       this.personas.set(via, p)
       // What is already in the chat wakes nobody.
@@ -3095,7 +3111,7 @@ export class Session extends EventEmitter {
   actorName (via) { const p = this.persona(via); return p ? p.name : this.name }
 
   /** The claim request fields that make the relay act for an AI session (server.js claimant). */
-  as (via) { const p = this.persona(via); return p ? { as: { id: p.via, label: p.label } } : {} }
+  as (via) { const p = this.persona(via); return p ? { as: { id: p.rid || p.via, label: p.label } } : {} }
 
   /** Whether a name is this member's or one of its AI sessions' (now or before a rename). */
   isMine (name) {
@@ -3146,6 +3162,17 @@ export class Session extends EventEmitter {
     this.publishPersonas()
   }
 
+  /**
+   * What the person asked their AI session (its tool's prompt hook): the first prompt names a
+   * session that has no name yet. Not while this person keeps their AI chat to themselves.
+   */
+  personaPrompt (via, text) {
+    const p = this.persona(via)
+    if (!p || p.named || this.agentSharing === false) return
+    const label = labelFromText(text)
+    if (label) this.renamePersona(via, label, 'prompt')
+  }
+
   /** An AI session used a Quilt tool: it is here, and its claims' idle time starts again (once a minute at most). */
   touchPersona (via) {
     const p = this.persona(via)
@@ -3178,6 +3205,8 @@ export class Session extends EventEmitter {
   publishPersonas () {
     if (!this.conn) return
     const now = Date.now()
+    // A session whose tool process has ended is gone: its name is free again.
+    for (const p of [...this.personas.values()]) if (p.chain && p.chain[0] && !processAlive(p.chain[0])) this.personas.delete(p.via)
     const live = [...this.personas.values()].filter((p) => now - p.seenAt < PERSONA_AWAY_MS)
     const list = live.map((p) => ({ name: p.name, tool: p.tool, ...(p.focus ? { focus: p.focus } : {}) }))
     const was = JSON.stringify(this.conn.awareness.getLocalState()?.personas || [])
@@ -3445,6 +3474,8 @@ export class Session extends EventEmitter {
       try {
         if (!this.conn) throw new Error('not connected')
         const focus = (p0 && p0.focus) || this.focus
+        // A session still named after its tool takes a name from the first file it edits.
+        if (p0 && !p0.named && labelFromFile(p)) this.renamePersona(via, labelFromFile(p), 'file')
         await this.conn.claimRequest({ op: 'claim', pattern: p, note: focus ? `editing: ${focus}` : 'editing', ...this.as(via) })
         this.autoClaims.set(p, Date.now())
         if (p0) this.autoVia.set(p, via)

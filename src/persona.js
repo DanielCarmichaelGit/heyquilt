@@ -52,17 +52,23 @@ export function gitBranch (dir) {
   } catch { return '' }
 }
 
-const FILLER = new Set(['i', 'im', 'i\'m', 'am', 'is', 'are', 'the', 'a', 'an', 'to', 'for', 'on', 'of', 'and', 'my', 'now', 'just', 'currently', 'working', 'work', 'going', 'will', 'be', 'about', 'with', 'in', 'this', 'that', 'it', 'please', 'can', 'you', 'we', 'let', 'lets', 'let\'s', 'start', 'starting'])
+const FILLER = new Set(['i', 'im', 'i\'m', 'am', 'is', 'are', 'was', 'the', 'a', 'an', 'to', 'for', 'on', 'of', 'and', 'or', 'my', 'our', 'me', 'now', 'just', 'currently', 'working', 'work', 'going', 'will', 'be', 'about', 'with', 'in', 'this', 'that', 'these', 'it', 'its', 'please', 'can', 'could', 'would', 'you', 'we', 'let', 'lets', 'let\'s', 'start', 'starting', 'why', 'what', 'how', 'when', 'where', 'there', 'some', 'so', 'do', 'does', 'did', 'have', 'has', 'hey', 'hi', 'ok', 'okay', 'yes', 'no', 'all', 'also', 'into', 'at', 'from', 'by', 'up', 'out', 'make', 'sure', 'want', 'need', 'like', 'use', 'using', 'thanks', 'thank'])
 
-/** A label from what a session says it is doing: its first few words that carry meaning. */
+/** A label from what a session says it is doing (or was asked): its first few words that carry meaning. */
 export function labelFromText (text) {
-  const words = String(text || '').replace(/[^\p{L}\p{N}\s'-]/gu, ' ').split(/\s+/).filter(Boolean)
+  const words = String(text || '').split(/\s+/).filter((w) => w && !/^(https?:|\/|~|<)/.test(w))
+    .map((w) => w.replace(/[^\p{L}\p{N}'-]/gu, '').replace(/^['-]+|['-]+$/g, '')).filter(Boolean)
   const kept = []
   for (const w of words) {
-    if (!kept.length && FILLER.has(w.toLowerCase())) continue
+    if (FILLER.has(w.toLowerCase()) || w.length > 24) continue
     kept.push(w.toLowerCase())
     if (kept.length === 3) break
   }
-  while (kept.length && FILLER.has(kept[kept.length - 1])) kept.pop()
   return cleanLabel(kept.join(' '))
+}
+
+/** A label from the first file a session edits: its name without the extension ("session.js" -> "session"). */
+export function labelFromFile (rel) {
+  const base = String(rel || '').split('/').filter(Boolean).pop() || ''
+  return cleanLabel(base.replace(/\.[A-Za-z0-9]+$/, ''))
 }

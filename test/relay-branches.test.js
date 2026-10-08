@@ -6,6 +6,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import * as Y from 'yjs'
 import { startServer } from '../src/server.js'
 import { Connection, REMOTE } from '../src/connection.js'
@@ -209,4 +210,146 @@ test('only editors may start a new branch; a viewer may still join one that exis
   assert.equal(room.store.get('new-feature'), null, 'no document was created for the refused branch')
   const r = await a.c.joinBranch('main', new Y.Doc())
   assert.equal(r.created, false, 'joining an existing branch is still allowed')
+})
+
+/** A room as a relay from before branch documents saved it: one document with files, chat and tasks. */
+function legacyRoom (dataDir, room) {
+  const legacy = new Y.Doc()
+  put(legacy, 'app.js', 'old\n')
+  legacy.getArray('chat').push([{ id: 'aaaaaaaaaaaaaaaa', by: 'x', text: 'old chat', ts: 1 }])
+  legacy.getMap('tasks').set('t1', { id: 't1', title: 'old task' })
+  fs.writeFileSync(path.join(dataDir, `${room}.ydoc`), Y.encodeStateAsUpdate(legacy))
+  fs.writeFileSync(path.join(dataDir, `${room}.json`), JSON.stringify({ secretHash: crypto.createHash('sha256').update('s').digest('hex'), createdAt: Date.now(), lastActive: Date.now() }))
+  return legacy
+}
+
+test('an old room\'s document becomes its default branch, taken by the first branch that joins; apps\' saved copies still match', async (t) => {
+  const dataDir = tmp('legacy')
+  const legacy = legacyRoom(dataDir, 'rb6')
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, dataDir })
+  t.after(() => srv.close())
+  const a = open(t, srv, 'rb6', 'a', 'main')
+  await a.c.waitForSync()
+  assert.equal(text(a.bdoc, 'app.js'), 'old\n')
+  assert.equal(a.doc.getArray('chat').get(0).text, 'old chat')
+  assert.equal(a.doc.getMap('tasks').get('t1').title, 'old task')
+  assert.equal(a.bdoc.getArray('chat').length, 0, 'the room-wide parts left the branch document')
+  const room = srv.rooms.get('rb6')
+  assert.equal(room.meta.layout, 2)
+  assert.equal(room.defaultKey, 'main')
+  assert.ok(fs.existsSync(path.join(dataDir, 'branches', 'rb6', branchFileName('main'))))
+  // An app's saved copy of the old document edits the same text, not a copy of it.
+  const saved = new Y.Doc()
+  Y.applyUpdate(saved, Y.encodeStateAsUpdate(legacy))
+  saved.getMap('files').get('app.js').insert(0, '// ')
+  Y.applyUpdate(a.bdoc, Y.encodeStateAsUpdate(saved))
+  await waitFor(() => text(room.store.get('main').doc, 'app.js') === '// old\n')
+})
+
+test('an app that synced the old document names its branch; other branches start empty; a folder without git gets the default', async (t) => {
+  const dataDir = tmp('adopt')
+  legacyRoom(dataDir, 'rb7')
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, dataDir })
+  t.after(() => srv.close())
+  const f = open(t, srv, 'rb7', 'f', 'feature', { adopt: 'main' })
+  await f.c.waitForSync()
+  assert.equal(text(f.bdoc, 'app.js'), undefined, 'feature is a branch of its own')
+  const m = open(t, srv, 'rb7', 'm', 'main')
+  await m.c.waitForSync()
+  assert.equal(text(m.bdoc, 'app.js'), 'old\n')
+  const n = open(t, srv, 'rb7', 'n', '∅')
+  await n.c.waitForSync()
+  assert.equal(text(n.bdoc, 'app.js'), 'old\n')
+  put(n.bdoc, 'from-plain.txt', 'p\n')
+  await waitFor(() => text(m.bdoc, 'from-plain.txt') === 'p\n')
+})
+
+test('a branch nobody is on leaves memory and comes back with its files', async (t) => {
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, dataDir: tmp('idle'), branchIdleMs: 50 })
+  t.after(() => srv.close())
+  const a = open(t, srv, 'rb8', 'a', 'main')
+  await a.c.waitForSync()
+  put(a.bdoc, 'kept.txt', 'kept\n')
+  await a.c.confirmBranch()
+  await a.c.joinBranch('side', new Y.Doc())
+  const room = srv.rooms.get('rb8')
+  await waitFor(() => !room.store.get('main'))
+  const back = new Y.Doc()
+  await a.c.joinBranch('main', back)
+  await a.c.waitForBranchSync()
+  assert.equal(text(back, 'kept.txt'), 'kept\n')
+})
+
+test('claims are per branch: the same path on two branches never blocks; each app hears its own branch\'s', async (t) => {
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet })
+  t.after(() => srv.close())
+  const a = open(t, srv, 'rb9', 'a', 'main')
+  await a.c.waitForSync()
+  const b = open(t, srv, 'rb9', 'b', 'feature-x')
+  await b.c.waitForSync()
+  await a.c.claimRequest({ op: 'claim', pattern: 'src/a.js', note: 'main work' })
+  await b.c.claimRequest({ op: 'claim', pattern: 'src/a.js', note: 'feature work' })
+  const room = srv.rooms.get('rb9')
+  assert.deepEqual(room.claimList('main').map((c) => c.by), ['a'])
+  assert.deepEqual(room.claimList('feature-x').map((c) => c.by), ['b'])
+  assert.ok(room.meta.claims['src/a.js'] && room.meta.claims['feature-x\0src/a.js'], 'the default branch keeps bare paths')
+  let heard = null
+  b.c.on('claims', (list) => { heard = list })
+  await a.c.claimRequest({ op: 'claim', pattern: 'docs/**' })
+  await waitFor(() => heard)
+  assert.deepEqual(heard.map((c) => c.pattern), ['src/a.js'])
+  assert.deepEqual(await b.c.claimRequest({ op: 'release', pattern: 'docs/**' }).then((r) => r.released), 0, 'a claim on main is not there to release on feature-x')
+})
+
+test('a viewer\'s change to a branch\'s files is undone there, and nobody else sees it', async (t) => {
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet })
+  t.after(() => srv.close())
+  const owner = open(t, srv, 'rb10', 'olive', 'main', { conn: { viewSecret: 'v' } })
+  await owner.c.waitForSync()
+  while (!owner.c.access || !owner.c.access.owner) await new Promise((resolve) => owner.c.once('access', resolve))
+  put(owner.bdoc, 'a.txt', 'safe\n')
+  const vid = generateIdentity()
+  const asked = new Promise((resolve) => owner.c.on('members', (m) => { if ((m.pending || []).some((p) => p.key === vid.publicKey)) resolve() }))
+  const v = open(t, srv, 'rb10', 'vic', 'main', { identity: vid, conn: { secret: 'v' } })
+  await asked
+  await owner.c.adminRequest({ op: 'approve', key: vid.publicKey, role: 'viewer' })
+  await v.c.waitForSync()
+  await waitFor(() => text(v.bdoc, 'a.txt') === 'safe\n')
+  v.bdoc.getMap('files').get('a.txt').insert(0, 'EVIL ')
+  await waitFor(() => text(v.bdoc, 'a.txt') === 'safe\n')
+  await wait(200)
+  assert.equal(text(owner.bdoc, 'a.txt'), 'safe\n')
+})
+
+test('a branch is removed from the session once nobody is on it; the default branch stays', async (t) => {
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet })
+  t.after(() => srv.close())
+  const a = open(t, srv, 'rb11', 'a', 'main')
+  await a.c.waitForSync()
+  const b = open(t, srv, 'rb11', 'b', 'gone')
+  await b.c.waitForSync()
+  await assert.rejects(a.c.branchRequest({ op: 'remove', branch: 'gone' }), /b is on gone/)
+  await b.c.joinBranch('main', new Y.Doc())
+  await a.c.branchRequest({ op: 'remove', branch: 'gone' })
+  const room = srv.rooms.get('rb11')
+  assert.deepEqual(room.branchList().map((x) => x.key), ['main'])
+  await assert.rejects(a.c.branchRequest({ op: 'remove', branch: 'main' }), /default branch/)
+})
+
+test('branches nobody was on for 30 days are dropped when the room loads; the active branch has the most people', async (t) => {
+  const dataDir = tmp('ttl')
+  const old = Date.now() - 31 * 86400e3
+  fs.writeFileSync(path.join(dataDir, 'rb12.json'), JSON.stringify({ secretHash: crypto.createHash('sha256').update('s').digest('hex'), layout: 2, defaultBranch: 'main', branches: { main: { by: 'a', at: old, seen: old }, stale: { by: 'a', at: old, seen: old }, fresh: { by: 'a', at: old, seen: Date.now() } }, lastActive: Date.now() }))
+  fs.mkdirSync(path.join(dataDir, 'branches', 'rb12'), { recursive: true })
+  fs.writeFileSync(path.join(dataDir, 'branches', 'rb12', branchFileName('stale')), Y.encodeStateAsUpdate(new Y.Doc()))
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, dataDir })
+  t.after(() => srv.close())
+  const a = open(t, srv, 'rb12', 'a', 'fresh')
+  const b = open(t, srv, 'rb12', 'b', 'fresh')
+  const c = open(t, srv, 'rb12', 'c', 'main')
+  await Promise.all([a.c.waitForSync(), b.c.waitForSync(), c.c.waitForSync()])
+  const room = srv.rooms.get('rb12')
+  assert.deepEqual(room.branchList().map((x) => x.key).sort(), ['fresh', 'main'])
+  assert.equal(fs.existsSync(path.join(dataDir, 'branches', 'rb12', branchFileName('stale'))), false)
+  assert.equal(room.activeBranch(), 'fresh')
 })

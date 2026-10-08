@@ -33,7 +33,7 @@ import {
   ROOM_DOC, syncHeader,
   syncStep1Message, updateMessage, awarenessMessage, bytesMessage, jsonMessage
 } from './protocol.js'
-import { BranchStore, DEFAULT_KEY, BRANCH_IDLE_MS, MAX_BRANCHES, validBranchKey, covers } from './branchdocs.js'
+import { BranchStore, DEFAULT_KEY, BRANCH_IDLE_MS, BRANCH_TTL_MS, MAX_BRANCHES, validBranchKey, covers, splitLegacyDoc } from './branchdocs.js'
 import { parsePublicKey, verifyChallenge } from './identity.js'
 import { verifyPass, PASS_TTL_MS } from './passes.js'
 import { cleanAccess, narrowAccess, relayAccess, fromRelay, sameAccess, mayChange, TALK_REFUSED } from './session-access.js'
@@ -115,8 +115,6 @@ class Room {
     this.cfg = cfg
     this.log = log
     this.doc = new Y.Doc()
-    this.awareness = new awarenessProtocol.Awareness(this.doc)
-    this.awareness.setLocalState(null)
     this.conns = new Map() // ws -> Set<awareness clientID>
     this.names = new Map() // ws -> verified name
     this.docFile = dataDir && path.join(dataDir, `${name}.ydoc`)
@@ -136,7 +134,6 @@ class Room {
         }
         if (fs.existsSync(this.metaFile)) this.meta = JSON.parse(fs.readFileSync(this.metaFile, 'utf8'))
       } catch (err) {
-        this.awareness.destroy()
         this.doc.destroy()
         throw Object.assign(new Error(`could not read the session's data: ${err.message}`), { unreadable: true })
       }
@@ -153,6 +150,11 @@ class Room {
       onSave: (e) => this.noteBranchSaved(e),
       onDiskError: (err) => this.diskError(err)
     })
+    // A room saved before branch documents: its one document becomes the default branch's.
+    this.migrateLegacy()
+    this.pruneBranches()
+    this.awareness = new awarenessProtocol.Awareness(this.doc)
+    this.awareness.setLocalState(null)
     // Claim holder (see holderKey) -> when they last did something in the session (changed the
     // document: a file, a message, their AI's feed; or used a hosted tool), for sweepClaims.
     this.meta.seen = this.meta.seen || {}
@@ -177,10 +179,16 @@ class Room {
     // Undoes changes from people who may not make them: file changes from viewers and from
     // people outside their folders, and posts from people who may not post (chat, the feed,
     // task comments, words of their own in the activity log, commit requests). Only their connections are tracked.
+    // Branch documents get a guard each (wireBranch) sharing these tracked connections. The room
+    // document's files maps are only in rooms from before branch documents.
     this.guard = new Y.UndoManager([this.files, this.blobs, this.fileKeys, this.chat, this.feed, this.taskComments, this.activity, this.commitRequests], { trackedOrigins: new Set(), captureTimeout: 0 })
-    this.undoing = null
-    this.recorded = null // the change the guard recorded last, for checkChange
-    this.guard.on('stack-item-added', ({ stackItem, type }) => { if (type === 'undo') this.recorded = stackItem })
+    // What checkChange works on: the room document's parts, its guard and who hears its updates.
+    this.roomParts = {
+      guard: this.guard, recorded: null, undoing: null,
+      files: this.files, blobs: this.blobs, fileKeys: this.fileKeys, chat: this.chat, feed: this.feed, taskComments: this.taskComments, activity: this.activity, commitRequests: this.commitRequests,
+      listeners: () => this.conns.keys(), frame: () => ROOM_DOC
+    }
+    this.guard.on('stack-item-added', ({ stackItem, type }) => { if (type === 'undo') this.roomParts.recorded = stackItem })
     // What a tracked change added to the activity log, read before Yjs merges the new entries
     // into older ones (after which a change event can no longer tell them apart).
     this.activityAdded = new WeakMap()
@@ -204,7 +212,7 @@ class Room {
     this.lastRenameAt = 0 // when the owner last renamed the session (RENAME_MS)
 
     this.doc.on('update', (update, origin, doc, tr) => {
-      if (origin === this.guard && this.undoing) { this.undoing.push(update); return } // sent merged, below
+      if (origin === this.guard && this.roomParts.undoing) { this.roomParts.undoing.push(update); return } // sent merged, below
       if (origin && origin !== this.guard && this.guard.trackedOrigins.has(origin) && !this.checkChange(origin, update, tr)) return
       if (origin && this.conns.has(origin)) this.noteActivity(this.holderKeys(origin))
       const msg = updateMessage(update)
@@ -543,20 +551,19 @@ class Room {
   /** Tells every connection the claims changed (a hosted agent claimed or released). */
   broadcastClaims () {
     this.saveMeta()
-    const claims = this.claimList()
-    for (const other of this.conns.keys()) send(other, jsonMessage(MSG_CLAIMS, { claims }))
+    for (const other of this.conns.keys()) send(other, jsonMessage(MSG_CLAIMS, { claims: this.claimList(other.branch) }))
   }
 
   /** May this connection change this file? */
   mayWrite (a, rel) { return mayChange(a, rel) }
 
   /**
-   * A restricted member (viewer, or agent limited to folders) changed the doc.
-   * Returns true to pass it on, or false after scheduling an undo because it
-   * touched files they may not change. The undo runs once the guard has
+   * A restricted member (viewer, or agent limited to folders) changed a document: the room's
+   * (`d` = roomParts) or a branch's (`d` = its entry). Returns true to pass it on, or false
+   * after scheduling an undo of what they may not change. The undo runs once the guard has
    * recorded the change, whichever order Yjs fires its events in.
    */
-  checkChange (ws, update, tr) {
+  checkChange (ws, update, tr, d = this.roomParts) {
     const a = this.access.get(ws)
     const touched = new Map() // path -> the types (files, blobs) it changed in
     const refused = []
@@ -565,11 +572,11 @@ class Room {
     // allowed and refused changes together (an edit and a post in one transaction).
     const undo = new Set()
     for (const [type, events] of tr.changedParentTypes) {
-      if (type === this.chat || type === this.feed || type === this.taskComments) {
-        if (a?.talk === false) { posts.push(type === this.chat ? 'chat' : type === this.feed ? 'the feed' : 'a task comment'); undo.add(type) }
+      if (type === d.chat || type === d.feed || type === d.taskComments) {
+        if (a?.talk === false) { posts.push(type === d.chat ? 'chat' : type === d.feed ? 'the feed' : 'a task comment'); undo.add(type) }
         continue
       }
-      if (type === this.commitRequests) {
+      if (type === d.commitRequests) {
         // Asking for a commit is a message to the host; marking one done (same message) isn't.
         if (a?.talk !== false) continue
         for (const e of events) {
@@ -580,7 +587,7 @@ class Room {
         }
         continue
       }
-      if (type === this.fileKeys) {
+      if (type === d.fileKeys) {
         // Keys to stored files: viewers may not touch them, and others may
         // only add new ones, so nobody can lock people out of stored files.
         for (const e of events) {
@@ -589,7 +596,7 @@ class Room {
         }
         continue
       }
-      if (type !== this.files && type !== this.blobs) continue
+      if (type !== d.files && type !== d.blobs) continue
       const touch = (rel) => touched.set(rel, [...(touched.get(rel) || []), type])
       for (const e of events) {
         if (e.target === type) for (const k of e.changes.keys.keys()) touch(k)
@@ -606,41 +613,50 @@ class Room {
       refused.push(rel)
       for (const t of types) undo.add(t)
       // The log entry for a change that's undone would describe something that never happened.
-      if (tr.changedParentTypes.has(this.activity)) undo.add(this.activity)
+      if (d.activity && tr.changedParentTypes.has(d.activity)) undo.add(d.activity)
+    }
+    // Activity entries come apart from the file changes they describe (files are in branch
+    // documents now): one about a file this member may not change describes a change undone there.
+    let quiet = false
+    const added = d.activity && tr.changedParentTypes.has(d.activity) ? (this.activityAdded.get(tr) || []) : []
+    if (added.length && !undo.has(d.activity) && a && a.talk !== false && added.some((x) => x && typeof x.path === 'string' && x.path && !this.mayWrite(a, x.path))) {
+      undo.add(d.activity)
+      quiet = true
     }
     // The activity log is written by apps as files change. Someone who may not post may add
-    // only those entries, for files this same change touched, never words of their own.
-    if (a?.talk === false && tr.changedParentTypes.has(this.activity) && !undo.has(this.activity)) {
+    // only those entries, for files on their branch they may change, never words of their own.
+    if (a?.talk === false && added.length && !undo.has(d.activity)) {
       const plain = (x) => x && typeof x === 'object' && Object.keys(x).every((k) => ACTIVITY_FIELDS.includes(k)) &&
-        x.by === a.name && ACTIVITY_KINDS.includes(x.kind) && touched.has(x.path) &&
-        (x.detail === undefined || ACTIVITY_DETAIL.test(x.detail)) && typeof x.ts === 'number'
-      const added = this.activityAdded.get(tr) || []
-      if (!added.every(plain)) { posts.push('the activity log'); undo.add(this.activity) }
+        x.by === a.name && ACTIVITY_KINDS.includes(x.kind) &&
+        (x.kind === 'switched' ? x.path === '' : typeof x.path === 'string' && this.mayWrite(a, x.path) && (x.kind === 'deleted' || touched.has(x.path) || this.onBranch(ws, x.path))) &&
+        (x.detail === undefined || ACTIVITY_DETAIL.test(x.detail)) && typeof x.ts === 'number' &&
+        (x.branch === undefined || validBranchKey(x.branch)) && (x.from === undefined || validBranchKey(x.from))
+      if (!added.every(plain)) { posts.push('the activity log'); undo.add(d.activity) }
     }
     refused.push(...posts)
     // The guard recorded this change just before this 'update' (its stack-item-added): only
     // that one is kept or undone, never another change that arrived in the same moment.
-    const item = this.recorded
-    this.recorded = null
-    if (!refused.length) { this.forget(item); return true }
-    this.log(`[${this.name}] undid ${a ? a.name : 'someone'}'s change to ${refused.slice(0, 3).join(', ')}${refused.length > 3 ? '…' : ''} (not allowed)`)
+    const item = d.recorded
+    d.recorded = null
+    if (!refused.length && !quiet) { this.forget(item, d); return true }
+    if (refused.length) this.log(`[${this.name}] undid ${a ? a.name : 'someone'}'s change to ${refused.slice(0, 3).join(', ')}${refused.length > 3 ? '…' : ''} (not allowed)`)
     queueMicrotask(() => {
       // Send the change and its undo as one update: nobody sees the change,
       // and nobody is left missing part of this person's history.
-      const others = this.guard.undoStack.filter((x) => x !== item)
-      const scope = this.guard.scope
-      this.guard.undoStack = item ? [item] : []
-      this.guard.scope = scope.filter((t) => undo.has(t))
-      this.undoing = []
-      try { this.guard.undo() } finally {
-        this.guard.scope = scope
-        this.guard.undoStack = others
-        this.guard.redoStack = []
-        const merged = Y.mergeUpdates([update, ...this.undoing])
-        this.undoing = null
-        const msg = updateMessage(merged)
-        for (const other of this.conns.keys()) send(other, msg)
+      const others = d.guard.undoStack.filter((x) => x !== item)
+      const scope = d.guard.scope
+      d.guard.undoStack = item ? [item] : []
+      d.guard.scope = scope.filter((t) => undo.has(t))
+      d.undoing = []
+      try { d.guard.undo() } finally {
+        d.guard.scope = scope
+        d.guard.undoStack = others
+        d.guard.redoStack = []
+        const merged = Y.mergeUpdates([update, ...d.undoing])
+        d.undoing = null
+        for (const other of d.listeners()) send(other, updateMessage(merged, d.frame(other)))
       }
+      if (!refused.length) return
       const why = posts.length === refused.length
         ? TALK_WHY
         : a && a.role === 'viewer' ? 'you can only view this session' : 'that is outside the folders you may change'
@@ -650,9 +666,9 @@ class Room {
   }
 
   /** An allowed change: the guard never needs to undo it. */
-  forget (item) {
-    const i = item ? this.guard.undoStack.indexOf(item) : -1
-    if (i >= 0) this.guard.undoStack.splice(i, 1)
+  forget (item, d = this.roomParts) {
+    const i = item ? d.guard.undoStack.indexOf(item) : -1
+    if (i >= 0) d.guard.undoStack.splice(i, 1)
   }
 
   /** The room's default branch: the first one anyone joined (∅, a folder without git, until then). */
@@ -678,8 +694,9 @@ class Room {
   }
 
   /** Branch `key`'s document, loaded, and added to the session when new (hosted agents and chat links use this). */
-  branchDoc (key, { by = '', base = null } = {}) {
+  branchDoc (key, { by = '', base = null, editor = true } = {}) {
     const k = this.resolveKey(key)
+    if (!this.meta.branches[k]) this.assertBranchRoom(editor)
     if (this.noteBranch(k, { by, base })) this.broadcastBranches()
     this.noteBranchSeen(k)
     return this.store.load(k)
@@ -700,9 +717,17 @@ class Room {
     this.saveMeta()
   }
 
-  /** A branch document just loaded: its changes go to the connections on that branch, and are saved. */
+  /** A branch document just loaded: guarded like the room's files, its changes sent to the connections on it, and saved. */
   wireBranch (e) {
-    e.doc.on('update', (update, origin) => {
+    e.guard = new Y.UndoManager([e.files, e.blobs, e.fileKeys], { trackedOrigins: this.guard.trackedOrigins, captureTimeout: 0 })
+    e.recorded = null
+    e.undoing = null
+    e.listeners = () => e.conns
+    e.frame = (ws) => ws.branchAs
+    e.guard.on('stack-item-added', ({ stackItem, type }) => { if (type === 'undo') e.recorded = stackItem })
+    e.doc.on('update', (update, origin, doc, tr) => {
+      if (origin === e.guard && e.undoing) { e.undoing.push(update); return } // sent merged, by checkChange
+      if (origin && origin !== e.guard && this.guard.trackedOrigins.has(origin) && !this.checkChange(origin, update, tr, e)) return
       if (origin && this.conns.has(origin)) this.noteActivity(this.holderKeys(origin))
       for (const ws of e.conns) if (ws !== origin) send(ws, updateMessage(update, ws.branchAs))
       e.bytes += update.length
@@ -712,6 +737,12 @@ class Room {
       }
       this.store.scheduleSave(e)
     })
+  }
+
+  /** Whether `rel` is a file on the branch this connection is on. */
+  onBranch (ws, rel) {
+    const e = ws.branch ? this.store.get(ws.branch) : null
+    return !!e && (e.files.has(rel) || e.blobs.has(rel))
   }
 
   /** A branch document was saved: records it was used just now (see noteBranchSeen), and the
@@ -725,9 +756,130 @@ class Room {
     this.saveMeta()
   }
 
-  /** The session's branches, for everyone's branch menu. */
+  /**
+   * A room saved before branch documents kept everything in one document. That document
+   * becomes the default branch's as it is (every app's saved copy still matches it), and its
+   * room-wide parts (chat, tasks, the feed, commit requests, activity) move to a new room
+   * document. Once, before anyone connects. The branch file is written first, so the files
+   * are never only in memory, and a crash part-way is finished at the next load.
+   */
+  migrateLegacy () {
+    if (this.meta.layout === 2) return
+    const legacy = this.doc
+    if (this.docFile && (legacy.getMap('files').size || legacy.getMap('blobs').size)) {
+      const stored = [...legacy.getMap('blobs').values()].filter((x) => x && x.stored && x.stored.id).map((x) => x.stored.id).sort()
+      const room = splitLegacyDoc(legacy)
+      if (!this.store.write(DEFAULT_KEY, Y.encodeStateAsUpdate(legacy))) { room.destroy(); return } // read-only now; tried again at the next load
+      const state = Y.encodeStateAsUpdate(room)
+      try {
+        fs.writeFileSync(this.docFile + '.tmp', state)
+        fs.renameSync(this.docFile + '.tmp', this.docFile)
+      } catch (err) { room.destroy(); this.diskError(err); return }
+      legacy.destroy()
+      this.doc = room
+      this.bytes = state.length
+      this.meta.branches[DEFAULT_KEY] = { by: '', at: this.meta.createdAt || Date.now(), base: null, stored }
+      this.log(`[${this.name}] moved its files into the default branch's document`)
+    } else if (this.store.stored(DEFAULT_KEY) && !this.meta.branches[DEFAULT_KEY]) {
+      // Stopped after both files were written, before this was saved.
+      this.meta.branches[DEFAULT_KEY] = { by: '', at: this.meta.createdAt || Date.now(), base: null }
+    }
+    if (this.meta.branches[DEFAULT_KEY] && !this.meta.defaultBranch) this.meta.defaultBranch = DEFAULT_KEY
+    this.meta.layout = 2
+    if (this.exists) this.saveMeta()
+  }
+
+  /**
+   * The default branch is ∅ (a folder without git, or a room from before branch documents)
+   * and nothing else is in the session: `key`, its first real branch, takes ∅'s document, so
+   * nobody diverges. Two names already in the session stay two branches.
+   */
+  adoptDefault (key) {
+    if (key === DEFAULT_KEY || this.defaultKey !== DEFAULT_KEY || !this.meta.branches[DEFAULT_KEY] || this.meta.branches[key]) return false
+    if (Object.keys(this.meta.branches).some((k) => k !== DEFAULT_KEY)) return false
+    this.store.rename(DEFAULT_KEY, key)
+    this.meta.branches[key] = this.meta.branches[DEFAULT_KEY]
+    delete this.meta.branches[DEFAULT_KEY]
+    this.meta.defaultBranch = key
+    for (const ws of this.conns.keys()) if (ws.branch === DEFAULT_KEY) ws.branch = key
+    this.saveMeta()
+    return true
+  }
+
+  /** Takes branch `key` out of the session: its document, its claims, hosted agents' choice of it. Never the git branch. */
+  removeBranch (key, { save = true } = {}) {
+    this.store.remove(key)
+    delete this.meta.branches[key]
+    for (const [k, c] of Object.entries(this.meta.claims)) if (this.branchOf(c) === key) delete this.meta.claims[k]
+    for (const [id, k] of Object.entries(this.meta.hostedBranch || {})) if (k === key) delete this.meta.hostedBranch[id]
+    if (save) this.saveMeta()
+  }
+
+  /** Branches nobody has been on for BRANCH_TTL_MS leave the session (never the default branch). */
+  pruneBranches (now = Date.now()) {
+    let gone = 0
+    for (const [key, b] of Object.entries(this.meta.branches)) {
+      if (key === this.defaultKey || now - (b.seen || b.at || 0) < BRANCH_TTL_MS) continue
+      this.removeBranch(key, { save: false })
+      gone++
+    }
+    if (!gone) return
+    this.log(`[${this.name}] removed ${gone} branch(es) nobody was on for 30 days`)
+    if (this.exists) this.saveMeta()
+  }
+
+  /**
+   * The branch with the most members on it (connected apps, and hosted agents that chose
+   * one); ties go to the owner's, then the default. Hosted agents and chat links work here
+   * unless they chose a branch.
+   */
+  activeBranch () {
+    const count = new Map()
+    const counted = new Set()
+    for (const ws of this.conns.keys()) {
+      const who = this.names.get(ws)
+      if (!ws.branch || counted.has(who)) continue
+      counted.add(who)
+      count.set(ws.branch, (count.get(ws.branch) || 0) + 1)
+    }
+    for (const [id, k] of Object.entries(this.meta.hostedBranch || {})) {
+      if (this.meta.branches[k] && this.hostedSeen.has(id)) count.set(k, (count.get(k) || 0) + 1)
+    }
+    if (!count.size) return this.defaultKey
+    const top = Math.max(...count.values())
+    const tied = [...count].filter(([, n]) => n === top).map(([k]) => k)
+    const owner = [...this.access].find(([, a]) => a.owner)?.[0]?.branch
+    if (owner && tied.includes(owner)) return owner
+    if (tied.includes(this.defaultKey)) return this.defaultKey
+    return tied.sort()[0]
+  }
+
+  /** The branch a hosted agent works on: the one it chose (quilt_switch_branch), or the active branch. */
+  hostedBranch (id) {
+    const k = (this.meta.hostedBranch || {})[id]
+    return k && this.meta.branches[k] ? k : this.activeBranch()
+  }
+
+  /**
+   * Whether a new branch may start: not over the session's branch limit or its size, and
+   * (unless `editor` is false) started by someone who may change files. Shared by
+   * branchRequest's join and branchDoc (hosted agents, chat links), so the same cap and
+   * editor-only rule applies wherever a branch can be created.
+   */
+  assertBranchRoom (editor = true) {
+    if (this.full) throw new Error("This session is over its size limit, so it can't take another branch.")
+    if (Object.keys(this.meta.branches).length >= MAX_BRANCHES) throw new Error(`This session already has ${MAX_BRANCHES} branches, its limit; an existing one has to go before another can start.`)
+    if (!editor) throw new Error('you can only view this session, so you cannot start a new branch')
+  }
+
+  /** The session's branches, for everyone's branch menu (hosted: the hosted agents on each). */
   branchList () {
-    return Object.entries(this.meta.branches).map(([key, b]) => ({ key, by: b.by || '', at: b.at || 0, base: b.base || null, default: key === this.defaultKey }))
+    const hosted = new Map()
+    for (const h of this.hostedOnline()) {
+      const k = this.hostedBranch(h.id)
+      hosted.set(k, [...(hosted.get(k) || []), h.name])
+    }
+    return Object.entries(this.meta.branches).map(([key, b]) => ({ key, by: b.by || '', at: b.at || 0, base: b.base || null, default: key === this.defaultKey, hosted: hosted.get(key) || [] }))
   }
 
   broadcastBranches () {
@@ -745,13 +897,14 @@ class Room {
     const key = String(req.branch ?? '')
     if (!validBranchKey(key)) throw new Error(`"${key.slice(0, 60)}" isn't a branch name`)
     if (req.op === 'join') {
+      // An app from before branch documents names the branch the old document was; else the first real branch takes ∅.
+      if (validBranchKey(String(req.adopt || ''))) this.adoptDefault(String(req.adopt))
+      this.adoptDefault(key)
       const k = this.resolveKey(key)
       const created = !this.meta.branches[k]
       if (created) {
-        if (this.full) throw new Error("This session is over its size limit, so it can't take another branch.")
-        if (Object.keys(this.meta.branches).length >= MAX_BRANCHES) throw new Error(`This session already has ${MAX_BRANCHES} branches, its limit; an existing one has to go before another can start.`)
         const a = this.access.get(ws)
-        if (a && a.role === 'viewer') throw new Error('you can only view this session, so you cannot start a new branch')
+        this.assertBranchRoom(!(a && a.role === 'viewer'))
       }
       try { this.store.load(k) } catch (err) {
         if (!err.unreadable) throw err
@@ -782,6 +935,17 @@ class Room {
       } catch { throw new Error('that is not a state vector') }
       if (!covers(Y.encodeStateVector(e.doc), want)) throw new Error(`not all of your changes on ${key} have reached the relay yet`)
       return { ok: true, branch: k }
+    }
+    if (req.op === 'remove') {
+      const a = this.access.get(ws)
+      if (!a || (this.controlled && !a.owner)) throw new Error('only the session owner can remove a branch')
+      const k = this.resolveKey(key)
+      if (!this.meta.branches[k]) throw new Error(`${key} isn't in this session`)
+      if (k === this.defaultKey) throw new Error(`${key} is the session's default branch; it stays`)
+      const on = [...this.conns.keys()].filter((c) => c.branch === k).map((c) => this.names.get(c))
+      if (on.length) throw new Error(`${[...new Set(on)].join(', ')} ${on.length === 1 ? 'is' : 'are'} on ${key}; it can be removed once nobody is`)
+      this.removeBranch(k)
+      return { ok: true, branch: k, listChanged: true }
     }
     throw new Error('unknown branch request')
   }
@@ -1039,11 +1203,11 @@ class Room {
     return true
   }
 
-  /** Who a claim from this connection belongs to: their name, or with sign-in on, their account. */
+  /** Who a claim from this connection belongs to: their name, or with sign-in on, their account; on the branch they're on. */
   claimant (ws, as = null) {
     const name = this.names.get(ws)
     const a = this.access.get(ws)
-    const who = ws.pass ? { name, id: `${ws.pass.kind}:${ws.pass.sub}`, owner: !!(a && a.owner), talk: !(a && a.talk === false) } : { name }
+    const who = ws.pass ? { name, id: `${ws.pass.kind}:${ws.pass.sub}`, owner: !!(a && a.owner), talk: !(a && a.talk === false), branch: ws.branch } : { name, branch: ws.branch }
     // One of several AI sessions working through this person's app (persona.js): its claims are
     // its own, under "<first name> · <label>" and the account plus the session's id. Nobody can
     // claim as someone else's: the name is built here from the connection's own.
@@ -1051,13 +1215,34 @@ class Room {
     return { ...who, name: personaName(name, as.label), ...(who.id ? { id: `${who.id}~${as.id}` } : {}), persona: true, of: name }
   }
 
+  /** Which branch a claim is on: its own, or the default branch (claims from before branches). */
+  branchOf (c) { return c.branch ? this.resolveKey(c.branch) : this.defaultKey }
+
+  /** Where a claim on `pattern` on `branch` is kept in meta.claims: the default branch keeps bare paths. */
+  claimKey (branch, pattern) {
+    const b = this.resolveKey(branch || this.defaultKey)
+    return b === this.defaultKey ? pattern : `${b}\0${pattern}`
+  }
+
+  shownClaim (c) { return { ...c, queue: c.queue || [], active: this.holderPresent(c), activeAt: this.lastActive(c) } }
+
   /**
-   * Each claim, with `active` (whoever holds it is in the session now), `activeAt` (when they
-   * last did something there) and its file queue: who asked for it next ({ id, path, by,
-   * title, description, task, ts }), oldest first.
+   * The claims on one branch (the default when none is given), each with `active` (whoever
+   * holds it is in the session now), `activeAt` (when they last did something there) and its
+   * file queue: who asked for it next ({ id, path, by, title, description, task, ts }), oldest first.
    */
-  claimList () {
-    return Object.values(this.meta.claims).map((c) => ({ ...c, queue: c.queue || [], active: this.holderPresent(c), activeAt: this.lastActive(c) })).sort((a, b) => a.ts - b.ts)
+  claimList (branch) {
+    const b = this.resolveKey(branch || this.defaultKey)
+    return Object.values(this.meta.claims).filter((c) => this.branchOf(c) === b).map((c) => this.shownClaim(c)).sort((x, y) => x.ts - y.ts)
+  }
+
+  /** Every claim on every branch. */
+  allClaims () { return Object.values(this.meta.claims).map((c) => this.shownClaim(c)).sort((x, y) => x.ts - y.ts) }
+
+  /** The files on a branch, for telling whether two patterns overlap (and the room document's, in rooms from before branches). */
+  branchPaths (branch) {
+    const e = this.store.load(this.resolveKey(branch || this.defaultKey))
+    return [...e.files.keys(), ...e.blobs.keys(), ...this.doc.getMap('files').keys(), ...this.doc.getMap('blobs').keys()]
   }
 
   /** Who holds a claim: their account with sign-in on, otherwise their name. */
@@ -1105,10 +1290,13 @@ class Room {
     return this.hostedOnline().some((h) => h.name === c.by)
   }
 
-  /** The claim covering a file: its own, or a folder or glob claim that matches it (the earliest). */
-  claimFor (file) {
-    if (this.meta.claims[file]) return this.meta.claims[file]
-    return Object.values(this.meta.claims).filter((c) => globMatcher(c.pattern)(file)).sort((a, b) => a.ts - b.ts)[0] || null
+  /** The claim covering a file on a branch: its own, or a folder or glob claim that matches it (the earliest). The
+   * live record in meta.claims, not a shown copy: claimRequestOp mutates its queue in place. */
+  claimFor (file, branch) {
+    const own = this.meta.claims[this.claimKey(branch, file)]
+    if (own) return own
+    const b = this.resolveKey(branch || this.defaultKey)
+    return Object.values(this.meta.claims).filter((c) => this.branchOf(c) === b && globMatcher(c.pattern)(file)).sort((x, y) => x.ts - y.ts)[0] || null
   }
 
   /**
@@ -1122,7 +1310,7 @@ class Room {
       if (!pick(c)) continue
       n++
       if (c.queue && c.queue.length) this.handOff(c, c.queue[0], { context: why ? why(c) : `${c.by} let go of it.`, auto: true })
-      else delete this.meta.claims[c.pattern]
+      else delete this.meta.claims[this.claimKey(c.branch, c.pattern)]
     }
     this.forgetSeen()
     return n
@@ -1149,9 +1337,9 @@ class Room {
   handOff (c, r, { context = '', auto = false } = {}) {
     const now = Date.now()
     const queue = (c.queue || []).filter((x) => x.id !== r.id)
-    const next = { by: r.by, ...(r.byId ? { byId: r.byId } : {}), ...(r.of ? { of: r.of } : {}), pattern: c.pattern, note: String(r.title || '').slice(0, 500), ts: now, from: c.by }
+    const next = { ...(c.branch ? { branch: c.branch } : {}), by: r.by, ...(r.byId ? { byId: r.byId } : {}), ...(r.of ? { of: r.of } : {}), pattern: c.pattern, note: String(r.title || '').slice(0, 500), ts: now, from: c.by }
     if (queue.length) next.queue = queue
-    this.meta.claims[c.pattern] = next
+    this.meta.claims[this.claimKey(c.branch, c.pattern)] = next
     this.meta.seen[this.holderKey(next)] = now
     const text = auto
       ? `📦 ${c.pattern} is yours now: you asked for it ("${r.title}"). ${context}`.trim()
@@ -1182,7 +1370,7 @@ class Room {
     const n = this.dropClaims((c) => now - this.lastActive(c) >= this.cfg.claimIdleMs, (c) => `${c.by} had done nothing in the session for ${mins} minutes.`)
     if (n) this.log(`[${this.name}] let go of ${n} claim(s) idle for ${mins} minutes`)
     // Also when a holder came or went: everyone's app shows whose claims are held by someone away.
-    const shown = this.claimList().map((c) => `${c.pattern}\0${c.active}`).join('\n')
+    const shown = this.allClaims().map((c) => `${c.branch || ''}\0${c.pattern}\0${c.active}`).join('\n')
     if (n || shown !== this.claimsShown) { this.claimsShown = shown; this.broadcastClaims() }
     return n
   }
@@ -1209,16 +1397,20 @@ class Room {
     // A person may also release or hand off what their own AI sessions hold (account~session).
     const mine = (c) => own(c) || (!who.persona && !!id && !!c.byId && c.byId.startsWith(`${id}~`))
     const pattern = String(req.pattern ?? '').trim().replace(/^\.\//, '')
+    // Claims are per branch: one on src/a.js on main never blocks src/a.js on feature-x.
+    const branch = this.resolveKey(who.branch || this.defaultKey)
+    const at = (p) => this.claimKey(branch, p)
+    const onBranch = branch === this.defaultKey ? {} : { branch }
     if (req.op === 'touch') return { ok: true } // an AI session is at work: its claims' idle time starts again
     if (req.op === 'claim') {
       if (!pattern) throw new Error('pattern required')
       if (pattern.length > MAX_PATTERN) throw new Error('pattern too long')
-      const existing = this.meta.claims[pattern]
+      const existing = this.meta.claims[at(pattern)]
       if (existing && !mine(existing)) throw new Error(`${pattern} is already claimed by ${existing.by}`)
-      const paths = [...this.doc.getMap('files').keys(), ...this.doc.getMap('blobs').keys()]
-      const other = this.claimList().find((c) => !mine(c) && patternsOverlap(c.pattern, pattern, paths))
+      const paths = this.branchPaths(branch)
+      const other = this.claimList(branch).find((c) => !mine(c) && patternsOverlap(c.pattern, pattern, paths))
       if (other) throw new Error(`${pattern} overlaps ${other.by}'s claim on ${other.pattern}`)
-      this.meta.claims[pattern] = { by: name, ...(id ? { byId: id } : {}), pattern, note: who.talk === false ? '' : String(req.note ?? '').slice(0, 500), ts: Date.now(), ...(who.persona ? { of: who.of } : {}), ...(existing?.queue ? { queue: existing.queue } : {}) }
+      this.meta.claims[at(pattern)] = { ...onBranch, by: name, ...(id ? { byId: id } : {}), pattern, note: who.talk === false ? '' : String(req.note ?? '').slice(0, 500), ts: Date.now(), ...(who.persona ? { of: who.of } : {}), ...(existing?.queue ? { queue: existing.queue } : {}) }
       return { ok: true }
     }
     if (req.op === 'release') {
@@ -1226,10 +1418,10 @@ class Room {
       // their context (op 'handoff'). Releasing everything lets go of the rest.
       const queued = (c) => c.queue && c.queue.length
       if (pattern === '*' || !pattern) {
-        const held = Object.values(this.meta.claims).filter((c) => mine(c) && queued(c)).map((c) => c.pattern)
-        return { ok: true, released: this.dropClaims((c) => mine(c) && !queued(c)), ...(held.length ? { held } : {}) }
+        const held = Object.values(this.meta.claims).filter((c) => mine(c) && queued(c) && this.branchOf(c) === branch).map((c) => c.pattern)
+        return { ok: true, released: this.dropClaims((c) => mine(c) && !queued(c) && this.branchOf(c) === branch), ...(held.length ? { held } : {}) }
       }
-      const c = this.meta.claims[pattern]
+      const c = this.meta.claims[at(pattern)]
       if (!c) return { ok: true, released: 0 }
       // The owner may release anyone's claim. Someone under the same name may release one
       // held by an account that isn't here (theirs from before a re-invite), but not take it.
@@ -1246,7 +1438,7 @@ class Room {
       const file = String(req.path ?? '').trim().replace(/^\.\//, '')
       if (!file || file.length > MAX_PATTERN) throw new Error('path required')
       if (who.talk === false) throw new Error('you may not post in this session')
-      const c = this.claimFor(file)
+      const c = this.claimFor(file, branch)
       if (!c) throw new Error(`${file} is not claimed: claim it and go ahead`)
       if (mine(c)) throw new Error(`${file} is already yours`)
       const title = String(req.title ?? '').trim().slice(0, MAX_REQUEST_TITLE)
@@ -1278,7 +1470,7 @@ class Room {
     if (req.op === 'handoff') {
       // The holder passes a claim to someone waiting for it (the first, unless `to` names a
       // request id or a person), with what they know: what they changed, what's left, gotchas.
-      const c = this.meta.claims[pattern] || (pattern && this.claimFor(pattern))
+      const c = this.meta.claims[at(pattern)] || (pattern && this.claimFor(pattern, branch))
       if (!c) throw new Error(`${pattern || 'that'} is not claimed`)
       if (!mine(c) && !who.owner) throw new Error(`${c.pattern} is ${c.by}'s to hand off`)
       const queue = c.queue || []
@@ -1512,11 +1704,11 @@ class Room {
         reply = { id: req.id, ...this.claimRequest(who, req) }
         this.noteActivity(who.persona ? [this.claimantKey(who)] : this.holderKeys(ws))
       } catch (err) {
-        return send(ws, jsonMessage(MSG_CLAIMS, { claims: this.claimList(), reply: { id: req.id, ok: false, error: err.message } }))
+        return send(ws, jsonMessage(MSG_CLAIMS, { claims: this.claimList(ws.branch), reply: { id: req.id, ok: false, error: err.message } }))
       }
       this.saveMeta()
-      const claims = this.claimList()
       for (const other of this.conns.keys()) {
+        const claims = this.claimList(other.branch)
         send(other, jsonMessage(MSG_CLAIMS, other === ws ? { claims, reply } : { claims }))
       }
     } else if (type === MSG_ADMIN) {
@@ -1545,18 +1737,24 @@ class Room {
     this.doc.destroy()
   }
 
-  /** Stored-file ids the document still points at. */
+  /** Stored-file ids any of the room's documents still points at (unloaded branches: as of their last save). */
   storedIds () {
     const ids = new Set()
-    for (const b of this.blobs.values()) if (b && b.stored && b.stored.id) ids.add(b.stored.id)
+    const add = (b) => { if (b && b.stored && b.stored.id) ids.add(b.stored.id) }
+    for (const b of this.blobs.values()) add(b) // rooms from before branch documents
+    for (const [key, meta] of Object.entries(this.meta.branches)) {
+      const e = this.store.get(key)
+      if (e) for (const b of e.blobs.values()) add(b)
+      else for (const id of meta.stored || []) ids.add(id)
+    }
     return ids
   }
 }
 
 const TALK_WHY = "you can't post in this session"
 // What an app's activity entries look like (session.js recordActivity, relay-mcp.js quilt_write).
-const ACTIVITY_FIELDS = ['by', 'path', 'kind', 'detail', 'ts']
-const ACTIVITY_KINDS = ['created', 'edited', 'deleted']
+const ACTIVITY_FIELDS = ['by', 'path', 'kind', 'detail', 'ts', 'branch', 'from']
+const ACTIVITY_KINDS = ['created', 'edited', 'deleted', 'switched']
 // Claim ops as the audit trail names them.
 const CLAIM_ACTIONS = { claim: 'claimed', release: 'released', request: 'requested', handoff: 'handed_off', withdraw: 'withdrew' }
 const ACTIVITY_DETAIL = /^(\+\d+ -\d+|\d+ bytes)?$/

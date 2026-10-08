@@ -378,7 +378,6 @@ export class Session extends EventEmitter {
     if (hadState) {
       // We've synced this folder before: hold what was edited while we were
       // away, let the relay tell us what the others did, then merge the two.
-      // Restarted on another branch, or mid-hold: nothing in this tree is the session's offline work.
       const marks = historyMarks(this.history.entries()) // what we had seen: the catch-up is the rest
       if (gitUnreadable) this.saysGitUnreadable(resumed)
       const offline = resumed ? { entries: [], take: [], downloads: [] } : this.captureOffline()
@@ -2457,6 +2456,13 @@ export class Session extends EventEmitter {
   }
 
   lastEditorOf (rel) {
+    // The branch's chronology first: it comes in the same update as the file, while the room's
+    // activity entry for it may arrive just after.
+    const h = this.history.array
+    for (let i = h.length - 1; i >= 0; i--) {
+      const e = h.get(i)
+      if (e && e.path === rel) return e.by === this.name ? null : (e.by || null)
+    }
     for (let i = this.activity.length - 1; i >= 0; i--) {
       const a = this.activity.get(i)
       if (a.path === rel) return a.by === this.name ? null : a.by

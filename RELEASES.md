@@ -9,6 +9,11 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.22 — 2026-10-08
+
+- **Edits held back by a claim merge by themselves.** If you come back to a session with changes to a file someone (or their AI) had claimed, your version used to wait under Merges until you settled it, even when the two sets of changes didn't overlap. Now Quilt combines them on its own as soon as they let go of the file, and the merge closes. If your changes do clash with theirs, the merge stays open for you, as before.
+- **Longer session names.** New sessions get a longer random name, so a new session can never land on the name of one that already exists.
+
 ## 0.3.21 — 2026-10-08
 
 Coming back to a session now tells you what changed while you were away.

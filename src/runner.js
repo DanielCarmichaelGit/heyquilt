@@ -42,7 +42,8 @@ export function decodeInvite (code) {
 export function newConn (server = relayUrl()) {
   return {
     server,
-    room: `room-${crypto.randomBytes(4).toString('hex')}`,
+    // 64 random bits: a new session never draws the name of one already on the relay.
+    room: `room-${crypto.randomBytes(8).toString('hex')}`,
     secret: crypto.randomBytes(18).toString('base64url'),
     viewSecret: crypto.randomBytes(18).toString('base64url')
   }

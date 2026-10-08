@@ -147,6 +147,7 @@ export class Session extends EventEmitter {
     this.merges = this.doc.getMap('merges') // id -> merge record (see merges.js)
     this.merging = new Set() // paths held out of normal sync until their offline merge has run
     this.catchUp = null // "while you were away" (catchup.js), until the person dismisses it
+    this.settleTried = new Set() // claimed merges already tried against a session version (id:sha1)
     this.awayBackups = null // while joining: copies of ours kept in .quilt/conflicts, for the catch-up
     this.work = null // { state: 'working'|'done', note, ts }: what an agent says it's doing
     // Claims follow edits (see autoClaim): path -> when this person last changed it. Released when
@@ -797,6 +798,7 @@ export class Session extends EventEmitter {
     if (parts.length) this.log(`${counts.conflict ? '⚠️ ' : '✅ '}your offline changes: ${parts.join(', ')}`)
     this.emit('merges', this.mergeList())
     this.scheduleStatusWrite()
+    this.settleReleasedMerges()
     return { shared: counts.pushed, merged: paths.merged, conflicts: paths.conflict }
   }
 
@@ -3338,8 +3340,48 @@ export class Session extends EventEmitter {
     }
     this.claims = next
     try { fs.writeFileSync(path.join(this.stateDir, 'claims.json'), JSON.stringify([...next.values()])) } catch {}
+    if (this.ready) this.settleReleasedMerges()
     this.scheduleStatusWrite()
     this.emit('claims', [...next.values()])
+  }
+
+  /**
+   * Our offline edits that waited only because someone held the file: once
+   * they let go, combine them with the session's version, as an offline merge
+   * would have. A clash stays open for the person to settle; so does a file
+   * edited again since (the person is already on it).
+   */
+  settleReleasedMerges () {
+    for (const rec of this.mergeList()) {
+      if (rec.kind !== 'claimed' || rec.state !== 'open' || rec.by !== this.name || rec.binary || rec.oursDeleted || rec.theirsHash === null) continue
+      if (this.mergeHeldBy(rec) || this.writeRefusal(rec.path) || this.merging.has(rec.path)) continue
+      const theirs = this.sharedKey(rec.path)
+      if (typeof theirs !== 'string' || theirs.startsWith('bin:')) continue
+      const tried = `${rec.id}:${sha1(theirs)}`
+      if (this.settleTried.has(tried)) continue
+      this.settleTried.add(tried)
+      const disk = this.readDisk(rec.path)
+      if (!disk || disk.key !== theirs) continue
+      const { ours, base } = this.mergeTexts(rec)
+      if (typeof ours !== 'string') continue
+      const holder = rec.claimedBy || rec.others[0] || 'someone'
+      const { text, conflicts } = merge3(base || '', ours, theirs)
+      if (conflicts.length) { this.log(`⚠️  ${holder} let go of ${rec.path}, but your changes clash with theirs: see Merges`); continue }
+      try {
+        this.applyMerged(rec.path, text, `with ${holder}'s changes, once they let go of it`)
+        updateMerge(this.doc, this.merges, rec.id, { state: 'done', resolvedBy: this.name, reason: `Combined automatically once ${holder} let go of it` }, LOCAL)
+      } catch (err) {
+        this.log(`could not combine ${rec.path}: ${err.message}`)
+        continue
+      }
+      this.log(`✅ ${holder} let go of ${rec.path}: your changes were combined with theirs`)
+      if (this.catchUp?.mine?.conflicts.includes(rec.path)) {
+        const m = this.catchUp.mine
+        m.conflicts = m.conflicts.filter((p) => p !== rec.path)
+        if (!m.merged.includes(rec.path)) m.merged.push(rec.path)
+        this.saveCatchUp()
+      }
+    }
   }
 
   /** Last known claims, so they're enforced before the relay answers (or while offline). */

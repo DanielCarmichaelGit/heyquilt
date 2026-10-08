@@ -1745,7 +1745,12 @@ export class Session extends EventEmitter {
     if (staged !== false) { state({ waiting: staged ? 'changes are staged for a commit here' : 'git could not say what is staged' }); return }
     const changes = await changesBetween(this.root, from, to)
     if (!changes) return
-    const paths = [...changes.keys()]
+    // A member's folder on this branch is already at `to`, in step with the session: the session's
+    // files are that commit plus the session's work already (that folder brought it in, or someone
+    // there resolved it by hand). This folder follows: only files the session doesn't share are merged.
+    const following = this.memberAt(to)
+    const paths = [...changes.keys()].filter((rel) => !following || !this.syncable(rel))
+    const scope = new Map([...changes].filter(([rel]) => !following || !this.syncable(rel)))
     const [base, theirs] = [await filesAt(this.root, from, paths), await filesAt(this.root, to, paths)]
     if (!base || !theirs || this.stopped || !this.quietForUpstream()) return
     for (const rel of paths) {
@@ -1781,7 +1786,7 @@ export class Session extends EventEmitter {
       if (emptied.has(dir) || [...this.sharedPaths()].some((p) => (dir ? p.startsWith(dir + '/') : !p.includes('/')))) continue
       if (await hasFilesUnder(this.root, from, dir)) emptied.add(dir)
     }
-    const plan = planCatchUp({ changes, base, theirs, disk: diskKey, moved, emptied })
+    const plan = planCatchUp({ changes: scope, base, theirs, disk: diskKey, moved, emptied })
     if (this.stopped || !this.quietForUpstream()) return
     if (plan.conflicts.length) {
       const behind = up ? up.behind : await commitsBetween(this.root, from, to)
@@ -1821,9 +1826,10 @@ export class Session extends EventEmitter {
     this.headChangedAt = 0
     this.upstreamDeferred = null
     const count = await commitsBetween(this.root, from, to)
+    if (following) this.log(`⬇️ ${branch} follows ${following}'s folder to ${to.slice(0, 7)} (${count ?? 'new'} commit${count === 1 ? '' : 's'} from ${upName}); the session already has their files`)
     const moves = plan.moves.length ? `; followed ${plan.moves.map((m) => `${m.from} → ${m.to}`).join(', ')}` : ''
-    this.log(`⬇️ brought in ${count ?? 'new'} commit${count === 1 ? '' : 's'} from ${upName} (${written} file${written === 1 ? '' : 's'})${moves}`)
-    if (written) await this.notePull({ from: { sha: from }, to: { sha: to, branch }, files: written })
+    if (!following) this.log(`⬇️ brought in ${count ?? 'new'} commit${count === 1 ? '' : 's'} from ${upName} (${written} file${written === 1 ? '' : 's'})${moves}`)
+    if (written && !following) await this.notePull({ from: { sha: from }, to: { sha: to, branch }, files: written })
     if (plan.strays.length) {
       const list = plan.strays.slice(0, 5).join(', ') + (plan.strays.length > 5 ? ', …' : '')
       this.notice(`The commits Quilt just brought in from ${upName} add ${list} to a folder the session had emptied (moved elsewhere?). Check whether they belong where the session moved the rest.`)
@@ -1859,6 +1865,17 @@ export class Session extends EventEmitter {
     const busy = this.hold ? this.hold.kind : this.quietForUpstream() ? null : 'files are still changing here'
     if (!busy) await this.gitTask(() => this.checkUpstream({ fetch: true, now: true }))
     return { git: true, branch: this.git.branch, busy, upstream: this.upstream, moved: !!(this.gitSeen && before && this.gitSeen.sha !== before) }
+  }
+
+  /** A member whose folder is on this branch at `sha`, in step with the session (not held), or null. */
+  memberAt (sha) {
+    if (!this.conn || !this.conn.awareness) return null
+    const me = this.conn.awareness.clientID
+    for (const [id, st] of this.conn.awareness.getStates()) {
+      if (id === me || !st || !st.git || !st.name) continue
+      if (st.git.branch === this.git.branch && st.git.sha === sha && !st.git.held) return st.name
+    }
+    return null
   }
 
   /** Whether another member's folder on this branch is first in line to bring commits in (the lowest client id). */

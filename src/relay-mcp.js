@@ -8,6 +8,7 @@
 // file changes are CRDT edits, so they merge with everyone else's.
 //
 // The older link-based server (handleAgentMcp) is kept for relays without sign-in.
+import { cleanGit, branchBoard, branchesMarkdown } from './branches.js'
 import crypto from 'node:crypto'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
@@ -157,6 +158,13 @@ function sessionTools (server, ctx) {
     for (const h of room.hostedOnline ? room.hostedOnline() : []) if (h.name !== me && !out.some((p) => p.name === h.name)) out.push({ name: h.name, kind: h.kind, tool: 'hosted', hosted: true })
     return out
   }
+  // Each member's folder tells the room its git (branch, upstream, the repository's branches): one list.
+  const branchesOf = (room) => {
+    const members = []
+    for (const st of room.awareness.getStates().values()) if (st && st.name && st.git) members.push({ name: st.name, git: cleanGit(st.git) })
+    for (const p of peers(room)) if (p.persona) members.push({ name: p.name, git: null, persona: true })
+    return branchBoard(members)
+  }
   const claimsOf = (room) => room.claimList ? room.claimList() : []
   // The rules every agent is held to (duties.js), enforced here because hosted agents work through these tools.
   const seen = (doc) => doc.getArray('chat').toArray().filter(visible)
@@ -251,8 +259,18 @@ function sessionTools (server, ctx) {
     const msgs = chat.toArray().filter(visible).slice(-8)
     lines.push('', '## Recent messages', ...(msgs.length ? msgs.map(fmtMsg) : ['- None.']))
     lines.push('', '## Tasks', taskMarkdown(readTasks(doc.getMap('tasks')), me, { tool: ctx.tool(), asAi: false, mentionYours: true }))
+    const br = branchesOf(room)
+    if (br.length) lines.push('', '## Branches', branchesMarkdown(br, { limit: 6 }))
     if (ctx.webhook) { const w = ctx.webhook.get(); lines.push('', w ? `Webhook: Quilt POSTs to ${w.url} on ${w.events.join(', ')}.` : 'No webhook: subscribe with quilt_webhook_subscribe to be told of mentions, direct messages and tasks as they happen.') }
     return text(lines.join('\n') + ctx.warn(room))
+  })
+
+  tool('quilt_branches', {
+    description: 'The session\'s git branches: which branch each member\'s folder is on, which AI sessions and worktrees work on which branch, how each stands against its upstream (behind, ahead, diverged), and who committed last.',
+    inputSchema: {}
+  }, (_, { room }) => {
+    const br = branchesOf(room)
+    return text(`${branchesMarkdown(br, { limit: 40 })}\n\nCommits pushed or merged elsewhere come into the session by themselves: the folder of a member on that branch fetches about once a minute and brings them in.`)
   })
 
   const taskMap = (doc) => doc.getMap('tasks')

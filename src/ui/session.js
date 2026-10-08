@@ -14,6 +14,7 @@ import { renderBoard, taskNotesModalHtml } from './board.js'
 import { accessFormValues, accessSaveBody, grantsLoading, grantsLoaded, grantsFailed } from './access-form.js'
 import { renderMergeBar, bindMerges, renderMergeView } from './merges.js'
 import { renderCatchUp, bindCatchUp } from './catchup.js'
+import { branchMenuHtml, upstreamText, needsHand } from './branches.js'
 
 let current = null // session id being shown
 let timers = []
@@ -85,7 +86,10 @@ export function mountSession (id) {
         <div class="popover people-menu" id="people-menu" role="dialog" aria-label="People in this session" hidden></div>
       </div>
       ${changesMarkup()}
-      <span class="branch-label" id="branch-label" hidden></span>
+      <div class="branch-wrap" id="branch-wrap" hidden>
+        <button type="button" class="branch-label" id="branch-label" aria-haspopup="true" aria-expanded="false" aria-controls="branch-menu"></button>
+        <div class="popover branch-menu" id="branch-menu" role="dialog" aria-label="Branches" hidden></div>
+      </div>
       ${openInMarkup()}
       <button class="btn sm ghost" id="tasks-btn" type="button" aria-pressed="false" title="Tasks">${I.board}<span class="wide-only">Tasks</span><span class="tasks-n" id="tasks-count" hidden></span></button>
       <button class="btn sm primary" id="invite-btn">${I.link}<span class="wide-only">Invite</span></button>
@@ -318,6 +322,7 @@ function bindTop () {
     await api('POST', `/api/sessions/${current}/stop`).catch((err) => toast(err.message))
   }
   $('#settings-btn').onclick = () => openSettings()
+  bindBranchMenu()
   const moreBtn = $('#more-btn')
   const moreMenu = $('#more-menu')
   const setMore = (open) => { moreMenu.hidden = !open; moreBtn.setAttribute('aria-expanded', String(open)) }
@@ -496,6 +501,37 @@ function agentLine (p) {
   return `<span class="ai-state">${a.tool ? `${esc(a.tool)} idle` : 'AI idle'}</span>`
 }
 
+// ------------------------------------------------------------- branches --
+let branchSyncing = false
+
+function renderBranchMenu () {
+  const st = sum().status
+  $('#branch-menu').innerHTML = branchMenuHtml({ git: st.git, branches: st.branches || [], me: st.me.name, syncing: branchSyncing })
+}
+
+function bindBranchMenu () {
+  const btn = $('#branch-label')
+  const menu = $('#branch-menu')
+  const set = (open) => {
+    menu.hidden = !open
+    btn.setAttribute('aria-expanded', String(open))
+    if (open) renderBranchMenu()
+  }
+  btn.onclick = () => set(menu.hidden)
+  menu.addEventListener('keydown', (e) => { if (e.key === 'Escape') { set(false); btn.focus() } })
+  document.addEventListener('mousedown', (e) => { if (!menu.hidden && !$('#branch-wrap').contains(e.target)) set(false) }, { signal: mounted.signal })
+  menu.addEventListener('click', async (e) => {
+    if (!e.target.closest('[data-branch-sync]') || branchSyncing) return
+    branchSyncing = true
+    renderBranchMenu()
+    const id = current
+    try { await api('POST', `/api/sessions/${id}/branches/sync`) } catch (err) { toast(err.message) } finally {
+      branchSyncing = false
+      if (id === current && !menu.hidden) renderBranchMenu()
+    }
+  })
+}
+
 function renderTop () {
   if (!current || !$('#people-btn')) return
   renderTabs()
@@ -503,7 +539,7 @@ function renderTop () {
   const g = st.git
   const label = $('#branch-label')
   if (label) {
-    label.hidden = !g
+    $('#branch-wrap').hidden = !g
     if (g) {
       // Paused on another branch: said at once. Git busy: only once it has lasted a moment.
       const held = g.hold ? Date.now() - g.hold.since : 0
@@ -511,8 +547,11 @@ function renderTop () {
       clearTimeout(holdNoteTimer)
       if (g.hold && !note) holdNoteTimer = setTimeout(renderTop, HOLD_NOTE_MS - held + 20)
       const tag = note ? (g.hold.kind === 'switching' ? `paused · you're on ${esc(g.hold.to || '?')}` : g.hold.conflict ? 'paused: resolve the git conflict' : 'syncing paused: git is busy') : ''
-      label.innerHTML = `${I.branch}<span class="branch-name" title="${esc(g.key)}">${esc(g.key)}</span>${tag ? `<span class="tag" title="${tag}">${tag}</span>` : ''}`
-      label.title = g.hold ? (g.hold.kind === 'switching' ? `This session syncs ${g.key}. Sync resumes when you're back on it.` : g.hold.conflict ? `git left a conflict in ${g.hold.conflict.join(', ')} on this computer. Resolve it and git add it; Quilt then shares your resolution.` : 'Quilt waits for git to finish, then catches up.') : `This folder is on ${g.key}`
+      const up = g.upstream
+      const behind = !tag && up && (up.behind || up.diverged) ? `<span class="tag${needsHand(up) ? ' warn' : ''}">${needsHand(up) ? 'needs a pull' : `${up.behind} behind`}</span>` : ''
+      label.innerHTML = `${I.branch}<span class="branch-name">${esc(g.key)}</span>${tag ? `<span class="tag" title="${tag}">${tag}</span>` : ''}${behind}`
+      label.title = g.hold ? (g.hold.kind === 'switching' ? `This session syncs ${g.key}. Sync resumes when you're back on it.` : g.hold.conflict ? `git left a conflict in ${g.hold.conflict.join(', ')} on this computer. Resolve it and git add it; Quilt then shares your resolution.` : 'Quilt waits for git to finish, then catches up.') : `This folder is on ${g.key}${up ? `, ${upstreamText(up)}` : ''}. Click for every branch in the session.`
+      if (!$('#branch-menu').hidden) renderBranchMenu()
     }
   }
   const people = [st.me, ...st.peers]

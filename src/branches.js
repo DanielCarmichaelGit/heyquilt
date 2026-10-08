@@ -45,7 +45,7 @@ export function branchBoard (members) {
     if (!g) continue
     if (g.branch || g.key) {
       const e = entry(g.on || g.key || g.branch)
-      e.folders.push({ name: m.name, held: g.held === 'switching' ? null : g.held })
+      e.folders.push({ name: m.name, held: g.held === 'switching' ? null : g.held, upstream: g.upstream })
       if (g.upstream && (!e.upstream || g.upstream.behind < e.upstream.behind)) e.upstream = g.upstream
     }
     if (!g.repo) continue
@@ -91,7 +91,7 @@ export function branchesMarkdown (board, { now = Date.now(), limit = 12 } = {}) 
   const out = []
   for (const b of board.slice(0, limit)) {
     const who = [
-      ...b.folders.map((f) => `${f.name}'s folder${f.held ? ` (${f.held})` : ''}`),
+      ...b.folders.map((f) => `${f.name}'s folder${f.held ? ` (${f.held})` : ''}${f.upstream && (f.upstream.conflicts || f.upstream.diverged) ? ` (${upstreamLine(f.upstream)})` : ''}`),
       ...b.ais.map((n) => `AI session ${n}`),
       ...b.worktrees.map((w) => `worktree \`${w}\``)
     ]

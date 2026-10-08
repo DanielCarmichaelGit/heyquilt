@@ -199,3 +199,27 @@ test('planner: a new file in a folder the session emptied is flagged; binaries a
   assert.match(lfs.conflicts[0].why, /could not read/)
   assert.ok(similarity('a\nb\nc\n', 'a\nb\nd\n') > 0.5)
 })
+
+test('a clash one member resolved by hand: the others\' folders follow it instead of reporting the clash again', async (t) => {
+  const { A, B, dirA, dirB, push } = await setup(t)
+  const mine = APP.replace('line2', 'line2 (alice)')
+  write(dirA, 'src/app.js', mine)
+  await waitFor(() => read(dirB, 'src/app.js') === mine)
+  const sha = push('src/app.js', APP.replace('line2', 'line2 (pushed)'))
+  await waitFor(() => A.status().git.upstream?.conflicts?.length === 1 && B.status().git.upstream?.conflicts?.length === 1, 10000)
+  // Alice's AI pulls and resolves it by hand, as the advice says.
+  git(dirA, 'stash', 'push', '-q', '-m', 'up-test')
+  git(dirA, 'pull', '-q', '--ff-only')
+  try { git(dirA, 'stash', 'pop', '-q') } catch {}
+  await waitFor(() => A.status().git.hold?.conflict) // a person takes a moment to resolve it
+  const resolved = APP.replace('line2', 'line2 (pushed, and alice)')
+  write(dirA, 'src/app.js', resolved)
+  git(dirA, 'add', 'src/app.js')
+  git(dirA, 'stash', 'drop', '-q')
+  await waitFor(() => read(dirB, 'src/app.js') === resolved, 10000)
+  // Bob's folder moves to the same commit, its file untouched, and no clash is reported any more.
+  await waitFor(() => git(dirB, 'rev-parse', 'HEAD') === sha && B.status().git.upstream?.behind === 0, 10000)
+  assert.equal(read(dirB, 'src/app.js'), resolved)
+  await waitFor(() => changed(dirB) === 'M src/app.js')
+  assert.equal(B.status().git.upstream.conflicts.length, 0)
+})

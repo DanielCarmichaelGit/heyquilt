@@ -115,7 +115,8 @@ export const STATIC = {
   '/releases.js': ['releases.js', 'text/javascript; charset=utf-8'],
   '/feed-convs.js': ['feed-convs.js', 'text/javascript; charset=utf-8'],
   '/board.js': ['board.js', 'text/javascript; charset=utf-8'],
-  '/schedule.js': ['schedule.js', 'text/javascript; charset=utf-8']
+  '/schedule.js': ['schedule.js', 'text/javascript; charset=utf-8'],
+  '/branches.js': ['branches.js', 'text/javascript; charset=utf-8']
 }
 
 // The page's Content-Security-Policy: scripts only from our own files (no inline script or
@@ -602,6 +603,8 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     'GET /api/sessions/:id/tree': (b, id) => get(id).tree(),
     'GET /api/sessions/:id/changes': (b, id) => get(id).changes(),
     'POST /api/sessions/:id/catch-up/dismiss': (b, id) => { const r = get(id).dismissCatchUp(); pushStatus(id); return r },
+    // Commits pushed or merged elsewhere: fetch and bring them in now (they also come in by themselves).
+    'POST /api/sessions/:id/branches/sync': async (b, id) => { const r = await get(id).syncBranchNow(); pushStatus(id); return r },
     'GET /api/sessions/:id/file': (b, id, url) => {
       const f = get(id).readShared(url.searchParams.get('path'))
       if (!f) throw httpError(404, 'That file is not in this session.')

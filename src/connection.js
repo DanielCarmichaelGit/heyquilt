@@ -35,6 +35,9 @@ const CLOCK_WRONG = "Your computer's clock looks wrong, so Quilt can't stay sign
 
 export const REMOTE = Symbol('remote')
 
+/** Whether a saved copy of document `epoch` is of another document than the relay's (the branch was started again since). */
+const staleEpoch = (epoch, reply) => !!epoch && !!reply.epoch && epoch !== reply.epoch
+
 export class Connection extends EventEmitter {
   /**
    * @param {object} opts
@@ -52,7 +55,7 @@ export class Connection extends EventEmitter {
    * @param {number} [opts.livenessMs]  give up on a connection that stays silent this long
    * @param {string} [opts.tool]  the app or AI tool this is, for the session's audit trail
    */
-  constructor ({ server, room, secret, key, viewSecret, kind = 'human', name, identity, doc, branch = null, beforeRemote, features = FEATURES, passes = null, passRefreshMs = PASS_REFRESH_MS, livenessMs = LIVENESS_MS, tool = '' }) {
+  constructor ({ server, room, secret, key, viewSecret, kind = 'human', name, identity, doc, branch = null, onStaleBranch = null, beforeRemote, features = FEATURES, passes = null, passRefreshMs = PASS_REFRESH_MS, livenessMs = LIVENESS_MS, tool = '' }) {
     super()
     if (room === RESERVED_ROOM) throw new Error(`"${RESERVED_ROOM}" is not a session name`)
     // Secrets travel in headers, never in the URL: proxies log URLs, and Fly's did (issue 011).
@@ -97,8 +100,15 @@ export class Connection extends EventEmitter {
     this.autoJoin = null // the id of the automatic join, whose refusal is said (branch-refused)
     this.roomSynced = false
     this.branchSynced = false
+    // Which document of the branch this app's copy belongs to (the relay starts a new one when a
+    // branch is started again after being removed). While the relay hasn't said, a saved copy is
+    // held back (branchHeld); a copy of an older one is never merged in: onStaleBranch(reply)
+    // gives the document to sync instead.
+    this.branchEpoch = (branch && branch.epoch) || null
+    this.branchHeld = false
+    this.onStaleBranch = onStaleBranch
     this._onBranchUpdate = (update, origin) => {
-      if (origin !== REMOTE && this.branchKey !== null) this.send(updateMessage(update, this.branchKey))
+      if (origin !== REMOTE && this.branchKey !== null && !this.branchHeld) this.send(updateMessage(update, this.branchKey))
     }
     if (branch) {
       this.setBranch(branch.key, branch.doc)
@@ -259,6 +269,7 @@ export class Connection extends EventEmitter {
       this.synced = false
       this.roomSynced = false
       this.branchSynced = false
+      this.branchHeld = false
       this.joining = null
       this.authed = false
       if (this.ws === ws) this.ws = null
@@ -335,7 +346,9 @@ export class Connection extends EventEmitter {
       this.autoJoin = id
       this.send(jsonMessage(MSG_BRANCH, { id, op: 'join', branch: this.branchKey, ...this.joinExtra }))
       this.joinExtra = {}
-      this.send(syncStep1Message(this.branchDoc, this.branchKey))
+      // A copy of a known document waits for the relay to say it is still that document (handle, MSG_BRANCHES).
+      if (this.branchEpoch) this.branchHeld = true
+      else this.send(syncStep1Message(this.branchDoc, this.branchKey))
     }
     // Set again rather than resent: that moves our clock on, so the relay takes the state
     // even when it still holds the clock from before a drop (it would ignore a repeat).
@@ -351,8 +364,8 @@ export class Connection extends EventEmitter {
     const type = decoding.readVarUint(dec)
     if (type === MSG_SYNC) {
       const docId = decoding.readVarString(dec)
-      const doc = docId === ROOM_DOC ? this.doc : docId === this.branchKey ? this.branchDoc : null
-      if (!doc) return // a branch this connection has left
+      const doc = docId === ROOM_DOC ? this.doc : docId === this.branchKey && !this.branchHeld ? this.branchDoc : null
+      if (!doc) return // a branch this connection has left (or whose document the relay hasn't confirmed yet)
       // Give the owner a chance to capture unsaved local edits so remote
       // changes merge with them instead of overwriting them.
       this.beforeRemote()
@@ -370,9 +383,25 @@ export class Connection extends EventEmitter {
       if (reply && this.joining && reply.id === this.joining.id) {
         const j = this.joining
         this.joining = null
-        if (reply.ok) { this.setBranch(j.key, j.doc); this.send(syncStep1Message(j.doc, j.key)) }
+        if (reply.ok) {
+          // A saved copy of an older document of this branch: a fresh one is synced instead.
+          const doc = staleEpoch(j.epoch, reply) ? (j.onStale ? j.onStale(reply) : new Y.Doc()) : j.doc
+          this.setBranch(j.key, doc)
+          this.send(syncStep1Message(doc, j.key))
+        }
       }
-      if (reply && reply.op === 'join' && reply.ok) this.emit('branch-joined', reply)
+      if (reply && reply.id === this.autoJoin && reply.ok && this.branchHeld) {
+        this.branchHeld = false
+        if (staleEpoch(this.branchEpoch, reply)) {
+          const fresh = this.onStaleBranch ? this.onStaleBranch(reply) : new Y.Doc()
+          this.setBranch(this.branchKey, fresh)
+        }
+        this.send(syncStep1Message(this.branchDoc, this.branchKey))
+      }
+      if (reply && reply.op === 'join' && reply.ok) {
+        if (reply.epoch) this.branchEpoch = reply.epoch
+        this.emit('branch-joined', reply)
+      }
       if (reply && reply.id === this.autoJoin && !reply.ok) this.failBranch(reply.error || 'refused')
       if (Array.isArray(branches)) this.emit('branches', branches)
       this.settle(reply, 'the relay refused that branch change')
@@ -422,6 +451,7 @@ export class Connection extends EventEmitter {
    */
   failBranch (error) {
     if (this.branchDoc) this.branchDoc.off('update', this._onBranchUpdate)
+    this.branchHeld = false
     this.branchKey = null
     this.branchDoc = null
     this.branchSynced = false
@@ -431,9 +461,13 @@ export class Connection extends EventEmitter {
     this.noteSynced()
   }
 
-  /** Moves this connection to branch `key`, syncing `doc` as it once the relay agrees: { branch, created, base }. */
-  joinBranch (key, doc, extra = {}) {
-    return this.request(MSG_BRANCH, { op: 'join', branch: key, ...extra }, 'branch switches', (id) => { this.joining = { id, key, doc } })
+  /**
+   * Moves this connection to branch `key`, syncing `doc` as it once the relay agrees: { branch, created, base, epoch }.
+   * `epoch`: which document of the branch `doc` holds a saved copy of; when the relay's is another, `onStale(reply)`
+   * gives the document synced instead (a new empty one by default), and `doc` is never sent.
+   */
+  joinBranch (key, doc, { epoch = null, onStale = null, ...extra } = {}) {
+    return this.request(MSG_BRANCH, { op: 'join', branch: key, ...extra }, 'branch switches', (id) => { this.joining = { id, key, doc, epoch, onStale } })
   }
 
   /** Resolves once the relay holds every change this app has on its branch (before a switch clears the folder). */

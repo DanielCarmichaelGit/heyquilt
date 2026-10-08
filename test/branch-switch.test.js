@@ -286,6 +286,68 @@ test('a checkout straight back: nothing of either branch ends up in the other', 
   await waitFor(() => read(dirB, 'src/app.js') === 'still live\n')
 })
 
+/** 30 days pass with nobody on `key`: the relay removes it from the session (Room.pruneBranches). */
+function prune (room, key) {
+  const r = srv.rooms.get(room)
+  const old = Date.now() - 31 * 86400e3
+  r.meta.branches[key].seen = r.meta.branches[key].at = old
+  r.pruneBranches()
+  assert.equal(r.meta.branches[key], undefined, `${key} was pruned`)
+  return r
+}
+
+test('a branch removed after 30 days and started again by someone else: a folder coming back with its kept copy never brings that copy back', async (t) => {
+  const { A, B, dirA, dirB, room } = await repos(t)
+  git(dirA, 'checkout', '-q', 'feature-x')
+  await waitFor(() => on(A, 'feature-x'), 10000)
+  write(dirA, 'only-a.txt', 'old copy\n')
+  await waitFor(() => A.files.get('only-a.txt')?.toString() === 'old copy\n')
+  await A.conn.confirmBranch()
+  git(dirA, 'checkout', '-q', 'main') // feature-x's document is kept in A's .quilt
+  await waitFor(() => on(A, 'main'), 10000)
+  const oldEpoch = srv.rooms.get(room).meta.branches['feature-x'].epoch
+  assert.ok(oldEpoch)
+  const r = prune(room, 'feature-x')
+  git(dirB, 'checkout', '-q', 'feature-x') // Bob starts it again, from his folder
+  await waitFor(() => on(B, 'feature-x'), 10000)
+  assert.notEqual(r.meta.branches['feature-x'].epoch, oldEpoch, 'a new document of feature-x')
+  write(dirB, 'feature.txt', 'bob fresh\n')
+  await waitFor(() => B.files.get('feature.txt')?.toString() === 'bob fresh\n')
+  git(dirA, 'checkout', '-q', 'feature-x')
+  await waitFor(() => on(A, 'feature-x') && read(dirA, 'feature.txt') === 'bob fresh\n', 10000)
+  const said = A.logs.filter((l) => l.includes('feature-x was removed from the session (nobody was on it for 30 days) and has been started again since'))
+  assert.equal(said.length, 1, A.logs.join('\n'))
+  await never(() => B.files.has('only-a.txt') || read(dirB, 'only-a.txt') !== null || read(dirB, 'feature.txt') !== 'bob fresh\n', 1500)
+  assert.equal(r.store.get('feature-x').files.has('only-a.txt'), false, 'the old copy never reached the new document')
+  write(dirA, 'feature.txt', 'together\n')
+  await waitFor(() => read(dirB, 'feature.txt') === 'together\n')
+})
+
+test('a folder whose app was off while its branch was removed and started again joins it fresh: its saved copy is never merged, and its differing files are kept aside', async (t) => {
+  const { A, B, dirA, dirB, room } = await repos(t)
+  git(dirA, 'checkout', '-q', 'feature-x')
+  await waitFor(() => on(A, 'feature-x'), 10000)
+  write(dirA, 'feature.txt', 'alice old\n')
+  await waitFor(() => A.files.get('feature.txt')?.toString() === 'alice old\n')
+  await A.conn.confirmBranch()
+  await close(A) // state.bin keeps feature-x's document as it was
+  const r = prune(room, 'feature-x')
+  git(dirB, 'checkout', '-q', 'feature-x')
+  await waitFor(() => on(B, 'feature-x'), 10000)
+  write(dirB, 'feature.txt', 'bob fresh\n')
+  await waitFor(() => r.store.get('feature-x')?.files.get('feature.txt')?.toString() === 'bob fresh\n')
+  const A2 = await open(t, dirA, 'alice', { room })
+  await waitFor(() => read(dirA, 'feature.txt') === 'bob fresh\n' && A2.files.get('feature.txt')?.toString() === 'bob fresh\n', 10000)
+  assert.deepEqual(copiesOf(dirA, 'feature.txt'), ['alice old\n'], 'the folder\'s version is kept in .quilt/conflicts')
+  const said = A2.logs.filter((l) => l.includes('feature-x was removed from the session (nobody was on it for 30 days) and has been started again since, so this folder joined it fresh'))
+  assert.equal(said.length, 1, A2.logs.join('\n'))
+  await never(() => read(dirB, 'feature.txt') !== 'bob fresh\n' || r.store.get('feature-x').files.get('feature.txt')?.toString() !== 'bob fresh\n', 1500)
+  write(dirB, 'feature.txt', 'bob again\n')
+  await waitFor(() => read(dirA, 'feature.txt') === 'bob again\n')
+  write(dirA, 'feature.txt', 'alice live\n')
+  await waitFor(() => read(dirB, 'feature.txt') === 'alice live\n')
+})
+
 test('a branch the relay refuses is said once; checking the old branch back out resumes sync', async (t) => {
   const { A, B, dirA, dirB, room } = await repos(t)
   const r = srv.rooms.get(room)

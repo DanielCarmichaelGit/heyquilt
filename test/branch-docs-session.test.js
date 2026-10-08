@@ -128,3 +128,28 @@ test('a folder from before branch documents rejoins its old room: its offline ed
   await open(t, other, 'bob', { room: 'old-room', server: url })
   await waitFor(() => read(other, 'notes.txt') === 'shared\nedited offline\n')
 })
+
+test('a branch over its own size limit: its folder is told once and stays connected; a folder on another branch syncs as usual', async (t) => {
+  const small = await startServer({ port: 0, host: '127.0.0.1', dataDir: tmp('relay-small'), log: () => {}, maxNewRoomsPerHour: 0, maxRoomBytes: 4000 })
+  t.after(() => small.close())
+  const at = `ws://127.0.0.1:${small.port}`
+  const { dirA, dirB } = clones()
+  write(dirA, 'big.txt', 'b'.repeat(5000))
+  git(dirB, 'checkout', '-q', 'feature')
+  const room = `bdfull${++rooms}`
+  const A = await open(t, dirA, 'alice', { room, server: at })
+  const B = await open(t, dirB, 'bob', { room, server: at })
+  const said = () => A.logs.filter((l) => l.includes("main is over the session's size limit for one branch"))
+  await waitFor(() => said().length === 1)
+  assert.ok(A.notices.some((n) => n.includes("main is over the session's size limit for one branch")), 'its AI hears it too')
+  write(dirB, 'README.md', 'feature edit\n')
+  const r = small.rooms.get(room)
+  await waitFor(() => r.store.get('feature')?.files.get('README.md')?.toString() === 'feature edit\n')
+  write(dirA, 'src/app.js', 'not taken\n')
+  await waitFor(() => A.files.get('src/app.js')?.toString() === 'not taken\n')
+  await never(() => r.store.get('main').files.get('src/app.js')?.toString() === 'not taken\n', 1000)
+  assert.equal(A.status().connected, true, 'nobody is disconnected for a full branch')
+  assert.equal(said().length, 1, 'said once')
+  A.say('still talking')
+  await waitFor(() => B.chat.toArray().some((m) => m.text === 'still talking'))
+})

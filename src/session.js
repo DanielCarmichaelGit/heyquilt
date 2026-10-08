@@ -118,6 +118,11 @@ export class Session extends EventEmitter {
     this.branch = null // the branch this folder syncs, as the relay names it (∅: the room's default, for a folder without git)
     this.branchList = [] // the session's branches, from the relay: [{ key, by, at, base, default, hosted }]
     this.legacyState = false // state.json from before branch documents: its state.bin is the room's old single document
+    // Which document of this.branch state.bin holds (the relay gives each branch document an epoch, new each time
+    // the branch is started again): a saved copy of an older one is never merged, the folder joins as a first join.
+    this.branchEpoch = null
+    this.savedBranch = null // the branch state.bin is of, as state.json names it
+    this.fullSaid = null // the branch whose size limit the log already reported
     this.bindBranchDoc(new Y.Doc())
     this.uploading = new Map() // path -> hash being uploaded
     this.downloading = new Map() // path -> hash being downloaded
@@ -324,6 +329,58 @@ export class Session extends EventEmitter {
   /** The relay's list of the session's branches. */
   setBranches (list) {
     this.branchList = (Array.isArray(list) ? list : []).filter((b) => b && typeof b.key === 'string')
+    // This folder's branch went over the size limit for one branch: said once, here and to its AI.
+    const mine = this.branchList.find((b) => b.key === this.branch)
+    if (mine && mine.full && this.fullSaid !== mine.key) {
+      this.fullSaid = mine.key
+      const msg = `${mine.key} is over the session's size limit for one branch, so the relay takes no new changes on it; they stay in this folder. Other branches, chat and tasks carry on as usual.`
+      this.log(`⚠️ ${msg}`)
+      this.notice(msg)
+    } else if (mine && !mine.full && this.fullSaid === mine.key) this.fullSaid = null
+    this.scheduleStatusWrite()
+  }
+
+  /**
+   * The relay's document of this folder's branch is not the one state.bin is a copy of: the branch
+   * was removed (nobody was on it for 30 days) and started again since. The copy is never merged
+   * into it; the connection syncs a new document instead, and once that has synced the folder
+   * joins as a first join (rejoinFresh). Returns the new document.
+   */
+  staleBranch (reply) {
+    const fresh = new Y.Doc()
+    this.staleRejoin = true // the offline merge (mergeOffline) is not run against the old copy
+    const onSynced = () => this.rejoinFresh(fresh, reply)
+    this.conn.once('branch-synced', onSynced)
+    return fresh
+  }
+
+  /** Joins this branch's new document as a first join: the session's files come to the folder, differing ones kept in .quilt/conflicts. */
+  rejoinFresh (fresh, reply) {
+    this.staleRejoin = false
+    this.rejoinedFresh = true
+    if (this.stopped || this.conn.branchDoc !== fresh) return
+    const old = this.bdoc
+    this.bindBranchDoc(fresh)
+    old.destroy()
+    if (typeof reply.epoch === 'string') this.branchEpoch = reply.epoch
+    // What this folder knew of the old document says nothing about this one.
+    this.lastKnown.clear()
+    this.storedOnDisk.clear()
+    this.known = null
+    this.merging.clear()
+    this.writeFailed.clear()
+    this.retry.clear()
+    this.saveHeldBases([])
+    this.observeBranch()
+    this.awayBackups = []
+    const msg = `${this.branch} was removed from the session (nobody was on it for 30 days) and has been started again since, so this folder joined it fresh: the session's files there are on disk, and your versions that differ are kept in .quilt/conflicts.`
+    // As at a first join: what differs is backed up once, by reconcileFirstJoin, not again as a live clash.
+    const ready = this.ready
+    this.ready = false
+    try { this.noteFirstJoin(this.reconcileFirstJoin()) } finally { this.ready = ready }
+    this.log(`⚠️ ${msg}`)
+    this.notice(msg)
+    this.saveStateNow()
     this.scheduleStatusWrite()
   }
 
@@ -361,7 +418,9 @@ export class Session extends EventEmitter {
       doc: this.doc,
       // An app's saved document from before branch documents is the room's old one: the relay kept it as that branch's.
       // base: the commit a branch new to the session starts from (a partner without it locally creates it there).
-      branch: { key: this.branch, doc: this.bdoc, ...(this.git && this.git.sha ? { base: this.git.sha } : {}), ...(this.legacyState && this.savedGit ? { adopt: this.savedGit.key } : {}) },
+      branch: { key: this.branch, doc: this.bdoc, ...(this.git && this.git.sha ? { base: this.git.sha } : {}), ...(this.legacyState && this.savedGit ? { adopt: this.savedGit.key } : {}), ...(this.branchEpoch && this.savedBranch === this.branch ? { epoch: this.branchEpoch } : {}) },
+      // state.bin is a copy of an older document of this branch (it was removed and started again): never merged.
+      onStaleBranch: (reply) => this.staleBranch(reply),
       beforeRemote: () => { if (this.ready) this.flushPending() }
     })
     this.conn.on('status', (s) => {
@@ -382,6 +441,7 @@ export class Session extends EventEmitter {
     // A move's own join is the move's to finish (finishMove): this.branch changes only once the folder is there.
     this.conn.on('branch-joined', (r) => {
       if (typeof r.branch !== 'string' || !r.branch || (this.hold && this.hold.kind === 'switching')) return
+      if (typeof r.epoch === 'string' && r.epoch && !this.staleRejoin) this.branchEpoch = r.epoch
       this.branch = r.branch
       this.announceBranch()
       this.scheduleStatusWrite()
@@ -631,6 +691,8 @@ export class Session extends EventEmitter {
       Y.applyUpdate(this.bdoc, fs.readFileSync(this.stateFile), LOCAL)
       try { Y.applyUpdate(this.doc, fs.readFileSync(this.roomFile), LOCAL) } catch {} // none from before: the relay sends it
       this.legacyState = meta.layout !== 2
+      this.savedBranch = typeof meta.branch === 'string' ? meta.branch : null
+      this.branchEpoch = typeof meta.epoch === 'string' && meta.epoch ? meta.epoch : null
       this.storedOnDisk = new Map(Object.entries(meta.storedOnDisk || {}))
       this.known = meta.known ? new Map(Object.entries(meta.known)) : null
       // No gitKey (an older state file): taken as the branch the folder is on now.
@@ -724,7 +786,7 @@ export class Session extends EventEmitter {
     for (const [rel, key] of this.lastKnown) known[rel] = sha1(key)
     // When we were last in touch with the session: "you left 3h ago" on the next catch-up.
     if (this.conn && this.conn.connected) this.savedSeenAt = Date.now()
-    fs.writeFileSync(path.join(this.stateDir, 'state.json'), JSON.stringify({ room: this.room, server: this.server, layout: 2, branch: this.branch, storedOnDisk: Object.fromEntries(this.storedOnDisk), known, ...this.gitState(), ...this.roleState(), ...(this.savedSeenAt ? { seenAt: this.savedSeenAt } : {}) }))
+    fs.writeFileSync(path.join(this.stateDir, 'state.json'), JSON.stringify({ room: this.room, server: this.server, layout: 2, branch: this.branch, ...(this.branchEpoch ? { epoch: this.branchEpoch } : {}), storedOnDisk: Object.fromEntries(this.storedOnDisk), known, ...this.gitState(), ...this.roleState(), ...(this.savedSeenAt ? { seenAt: this.savedSeenAt } : {}) }))
   }
 
   /** This member's role, so the next start knows it before the relay says (ignoreQuiltState). */
@@ -847,6 +909,8 @@ export class Session extends EventEmitter {
   /** Runs once the relay has synced: merges every captured path against the session's version. */
   async mergeOffline ({ entries, take, downloads }) {
     if (this.stopped) { for (const e of entries) this.merging.delete(e.rel); return null } // the next start captures them again
+    // The saved copy was of an older document of this branch: the folder joined fresh instead (rejoinFresh).
+    if (this.staleRejoin || this.rejoinedFresh) { for (const e of entries) this.merging.delete(e.rel); return null }
     const counts = { pushed: 0, merged: 0, ai: 0, conflict: 0 }
     const paths = { merged: [], conflict: [] } // for the catch-up
     const queue = entries.slice()
@@ -1432,7 +1496,7 @@ export class Session extends EventEmitter {
     const claims = this.claims
     const doc = new Y.Doc()
     const left = this.unparkLocalState(to, doc)
-    return this.finishMove({ from, to, doc, left, carried, claims })
+    return this.finishMove({ from, to, doc, left, epoch: left ? this.parkedEpoch(to) : null, carried, claims })
   }
 
   /**
@@ -1442,18 +1506,32 @@ export class Session extends EventEmitter {
    * HEAD from where it is. Tried again (recheckMove) when the relay can't load the branch yet.
    */
   async finishMove (m) {
-    const { from, to, doc, left, carried } = m
+    const { from, to, carried } = m
+    let { doc, left } = m
     let at = await this.headNow()
     if (this.stopped) return null
     if (at !== to) return this.abandonMove(m, at)
     let head = await headKey(this.root)
     let reply
+    let fresh = null // the relay's document of `to` is newer than the one this folder kept (P27)
     try {
-      reply = await this.conn.joinBranch(to, doc, head && head.sha ? { base: head.sha } : {})
+      reply = await this.conn.joinBranch(to, doc, { ...(head && head.sha ? { base: head.sha } : {}), epoch: m.epoch || null, onStale: () => (fresh = new Y.Doc()) })
       await this.conn.waitForBranchSync()
     } catch (err) {
+      if (fresh) fresh.destroy()
       this.pendingMove = m
       throw err
+    }
+    if (fresh) {
+      // `to` was removed from the session and started again since this folder left it: what it
+      // kept of the old document is dropped, and the folder arrives as one that was never there.
+      doc.destroy()
+      m.doc = doc = fresh
+      m.left = left = null
+      m.epoch = null
+      const said = `${to} was removed from the session (nobody was on it for 30 days) and has been started again since, so what this folder had kept of it is not brought back; the session's files there are on disk.`
+      this.log(`⚠️ ${said}`)
+      this.notice(said)
     }
     if (this.stopped) return null
     head = await headKey(this.root)
@@ -1467,6 +1545,7 @@ export class Session extends EventEmitter {
     this.bindBranchDoc(doc)
     old.destroy()
     this.branch = reply.branch || to
+    this.branchEpoch = typeof reply.epoch === 'string' && reply.epoch ? reply.epoch : null
     this.git = head || { key: to, branch: to, sha: null } // a branch with no commits yet has no sha
     this.gitSeen = this.git
     this.rejoin = false
@@ -1531,6 +1610,7 @@ export class Session extends EventEmitter {
     m.doc.destroy()
     if (this.conn.branchKey !== this.branch) {
       this.conn.setBranch(this.branch, this.bdoc) // a reconnect meanwhile joins it again by itself
+      this.conn.branchEpoch = this.branchEpoch // the document it holds, for that join (not the one it left)
       try {
         await this.conn.joinBranch(this.branch, this.bdoc)
         await this.conn.waitForBranchSync()
@@ -1734,7 +1814,14 @@ export class Session extends EventEmitter {
       fs.mkdirSync(dir, { recursive: true })
       fs.writeFileSync(path.join(dir, 'state.bin'), Y.encodeStateAsUpdate(this.bdoc))
       fs.writeFileSync(path.join(dir, 'claims.json'), JSON.stringify([...this.claims.values()]))
+      if (this.branchEpoch) fs.writeFileSync(path.join(dir, 'epoch'), this.branchEpoch)
+      else fs.rmSync(path.join(dir, 'epoch'), { force: true })
     } catch (err) { this.log(`could not keep ${key}'s state: ${err.message}`) }
+  }
+
+  /** Which document of branch `key` its kept state is a copy of (parkLocalState), or null. */
+  parkedEpoch (key) {
+    try { return fs.readFileSync(path.join(this.branchStateDir(key), 'epoch'), 'utf8').trim() || null } catch { return null }
   }
 
   /**

@@ -365,7 +365,7 @@ export class Session extends EventEmitter {
     this.conn.on('status', (s) => {
       this.log(s === 'connected' ? `connected to relay` : 'disconnected from relay, reconnecting…')
       this.scheduleStatusWrite()
-      if (s === 'connected') this.retryFailed()
+      if (s === 'connected') { this.moveRetryAt = 0; this.retryFailed() }
     })
     this.retryTimer = setInterval(() => this.retryFailed(), RETRY_MS)
     this.retryTimer.unref()
@@ -916,12 +916,13 @@ export class Session extends EventEmitter {
   myKey () { return (this.identity || this.conn?.identity)?.publicKey || null }
 
   /** Merges one captured path. Returns what happened, or null when nothing needed doing. */
-  async mergeOne ({ rel, base, via = null }) {
+  async mergeOne ({ rel, base, via = null, theirs: given }) {
     const release = () => this.merging.delete(rel)
     const disk = this.readDisk(rel)
     if (disk && (disk.skip || disk.tooLarge)) { release(); return null }
     const ours = disk ? disk.key : null // re-read: it may have changed again before the relay synced
-    const theirs = this.sharedKey(rel)
+    // `given`: the version to merge with when the session hasn't the file (HEAD's, for work carried in a checkout).
+    const theirs = this.sharedKey(rel) === undefined && given !== undefined ? given : this.sharedKey(rel)
     const theirsBy = this.lastEditorOf(rel)
     // Claimed by someone else meanwhile: a record, even if they haven't changed it yet (ingest would reject it).
     const claim = this.claimFor(rel)
@@ -938,6 +939,7 @@ export class Session extends EventEmitter {
       // Only they changed it. (lastKnown may hold a newer doc's text when the base came from merging.json.)
       release()
       if (ours !== null) this.lastKnown.set(rel, ours)
+      if (theirs !== this.sharedKey(rel)) { if (!theirs.startsWith('bin:')) this.putHeadVersion(rel, theirs); return null } // `given`: git's file, not the session's
       this.tryWrite(rel)
       return null
     }
@@ -1331,7 +1333,8 @@ export class Session extends EventEmitter {
     this.following = to
     this.setHold('switching', { to, ...(prevHead ? { prevHead } : {}) }) // nothing more is shared on the old branch from here
     this.gitTask(() => this.moveTo(to))
-      .catch((err) => this.moveFailed(to, err))
+      // The branch it failed on: a move can retarget on the way (moveTo, abandonMove).
+      .catch((err) => this.moveFailed((this.pendingMove && this.pendingMove.to) || (this.hold && this.hold.to) || to, err))
       .finally(() => { this.following = null })
   }
 
@@ -1344,9 +1347,11 @@ export class Session extends EventEmitter {
   moveFailed (to, err) {
     if (this.stopped || !this.hold || this.hold.kind !== 'switching') return
     const msg = (err && err.message) || String(err)
-    const refused = !!(this.conn && this.conn.connected) && !/did not answer|not connected|disconnected/.test(msg)
-    this.moveTries = (this.moveTries || 0) + 1
-    this.moveRetryAt = Date.now() + (refused ? MOVE_RETRY_MAX_MS : Math.min(MOVE_RETRY_MAX_MS, RETRY_MS * 2 ** (this.moveTries - 1)))
+    const connected = !!(this.conn && this.conn.connected)
+    const refused = connected && !/did not answer|not connected|disconnected/.test(msg)
+    // Offline is no try: reconnecting tries again at once (start: the 'connected' status clears moveRetryAt).
+    if (connected) this.moveTries = (this.moveTries || 0) + 1
+    this.moveRetryAt = !connected ? 0 : Date.now() + (refused ? MOVE_RETRY_MAX_MS : Math.min(MOVE_RETRY_MAX_MS, RETRY_MS * 2 ** (this.moveTries - 1)))
     this.hold.waiting = refused ? 'refused' : 'retrying'
     this.emit('hold', this.hold)
     this.scheduleStatusWrite()
@@ -1572,6 +1577,8 @@ export class Session extends EventEmitter {
           return !(disk && (disk.skip || disk.tooLarge)) && (disk ? disk.key : undefined) !== this.sharedKey(rel)
         })).filter((rel) => !away.has(rel))
     const fromHead = [...away].filter((rel) => this.sharedKey(rel) === undefined) // the document hasn't it: HEAD's file
+    // Carried, then edited since the checkout: only that edit is this branch's. Merged against the carried version.
+    const editedSince = new Set(dirty.filter((rel) => carried.has(rel)))
     const ask = [...dirty, ...fromHead]
     const atHead = this.git && this.git.sha && ask.length ? await filesAt(this.root, this.git.sha, ask) : null
     const bins = new Map()
@@ -1594,9 +1601,29 @@ export class Session extends EventEmitter {
       }
     } finally { this.arriving = false }
     const baseOf = (rel) => left && left.has(rel) ? left.get(rel) : atHead ? atHead.get(rel) ?? undefined : undefined
-    const entries = dirty.map((rel) => ({ rel, base: baseOf(rel), via: 'hold' }))
+    const entries = []
+    for (const rel of dirty) {
+      if (!editedSince.has(rel)) { entries.push({ rel, base: baseOf(rel), via: 'hold' }); continue }
+      // theirs: this branch's version, else HEAD's file. Neither has it: the file is the old branch's, kept aside.
+      const head = atHead ? atHead.get(rel) : undefined
+      if (this.sharedKey(rel) === undefined && (head === null || head === undefined)) { this.setAsideCarried(rel); continue }
+      entries.push({ rel, base: carried.get(rel), via: 'hold', ...(this.sharedKey(rel) === undefined ? { theirs: head } : {}) })
+    }
     for (const e of entries) this.merging.add(e.rel)
     return entries
+  }
+
+  /** A file git carried from the old branch that this branch hasn't, edited since: a copy under .quilt/conflicts, and off the disk. */
+  setAsideCarried (rel) {
+    const disk = this.readDisk(rel)
+    if (!disk || disk.skip || disk.tooLarge) return
+    try {
+      const dest = path.join(this.stateDir, 'conflicts', `${Date.now()}`, ...rel.split('/'))
+      fs.mkdirSync(path.dirname(dest), { recursive: true })
+      fs.copyFileSync(resolveInside(this.root, rel), dest)
+      this.putHeadVersion(rel, null)
+      this.log(`📦 ${rel} came over from the old branch in the checkout and isn't on ${this.branch}; your copy is in ${path.relative(this.root, dest)}.`)
+    } catch (err) { this.log(`could not set ${rel} aside: ${err.message}`) }
   }
 
   /** A carried path the branch's document hasn't: HEAD's file goes back (`key` from filesAt, `buf` for a binary), or none when HEAD hasn't it either. */
@@ -1620,7 +1647,7 @@ export class Session extends EventEmitter {
 
   /**
    * The paths git carried over from the old branch (path -> the old branch's version): changed
-   * on disk, the old document's version there, and not the old HEAD's. (git keeps uncommitted
+   * on disk, where the old branch's document differs from its HEAD. (git keeps uncommitted
    * changes across a checkout; Quilt wrote the session's work there as such.)
    */
   async carriedFrom (oldKeys, fromSha) {
@@ -1628,14 +1655,15 @@ export class Session extends EventEmitter {
     const tree = await treeState(this.root, [])
     if (!tree) return out
     // .gitignore's .quilt/ line is Quilt's own, carried on every checkout: not the session's work.
-    const dirty = [...tree.dirty].filter((rel) => this.syncable(rel) && oldKeys.has(rel) && rel !== '.gitignore')
+    const dirty = [...tree.dirty].filter((rel) => this.syncable(rel) && rel !== '.gitignore')
     const was = fromSha && dirty.length ? await filesAt(this.root, fromSha, dirty) : null
     for (const rel of dirty) {
       const disk = this.readDisk(rel)
       if (disk && (disk.skip || disk.tooLarge)) continue
-      const here = disk ? disk.key : null
+      // The old branch had uncommitted work here, and git kept a change across the checkout. (The disk may
+      // have been edited again since: arrive merges that edit against the old branch's version.)
       const head = was ? was.get(rel) : undefined // undefined: git couldn't read it
-      if (here === oldKeys.get(rel) && head !== here) out.set(rel, here)
+      if (oldKeys.has(rel)) { if (oldKeys.get(rel) !== head) out.set(rel, oldKeys.get(rel)) } else if (!disk && head) out.set(rel, null) // a deletion the old branch made
     }
     return out
   }

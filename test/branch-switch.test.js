@@ -133,6 +133,62 @@ test('on a branch the session has, what git carried over gets that branch\'s ver
   await waitFor(() => on(A, 'main') && read(dirA, 'src/app.js') === 'bob on main\n' && read(dirA, 'notes.txt') === 'bob notes\n', 10000)
 })
 
+test('a deletion git carries over stays on the old branch: feature-x keeps the file', async (t) => {
+  const { A, B, dirA, dirB } = await repos(t)
+  git(dirA, 'checkout', '-q', 'feature-x') // feature-x is in the session from here
+  await waitFor(() => on(A, 'feature-x'), 10000)
+  git(dirA, 'checkout', '-q', 'main')
+  await waitFor(() => on(A, 'main'), 10000)
+  fs.rmSync(path.join(dirB, 'src/app.js')) // the same in both commits: git carries the deletion over
+  await waitFor(() => read(dirA, 'src/app.js') === null)
+  git(dirA, 'checkout', '-q', 'feature-x')
+  await waitFor(() => on(A, 'feature-x') && read(dirA, 'src/app.js') === MAIN_APP, 10000)
+  await never(() => A.files.get('src/app.js')?.toString() !== MAIN_APP, 1000)
+  assert.equal(B.files.has('src/app.js'), false, 'main keeps the deletion')
+})
+
+test('carried work edited before the move finished: only that edit reaches feature-x, never the partner\'s main work', async (t) => {
+  const { A, B, dirA, dirB } = await repos(t)
+  git(dirA, 'checkout', '-q', 'feature-x') // feature-x is in the session from here
+  await waitFor(() => on(A, 'feature-x'), 10000)
+  git(dirA, 'checkout', '-q', 'main')
+  await waitFor(() => on(A, 'main'), 10000)
+  write(dirB, 'src/app.js', 'app\nbob line\n') // bob's uncommitted main work, on alice's disk too
+  await waitFor(() => read(dirA, 'src/app.js') === 'app\nbob line\n')
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  const join = A.conn.joinBranch.bind(A.conn)
+  A.conn.joinBranch = async (...args) => { await gate; return join(...args) }
+  git(dirA, 'checkout', '-q', 'feature-x') // carries src/app.js over
+  await waitFor(() => A.status().git.hold?.kind === 'switching', 10000)
+  write(dirA, 'src/app.js', 'alice line\napp\nbob line\n') // edited while the move is held
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  release()
+  await waitFor(() => on(A, 'feature-x') && A.files.get('src/app.js')?.toString() === 'alice line\napp\n', 10000)
+  assert.equal(read(dirA, 'src/app.js'), 'alice line\napp\n')
+  await never(() => (A.files.get('src/app.js')?.toString() || '').includes('bob line'), 1000)
+  assert.equal(B.files.get('src/app.js')?.toString(), 'app\nbob line\n', 'main keeps bob\'s work, without alice\'s feature edit')
+})
+
+test('a checkout while the relay is unreachable moves the folder as soon as it reconnects', async (t) => {
+  const { A, dirA } = await repos(t)
+  git(dirA, 'checkout', '-q', 'feature-x') // feature-x is in the session from here
+  await waitFor(() => on(A, 'feature-x'), 10000)
+  git(dirA, 'checkout', '-q', 'main')
+  await waitFor(() => on(A, 'main'), 10000)
+  const reconnect = A.conn.connect.bind(A.conn)
+  A.conn.connect = () => {} // stays offline until the test reconnects it
+  A.conn.ws.terminate()
+  await waitFor(() => !A.status().connected)
+  git(dirA, 'checkout', '-q', 'feature-x')
+  await waitFor(() => A.status().git.hold?.waiting === 'retrying', 10000)
+  await new Promise((resolve) => setTimeout(resolve, 500))
+  assert.equal(A.moveTries, 0, 'failing offline is no try')
+  A.conn.connect = reconnect
+  reconnect()
+  await waitFor(() => on(A, 'feature-x') && read(dirA, 'feature.txt') === 'feature\n', 5000) // well within the 30 s retry
+})
+
 test('git checkout -b: a branch new to the session starts from the folder, its uncommitted work included', async (t) => {
   const { A, B, dirA, dirB } = await repos(t)
   write(dirA, 'src/app.js', 'wip\n')

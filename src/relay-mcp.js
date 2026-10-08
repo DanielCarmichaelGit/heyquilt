@@ -987,6 +987,7 @@ export async function handleHostedMcp ({ req, res, pass, relay, workspaces = nul
     if (room) {
       touched.add(room)
       room.hostedSeen.delete(account)
+      room.forgetHostedBranch(account)
       for (const [k, p] of room.pending) if (k.hosted && p.id === account) room.pending.delete(k)
       // Leaving lets go of its claims: nobody else could.
       room.dropRequests((r) => r.byId === account)
@@ -1005,7 +1006,8 @@ export async function handleHostedMcp ({ req, res, pass, relay, workspaces = nul
     }
   }, ({ branch, create }) => ctx.withSession((room) => {
     try {
-      const r = room.setHostedBranch(account, String(branch).trim(), { create: !!create, by: me })
+      const editor = ctx.access(room)?.role !== 'viewer'
+      const r = room.setHostedBranch(account, String(branch).trim(), { create: !!create, by: me, editor })
       return text(r.created
         ? `Started ${r.branch} from ${r.from}, with a copy of its files. Your file tools, claims and history use ${r.branch} now; people move their folders to it from the branch menu.`
         : `You are on ${r.branch} now: your file tools, claims and history use it.`)

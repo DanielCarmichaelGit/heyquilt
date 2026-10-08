@@ -876,7 +876,7 @@ class Room {
    * `create`: a new branch in the session, started from a copy of the files on the branch it
    * is on (as `git switch -c` carries a folder's work). Returns { branch, created, from }.
    */
-  setHostedBranch (id, key, { create = false, by = '' } = {}) {
+  setHostedBranch (id, key, { create = false, by = '', editor = true } = {}) {
     if (!validBranchKey(key) || key === DEFAULT_KEY) throw new Error(`"${String(key).slice(0, 60)}" isn't a branch name.`)
     const to = this.resolveKey(key)
     const from = this.hostedBranch(id)
@@ -886,7 +886,7 @@ class Room {
     if (!exists) {
       if (this.full) throw new Error("This session is over its size limit, so it can't take another branch.")
       const src = this.branchDoc(from, { by })
-      const e = this.branchDoc(to, { by, base: this.meta.branches[from] ? this.meta.branches[from].base : null })
+      const e = this.branchDoc(to, { by, base: this.meta.branches[from] ? this.meta.branches[from].base : null, editor })
       e.doc.transact(() => {
         for (const [rel, t] of src.files) { const y = new Y.Text(); y.insert(0, t.toString()); e.files.set(rel, y) }
         for (const [rel, b] of src.blobs) e.blobs.set(rel, b)
@@ -897,6 +897,13 @@ class Room {
     this.saveMeta()
     this.broadcastBranches()
     return { branch: to, created: !exists, from }
+  }
+
+  /** A hosted agent's branch choice, forgotten once its membership here ends (it left, or the owner removed it). */
+  forgetHostedBranch (id, { save = true } = {}) {
+    if (!this.meta.hostedBranch || !(id in this.meta.hostedBranch)) return
+    delete this.meta.hostedBranch[id]
+    if (save) this.saveMeta()
   }
 
   /**
@@ -1190,7 +1197,7 @@ class Room {
       this.meta.removed = Object.fromEntries(removed.slice(-MAX_REMOVED))
       this.saveMeta()
       for (const [cws, a] of this.access) if (gone.includes(a.id)) { cws.endReason = 'removed'; cws.close(CLOSE_DENIED, 'The session owner removed you') }
-      for (const id of gone) { this.hostedSeen.delete(id); if (this.onHostedGone) this.onHostedGone(id, 'removed') }
+      for (const id of gone) { this.hostedSeen.delete(id); this.forgetHostedBranch(id); if (this.onHostedGone) this.onHostedGone(id, 'removed') }
       this.broadcastClaims()
       return { ok: true }
     }

@@ -90,3 +90,43 @@ test('a folder that switches to the agent\'s branch (a checkout in git) gets its
   git(carlDir, 'checkout', '-q', 'main')
   await waitFor(() => read(carlDir, 'README.md') === '# Project\n', 10000)
 })
+
+test('a viewer hosted agent cannot create a branch, but can switch to one that exists', async () => {
+  const GROK2 = 'agent:agent-grok2'
+  const hostedPass2 = () => signPass({ v: 1, sub: 'agent-grok2', kind: 'agent', name: 'Grok2-Bot', key: '', exp: Date.now() + PASS_TTL_MS }, PASS_KEYS.privateKey)
+  const bare2 = tmp('bare2'); git(bare2, 'init', '-q', '--bare', '-b', 'main')
+  const dir2 = tmp('carl2'); git(dir2, 'clone', '-q', bare2, '.')
+  write(dir2, 'README.md', '# Other project\n'); git(dir2, 'add', '.'); git(dir2, 'commit', '-qm', 'one'); git(dir2, 'push', '-q', 'origin', 'main')
+  const id2 = generateIdentity()
+  const carl2 = new Session({ dir: dir2, server: `ws://127.0.0.1:${srv.port}`, room: 'bh-2', secret: 's2', viewSecret: 'v2', name: 'Carl2', tool: 'Claude Code', identity: id2, passes: testPasses(id2, { name: 'Carl2', sub: 'user-carl2' }) })
+  await carl2.start({ waitTimeoutMs: 5000 })
+  carl2.setAgentState({ tool: 'Claude Code', status: 'idle' })
+  await waitFor(() => carl2.isOwner)
+  const grok2 = new Client({ name: 'grok2', version: '1.0.0' })
+  await grok2.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${srv.port}/mcp`), { requestInit: { headers: { 'x-quilt-pass': hostedPass2() } } }))
+  const call2 = (name, args = {}) => grok2.callTool({ name, arguments: args })
+  try {
+    await call2('quilt_join_session', { invite: 'https://join.heyquilt.com/bh-2#s2' })
+    await waitFor(() => carl2.waiting.some((p) => p.key === GROK2))
+    await carl2.approve(GROK2, { role: 'viewer' })
+    await waitFor(() => carl2.members.some((m) => m.key === GROK2))
+    const created = await call2('quilt_switch_branch', { branch: 'feature-y', create: true })
+    assert.equal(created.isError, true)
+    assert.match(out(created), /you can only view this session, so you cannot start a new branch/)
+    assert.equal(srv.rooms.get('bh-2').meta.branches['feature-y'], undefined, 'no branch document was created')
+    const switched = await call2('quilt_switch_branch', { branch: 'main' })
+    assert.ok(!switched.isError, out(switched))
+    assert.match(out(switched), /You are on main now/)
+  } finally {
+    await grok2.close()
+    await carl2.stop()
+  }
+})
+
+test('leaving the session forgets the hosted agent\'s branch choice', async () => {
+  const room = srv.rooms.get('bh-1')
+  assert.equal(room.meta.hostedBranch[GROK], 'feature-x', 'Grok had chosen feature-x')
+  const r = await call('quilt_leave_session')
+  assert.ok(!r.isError, out(r))
+  assert.equal((room.meta.hostedBranch || {})[GROK], undefined, 'the choice is forgotten once the agent leaves')
+})

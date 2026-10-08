@@ -48,6 +48,8 @@ export function mentionsMe (text, me, { agent = false } = {}) {
  *   tasks for "their AI" are the reader's and tasks for the person are not. One of
  *   several AI sessions working through a person's app (persona.js) has its own name,
  *   the names it had before (`aliases`), and `of`, its person: tasks for "their AI" are its.
+ *   `own`: names of the reader's own AI sessions. What they say never wakes the reader: a
+ *   session writing to its own person is talking to the person, not to their other sessions.
  * The first scan (no state) only takes stock: nothing that is already there
  * wakes anyone. A task fires once when it becomes the reader's while open;
  * handing it away and back fires again.
@@ -55,6 +57,7 @@ export function mentionsMe (text, me, { agent = false } = {}) {
 export function scanInbox ({ messages = [], tasks = [], reader, now = Date.now() }, state = null) {
   const me = reader && reader.name
   const names = me ? [me, ...((reader && reader.aliases) || [])] : []
+  const own = new Set((reader && reader.own) || [])
   const seed = !state
   const seenMsgs = new Set(state?.messages || [])
   const assigned = new Set(state?.assigned || [])
@@ -63,7 +66,7 @@ export function scanInbox ({ messages = [], tasks = [], reader, now = Date.now()
   for (const m of messages) {
     if (!m || typeof m.id !== 'string' || !m.id) continue
     msgIds.push(m.id)
-    if (seed || seenMsgs.has(m.id) || !me || names.includes(m.by)) continue
+    if (seed || seenMsgs.has(m.id) || !me || names.includes(m.by) || own.has(m.by)) continue
     const text = typeof m.text === 'string' ? m.text : ''
     // File queue messages (a request for a file the reader holds, or a file handed to them) wake
     // them like a direct message, but ask for a handoff rather than a reply (duties.js).

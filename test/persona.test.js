@@ -86,6 +86,27 @@ test('two AI sessions through one app are members of their own, with their own m
   assert.equal(dana.inbox({ via: 'aaaaaaaa' }).events.length, 0, 'answered')
 })
 
+test('an AI session writing to its own person reaches the person, not that person\'s other AI sessions', async (t) => {
+  const { dana, bob, room } = await pair(t)
+  // A second Quilt of Dana's in the room (the desktop app and a CLI, say), with an AI session of its own.
+  const other = new Session({ dir: tmp('a2'), server, room, secret: 'pw', name: 'Dana Smith', tool: 'cursor' })
+  t.after(() => other.stop())
+  await other.start({ waitTimeoutMs: 5000 })
+  other.registerPersona({ via: 'cccccccc', tool: 'Claude Code', cwd: tmp('z') })
+  other.renamePersona('cccccccc', 'branches')
+  await waitFor(() => dana.status().peers.some((p) => p.name === 'Dana · branches'))
+  other.say('OK for the AI to run the pull itself?', { agent: true, via: 'cccccccc', to: 'Dana Smith' })
+  other.say('@Dana Smith the tests pass', { agent: true, via: 'cccccccc', also: true })
+  await waitFor(() => dana.chat.toArray().filter((m) => m.by === 'Dana · branches').length === 2)
+  await new Promise((r) => setTimeout(r, 300))
+  // Dana reads them in the app; nothing lands in the inbox her AI sessions answer from.
+  assert.equal(dana.inbox().events.length, 0)
+  // Someone else writing to Dana still reaches her AI.
+  bob.say('@Dana Smith can you look at the build?')
+  await waitFor(() => dana.inbox().events.length === 1)
+  assert.equal(dana.inbox().events[0].by, 'Bob')
+})
+
 test("an AI session's claims are its own: another session of the same person is refused, the person's own disk is not", async (t) => {
   const { dana, bob, dirA, dirB, room } = await pair(t)
   dana.registerPersona({ via: 'aaaaaaaa', tool: 'Claude Code', cwd: tmp('x') })

@@ -2879,7 +2879,18 @@ export class Session extends EventEmitter {
   // ------------------------------------------------------------- inbox --
 
   /** Who the inbox is for: this agent, or this person's AI (tasks for "their AI" are its). */
-  inboxReader () { return { name: this.name, asAi: this.kind !== 'agent', agent: this.kind === 'agent' } }
+  inboxReader () {
+    // This person's AI sessions, through this app or another Quilt of theirs in the room: a
+    // session writing to its person is talking to the person, not to their other sessions.
+    const own = [...this.personas.values()].flatMap((p) => [p.name, ...(p.aliases || [])])
+    if (this.conn && this.conn.awareness) {
+      for (const st of this.conn.awareness.getStates().values()) {
+        if (!st || st.name !== this.name || !Array.isArray(st.personas)) continue
+        for (const x of st.personas) if (x && typeof x.name === 'string') own.push(x.name)
+      }
+    }
+    return { name: this.name, asAi: this.kind !== 'agent', agent: this.kind === 'agent', own }
+  }
 
   /**
    * Looks for new mentions, direct messages and handed-over tasks. `quiet` takes

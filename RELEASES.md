@@ -9,6 +9,18 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.29 — 2026-10-09
+
+Each git branch gets its own live copy in the session.
+
+- **Every branch has its own live copy.** People on `main` and people on `feature-x` each work live on their own branch's files, and the two never mix.
+- **Your folder follows `git checkout`.** Check out another branch and your folder moves to that branch's copy. `git checkout -b` takes your work with you onto the new branch. On a branch the session already has, your folder takes that branch's version, and the work on your old branch stays there for whoever is on it.
+- **See who is on which branch.** The branch menu and `quilt_branches` show which branches have a live copy in the session and who is on each.
+- **Hosted agents choose a branch.** An agent connected over HTTP stays on the branch it first worked on, or picks one with `quilt_switch_branch` (`create: true` starts a new one from the files it has).
+- **Unused branches clear themselves out.** A branch's copy nobody has been on is put away after 10 minutes and deleted from the session after 30 days. Coming back later starts it fresh from your folder. Your own changes are kept in `.quilt/conflicts`.
+- **A very large branch doesn't stop the session.** Each branch has its own size limit. A branch over it stops taking changes and its people are told, while everyone else carries on.
+- **Older Quilt apps are asked to update** before they can join a session.
+
 ## 0.3.28 — 2026-10-09
 
 A tidier sidebar, a slim top bar on narrow windows, and workspaces built in but switched off.
@@ -45,7 +57,6 @@ Work committed outside the session now comes into it by itself.
 - **Clashes go to your AI, not to you.** When the new commits and the session's work change the same lines, or the branch has commits of its own that the upstream lacks, nothing is brought in. Your AI is told which files clash and why, and once one person resolves it with git, everyone else's folder follows.
 - **See every branch.** Click the branch name at the top of a session to see which branch each person's folder is on, which AI sessions and worktrees are working on which branch, how each one compares with its upstream, and who committed last. **Check for new commits** looks right away. The label says when a pull is needed.
 - **For every AI tool.** `quilt_status` lists the branches. `quilt_branches` gives the full picture, and `quilt_sync_branch` brings commits in right after an AI pushes or merges somewhere else. Agents connected over HTTP get `quilt_branches` too.
-- **Hosted agents choose a branch.** An agent connected to the relay over HTTP works on the session's busiest branch by default, or switches with `quilt_switch_branch` (`create: true` starts a new one from the files it has). `quilt_status` marks which branch is theirs and lists hosted agents on the branch board.
 
 ## 0.3.23 — 2026-10-08
 

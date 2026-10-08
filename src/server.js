@@ -56,6 +56,11 @@ export const HOSTED_ONLINE_MS = 30 * 60 * 1000
 // A room's renames: each one saves the room and queues a presence report, so they're rationed.
 const RENAME_MS = 2000
 const MAX_PATTERN = 500
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/ // never in a claim: branch claims are keyed `<branch>\0<pattern>`
+// A room's documents together (the room's and every branch's) may take this many times the size limit before new branches are refused.
+const MAX_TOTAL_FACTOR = 10
+const newEpoch = () => crypto.randomBytes(8).toString('hex')
 // The file queue: requests for a claimed file (a title, and a summary of the plan), and handoffs.
 const MAX_REQUEST_TITLE = 120
 const MAX_REQUEST_TEXT = 300
@@ -205,7 +210,9 @@ class Room {
       if (!events || !this.guard.trackedOrigins.has(tr.origin)) return
       this.activityAdded.set(tr, events.flatMap((e) => [...e.changes.added].flatMap((item) => item.content.getContent())))
     })
-    this.full = this.totalBytes() > cfg.maxRoomBytes
+    // The room's own document against the size limit; each branch document has a limit of its
+    // own (branchFull). A disk error (diskError, possibly from migrateLegacy above) keeps it read-only.
+    this.full = this.unsavable || this.bytes > cfg.maxRoomBytes
     this.saveTimer = null
     this.unloadTimer = null
     this.presence = null // a PresenceReporter when the relay reports presence (set by startServer)
@@ -677,7 +684,7 @@ class Room {
   /** The document a branch name stands for: ∅ is the default branch. */
   resolveKey (key) { return key === DEFAULT_KEY ? this.defaultKey : key }
 
-  /** Bytes the room takes: its own document and every branch's. */
+  /** Bytes the room takes: its own document and every branch's (capped at MAX_TOTAL_FACTOR times the limit, see assertBranchRoom). */
   totalBytes () {
     let n = this.bytes
     if (this.store) for (const key of Object.keys(this.meta.branches)) n += this.store.size(key)
@@ -687,14 +694,29 @@ class Room {
   /** Adds a branch to the session (once): who started it, when, and the commit it started from. True when new. */
   noteBranch (key, { by = '', base = null } = {}) {
     if (this.meta.branches[key]) return false
-    this.meta.branches[key] = { by, at: Date.now(), base: typeof base === 'string' && /^[0-9a-f]{40,64}$/.test(base) ? base : null }
+    this.meta.branches[key] = { by, at: Date.now(), base: typeof base === 'string' && /^[0-9a-f]{40,64}$/.test(base) ? base : null, epoch: newEpoch() }
     if (!this.meta.defaultBranch) this.meta.defaultBranch = key
     this.saveMeta()
     return true
   }
 
+  /**
+   * Which document of branch `key` this is: a new id each time the branch's document is
+   * started (including after a prune). An app's saved copy of an older one is not merged in.
+   */
+  branchEpoch (key) {
+    const b = this.meta.branches[key]
+    if (!b) return null
+    if (!b.epoch) { b.epoch = newEpoch(); this.saveMeta() } // noted before epochs
+    return b.epoch
+  }
+
+  /** Whether branch `key`'s document is over the size limit (every document has the limit of its own). */
+  branchFull (key) { return this.store.size(key) > this.cfg.maxRoomBytes }
+
   /** Branch `key`'s document, loaded, and added to the session when new (hosted agents and chat links use this). */
   branchDoc (key, { by = '', base = null, editor = true } = {}) {
+    this.assertMigrated()
     const k = this.resolveKey(key)
     if (!this.meta.branches[k]) this.assertBranchRoom(editor)
     if (this.noteBranch(k, { by, base })) this.broadcastBranches()
@@ -730,10 +752,12 @@ class Room {
       if (origin && origin !== e.guard && this.guard.trackedOrigins.has(origin) && !this.checkChange(origin, update, tr, e)) return
       if (origin && this.conns.has(origin)) this.noteActivity(this.holderKeys(origin))
       for (const ws of e.conns) if (ws !== origin) send(ws, updateMessage(update, ws.branchAs))
+      const was = e.bytes > this.cfg.maxRoomBytes
       e.bytes += update.length
-      if (!this.full && this.totalBytes() > this.cfg.maxRoomBytes) {
-        this.full = true
-        this.log(`[${this.name}] over the size limit; further edits are refused`)
+      if (!was && e.bytes > this.cfg.maxRoomBytes) {
+        // Only this branch: the room and the other branches carry on, and nobody is disconnected.
+        this.log(`[${this.name}] branch ${e.key} is over the size limit; further edits to it are refused`)
+        this.broadcastBranches()
       }
       this.store.scheduleSave(e)
     })
@@ -778,7 +802,7 @@ class Room {
       legacy.destroy()
       this.doc = room
       this.bytes = state.length
-      this.meta.branches[DEFAULT_KEY] = { by: '', at: this.meta.createdAt || Date.now(), base: null, stored }
+      this.meta.branches[DEFAULT_KEY] = { by: '', at: this.meta.createdAt || Date.now(), base: null, stored, epoch: newEpoch() }
       this.log(`[${this.name}] moved its files into the default branch's document`)
     } else if (this.store.stored(DEFAULT_KEY) && !this.meta.branches[DEFAULT_KEY]) {
       // Stopped after both files were written, before this was saved: the default branch's
@@ -793,7 +817,7 @@ class Room {
         stored = [...probe.getMap('blobs').values()].filter((x) => x && x.stored && x.stored.id).map((x) => x.stored.id).sort()
         probe.destroy()
       } catch (err) { this.log(`[${this.name}] could not read the default branch while recovering: ${err.message}`) }
-      this.meta.branches[DEFAULT_KEY] = { by: '', at: this.meta.createdAt || Date.now(), base: null, stored }
+      this.meta.branches[DEFAULT_KEY] = { by: '', at: this.meta.createdAt || Date.now(), base: null, stored, epoch: newEpoch() }
     }
     if (this.meta.branches[DEFAULT_KEY] && !this.meta.defaultBranch) this.meta.defaultBranch = DEFAULT_KEY
     this.meta.layout = 2
@@ -813,6 +837,7 @@ class Room {
     delete this.meta.branches[DEFAULT_KEY]
     this.meta.defaultBranch = key
     for (const ws of this.conns.keys()) if (ws.branch === DEFAULT_KEY) ws.branch = key
+    for (const [id, k] of Object.entries(this.meta.hostedBranch || {})) if (k === DEFAULT_KEY) this.meta.hostedBranch[id] = key
     this.saveMeta()
     return true
   }
@@ -872,6 +897,20 @@ class Room {
   }
 
   /**
+   * A hosted agent that hasn't chosen a branch is pinned to the active branch (its first call on
+   * files), so it stays there until quilt_switch_branch even as people check other branches out.
+   */
+  pinHostedBranch (id) {
+    const k = (this.meta.hostedBranch || {})[id]
+    if (k && this.meta.branches[k]) return k
+    const to = this.activeBranch()
+    this.meta.hostedBranch = { ...(this.meta.hostedBranch || {}), [id]: to }
+    this.saveMeta()
+    this.broadcastBranches()
+    return to
+  }
+
+  /**
    * A hosted agent works on branch `key` from now on (quilt_switch_branch), kept per member.
    * `create`: a new branch in the session, started from a copy of the files on the branch it
    * is on (as `git switch -c` carries a folder's work). Returns { branch, created, from }.
@@ -884,7 +923,8 @@ class Room {
     if (!exists && !create) throw new Error(`${key} isn't in this session. Pass create: true to start it from the files on ${from}.`)
     if (exists && create) throw new Error(`${key} is already in this session: switch to it without create.`)
     if (!exists) {
-      if (this.full) throw new Error("This session is over its size limit, so it can't take another branch.")
+      this.assertMigrated()
+      this.assertBranchRoom(editor, this.store.size(from)) // a copy of `from`'s files
       const src = this.branchDoc(from, { by })
       const e = this.branchDoc(to, { by, base: this.meta.branches[from] ? this.meta.branches[from].base : null, editor })
       e.doc.transact(() => {
@@ -907,15 +947,23 @@ class Room {
   }
 
   /**
-   * Whether a new branch may start: not over the session's branch limit or its size, and
-   * (unless `editor` is false) started by someone who may change files. Shared by
-   * branchRequest's join and branchDoc (hosted agents, chat links), so the same cap and
-   * editor-only rule applies wherever a branch can be created.
+   * Whether a new branch may start: not over the session's branch limit or its total size
+   * (every document together, with `adding` bytes more for the copy a new branch starts
+   * from), and (unless `editor` is false) started by someone who may change files. Shared by
+   * branchRequest's join and branchDoc (hosted agents, chat links), so the same caps and
+   * editor-only rule apply wherever a branch can be created. Refusing here never
+   * disconnects anyone: the folder stays on its branch.
    */
-  assertBranchRoom (editor = true) {
-    if (this.full) throw new Error("This session is over its size limit, so it can't take another branch.")
+  assertBranchRoom (editor = true, adding = 0) {
+    if (this.unsavable) throw new Error("The relay can't save this session right now, so it can't take another branch.")
+    if (this.totalBytes() + adding > this.cfg.maxRoomBytes * MAX_TOTAL_FACTOR) throw new Error("This session is at its size limit across all its branches, so it can't take another branch. Branches nobody is on leave the session after 30 days.")
     if (Object.keys(this.meta.branches).length >= MAX_BRANCHES) throw new Error(`This session already has ${MAX_BRANCHES} branches, its limit; an existing one has to go before another can start.`)
     if (!editor) throw new Error('you can only view this session, so you cannot start a new branch')
+  }
+
+  /** A room whose move to branch documents failed on the relay's disk (migrateLegacy) stays read-only: no branch document is used. */
+  assertMigrated () {
+    if (this.meta.layout !== 2) throw new Error("The relay couldn't finish updating how it stores this session (its disk refused), so the session is read-only until the relay is fixed.")
   }
 
   /** The session's branches, for everyone's branch menu (hosted: the hosted agents on each). */
@@ -925,7 +973,7 @@ class Room {
       const k = this.hostedBranch(h.id)
       hosted.set(k, [...(hosted.get(k) || []), h.name])
     }
-    return Object.entries(this.meta.branches).map(([key, b]) => ({ key, by: b.by || '', at: b.at || 0, base: b.base || null, default: key === this.defaultKey, hosted: hosted.get(key) || [] }))
+    return Object.entries(this.meta.branches).map(([key, b]) => ({ key, by: b.by || '', at: b.at || 0, base: b.base || null, default: key === this.defaultKey, hosted: hosted.get(key) || [], ...(this.branchFull(key) ? { full: true } : {}) }))
   }
 
   broadcastBranches () {
@@ -943,14 +991,17 @@ class Room {
     const key = String(req.branch ?? '')
     if (!validBranchKey(key)) throw new Error(`"${key.slice(0, 60)}" isn't a branch name`)
     if (req.op === 'join') {
+      this.assertMigrated()
       // An app from before branch documents names the branch the old document was; else the first real branch takes ∅.
-      if (validBranchKey(String(req.adopt || ''))) this.adoptDefault(String(req.adopt))
-      this.adoptDefault(key)
+      let adopted = false
+      if (validBranchKey(String(req.adopt || ''))) adopted = this.adoptDefault(String(req.adopt))
+      adopted = this.adoptDefault(key) || adopted
       const k = this.resolveKey(key)
       const created = !this.meta.branches[k]
       if (created) {
         const a = this.access.get(ws)
-        this.assertBranchRoom(!(a && a.role === 'viewer'))
+        // A new branch starts as a copy of the folder, about the size of the branch it is on now.
+        this.assertBranchRoom(!(a && a.role === 'viewer'), ws.branch && ws.branch !== k ? this.store.size(ws.branch) : 0)
       }
       try { this.store.load(k) } catch (err) {
         if (!err.unreadable) throw err
@@ -968,7 +1019,8 @@ class Room {
       ws.branchAs = key // as the app named it (∅ without git): its sync messages carry this
       this.noteBranch(k, { by: this.names.get(ws) || '', base: req.base })
       this.noteBranchSeen(k, { force: true })
-      return { ok: true, branch: k, created, base: this.meta.branches[k].base, listChanged: created }
+      // Everyone hears a new branch, and a default branch that just took its real name.
+      return { ok: true, branch: k, created, base: this.meta.branches[k].base, epoch: this.branchEpoch(k), listChanged: created || adopted }
     }
     if (req.op === 'confirm') {
       const k = this.resolveKey(key)
@@ -1451,6 +1503,7 @@ class Room {
     if (req.op === 'claim') {
       if (!pattern) throw new Error('pattern required')
       if (pattern.length > MAX_PATTERN) throw new Error('pattern too long')
+      if (CONTROL_CHARS.test(pattern)) throw new Error('a pattern cannot contain control characters')
       const existing = this.meta.claims[at(pattern)]
       if (existing && !mine(existing)) throw new Error(`${pattern} is already claimed by ${existing.by}`)
       const paths = this.branchPaths(branch)
@@ -1483,6 +1536,7 @@ class Room {
       // told now, and must hand it off (with context) before letting go.
       const file = String(req.path ?? '').trim().replace(/^\.\//, '')
       if (!file || file.length > MAX_PATTERN) throw new Error('path required')
+      if (CONTROL_CHARS.test(file)) throw new Error('a path cannot contain control characters')
       if (who.talk === false) throw new Error('you may not post in this session')
       const c = this.claimFor(file, branch)
       if (!c) throw new Error(`${file} is not claimed: claim it and go ahead`)
@@ -1704,8 +1758,11 @@ class Room {
         const e = (k === ws.branch || k === ws.prevBranch) ? this.store.get(k) : null
         if (!e) return
         doc = e.doc
+        // A branch over its size limit takes nothing new; the room and every other branch carry
+        // on, and nobody is disconnected for it (its members hear it in the branch list).
+        if (!this.unsavable && this.branchFull(k) && decoding.peekVarUint(dec) !== syncProtocol.messageYjsSyncStep1) return
       }
-      if (this.full) {
+      if (docId === ROOM_DOC ? this.full : this.unsavable) {
         // Over quota: still answer "what do you have?" so people can read, but refuse new data.
         if (decoding.peekVarUint(dec) !== syncProtocol.messageYjsSyncStep1) {
           ws.endReason = 'disconnected'

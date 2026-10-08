@@ -130,3 +130,48 @@ test('leaving the session forgets the hosted agent\'s branch choice', async () =
   assert.ok(!r.isError, out(r))
   assert.equal((room.meta.hostedBranch || {})[GROK], undefined, 'the choice is forgotten once the agent leaves')
 })
+
+test('a hosted agent with no chosen branch is pinned to the active branch at its first file call: a write after people move never lands on another branch', async () => {
+  const GROK3 = 'agent:agent-grok3'
+  const pass3 = () => signPass({ v: 1, sub: 'agent-grok3', kind: 'agent', name: 'Grok3-Bot', key: '', exp: Date.now() + PASS_TTL_MS }, PASS_KEYS.privateKey)
+  const bare3 = tmp('bare3'); git(bare3, 'init', '-q', '--bare', '-b', 'main')
+  const dir3 = tmp('carl3'); git(dir3, 'clone', '-q', bare3, '.')
+  write(dir3, 'src/a.js', 'main a\n'); git(dir3, 'add', '.'); git(dir3, 'commit', '-qm', 'one'); git(dir3, 'push', '-q', 'origin', 'main')
+  const id3 = generateIdentity()
+  const carl3 = new Session({ dir: dir3, server: `ws://127.0.0.1:${srv.port}`, room: 'bh-3', secret: 's3', viewSecret: 'v3', name: 'Carl3', tool: 'Claude Code', identity: id3, passes: testPasses(id3, { name: 'Carl3', sub: 'user-carl3' }) })
+  await carl3.start({ waitTimeoutMs: 5000 })
+  carl3.setAgentState({ tool: 'Claude Code', status: 'idle' })
+  await waitFor(() => carl3.isOwner)
+  const grok3 = new Client({ name: 'grok3', version: '1.0.0' })
+  await grok3.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${srv.port}/mcp`), { requestInit: { headers: { 'x-quilt-pass': pass3() } } }))
+  const call3 = (name, args = {}) => grok3.callTool({ name, arguments: args })
+  try {
+    await call3('quilt_join_session', { invite: 'https://join.heyquilt.com/bh-3#s3' })
+    await waitFor(() => carl3.waiting.some((p) => p.key === GROK3))
+    await carl3.approve(GROK3, { role: 'editor' })
+    await waitFor(() => carl3.members.some((m) => m.key === GROK3))
+    const room = srv.rooms.get('bh-3')
+    // A call that touches no files leaves the agent unpinned.
+    await call3('quilt_tasks')
+    assert.equal((room.meta.hostedBranch || {})[GROK3], undefined)
+    assert.equal(out(await call3('quilt_read_file', { path: 'src/a.js' })), 'main a\n')
+    assert.equal(room.meta.hostedBranch[GROK3], 'main', 'pinned to the branch it read from')
+    // Meanwhile most people check out feature-z: it becomes the session's active branch.
+    room.noteBranch('feature-z')
+    const feature = room.store.load('feature-z')
+    room.activeBranch = () => 'feature-z'
+    const w = await call3('quilt_write_file', { path: 'src/a.js', content: 'grok edit\n' })
+    assert.ok(!w.isError, out(w))
+    assert.match(out(w), /Updated src\/a\.js on main/)
+    assert.equal(room.store.get('main').files.get('src/a.js')?.toString(), 'grok edit\n', 'the write went to the branch it read from')
+    assert.equal(feature.files.has('src/a.js'), false, 'feature-z never got main\'s file')
+    await waitFor(() => read(dir3, 'src/a.js') === 'grok edit\n')
+    // Choosing a branch still moves it.
+    const sw = await call3('quilt_switch_branch', { branch: 'feature-z' })
+    assert.ok(!sw.isError, out(sw))
+    assert.equal(room.meta.hostedBranch[GROK3], 'feature-z')
+  } finally {
+    await grok3.close()
+    await carl3.stop()
+  }
+})

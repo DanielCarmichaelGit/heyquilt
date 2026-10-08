@@ -142,7 +142,9 @@ test('too many connections from one address are refused', async (t) => {
   assert.deepEqual([a.status, b.status, c.status], [101, 101, 429])
 })
 
-test('a room over its size quota refuses new edits', async (t) => {
+test('a room whose own document is over its size quota refuses new edits', async (t) => {
+  // The room's document (chat, tasks, the feed) has the limit; each branch's files have one of
+  // their own (relay-branches.test.js: a full branch refuses only its own edits).
   const defer = cleanups(t)
   const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, maxRoomBytes: 4000 })
   defer(() => srv.close())
@@ -152,9 +154,9 @@ test('a room over its size quota refuses new edits', async (t) => {
   s.on('fatal', (err) => { fatal = err })
   defer(() => s.stop())
   await s.start({ waitTimeoutMs: 3000 })
-  fs.writeFileSync(path.join(dir, 'a.txt'), 'x'.repeat(6000))
+  s.doc.getArray('agentFeed').push([{ by: 'a', summary: 'x'.repeat(6000), ts: Date.now() }])
   await waitFor(() => srv.rooms.get('big')?.full)
-  fs.writeFileSync(path.join(dir, 'b.txt'), 'more')
+  s.doc.getArray('agentFeed').push([{ by: 'a', summary: 'more', ts: Date.now() }])
   await waitFor(() => fatal)
   assert.match(fatal.message, /size limit/)
 })

@@ -170,25 +170,91 @@ test('an auto-join that is refused makes waitForSync reject instead of hanging, 
   assert.equal(srv.rooms.get('rb7').store.get('no good'), null, 'no document was created for the refused branch')
 })
 
-test('a refused auto-join to a session already over its size limit also makes waitForSync reject, not hang', { timeout: 15000 }, async (t) => {
-  // A full session refuses a brand-new branch the same way an invalid key does (see the test
-  // above): this exercises that through the room's own size limit rather than a bad key, which
-  // used to leave the relay's socket for the connection half-closed for ~30s (see
-  // src/server.js's closeSoon) rather than settling quickly.
-  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet })
+test('a session over its total size across branches refuses a new branch in plain English, and nobody is disconnected', { timeout: 15000 }, async (t) => {
+  // Each document has the size limit of its own; all of a room's documents together may take ten
+  // times it. Past that, a new branch is refused the way an invalid key is (see the test above):
+  // waitForSync rejects rather than hangs, and the apps already in the session stay connected.
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, maxRoomBytes: 1000 })
+  t.after(() => srv.close())
   const seed = open(t, srv, 'rb7b', 'seed', 'main')
   await seed.c.waitForSync()
-  srv.rooms.get('rb7b').full = true
+  put(seed.bdoc, 'big.txt', 'x'.repeat(11000))
+  const room = srv.rooms.get('rb7b')
+  await waitFor(() => room.totalBytes() > 10000)
   const a = open(t, srv, 'rb7b', 'a', 'brand-new-branch')
-  await assert.rejects(a.c.waitForSync(), /size limit/)
+  await assert.rejects(a.c.waitForSync(), /size limit across all its branches, so it can't take another branch/)
   assert.equal(a.c.branchKey, null, 'the refused branch was let go, so room-only sync could settle')
-  // Close everything (and give it a moment to finish) before the relay itself closes: a
-  // connection still mid-close when the relay tears down its socket from under it is a
-  // different scenario than this test means to cover.
-  a.c.close()
-  seed.c.close()
-  await wait(500)
-  await srv.close()
+  assert.equal(room.meta.branches['brand-new-branch'], undefined)
+  await wait(200)
+  assert.equal(a.c.closed, false, 'refused a branch, not disconnected')
+  assert.equal(seed.c.connected, true)
+  a.doc.getArray('chat').push([{ text: 'still here' }])
+  await waitFor(() => seed.doc.getArray('chat').length === 1)
+})
+
+test('branches whose sizes add up past the limit all stay connected and syncing: the limit is per document', { timeout: 15000 }, async (t) => {
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, maxRoomBytes: 3000 })
+  t.after(() => srv.close())
+  const apps = {}
+  for (const k of ['main', 'one', 'two']) {
+    apps[k] = [open(t, srv, 'rbsz', `${k}-a`, k), open(t, srv, 'rbsz', `${k}-b`, k)]
+    await Promise.all(apps[k].map((x) => x.c.waitForSync()))
+    put(apps[k][0].bdoc, 'part.txt', k.repeat(2000 / k.length))
+    await waitFor(() => text(apps[k][1].bdoc, 'part.txt') === k.repeat(2000 / k.length))
+  }
+  const room = srv.rooms.get('rbsz')
+  assert.ok(room.totalBytes() > 3000, `the documents together are over the limit (${room.totalBytes()})`)
+  for (const k of ['main', 'one', 'two']) {
+    put(apps[k][0].bdoc, 'more.txt', `more on ${k}\n`)
+    await waitFor(() => text(apps[k][1].bdoc, 'more.txt') === `more on ${k}\n`)
+    assert.equal(apps[k][1].c.connected, true)
+  }
+  assert.equal(room.full, false)
+  assert.deepEqual(room.branchList().filter((b) => b.full), [])
+})
+
+test('one branch over the limit is full on its own: it takes nothing new and its members hear it; the other branches and the room carry on', { timeout: 15000 }, async (t) => {
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, maxRoomBytes: 3000 })
+  t.after(() => srv.close())
+  const big = open(t, srv, 'rbfull', 'big', 'big')
+  const big2 = open(t, srv, 'rbfull', 'big2', 'big')
+  const m = open(t, srv, 'rbfull', 'm', 'main')
+  const m2 = open(t, srv, 'rbfull', 'm2', 'main')
+  await Promise.all([big, big2, m, m2].map((x) => x.c.waitForSync()))
+  let heard = null
+  big2.c.on('branches', (list) => { heard = list })
+  put(big.bdoc, 'huge.txt', 'h'.repeat(4000))
+  await waitFor(() => text(big2.bdoc, 'huge.txt'))
+  await waitFor(() => heard && heard.find((b) => b.key === 'big')?.full === true)
+  assert.equal(heard.find((b) => b.key === 'main').full, undefined, 'main is not full')
+  const room = srv.rooms.get('rbfull')
+  put(big.bdoc, 'after.txt', 'refused\n')
+  await wait(400)
+  assert.equal(text(room.store.get('big').doc, 'after.txt'), undefined, 'the full branch took nothing new')
+  assert.equal(text(big2.bdoc, 'after.txt'), undefined)
+  assert.equal(big.c.connected, true, 'nobody is disconnected for a full branch')
+  assert.equal(big.c.closed, false)
+  put(m.bdoc, 'fine.txt', 'main carries on\n')
+  await waitFor(() => text(m2.bdoc, 'fine.txt') === 'main carries on\n')
+  big.doc.getArray('chat').push([{ text: 'chat still works' }])
+  await waitFor(() => m2.doc.getArray('chat').length === 1)
+})
+
+test('a room whose move to branch documents failed on disk stays read-only: nobody edits empty branch documents', { timeout: 15000 }, async (t) => {
+  const dataDir = tmp('migrate-fail')
+  legacyRoom(dataDir, 'rbmf')
+  fs.writeFileSync(path.join(dataDir, 'branches'), 'not a folder') // the branch file can't be written
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, dataDir })
+  t.after(() => srv.close())
+  const a = open(t, srv, 'rbmf', 'a', 'main')
+  await assert.rejects(a.c.waitForSync())
+  const room = srv.rooms.get('rbmf')
+  assert.equal(room.unsavable, true)
+  assert.equal(room.full, true, 'read-only')
+  assert.notEqual(room.meta.layout, 2)
+  assert.deepEqual(Object.keys(room.meta.branches), [], 'no branch document was started')
+  assert.throws(() => room.branchDoc('main'), /read-only until the relay is fixed/)
+  assert.equal(room.doc.getMap('files').get('app.js').toString(), 'old\n', 'the old files are still where they were')
 })
 
 test('an edit sent for the branch just left, still in flight when the switch landed, still reaches the relay', async (t) => {
@@ -414,4 +480,35 @@ test('a relay restarted mid-migration (branch file written, room file swapped, m
   room.onEmpty()
   await waitFor(() => !srv.rooms.has('rb13'), 3000)
   assert.equal(fs.existsSync(path.join(dataDir, 'blobs', 'rb13', id)), true, 'the stored file survives the sweep because it is still a known stored id')
+})
+
+test('when the first real branch takes the default branch over, everyone hears the new list', async (t) => {
+  const dataDir = tmp('adopt-broadcast')
+  legacyRoom(dataDir, 'rb14')
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, dataDir })
+  t.after(() => srv.close())
+  const n = open(t, srv, 'rb14', 'n', '∅')
+  await n.c.waitForSync()
+  let heard = null
+  n.c.on('branches', (list) => { heard = list })
+  const m = open(t, srv, 'rb14', 'm', 'main')
+  await m.c.waitForSync()
+  await waitFor(() => heard && heard.some((b) => b.key === 'main' && b.default))
+  assert.equal(heard.some((b) => b.key === '∅'), false)
+})
+
+test('a claim pattern or path with a control character is refused, so a branch claim\'s key can never be forged', async (t) => {
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet })
+  t.after(() => srv.close())
+  const a = open(t, srv, 'rb15', 'a', 'main')
+  await a.c.waitForSync()
+  const b = open(t, srv, 'rb15', 'b', 'feature-x')
+  await b.c.waitForSync()
+  await b.c.claimRequest({ op: 'claim', pattern: 'src/a.js' })
+  // On main, bare keys: 'feature-x\0src/a.js' would be feature-x's claim.
+  await assert.rejects(a.c.claimRequest({ op: 'claim', pattern: 'feature-x\0src/a.js' }), /control characters/)
+  await assert.rejects(a.c.claimRequest({ op: 'claim', pattern: 'x\ny' }), /control characters/)
+  await assert.rejects(a.c.claimRequest({ op: 'request', path: 'feature-x\0src/a.js', title: 't' }), /control characters/)
+  const room = srv.rooms.get('rb15')
+  assert.equal(room.meta.claims['feature-x\0src/a.js'].by, 'b', 'feature-x\'s claim is untouched')
 })

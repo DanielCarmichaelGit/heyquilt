@@ -36,6 +36,8 @@ const TAB_STALE_MS = 3 * 60 * 1000
 const MAX_WRITE_BYTES = 1024 * 1024
 const HOSTED_AUTO_CLAIM_QUIET_MS = 10 * 60 * 1000 // a file a hosted agent stopped writing this long ago is let go of
 const MAX_READ_CHARS = 200 * 1024
+// Tools that read or change a branch's files, claims or history: a hosted agent's first one pins its branch (Room.pinHostedBranch).
+const FILE_TOOLS = new Set(['quilt_history', 'quilt_list_files', 'quilt_read_file', 'quilt_write_file', 'quilt_claim', 'quilt_release', 'quilt_request_file', 'quilt_handoff', 'quilt_withdraw_request'])
 const AGENT = 'agent-mcp' // transaction origin
 
 export const INSTRUCTIONS =
@@ -68,7 +70,7 @@ export const HOSTED_INSTRUCTIONS =
   'call quilt_webhook_subscribe with a URL of yours: Quilt POSTs each one there as it happens. ' +
   'You are connected over HTTP, so you show as online for 30 minutes after each tool call: while idle, call quilt_inbox at least every 30 minutes so people can see you are still there. ' +
   'HTTP is only for an agent with no computer. If you can run shell commands anywhere (a computer, a cloud machine, a sandbox), you must use the Quilt CLI there instead (`quilt agent join`, then `quilt join <invite> --agent <your name>`): files sync to disk and you show as live. ' +
-  'A session has a branch for each git branch its members work on, each with its own files: quilt_status lists them and who is on each, and you work on the busiest one until you pick another with quilt_switch_branch (create: true starts a new one from the files you have). ' +
+  'A session has a branch for each git branch its members work on, each with its own files: quilt_status lists them and who is on each, and your first call on files puts you on the busiest one, where you stay until you pick another with quilt_switch_branch (create: true starts a new one from the files you have). ' +
   TASK_WORKFLOW
 
 const NOT_LINKED = 'Your user is not in a quilt session in their browser right now. Ask them to open quilt in their ' +
@@ -135,6 +137,9 @@ function sessionTools (server, ctx) {
     return room.branchDoc(key, { by: me, editor })
   }
   const tool = (name, def, fn) => server.registerTool(name, def, async (args) => stale(await ctx.withSession((room) => {
+    // A hosted agent with no branch of its own is pinned to the active branch by its first call
+    // on files, so a read and the write after it never land on two different branches.
+    if (ctx.pin && FILE_TOOLS.has(name)) ctx.pin(room)
     // The audit trail: which tool, on what (a path, a pattern or a task id; never contents).
     const caller = ctx.who(room)
     if (caller && caller.id && room.audit) {
@@ -159,6 +164,10 @@ function sessionTools (server, ctx) {
   }
   const me = ctx.me
   const writable = (room) => room.full ? 'This session is over its size limit, so nothing new can be saved.' : null
+  // A branch over its own size limit takes no new files; the rest of the session carries on.
+  const branchWritable = (room, branch) => branch && room.branchFull && room.branchFull(branch.key) ? `${branch.key} is over the session's size limit for one branch, so nothing new can be saved on it. Other branches still take changes.` : null
+  // Which branch a file answer is about, when the session has more than one.
+  const onBranchNote = (room, branch) => branch && room.meta && Object.keys(room.meta.branches || {}).length > 1 ? ` on ${branch.key}` : ''
   const visible = (m) => m && m.id && (!m.to || m.to === me || m.by === me)
   const fmtMsg = (m) => `- ${m.by}${m.to ? ` → ${m.to} (direct)` : ''} (${ago(m.ts)}): ${m.text}${m.file ? ` [file: ${m.file.name}]` : ''}`
   const peers = (room) => {
@@ -607,7 +616,7 @@ function sessionTools (server, ctx) {
     }
   }, ({ path: p, content }, { room, doc, fdoc, branch, files, blobs, activity }) => {
     { const w = waitRefusal(doc, 'quilt_write_file'); if (w) return fail(w) }
-    const err = writable(room)
+    const err = writable(room) || branchWritable(room, branch)
     if (err) return fail(err)
     const rel = cleanPath(p)
     if (!isSafeRelPath(rel)) return fail('That is not a path inside the project.')
@@ -644,7 +653,7 @@ function sessionTools (server, ctx) {
       if (ctx.saveInbox) ctx.saveInbox()
     }
     const context = renderChatAbout(said)
-    return text(`${existed ? 'Updated' : 'Created'} ${rel}${detail ? ` (${detail} lines)` : ' (no change)'}. Everyone in the session has it now.${claimedNow ? ` ${rel} is claimed for you while you work on it; quilt_release it when you are done.` : ''}${context ? `\n\n${context}` : ''}`)
+    return text(`${existed ? 'Updated' : 'Created'} ${rel}${onBranchNote(room, branch)}${detail ? ` (${detail} lines)` : ' (no change)'}. Everyone in the session has it now.${claimedNow ? ` ${rel} is claimed for you while you work on it; quilt_release it when you are done.` : ''}${context ? `\n\n${context}` : ''}`)
   })
 
   tool('quilt_claim', {
@@ -910,6 +919,7 @@ export async function handleHostedMcp ({ req, res, pass, relay, workspaces = nul
     who: () => ({ name: me, id: account }),
     access: (room) => room.hostedAccess(pass),
     branch: (room) => room.hostedBranch(account),
+    pin: (room) => room.pinHostedBranch(account),
     tool: () => toolLabel(mcp.server.getClientVersion()?.name) || 'hosted',
     warn: () => '',
     inbox: () => {
@@ -1009,7 +1019,7 @@ export async function handleHostedMcp ({ req, res, pass, relay, workspaces = nul
       const editor = ctx.access(room)?.role !== 'viewer'
       const r = room.setHostedBranch(account, String(branch).trim(), { create: !!create, by: me, editor })
       return text(r.created
-        ? `Started ${r.branch} from ${r.from}, with a copy of its files. Your file tools, claims and history use ${r.branch} now; people move their folders to it from the branch menu.`
+        ? `Started ${r.branch} from ${r.from}, with a copy of its files. Your file tools, claims and history use ${r.branch} now. It isn't in git yet: people work on it with \`git checkout -b ${r.branch}\` (or \`git checkout ${r.branch}\` once it is pushed), and their folder follows.`
         : `You are on ${r.branch} now: your file tools, claims and history use it.`)
     } catch (e) { return fail(e.message) }
   }))

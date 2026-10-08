@@ -497,7 +497,7 @@ class ChatPage {
       commentOnTasks: talk,
       readMembers: true,
       readFiles: true,
-      addNewFiles: a.role !== 'viewer' && !this.room.full,
+      addNewFiles: a.role !== 'viewer' && !this.room.full && !this.branchFull(),
       changeExistingFiles: false,
       ...(a.scopes.length ? { onlyIn: a.scopes } : {}),
       ...(a.scopesExcept.length ? { notIn: a.scopesExcept } : {}),
@@ -830,7 +830,15 @@ class ChatPage {
     if (refusal) return { code: 403, body: `The session owner says ${refusal}.` }
     const claim = (this.room.claimList ? this.room.claimList(this.branch.key) : []).find((c) => c.by !== this.me && globMatcher(c.pattern)(rel))
     if (claim) return { code: 409, body: `${rel} is in ${claim.pattern}, which ${claim.by} has claimed${claim.note ? ` (${claim.note})` : ''}. Put it somewhere else, or ask them with the "say" link.` }
-    return this.writable() ? { code: 403, body: this.writable() } : null
+    if (this.writable()) return { code: 403, body: this.writable() }
+    return this.branchFull() ? { code: 403, body: this.branchFull() } : null
+  }
+
+  /** Why the branch files are added to can take nothing new (it is over its own size limit), or null. */
+  branchFull () {
+    let k
+    try { k = this.branch.key } catch { return null } // no branch to add to: placeRefusal says why
+    return this.room.branchFull && this.room.branchFull(k) ? `${k} is over the session's size limit for one branch, so no new files can be saved on it.` : null
   }
 
   async addFromWeb (address, p, fetchFile) {

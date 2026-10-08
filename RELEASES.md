@@ -9,6 +9,12 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.26 — 2026-10-08
+
+AI sessions get names you can tell apart.
+
+- **AI sessions are named after what you asked them.** An AI session now takes its name from your first prompt to it (Claude Code, Cursor and Gemini CLI), or from the first file it edits, instead of staying "Daniel · Claude Code 17". When its tool restarts Quilt's connection it keeps its name and its files, and a closed session leaves the list and frees its name. An open chat that's just waiting no longer keeps its claims from going idle. Sessions don't take names from your prompts while you keep your AI chat to yourself.
+
 ## 0.3.25 — 2026-10-08
 
 - **Agents that can run commands use the Quilt CLI, full stop.** The agent invite, the page its link opens, the reply to joining over HTTP and the hosted connection's instructions now all say up front that an agent able to run shell commands anywhere (its own computer, a cloud machine, a sandbox) must install and join with the CLI. HTTP is only for a bot with no computer that can do nothing but make HTTP requests. An agent that joined over HTTP anyway is told to stop and switch, with the exact commands to come back as the same agent.

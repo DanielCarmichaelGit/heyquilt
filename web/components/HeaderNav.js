@@ -14,6 +14,7 @@ const MARKETING = [
   { href: '/#how', label: 'How it works' },
   { href: '/#agents', label: 'Agents' },
   { href: '/docs', label: 'Docs' },
+  { href: '/blog', label: 'Blog' },
   { href: '/pricing', label: 'Pricing' }
 ]
 

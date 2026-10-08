@@ -516,8 +516,14 @@ export class Connection extends EventEmitter {
     awarenessProtocol.removeAwarenessStates(this.awareness, [this.doc.clientID], 'local')
     if (this.ws) {
       const ws = this.ws
-      // Flush the presence removal before closing.
-      setTimeout(() => ws.close(), 50)
+      // Flush the presence removal before closing. If the relay doesn't ack the close
+      // handshake (it's gone, or this socket is in the middle of being refused), don't
+      // leave it half-closed for the 'ws' library's ~30s default: finish it off.
+      setTimeout(() => {
+        ws.close()
+        const t = setTimeout(() => { if (ws.readyState !== ws.CLOSED) ws.terminate() }, 2000)
+        ws.once('close', () => clearTimeout(t))
+      }, 50)
     }
     this.awareness.destroy()
   }

@@ -159,6 +159,33 @@ test('a room over its size quota refuses new edits', async (t) => {
   assert.match(fatal.message, /size limit/)
 })
 
+test('a connection refused for the room being over its size limit settles quickly, instead of hanging', { timeout: 15000 }, async (t) => {
+  // Joining an already-full room still runs the ordinary two-step Yjs handshake for the room
+  // document; the step the new connection sends back (not itself new data) gets refused with
+  // CLOSE_ROOM_FULL the same as a real edit would, but the underlying socket used to rely on
+  // the 'ws' library's default ~30s close-handshake timeout to finish closing, because this is
+  // a close the relay forces, not one a well-behaved peer necessarily acks right away. That
+  // left the relay's socket for the connection half-closed (readable: false, writable: true)
+  // for up to 30s. The relay now bounds this with closeSoon() in src/server.js.
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, maxRoomBytes: 4000 })
+  const seed = new Connection({ server: `ws://127.0.0.1:${srv.port}`, room: 'full2', secret: 's', name: 'seed', identity: generateIdentity(), doc: new Y.Doc() })
+  await seed.waitForSync()
+  srv.rooms.get('full2').full = true
+  const start = Date.now()
+  const a = new Connection({ server: `ws://127.0.0.1:${srv.port}`, room: 'full2', secret: 's', name: 'a', identity: generateIdentity(), doc: new Y.Doc() })
+  let fatal = null
+  a.on('fatal', (err) => { fatal = err })
+  await waitFor(() => fatal, 10000) // well under the old ~30s default close timeout
+  assert.match(fatal.message, /size limit/)
+  assert.ok(Date.now() - start < 10000, 'settled well before the old 30s close-handshake timeout')
+  assert.equal(a.closed, true, 'the connection settled instead of hanging or endlessly reconnecting')
+  // Close everything (and give it a moment to finish) before the relay itself closes.
+  a.close()
+  seed.close()
+  await wait(500)
+  await srv.close()
+})
+
 test('a stored room too big to load is refused instead of loaded', async (t) => {
   const defer = cleanups(t)
   const dataDir = tmp('toobig')

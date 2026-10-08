@@ -170,6 +170,27 @@ test('an auto-join that is refused makes waitForSync reject instead of hanging, 
   assert.equal(srv.rooms.get('rb7').store.get('no good'), null, 'no document was created for the refused branch')
 })
 
+test('a refused auto-join to a session already over its size limit also makes waitForSync reject, not hang', { timeout: 15000 }, async (t) => {
+  // A full session refuses a brand-new branch the same way an invalid key does (see the test
+  // above): this exercises that through the room's own size limit rather than a bad key, which
+  // used to leave the relay's socket for the connection half-closed for ~30s (see
+  // src/server.js's closeSoon) rather than settling quickly.
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet })
+  const seed = open(t, srv, 'rb7b', 'seed', 'main')
+  await seed.c.waitForSync()
+  srv.rooms.get('rb7b').full = true
+  const a = open(t, srv, 'rb7b', 'a', 'brand-new-branch')
+  await assert.rejects(a.c.waitForSync(), /size limit/)
+  assert.equal(a.c.branchKey, null, 'the refused branch was let go, so room-only sync could settle')
+  // Close everything (and give it a moment to finish) before the relay itself closes: a
+  // connection still mid-close when the relay tears down its socket from under it is a
+  // different scenario than this test means to cover.
+  a.c.close()
+  seed.c.close()
+  await wait(500)
+  await srv.close()
+})
+
 test('an edit sent for the branch just left, still in flight when the switch landed, still reaches the relay', async (t) => {
   const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet })
   t.after(() => srv.close())

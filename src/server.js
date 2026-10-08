@@ -1709,7 +1709,7 @@ class Room {
         // Over quota: still answer "what do you have?" so people can read, but refuse new data.
         if (decoding.peekVarUint(dec) !== syncProtocol.messageYjsSyncStep1) {
           ws.endReason = 'disconnected'
-          ws.close(CLOSE_ROOM_FULL, 'room is over the size limit')
+          closeSoon(ws, CLOSE_ROOM_FULL, 'room is over the size limit')
           return
         }
       }
@@ -1845,6 +1845,20 @@ function renewPass (ws, buf) {
 
 function send (ws, msg) {
   if (ws.readyState === ws.OPEN) ws.send(msg, (err) => { if (err) ws.terminate() })
+}
+
+/**
+ * Closes a socket for a reason the app should see (a normal `ws.close`, so a well-behaved
+ * app gets the code and reason in its 'close' handler), but doesn't wait out the library's
+ * full ~30s close-handshake timeout for a peer that never acks: if the close hasn't
+ * finished on its own well before then, it terminates the socket outright. Used for closes
+ * the relay forces for policy reasons (e.g. CLOSE_ROOM_FULL) rather than ones a healthy,
+ * responsive client is expected to negotiate.
+ */
+function closeSoon (ws, code, reason, ms = 2000) {
+  ws.close(code, reason)
+  const t = setTimeout(() => { if (ws.readyState !== ws.CLOSED) ws.terminate() }, ms)
+  ws.once('close', () => clearTimeout(t))
 }
 
 export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, log = console.log, presenceOptions = {}, ...opts } = {}) {

@@ -593,6 +593,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     'POST /api/sessions/:id/tasks': (b, id) => ({ task: get(id).addTask(b), tasks: get(id).taskList() }),
     'POST /api/sessions/:id/tasks/update': (b, id) => ({ task: get(id).updateTask(b), tasks: get(id).taskList() }),
     'POST /api/sessions/:id/tasks/delete': (b, id) => { get(id).deleteTask(b.id); return { tasks: get(id).taskList() } },
+    'POST /api/sessions/:id/tasks/comment': (b, id) => ({ ...get(id).commentTask(b), tasks: get(id).taskList() }),
     'GET /api/sessions/:id/feed': (b, id, url) => {
       const s = get(id)
       return { entries: s.agentFeedFor(url.searchParams.get('who') || s.name) }

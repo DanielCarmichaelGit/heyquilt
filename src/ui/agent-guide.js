@@ -55,6 +55,7 @@ export function agentGuide ({ apiUrl = 'https://api.heyquilt.com', via = 'both' 
     '',
     '### Tasks',
     '- `quilt_tasks` lists the board (To do, In progress, QA, Done) with ids; open tasks assigned to you come first.',
+    '- `quilt_task` reads one task in full with its comments; `quilt_comment_task` leaves a work note, a handoff or the reason for an assignment on it, instead of in the chat.',
     `- Add: ${call('quilt_add_task', { title: 'a few words', assignee: '<name> or me', files: ['src/app.js'] })}. Assign: ${call('quilt_assign_task', { id: '<task id>', assignee: '<name>', to_ai: true })}. to_ai: true gives it to that person's AI instead of the person; an agent is assigned by its own name, without to_ai.`,
     `- Move: ${call('quilt_move_task', { id: '<task id>', column: 'doing' })} when you start (you get a briefing: its files, recent changes, claims, the project's checks); "qa" when done and tested, with qaNotes (what changed, how you checked it); "done" after QA, with verified (what you ran and what you saw). A move without those is refused.`,
     '- A task handed to you wakes you like a direct message. Take it with quilt_move_task, or say in chat why not.',

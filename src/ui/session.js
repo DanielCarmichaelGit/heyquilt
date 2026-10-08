@@ -1462,7 +1462,7 @@ function renderTreePane () {
   $('#file-count').textContent = tree ? `${tree.files.length}` : ''
 }
 
-function openTaskNotes (task) {
+function openTaskNotes (task, { instant = false } = {}) {
   document.querySelector('.task-notes-back')?.remove()
   const back = document.createElement('div')
   back.className = 'modal-back task-notes-back'
@@ -1482,9 +1482,25 @@ function openTaskNotes (task) {
   back.addEventListener('mousedown', (e) => { if (e.target === back) close() })
   back.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); close() } })
   back.querySelector('[data-close-notes]').onclick = close
-  back.querySelector('[data-close-notes]').focus()
-  if (reduce) back.classList.add('is-open')
+  const form = back.querySelector('.task-comment-form')
+  const box = back.querySelector('.task-comment-text')
+  box.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); form.requestSubmit() } })
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault()
+    const text = box.value.trim()
+    if (!text) return
+    try {
+      await changeTasks('/comment', { id: task.id, text })
+      const now = (sum()?.status.tasks || []).find((t) => t.id === task.id)
+      box.value = ''
+      // Drawn again with the new comment, the box ready for another.
+      if (now) openTaskNotes(now, { instant: true })
+    } catch (err) { toast(err.message) }
+  })
+  ;(task.comments?.length || task.qaNotes || task.verified ? back.querySelector('[data-close-notes]') : box).focus()
+  if (reduce || instant) back.classList.add('is-open')
   else requestAnimationFrame(() => requestAnimationFrame(() => back.classList.add('is-open')))
+  if (instant) back.querySelector('.task-comment-text').focus()
 }
 
 function applyTreeCollapsed () {

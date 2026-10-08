@@ -16,6 +16,7 @@ import * as Y from 'yjs'
 import { capText, toolLabel } from './agents/common.js'
 import { globMatcher, isSafeRelPath } from './pathrules.js'
 import { readTasks, addTask, updateTask, deleteTask, taskMarkdown, formatTasks, columnName, assigneeLabel, assignmentFields } from './tasks.js'
+import { readComments, addComment, withComments, formatTaskDetails, MAX_COMMENT } from './task-comments.js'
 import { applyTextDiff } from './textdiff.js'
 import { parseInvite } from './ui/invite.js'
 import { scanInbox, renderInbox } from './inbox.js'
@@ -40,7 +41,7 @@ export const INSTRUCTIONS =
   'When your user asks for something, call quilt_share with their request and a short plan before you start, and call it ' +
   'again with a short summary when you finish, so collaborators can follow along. ' +
   'Before starting a task, call quilt_status to see who is working on what, and quilt_tasks for the shared board ' +
-  '(open tasks assigned to you are listed first). Assign work with quilt_assign_task. ' +
+  '(open tasks assigned to you are listed first). Assign work with quilt_assign_task; quilt_task reads one task in full with its comments, and quilt_comment_task leaves a note or handoff on it. ' +
   'quilt_history tells you who changed which file, when, with the diff: read it for the files you are about to touch. ' +
   'Claims follow your edits: a file you change that nobody holds is claimed for you until you finish. ' +
   'Do not edit files someone else has claimed: ask for the file in its file queue with quilt_request_file (a title and up to 300 characters on what you plan), and you are handed it with context when they are done. ' +
@@ -52,7 +53,7 @@ export const HOSTED_INSTRUCTIONS =
   'Join a session with quilt_join_session and the invite link you were given; the session owner may have to let you in first ' +
   '(quilt_session_info tells you). Then: quilt_status to see who is doing what, quilt_list_files and quilt_read_file to look ' +
   'around, quilt_write_file to change a file (always read it right before; the file is claimed for you while you work on it, release it with quilt_release when done), quilt_claim ahead of a larger change across several files, quilt_share to ' +
-  'tell everyone what you are doing, and quilt_message to talk. The shared task board is quilt_tasks, quilt_add_task, quilt_assign_task and quilt_move_task. ' +
+  'tell everyone what you are doing, and quilt_message to talk. The shared task board is quilt_tasks, quilt_add_task, quilt_assign_task and quilt_move_task; quilt_task reads one in full with its comments, and quilt_comment_task leaves a work note or handoff on it. ' +
   'quilt_history tells you who changed which file, when, with the diff: read it for the files you are about to touch. ' +
   'Do not edit files someone else has claimed: a refused write tells you who holds the file; ask for it in its file queue with quilt_request_file (a title, and up to 300 characters on what you plan) and carry on with other work: you are woken when it is handed to you. ' +
   'When someone waits in the queue for a file you hold, every answer says so: finish your change, then hand it off with quilt_handoff and your context (what you changed, what is left). You cannot finish a task or release the file before. A claim whose holder does nothing for 20 minutes goes to the next in its queue. ' +
@@ -326,7 +327,7 @@ function sessionTools (server, ctx) {
         const all = historyOf(room).entries()
         const history = (tf.length ? all.filter((e) => tf.includes(e.path)) : all).slice(-8)
         const claims = claimsOf(room).filter((c) => !tf.length || tf.some((f) => globMatcher(c.pattern)(f)))
-        return text(pickupBrief({ task, history, claims, checklist: checklistOf(files), me }))
+        return text(pickupBrief({ task: { ...task, comments: readComments(doc.getMap('taskComments'), task.id) }, history, claims, checklist: checklistOf(files), me }))
       }
       if (column === 'qa') return text(`Moved "${task.title}" to QA. Notes: ${qaNotesLine(task)}`)
       if (column === 'done') return text(`Moved "${task.title}" to Done. Verified: ${verifiedLine(task)}`)
@@ -349,6 +350,33 @@ function sessionTools (server, ctx) {
     try {
       const task = updateTask(doc, taskMap(doc), { id, ...taskFields({ assignee, to_ai, files }, room) }, AGENT)
       return text(assignedLine(task))
+    } catch (e) { return fail(e.message) }
+  })
+
+  tool('quilt_task', {
+    description: 'One task in full: its column, assignee, files, QA and Done notes, and its comments (work notes and handoffs people left on it).',
+    inputSchema: { id: z.string().describe('Task id from quilt_tasks') }
+  }, ({ id }, { doc }) => {
+    const task = withComments(readTasks(taskMap(doc)), doc.getMap('taskComments')).find((t) => t.id === id)
+    return task ? text(formatTaskDetails(task)) : fail('No such task: read the board with quilt_tasks.')
+  })
+
+  tool('quilt_comment_task', {
+    description: 'Add a comment to a task: a work note, a handoff, or why it went to whom. Put reasoning about a task here instead of in the chat.',
+    inputSchema: {
+      id: z.string().describe('Task id from quilt_tasks'),
+      text: z.string().max(MAX_COMMENT).describe('The comment')
+    }
+  }, ({ id, text: words }, { room, doc }) => {
+    { const w = waitRefusal(doc, 'quilt_comment_task'); if (w) return fail(w) }
+    if (ctx.access(room)?.talk === false) return fail(TALK_REFUSED)
+    const err = writable(room)
+    if (err) return fail(err)
+    try {
+      const tasks = readTasks(taskMap(doc))
+      addComment(doc, doc.getMap('taskComments'), tasks, { taskId: id, by: me, text: words }, AGENT)
+      const task = tasks.find((t) => t.id === id)
+      return text(`Comment added to "${task.title}" (${readComments(doc.getMap('taskComments'), id).length} on it now).`)
     } catch (e) { return fail(e.message) }
   })
 

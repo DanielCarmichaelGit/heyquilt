@@ -1,6 +1,6 @@
 // The session task board: four columns. Task ids and titles come from the
 // shared room, so every string is escaped. Column ids match src/tasks.js.
-import { I, esc } from './common.js'
+import { I, esc, ago } from './common.js'
 import { markdown } from './feed.js'
 import { cronToText } from './schedule.js'
 
@@ -100,24 +100,32 @@ function noteFields (t) {
   return sections
 }
 
-/** Full ticket notes for the eye-icon modal. Markdown is rendered; raw HTML is escaped. */
+/** Full ticket notes and comments for the notes modal. Markdown is rendered; raw HTML is escaped. */
 export function taskNotesModalHtml (t) {
   const sections = noteFields(t)
-  const body = sections.length
-    ? sections.map((s) => `<section class="task-notes-sec"><h4>${esc(s.label)}</h4><div class="task-notes-body md">${markdown(s.text)}</div></section>`).join('')
-    : '<p class="lead">No notes on this ticket.</p>'
+  const notes = sections.map((s) => `<section class="task-notes-sec"><h4>${esc(s.label)}</h4><div class="task-notes-body md">${markdown(s.text)}</div></section>`).join('')
+  const comments = Array.isArray(t?.comments) ? t.comments : []
+  const thread = comments.length
+    ? `<ol class="task-comments">${comments.map((c) => `<li class="task-comment"><div class="task-comment-head"><b>${esc(c.by)}</b> <span>${esc(ago(c.ts))}</span></div><div class="md">${markdown(c.text)}</div></li>`).join('')}</ol>`
+    : '<p class="lead">No comments yet.</p>'
   const col = COLUMNS.find((c) => c.id === t?.column)?.name || ''
   return `<div class="card modal task-notes-modal" role="dialog" aria-modal="true" aria-labelledby="task-notes-title">
     <h3 id="task-notes-title">${esc(t?.title || 'Task')}</h3>
     ${col ? `<p class="lead">${esc(col)}</p>` : ''}
-    ${body}
-    <div class="actions"><button type="button" class="btn primary" data-close-notes>Close</button></div>
+    ${notes}
+    <section class="task-notes-sec"><h4>Comments</h4>${thread}</section>
+    <form class="task-comment-form">
+      <textarea class="task-comment-text" rows="2" maxlength="2000" placeholder="Add a comment: a work note, a handoff, why it went to whom" aria-label="Comment on ${esc(t?.title || 'this task')}"></textarea>
+      <div class="actions"><button type="button" class="btn" data-close-notes>Close</button><button type="submit" class="btn primary">Comment</button></div>
+    </form>
   </div>`
 }
 
 function notesButton (t) {
-  if (!noteFields(t).length) return ''
-  return `<button type="button" class="task-icon" data-task-notes title="View notes" aria-label="View notes on ${esc(t.title)}">${I.eye}</button>`
+  const n = Array.isArray(t.comments) ? t.comments.length : 0
+  const has = noteFields(t).length || n
+  const label = `Notes and comments${n ? ` (${n})` : ''}`
+  return `<button type="button" class="task-icon task-notes-btn${has ? ' on' : ''}" data-task-notes title="${esc(label)}" aria-label="${esc(label)} on ${esc(t.title)}">${has && !n ? I.eye : I.chat}${n ? `<span class="task-count">${n}</span>` : ''}</button>`
 }
 
 function recurButton (t) {

@@ -93,6 +93,7 @@ export async function startControl (session, extras = {}) {
     },
     // What an agent gets when it picks a task up: history for its files, claims, the project's checks.
     'POST /tasks/brief': (b) => session.taskBrief(b.id),
+    'POST /tasks/comment': (b) => session.commentTask(b),
     'POST /tasks/delete': (b) => { session.deleteTask(b.id); return { tasks: session.taskList() } },
     'GET /merges': () => {
       const merges = session.mergeList()

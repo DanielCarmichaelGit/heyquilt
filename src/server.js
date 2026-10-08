@@ -157,10 +157,11 @@ class Room {
     this.feed = this.doc.getArray('agentFeed')
     this.activity = this.doc.getArray('activity') // { by, path, kind, detail, ts }
     this.commitRequests = this.doc.getMap('commitRequests') // id -> { id, by, message, ts, state, ... }
+    this.taskComments = this.doc.getMap('taskComments') // task id -> [{ id, by, text, ts }] (task-comments.js)
     // Undoes changes from people who may not make them: file changes from viewers and from
     // people outside their folders, and posts from people who may not post (chat, the feed,
-    // words of their own in the activity log, commit requests). Only their connections are tracked.
-    this.guard = new Y.UndoManager([this.files, this.blobs, this.fileKeys, this.chat, this.feed, this.activity, this.commitRequests], { trackedOrigins: new Set(), captureTimeout: 0 })
+    // task comments, words of their own in the activity log, commit requests). Only their connections are tracked.
+    this.guard = new Y.UndoManager([this.files, this.blobs, this.fileKeys, this.chat, this.feed, this.taskComments, this.activity, this.commitRequests], { trackedOrigins: new Set(), captureTimeout: 0 })
     this.undoing = null
     this.recorded = null // the change the guard recorded last, for checkChange
     this.guard.on('stack-item-added', ({ stackItem, type }) => { if (type === 'undo') this.recorded = stackItem })
@@ -476,6 +477,10 @@ class Room {
       if (e.target === this.tasks) for (const k of e.keysChanged || []) tasks.add(k)
       else if (e.path.length) tasks.add(String(e.path[0]))
     }
+    // A comment on a task is work on that task.
+    for (const e of tr.changedParentTypes.get(this.taskComments) || []) {
+      if (e.target === this.taskComments) for (const k of e.keysChanged || []) if (this.taskComments.has(k)) tasks.add(k)
+    }
     for (const id of tasks) act('task', id)
   }
 
@@ -544,8 +549,8 @@ class Room {
     // allowed and refused changes together (an edit and a post in one transaction).
     const undo = new Set()
     for (const [type, events] of tr.changedParentTypes) {
-      if (type === this.chat || type === this.feed) {
-        if (a?.talk === false) { posts.push(type === this.chat ? 'chat' : 'the feed'); undo.add(type) }
+      if (type === this.chat || type === this.feed || type === this.taskComments) {
+        if (a?.talk === false) { posts.push(type === this.chat ? 'chat' : type === this.feed ? 'the feed' : 'a task comment'); undo.add(type) }
         continue
       }
       if (type === this.commitRequests) {

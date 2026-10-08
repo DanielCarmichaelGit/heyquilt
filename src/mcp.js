@@ -14,6 +14,7 @@ import { findDaemon, call as rawCall } from './control.js'
 import { parentPids } from './hooks.js'
 import { renderMessage, renderStatus } from './status.js'
 import { formatTasks, columnName, assigneeLabel, renderNextTask } from './tasks.js'
+import { formatTaskDetails, MAX_COMMENT } from './task-comments.js'
 import { runSession, decodeInvite, newConn, readConfig, runningElsewhere, personsFolder, agentCopyFolder } from './runner.js'
 import { INVALID_INVITE } from './ui/invite.js'
 import { toolLabel } from './agents/common.js'
@@ -57,7 +58,7 @@ export const MCP_INSTRUCTIONS =
   'you at any time. Call quilt_status before starting a task; use quilt_partner_feed to see what a partner\'s AI is ' +
   'doing; announce your task with quilt_set_focus. The session has a shared task board: read it with quilt_tasks ' +
   '(open tasks assigned to you are listed first), add work with quilt_add_task, assign it with quilt_assign_task, ' +
-  'and move a task with quilt_move_task when you start or finish it. ' +
+  'and move a task with quilt_move_task when you start or finish it; quilt_task reads one in full with its comments, and quilt_comment_task leaves a note or handoff on it. ' +
   'quilt_history tells you who changed which file, when, with the diff: read it for the files you are about to touch. ' +
   'If git refuses to pull because untracked files would be overwritten, those files came from the session: quilt_status lists them under Pulling (and whether they match); make way and pull with rm <files> && git pull --autostash, and Quilt keeps them for everyone. ' +
   'If the person you work for lets their AI pick up work by itself (their Quilt settings), finishing (quilt_set_work done, a task to QA or Done) hands you your next task from the board: start it. ' +
@@ -240,7 +241,7 @@ export async function runMcp () {
     if (column === 'qa') patch.qaNotes = qaNotes
     if (column === 'done') patch.verified = verified
     const { task } = await call(d, 'POST', '/tasks/update', patch)
-    if (column === 'doing') return pickupBrief({ ...brief, task })
+    if (column === 'doing') return pickupBrief({ ...brief, task: { ...task, comments: brief.task.comments } })
     if (column === 'qa') return `Moved "${task.title}" to QA. Notes: ${qaNotesLine(task)}` + await nextUp(d)
     if (column === 'done') return `Moved "${task.title}" to Done. Verified: ${verifiedLine(task)}` + await nextUp(d)
     return `Moved "${task.title}" to ${columnName(task.column)}.`
@@ -261,6 +262,27 @@ export async function runMcp () {
     const me = (await call(d, 'GET', '/info')).name
     return describeAssignment(task, me)
   }, { gate: gateFor('quilt_assign_task') }))
+
+  server.registerTool('quilt_task', {
+    description: 'One task in full: its column, assignee, files, QA and Done notes, and its comments (work notes and handoffs people left on it).',
+    inputSchema: { id: z.string().describe('Task id from quilt_tasks') }
+  }, ({ id }) => withDaemon(async (d) => {
+    const { tasks } = await call(d, 'GET', '/tasks')
+    const task = tasks.find((t) => t.id === id)
+    if (!task) return 'No such task: read the board with quilt_tasks.'
+    return formatTaskDetails(task)
+  }))
+
+  server.registerTool('quilt_comment_task', {
+    description: 'Add a comment to a task: a work note, a handoff, or why it went to whom. Put reasoning about a task here instead of in the chat.',
+    inputSchema: {
+      id: z.string().describe('Task id from quilt_tasks'),
+      text: z.string().max(MAX_COMMENT).describe('The comment')
+    }
+  }, ({ id, text }) => withDaemon(async (d) => {
+    const { task } = await call(d, 'POST', '/tasks/comment', { id, text })
+    return `Comment added to "${task.title}" (${task.comments.length} on it now).`
+  }, { gate: gateFor('quilt_comment_task') }))
 
   server.registerTool('quilt_delete_task', {
     description: 'Remove a task from the shared board.',

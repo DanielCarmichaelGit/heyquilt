@@ -152,6 +152,27 @@ test('picking up a task briefs the agent: files, their recent changes, claims an
   fs.rmSync(path.join(carlDir, 'AGENTS.md'))
 })
 
+test('the agent comments on a task and reads it in full; the owner sees the comment and answers on the task', async () => {
+  const added = out(await call('quilt_add_task', { title: 'Plan the launch' }))
+  const id = added.split('\n').find((l) => /^[0-9a-f]{16}$/.test(l.trim())).trim()
+  const c = await call('quilt_comment_task', { id, text: 'Giving the copy to Carl: he wrote the last launch post.' })
+  assert.ok(!c.isError, out(c))
+  assert.match(out(c), /^Comment added to "Plan the launch" \(1 on it now\)\./)
+  const seen = await (async () => { for (let i = 0; i < 200; i++) { const t = carl.taskList().find((x) => x.id === id && x.comments.length); if (t) return t; await new Promise((r) => setTimeout(r, 25)) } })()
+  assert.ok(seen, 'the owner sees it')
+  assert.equal(seen.comments[0].text, 'Giving the copy to Carl: he wrote the last launch post.')
+  const agent = seen.comments[0].by
+  carl.commentTask({ id, text: 'Fine, draft due Friday.' })
+  await waitFor(async () => /Comments \(2\)/.test(out(await call('quilt_task', { id }))))
+  const full = out(await call('quilt_task', { id }))
+  assert.match(full, new RegExp(`^Plan the launch\nid: ${id}\nColumn: To do\nAssigned to: nobody`))
+  assert.match(full, new RegExp(`- ${agent} \\(\\d+s ago\\): Giving the copy to Carl.*\n- Carl \\(\\d+s ago\\): Fine, draft due Friday\\.`))
+  // Picking it up shows the comments in the briefing.
+  assert.match(out(await call('quilt_move_task', { id, column: 'doing' })), /Comments on the task \(latest last\):\n- you \[\d+s ago\]: Giving the copy to Carl.*\n- Carl \[\d+s ago\]: Fine, draft due Friday\./)
+  assert.ok((await call('quilt_task', { id: 'ffffffffffffffff' })).isError)
+  assert.ok((await call('quilt_comment_task', { id: 'ffffffffffffffff', text: 'x' })).isError)
+})
+
 test('the agent reads what the owner has, and what it writes lands on the owner\'s disk', async () => {
   assert.equal(out(await call('quilt_read_file', { path: 'README.md' })), '# Project\n')
   assert.match(out(await call('quilt_read_file', { path: 'missing.txt' })), /no file called missing.txt/)

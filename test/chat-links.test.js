@@ -150,7 +150,7 @@ test('a claimed folder, and a message waiting for an answer, hold the AI back li
 test('a link works for ten minutes; the owner extends it while it works, and one that ran out needs a new link', async () => {
   const now = Date.now()
   assert.ok(link.expiresAt > now + 9 * 60000 && link.expiresAt <= now + 10 * 60000, 'ten minutes by default')
-  assert.match((await open()).text, /This link works for (9|10) more minutes\. When it runs out, it stops working and a new link is needed/)
+  assert.match((await open()).text, /This link works for (9|10) more minutes \(until \d{4}-[^)]+\)\. When it runs out, it stops working and a new link is needed/)
   const m = await waitFor(() => dana.members.find((x) => x.name === 'ChatGPT'))
   assert.equal(m.chat, true)
   assert.equal(m.expiresAt, link.expiresAt, 'the owner sees when it runs out')

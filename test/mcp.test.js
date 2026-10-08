@@ -287,6 +287,19 @@ test('an AI whose person lets it pick up work is handed its next task as it fini
   }
 })
 
+test('the agent comments on a task and reads it in full, comments from people included', async () => {
+  const task = human.addTask({ title: 'Choose a font' })
+  await waitFor(async () => text(await call('quilt_tasks')).includes(task.id))
+  const c = text(await call('quilt_comment_task', { id: task.id, text: 'Inter reads best at small sizes.' }))
+  assert.match(c, /Comment added to "Choose a font" \(1 on it now\)\./)
+  await waitFor(() => human.taskList().find((t) => t.id === task.id)?.comments.length === 1)
+  assert.equal(human.taskList().find((t) => t.id === task.id).comments[0].by, 'helper')
+  human.commentTask({ id: task.id, text: 'Agreed.' })
+  const full = await waitFor(async () => { const t = text(await call('quilt_task', { id: task.id })); return /Comments \(2\)/.test(t) && t })
+  assert.match(full, /- helper \(\d+s ago\): Inter reads best at small sizes\.\n- dana \(\d+s ago\): Agreed\./)
+  human.deleteTask(task.id)
+})
+
 test('nothing is Claude-only: any MCP client is pushed what arrives, and shares its work into the feed, the board and commit timing', async (t) => {
   // A second agent tool in the same folder, which is not Claude Code: it works through the same session.
   const codex = new Client({ name: 'codex-mcp-client', version: '1.0.0' })

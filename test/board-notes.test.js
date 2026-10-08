@@ -11,12 +11,27 @@ globalThis.window = { addEventListener () {} }
 const { renderBoard, taskNotesModalHtml } = await import('../src/ui/board.js')
 const task = (over) => ({ id: 'abcdef0123456789', title: 'Ship it', column: 'qa', by: 'Duncan', assignee: '', forAi: false, tool: '', files: [], order: 1, ts: 1, verified: '', qaNotes: '', ...over })
 
-test('a card with notes gets an eye button; a card without one does not', () => {
+test('every card has a notes-and-comments button: an eye with notes, a count with comments, dimmed with neither', () => {
   const withNotes = renderBoard([task({ qaNotes: 'added the modal' })], 'Dana')
   assert.match(withNotes, /data-task-notes/)
-  assert.match(withNotes, /View notes on Ship it/)
-  assert.doesNotMatch(renderBoard([task()], 'Dana'), /data-task-notes/)
-  assert.doesNotMatch(renderBoard([task({ column: 'doing', verified: '   ', qaNotes: '' })], 'Dana'), /data-task-notes/)
+  assert.match(withNotes, /Notes and comments on Ship it/)
+  assert.match(withNotes, /task-notes-btn on/)
+  const bare = renderBoard([task()], 'Dana')
+  assert.match(bare, /data-task-notes/, 'so the first comment can be added')
+  assert.doesNotMatch(bare, /task-notes-btn on/)
+  assert.doesNotMatch(bare, /task-count/)
+  const talked = renderBoard([task({ comments: [{ id: 'a'.repeat(16), by: 'ChatGPT', text: 'Gave it to Duncan', ts: 1 }] })], 'Dana')
+  assert.match(talked, /Notes and comments \(1\) on Ship it/)
+  assert.match(talked, /<span class="task-count">1<\/span>/)
+})
+
+test('the modal lists comments with who wrote them, escaped, and a box to add one', () => {
+  const html = taskNotesModalHtml(task({ comments: [{ id: 'a'.repeat(16), by: 'Chat<GPT>', text: 'Gave it to **Duncan**: he wrote the <parser>', ts: Date.now() }] }))
+  assert.match(html, /<b>Chat&lt;GPT&gt;<\/b>/)
+  assert.match(html, /<strong>Duncan<\/strong>/)
+  assert.match(html, /he wrote the &lt;parser&gt;/)
+  assert.match(html, /class="task-comment-form"/)
+  assert.match(html, /aria-label="Comment on Ship it"/)
 })
 
 test('the notes modal shows the full text, keeps newlines, and escapes markup', () => {
@@ -33,10 +48,11 @@ test('the notes modal shows the full text, keeps newlines, and escapes markup', 
   assert.match(html, /data-close-notes/)
 })
 
-test('a ticket with no notes says so instead of inventing any', () => {
+test('a ticket with no notes or comments says so instead of inventing any', () => {
   const html = taskNotesModalHtml(task({ column: 'todo', title: 'Empty' }))
-  assert.match(html, /No notes on this ticket/)
+  assert.match(html, /No comments yet/)
   assert.doesNotMatch(html, /task-notes-body/)
+  assert.doesNotMatch(html, /QA notes|Done notes/)
 })
 
 test('notes render markdown links and images, and do not run raw html', () => {

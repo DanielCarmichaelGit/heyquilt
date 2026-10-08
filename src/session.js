@@ -20,6 +20,7 @@ import {
 import { deriveWrapKey, newFileKey, wrapKey, unwrapKey, encryptBlob, decryptBlob, blobId } from './largefiles.js'
 import { applyTextDiff } from './textdiff.js'
 import { migrateDir } from './legacy.js'
+import { withComments, addComment as putComment } from './task-comments.js'
 import { readTasks, addTask as putTask, updateTask as patchTask, deleteTask as dropTask, planAutoTask, nextTask, pickupMode } from './tasks.js'
 import { getSettings } from './settings.js'
 import { HistoryLog, queryHistory, parseSince, currentTask } from './history.js'
@@ -122,6 +123,7 @@ export class Session extends EventEmitter {
     this.agentFeed = this.doc.getArray('agentFeed') // { id, by, tool, conv, kind, text, ts }
     this.commitRequests = this.doc.getMap('commitRequests') // id -> { id, by, message, ts, state: 'open'|'done', doneBy, hash }
     this.tasks = this.doc.getMap('tasks') // id -> { id, title, column, by, assignee, forAi, tool, files, conv, verified, qaNotes, recurring, cron, order, ts }
+    this.taskComments = this.doc.getMap('taskComments') // task id -> [{ id, by, text, ts }] (task-comments.js)
     // Mentions, direct messages and tasks handed to this member (or their AI), for agents to wake on.
     this.inboxTracker = new Inbox()
     // Shared by every AI session working as this member (each runs its own `quilt mcp`): messages
@@ -493,6 +495,7 @@ export class Session extends EventEmitter {
       this.scanInbox({ quiet: tr.origin === LOCAL })
       this.scheduleStatusWrite()
     })
+    this.taskComments.observe(() => this.scheduleStatusWrite())
     this.commitRequests.observe((ev, tr) => {
       for (const [id, change] of ev.changes.keys) {
         const r = this.commitRequests.get(id)
@@ -2402,7 +2405,14 @@ export class Session extends EventEmitter {
   // ------------------------------------------------------------- tasks --
 
   /** The shared board: To do, In progress, QA, Done. Everyone in the room sees the same list. */
-  taskList () { return readTasks(this.tasks) }
+  taskList () { return withComments(readTasks(this.tasks), this.taskComments) }
+
+  /** Adds a comment to a task as this person: a work note, a handoff, why it went to whom. */
+  commentTask ({ id, text } = {}) {
+    if (!this.mayTalk()) throw new Error(TALK_REFUSED)
+    const comment = putComment(this.doc, this.taskComments, readTasks(this.tasks), { taskId: id, by: this.name, text }, LOCAL)
+    return { comment, task: this.taskList().find((t) => t.id === id) }
+  }
 
   /**
    * The In-progress task this person (or, when their AI is working, their AI) is on,

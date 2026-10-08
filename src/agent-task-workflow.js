@@ -109,6 +109,11 @@ export function pickupBrief ({ task, history = [], claims = [], checklist = '', 
   } else {
     lines.push('', files.length ? 'No recorded changes to these files yet.' : 'No recorded changes yet.')
   }
+  const comments = Array.isArray(task?.comments) ? task.comments.slice(-5) : []
+  if (comments.length) {
+    lines.push('', 'Comments on the task (latest last):')
+    for (const c of comments) lines.push(`- ${c.by === me ? 'you' : c.by} [${agoText(c.ts, now)}]: ${String(c.text).replace(/\n/g, '\n  ')}`)
+  }
   const others = claims.filter((c) => c.by !== me)
   if (others.length) {
     lines.push('', 'Claims to respect (ask for the file with quilt_request_file instead of editing it):')

@@ -246,6 +246,9 @@ export class Session extends EventEmitter {
     this.moveTries = 0 // moves in a row that didn't finish (moveFailed), for backing off
     this.moveRetryAt = 0 // not tried again before this, unless git moves
     this.moveSaid = null // the failure last told, so it's told once
+    // path -> key: files git has on this branch that its document hasn't (the session deleted them), as a
+    // move left them. Not shared unless edited (ingest).
+    this.gitOnly = new Map()
     this.leftoverLock = null // the stamp of an index.lock left behind by a crashed git, paid no attention to
     this.settleGen = 0 // counts settleSoon calls (see onSettled)
     this.lastFileEventAt = 0 // the watcher's last event in the working tree
@@ -916,13 +919,14 @@ export class Session extends EventEmitter {
   myKey () { return (this.identity || this.conn?.identity)?.publicKey || null }
 
   /** Merges one captured path. Returns what happened, or null when nothing needed doing. */
-  async mergeOne ({ rel, base, via = null, theirs: given }) {
+  async mergeOne (e) {
+    if (e.carried) return this.mergeCarried(e) // work a checkout carried from another branch
+    const { rel, base, via = null } = e
     const release = () => this.merging.delete(rel)
     const disk = this.readDisk(rel)
     if (disk && (disk.skip || disk.tooLarge)) { release(); return null }
     const ours = disk ? disk.key : null // re-read: it may have changed again before the relay synced
-    // `given`: the version to merge with when the session hasn't the file (HEAD's, for work carried in a checkout).
-    const theirs = this.sharedKey(rel) === undefined && given !== undefined ? given : this.sharedKey(rel)
+    const theirs = this.sharedKey(rel)
     const theirsBy = this.lastEditorOf(rel)
     // Claimed by someone else meanwhile: a record, even if they haven't changed it yet (ingest would reject it).
     const claim = this.claimFor(rel)
@@ -939,7 +943,6 @@ export class Session extends EventEmitter {
       // Only they changed it. (lastKnown may hold a newer doc's text when the base came from merging.json.)
       release()
       if (ours !== null) this.lastKnown.set(rel, ours)
-      if (theirs !== this.sharedKey(rel)) { if (!theirs.startsWith('bin:')) this.putHeadVersion(rel, theirs); return null } // `given`: git's file, not the session's
       this.tryWrite(rel)
       return null
     }
@@ -1557,6 +1560,7 @@ export class Session extends EventEmitter {
     this.known = null
     this.writeFailed.clear()
     this.retry.clear()
+    this.gitOnly.clear()
     if (created || (!this.files.size && !this.blobs.size)) {
       // What the folder brings to the room is its starting point, not a change anyone made.
       this.arriving = true
@@ -1582,7 +1586,7 @@ export class Session extends EventEmitter {
     const ask = [...dirty, ...fromHead]
     const atHead = this.git && this.git.sha && ask.length ? await filesAt(this.root, this.git.sha, ask) : null
     const bins = new Map()
-    for (const rel of fromHead) {
+    for (const rel of [...fromHead, ...editedSince]) {
       const k = atHead ? atHead.get(rel) : null
       if (typeof k === 'string' && k.startsWith('bin:')) bins.set(rel, await blobAt(this.root, this.git.sha, rel))
     }
@@ -1597,33 +1601,75 @@ export class Session extends EventEmitter {
       for (const rel of walk(this.root, this.ig)) {
         if (shared.has(rel) || changed.has(rel) || this.lastKnown.has(rel) || !this.syncable(rel)) continue
         const disk = this.readDisk(rel)
-        if (disk && !disk.skip && !disk.tooLarge) this.lastKnown.set(rel, disk.key)
+        if (disk && !disk.skip && !disk.tooLarge) { this.lastKnown.set(rel, disk.key); this.gitOnly.set(rel, disk.key) }
       }
     } finally { this.arriving = false }
     const baseOf = (rel) => left && left.has(rel) ? left.get(rel) : atHead ? atHead.get(rel) ?? undefined : undefined
     const entries = []
     for (const rel of dirty) {
       if (!editedSince.has(rel)) { entries.push({ rel, base: baseOf(rel), via: 'hold' }); continue }
-      // theirs: this branch's version, else HEAD's file. Neither has it: the file is the old branch's, kept aside.
-      const head = atHead ? atHead.get(rel) : undefined
-      if (this.sharedKey(rel) === undefined && (head === null || head === undefined)) { this.setAsideCarried(rel); continue }
-      entries.push({ rel, base: carried.get(rel), via: 'hold', ...(this.sharedKey(rel) === undefined ? { theirs: head } : {}) })
+      // Merged with this branch's version (HEAD's file when its document hasn't the path): see mergeCarried.
+      entries.push({ rel, base: carried.get(rel), via: 'hold', carried: true, head: atHead ? atHead.get(rel) : undefined, headBuf: bins.get(rel) })
     }
     for (const e of entries) this.merging.add(e.rel)
     return entries
   }
 
-  /** A file git carried from the old branch that this branch hasn't, edited since: a copy under .quilt/conflicts, and off the disk. */
-  setAsideCarried (rel) {
+  /**
+   * A path git carried over from the old branch, edited after the checkout: only that edit is
+   * this branch's. Merged three-way (base: the carried version; ours: the disk; theirs: this
+   * branch's version, or HEAD's file when its document hasn't the path). Anything that doesn't
+   * merge cleanly (a clash, a binary, a file this branch hasn't) is set aside: never a shared
+   * merge record, which would carry the old branch's text into this one.
+   */
+  async mergeCarried ({ rel, base, head, headBuf }) {
+    this.merging.delete(rel)
     const disk = this.readDisk(rel)
-    if (!disk || disk.skip || disk.tooLarge) return
+    if (disk && (disk.skip || disk.tooLarge)) return null
+    const ours = disk ? disk.key : null
+    const inDoc = this.sharedKey(rel) !== undefined
+    if (!inDoc && head === undefined) {
+      // git couldn't read HEAD's file (too large, a filter): left as it is, and not shared.
+      if (disk) this.lastKnown.set(rel, disk.key)
+      return null
+    }
+    const theirs = inDoc ? this.sharedKey(rel) : head // null: neither this branch nor its commit has it
+    if (ours === theirs) { if (ours === null) this.lastKnown.delete(rel); else this.lastKnown.set(rel, ours); return null }
+    if (ours === base) { this.putBranchVersion(rel, { inDoc, head, headBuf }); return null } // not edited after all
+    const isText = (k) => typeof k === 'string' && !k.startsWith('bin:')
+    if (isText(base) && isText(ours) && isText(theirs)) {
+      const { text, conflicts } = merge3(base, ours, theirs)
+      if (!conflicts.length) { this.applyMerged(rel, text, 'with your edit made after switching'); return 'merged' }
+    }
+    this.setAsideCarried(rel, { inDoc, head, headBuf, clash: theirs !== null })
+    return null
+  }
+
+  /** This branch's version of rel onto the disk: its document's, else HEAD's file, else none. */
+  putBranchVersion (rel, { inDoc, head, headBuf }) {
+    if (!inDoc) return this.putHeadVersion(rel, head, headBuf)
+    const disk = this.readDisk(rel)
+    if (disk && !disk.skip && !disk.tooLarge) this.lastKnown.set(rel, disk.key) // replaced without a copy here: setAsideCarried keeps one
+    this.tryWrite(rel)
+  }
+
+  /** A carried path edited after the checkout that can't merge: the folder's copy under .quilt/conflicts, this branch's version on disk, said once. */
+  setAsideCarried (rel, { inDoc, head, headBuf, clash }) {
+    let dest = null
     try {
-      const dest = path.join(this.stateDir, 'conflicts', `${Date.now()}`, ...rel.split('/'))
-      fs.mkdirSync(path.dirname(dest), { recursive: true })
-      fs.copyFileSync(resolveInside(this.root, rel), dest)
-      this.putHeadVersion(rel, null)
-      this.log(`📦 ${rel} came over from the old branch in the checkout and isn't on ${this.branch}; your copy is in ${path.relative(this.root, dest)}.`)
-    } catch (err) { this.log(`could not set ${rel} aside: ${err.message}`) }
+      if (this.onDisk(rel)) {
+        dest = path.join(this.stateDir, 'conflicts', `${Date.now()}`, ...rel.split('/'))
+        fs.mkdirSync(path.dirname(dest), { recursive: true })
+        fs.copyFileSync(resolveInside(this.root, rel), dest)
+      }
+    } catch (err) { this.log(`could not keep a copy of ${rel}: ${err.message}`); return }
+    this.putBranchVersion(rel, { inDoc, head, headBuf })
+    const copy = dest ? `; your copy is in ${path.relative(this.root, dest).split(path.sep).join('/')}` : ''
+    const text = clash
+      ? `Your edit to ${rel} after switching to ${this.branch} clashed with ${this.branch}'s version, so ${this.branch}'s version is on disk${copy}.`
+      : `${rel} came over from the old branch in the checkout and isn't on ${this.branch}, so it's off the disk${copy}.`
+    this.log(`📦 ${text}`)
+    this.notice(text)
   }
 
   /** A carried path the branch's document hasn't: HEAD's file goes back (`key` from filesAt, `buf` for a binary), or none when HEAD hasn't it either. */
@@ -1642,6 +1688,7 @@ export class Session extends EventEmitter {
       fs.mkdirSync(path.dirname(abs), { recursive: true })
       this.writeFile(rel, abs, data)
       this.lastKnown.set(rel, key)
+      if (this.sharedKey(rel) === undefined) this.gitOnly.set(rel, key)
     } catch (err) { this.log(`could not put ${rel} back to your last commit: ${err.message}`) }
   }
 
@@ -1663,7 +1710,7 @@ export class Session extends EventEmitter {
       // The old branch had uncommitted work here, and git kept a change across the checkout. (The disk may
       // have been edited again since: arrive merges that edit against the old branch's version.)
       const head = was ? was.get(rel) : undefined // undefined: git couldn't read it
-      if (oldKeys.has(rel)) { if (oldKeys.get(rel) !== head) out.set(rel, oldKeys.get(rel)) } else if (!disk && head) out.set(rel, null) // a deletion the old branch made
+      if (oldKeys.has(rel)) { if (oldKeys.get(rel) !== head) out.set(rel, oldKeys.get(rel)) } else if (!disk && head !== null && head !== undefined) out.set(rel, null) // a deletion the old branch made
     }
     return out
   }
@@ -2475,6 +2522,11 @@ export class Session extends EventEmitter {
     if (this.writeFailed.has(rel)) return false // the shared version never reached the disk: what's there is no edit of ours
     if (IGNORE_FILES.includes(path.posix.basename(rel))) this.ig = loadIgnore(this.root)
     const disk = this.readDisk(rel)
+    if (this.gitOnly.size && this.gitOnly.has(rel)) {
+      // A file git has that this branch's document hasn't, as the move left it: git's, not an edit.
+      if (disk && disk.key === this.gitOnly.get(rel) && !this.files.has(rel) && !this.blobs.has(rel)) return false
+      this.gitOnly.delete(rel)
+    }
     if (disk && (disk.skip || disk.tooLarge)) {
       if (disk.tooLarge && !this.warnedLarge.has(rel)) {
         this.warnedLarge.add(rel)

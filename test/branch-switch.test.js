@@ -155,10 +155,7 @@ test('carried work edited before the move finished: only that edit reaches featu
   await waitFor(() => on(A, 'main'), 10000)
   write(dirB, 'src/app.js', 'app\nbob line\n') // bob's uncommitted main work, on alice's disk too
   await waitFor(() => read(dirA, 'src/app.js') === 'app\nbob line\n')
-  let release
-  const gate = new Promise((resolve) => { release = resolve })
-  const join = A.conn.joinBranch.bind(A.conn)
-  A.conn.joinBranch = async (...args) => { await gate; return join(...args) }
+  const release = holdJoin(A)
   git(dirA, 'checkout', '-q', 'feature-x') // carries src/app.js over
   await waitFor(() => A.status().git.hold?.kind === 'switching', 10000)
   write(dirA, 'src/app.js', 'alice line\napp\nbob line\n') // edited while the move is held
@@ -168,6 +165,66 @@ test('carried work edited before the move finished: only that edit reaches featu
   assert.equal(read(dirA, 'src/app.js'), 'alice line\napp\n')
   await never(() => (A.files.get('src/app.js')?.toString() || '').includes('bob line'), 1000)
   assert.equal(B.files.get('src/app.js')?.toString(), 'app\nbob line\n', 'main keeps bob\'s work, without alice\'s feature edit')
+})
+
+/** Holds A's next branch join until the returned function is called (the move waits there, held). */
+function holdJoin (A) {
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  const join = A.conn.joinBranch.bind(A.conn)
+  A.conn.joinBranch = async (...args) => { await gate; A.conn.joinBranch = join; return join(...args) }
+  return release
+}
+const copiesOf = (dir, rel) => {
+  const root = path.join(dir, '.quilt', 'conflicts')
+  if (!fs.existsSync(root)) return []
+  return fs.readdirSync(root).map((d) => read(path.join(root, d), rel)).filter((x) => x !== null)
+}
+
+test('carried work edited after the checkout that clashes with the branch is set aside: no merge record, nothing of main in feature-x', async (t) => {
+  const { A, B, dirA, dirB } = await repos(t)
+  git(dirA, 'checkout', '-q', 'feature-x')
+  await waitFor(() => on(A, 'feature-x'), 10000)
+  write(dirA, 'src/app.js', 'feature app\n') // feature-x's own work on the file
+  await waitFor(() => A.files.get('src/app.js')?.toString() === 'feature app\n')
+  git(dirA, 'checkout', '-q', 'main')
+  await waitFor(() => on(A, 'main') && read(dirA, 'src/app.js') === MAIN_APP, 10000)
+  write(dirB, 'src/app.js', 'app\nbob line\n')
+  await waitFor(() => read(dirA, 'src/app.js') === 'app\nbob line\n')
+  const release = holdJoin(A)
+  git(dirA, 'checkout', '-q', 'feature-x') // carries bob's main work over
+  await waitFor(() => A.status().git.hold?.kind === 'switching', 10000)
+  write(dirA, 'src/app.js', 'app\nbob line\nalice line\n') // an edit after switching, on top of it
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  release()
+  await waitFor(() => on(A, 'feature-x') && read(dirA, 'src/app.js') === 'feature app\n' && A.logs.some((l) => l.includes('clashed with feature-x')), 10000)
+  assert.ok(A.notices.some((n) => n.includes('Your edit to src/app.js after switching to feature-x clashed')), A.notices.join('\n'))
+  assert.ok(copiesOf(dirA, 'src/app.js').includes('app\nbob line\nalice line\n'), 'the folder\'s copy is kept')
+  await never(() => A.files.get('src/app.js')?.toString() !== 'feature app\n' || A.mergeList().length, 1000)
+  assert.equal(B.files.get('src/app.js')?.toString(), 'app\nbob line\n')
+})
+
+test('the same clash on a file feature-x\'s document hasn\'t: HEAD\'s file goes back, never deleted', async (t) => {
+  const { A, B, dirA, dirB } = await repos(t)
+  git(dirA, 'checkout', '-q', 'feature-x')
+  await waitFor(() => on(A, 'feature-x'), 10000)
+  fs.rmSync(path.join(dirA, 'src/app.js')) // the session deletes it on feature-x (it stays in the commit)
+  await waitFor(() => !A.files.has('src/app.js'))
+  git(dirA, 'checkout', '-q', 'main')
+  await waitFor(() => on(A, 'main') && read(dirA, 'src/app.js') === MAIN_APP, 10000)
+  write(dirB, 'src/app.js', 'app\nbob line\n')
+  await waitFor(() => read(dirA, 'src/app.js') === 'app\nbob line\n')
+  const release = holdJoin(A)
+  git(dirA, 'checkout', '-q', 'feature-x')
+  await waitFor(() => A.status().git.hold?.kind === 'switching', 10000)
+  write(dirA, 'src/app.js', 'app\nbob line\nalice line\n')
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  release()
+  await waitFor(() => on(A, 'feature-x') && A.logs.some((l) => l.includes('clashed with feature-x')), 10000)
+  assert.equal(read(dirA, 'src/app.js'), MAIN_APP, 'HEAD\'s committed file, not deleted')
+  assert.ok(copiesOf(dirA, 'src/app.js').includes('app\nbob line\nalice line\n'))
+  await never(() => A.files.has('src/app.js') || A.mergeList().length || read(dirA, 'src/app.js') !== MAIN_APP, 1000)
+  assert.equal(B.files.get('src/app.js')?.toString(), 'app\nbob line\n')
 })
 
 test('a checkout while the relay is unreachable moves the folder as soon as it reconnects', async (t) => {

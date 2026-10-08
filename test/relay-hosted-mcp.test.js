@@ -99,6 +99,20 @@ test('joining puts the agent on the owner\'s list; the owner lets it in and it b
   assert.match(out(await call('quilt_join_session', { invite: 'https://join.heyquilt.com/hm-1#s' })), /Joined room hm-1 as Grok-Bot \(editor\)/)
 })
 
+test('a hosted agent sees the session\'s branches: which folder is on which, and how each stands against its upstream', async () => {
+  // Carl's folder is no git repository here: what a git folder tells the room is set by hand.
+  carl.conn.awareness.setLocalStateField('git', {
+    branch: 'main', key: 'main', sha: 'a'.repeat(40), held: null, on: 'main',
+    upstream: { name: 'origin/main', url: 'https://github.com/x/y.git', behind: 2, ahead: 0, diverged: false, conflicts: 1, waiting: null },
+    repo: { worktrees: [{ name: '.', branch: 'main' }, { name: 'billing', branch: 'billing' }], branches: [{ name: 'billing', upstream: null, ahead: 0, behind: 0, author: 'Sam', ts: Date.now() - 5 * 60000, subject: 'Plans' }] }
+  })
+  const listed = await waitFor(async () => { const t = out(await call('quilt_branches')); return t.includes('`billing`') && t })
+  assert.match(listed, /`main` · on it: Carl's folder \(2 behind origin\/main; 1 file clash with the session's work\)\n/)
+  assert.match(listed, /`billing` · on it: worktree `billing` · last commit 5m ago by Sam: Plans/)
+  assert.match(listed, /come into the session by themselves/)
+  assert.match(out(await call('quilt_status')), /## Branches\n(- .*\n)*- `main` · on it: Carl/)
+})
+
 test('moving a task to In progress reminds the agent to grok → plan → build → test', async () => {
   const added = await call('quilt_add_task', { title: 'Wire agent workflow' })
   assert.ok(!added.isError, out(added))
@@ -443,3 +457,4 @@ test('the relay tells the accounts API which session a hosted agent is in', asyn
   const other = await fetch(`${http}/mcp`, { method: 'POST', headers: { 'x-quilt-pass': hostedPass({ sub: 'agent-new', name: 'New' }), 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }) })
   assert.equal(other.headers.get('x-quilt-room'), null, 'in no session')
 })
+

@@ -95,7 +95,8 @@ export function branchesMarkdown (board, { now = Date.now(), limit = 12 } = {}) 
       ...b.ais.map((n) => `AI session ${n}`),
       ...b.worktrees.map((w) => `worktree \`${w}\``)
     ]
-    const bits = [who.length ? `on it: ${who.join(', ')}` : '', upstreamLine(b.upstream), b.last ? `last commit ${ago(b.last.ts, now)} by ${b.last.author}: ${b.last.subject}` : ''].filter(Boolean)
+    const line = upstreamLine(b.upstream)
+    const bits = [who.length ? `on it: ${who.join(', ')}` : '', who.some((w) => w.includes(`(${line})`)) ? '' : line, b.last ? `last commit ${ago(b.last.ts, now)} by ${b.last.author}: ${b.last.subject}` : ''].filter(Boolean)
     out.push(`- \`${b.name}\`${bits.length ? ` · ${bits.join(' · ')}` : ''}`)
   }
   if (board.length > limit) out.push(`- …and ${board.length - limit} more`)

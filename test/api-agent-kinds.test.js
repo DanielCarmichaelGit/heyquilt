@@ -26,7 +26,7 @@ async function startedRoom (h, ws, room, owner) {
 }
 
 test('the migration adds agent_invites.global, additively', () => {
-  const s = fs.readFileSync(new URL('../supabase/migrations/20261008000000_agent_invite_global.sql', import.meta.url), 'utf8')
+  const s = fs.readFileSync(new URL('../supabase/migrations/20261008000001_agent_invite_global.sql', import.meta.url), 'utf8')
   assert.match(s, /alter table public\.agent_invites add column global boolean not null default false;/)
   assert.doesNotMatch(s, /\bdrop\b/i)
 })

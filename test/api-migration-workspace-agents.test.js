@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 
-const sql = () => fs.readFileSync(new URL('../supabase/migrations/20261007000000_workspace_agents.sql', import.meta.url), 'utf8')
+const sql = () => fs.readFileSync(new URL('../supabase/migrations/20261007000001_workspace_agents.sql', import.meta.url), 'utf8')
 const table = (s, name) => (s.match(new RegExp(`create table public\\.${name} \\([\\s\\S]*?\\n\\);`)) || [''])[0]
 
 test('the columns and tables the spec names', () => {

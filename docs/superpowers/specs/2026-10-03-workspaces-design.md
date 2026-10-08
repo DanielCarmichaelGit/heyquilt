@@ -358,7 +358,7 @@ What phase 3 changed from the design above, and why:
   choice apply) and **Session agent** (invited to one running session, the current one first; the paste text
   carries its link), with **How agent kinds work** linking to heyquilt.com/docs/agent-kinds. A global invite is
   `POST /v1/agent-invites` with `{ global: true }` (ignored with the flag off), stored as
-  `agent_invites.global` (migration `20261008000000_agent_invite_global`, which the API selects with the flag
+  `agent_invites.global` (migration `20261008000001_agent_invite_global`, which the API selects with the flag
   off too); joining it places the agent with reach all, sessions all, edit access, inside the join's rollback.
   With workspaces off every button behaves as before.
 - **Inheritance is an invitation, not admission.** `roomAccess` no longer lets an agent into a session through

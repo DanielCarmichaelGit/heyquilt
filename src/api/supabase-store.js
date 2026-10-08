@@ -267,7 +267,7 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     },
     async listWorkspaceSessions (workspaceId) { return (await one(db.from('relay_sessions').select(RELAY_SESSION).eq('workspace_id', workspaceId).order('last_active_at', { ascending: false }))).map(rowFrom) },
 
-    // Workspace agents (see 20261007000000_workspace_agents.sql). Where an agent works,
+    // Workspace agents (see 20261007000001_workspace_agents.sql). Where an agent works,
     // a workspace's say over one that reaches it, per-session keep-outs, and its webhook.
     async agentPlacement (agentId) { return rowFrom(await one(db.from('agent_placements').select(AGENT_PLACEMENT).eq('agent_id', agentId).maybeSingle())) },
     async putAgentPlacement ({ agentId, reach = 'manual', workspaceIds = [], sessions = 'invited', access = 'edit', scopes = [], updatedBy }) {

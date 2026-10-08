@@ -27,7 +27,7 @@
 
 ## File Structure
 
-- Create `supabase/migrations/20261007000000_workspace_agents.sql`.
+- Create `supabase/migrations/20261007000001_workspace_agents.sql`.
 - Modify `src/api/memory-store.js`, `src/api/supabase-store.js`: placements, overrides, exclusions, agent webhooks, org agent list, member `sessions`, invite workspace fields.
 - Create `src/api/agent-placement.js`: `agentReach`, `agentJoinsSession`, `agentsJoiningSession`, `cleanPlacement`.
 - Modify `src/api/workspace-access.js` (rule 4), `src/api/access.js` (per-session exclusion).
@@ -43,7 +43,7 @@
 ### Task 1: Migration
 
 **Files:**
-- Create: `supabase/migrations/20261007000000_workspace_agents.sql`
+- Create: `supabase/migrations/20261007000001_workspace_agents.sql`
 - Test: `test/api-migration-workspace-agents.test.js`
 
 **Interfaces (produces):** tables `agent_placements`, `workspace_agent_overrides`, `session_agent_exclusions`, `agent_webhooks`; columns `workspace_members.sessions`, `agent_invites.workspace_id`, `agent_invites.workspace_access`, `agent_invites.workspace_sessions`.
@@ -56,7 +56,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 
-const sql = () => fs.readFileSync(new URL('../supabase/migrations/20261007000000_workspace_agents.sql', import.meta.url), 'utf8')
+const sql = () => fs.readFileSync(new URL('../supabase/migrations/20261007000001_workspace_agents.sql', import.meta.url), 'utf8')
 const table = (s, name) => (s.match(new RegExp(`create table public\\.${name} \\([\\s\\S]*?\\n\\);`)) || [''])[0]
 
 test('the columns and tables the spec names', () => {
@@ -88,7 +88,7 @@ test('additive only, RLS on, service role only', () => {
 - [ ] **Step 3: Write the migration**
 
 ```sql
--- supabase/migrations/20261007000000_workspace_agents.sql
+-- supabase/migrations/20261007000001_workspace_agents.sql
 -- Agents in workspaces (phase 3): where an agent works, a workspace's say over a global
 -- agent, per-session keep-outs, and an agent's own webhook for "session started". Additive
 -- only. The accounts API is the only reader and writer, so row-level security is on with no

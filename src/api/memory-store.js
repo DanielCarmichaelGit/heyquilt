@@ -744,7 +744,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     },
     async listWorkspaceSessions (workspaceId) { return all(relaySessions, (s) => s.workspaceId === workspaceId).sort((a, b) => b.lastActiveAt - a.lastActiveAt).map(copy) },
 
-    // Workspace agents (see 20261007000000_workspace_agents.sql). Where an agent works,
+    // Workspace agents (see 20261007000001_workspace_agents.sql). Where an agent works,
     // a workspace's say over one that reaches it, per-session keep-outs, and its webhook.
     async agentPlacement (agentId) { return copy(agentPlacements.get(agentId)) },
     async putAgentPlacement ({ agentId, reach = 'manual', workspaceIds = [], sessions = 'invited', access = 'edit', scopes = [], updatedBy }) {

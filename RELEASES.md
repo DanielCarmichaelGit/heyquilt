@@ -9,6 +9,16 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.24 — 2026-10-08
+
+Work committed outside the session now comes into it by itself.
+
+- **Commits from elsewhere come in by themselves.** When someone pushes from a worktree, merges a pull request on GitHub, or lands a branch from another worktree, the session used to miss it until a person in it ran `git pull`. Now each folder checks its branch's upstream about once a minute and brings new commits in on its own: the branch moves forward and the session's uncommitted work is merged into those files, for everyone. Quilt only ever moves a branch forward. It never merges git history, and it writes nothing unless every file merges cleanly.
+- **Moved files keep up.** If the session moved a file (say, tests into new folders) and the new commits change it at its old place, the change lands in the moved copy. New files the commits add to a folder the session emptied are pointed out to your AI.
+- **Clashes go to your AI, not to you.** When the new commits and the session's work change the same lines, or the branch has commits of its own that the upstream lacks, nothing is brought in. Your AI is told which files clash and why, and once one person resolves it with git, everyone else's folder follows.
+- **See every branch.** Click the branch name at the top of a session to see which branch each person's folder is on, which AI sessions and worktrees are working on which branch, how each one compares with its upstream, and who committed last. **Check for new commits** looks right away. The label says when a pull is needed.
+- **For every AI tool.** `quilt_status` lists the branches. `quilt_branches` gives the full picture, and `quilt_sync_branch` brings commits in right after an AI pushes or merges somewhere else. Agents connected over HTTP get `quilt_branches` too.
+
 ## 0.3.23 — 2026-10-08
 
 - **An agent invite from a session brings the session with it.** Inviting an AI agent from a session's Invite now puts that session's link in the text you paste, so the agent registers and joins the session in one go instead of waiting for you to send the link separately.

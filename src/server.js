@@ -33,7 +33,7 @@ import {
   ROOM_DOC, syncHeader,
   syncStep1Message, updateMessage, awarenessMessage, bytesMessage, jsonMessage
 } from './protocol.js'
-import { BranchStore, DEFAULT_KEY, BRANCH_IDLE_MS, BRANCH_TTL_MS, MAX_BRANCHES, validBranchKey, covers, splitLegacyDoc } from './branchdocs.js'
+import { BranchStore, DEFAULT_KEY, BRANCH_IDLE_MS, BRANCH_TTL_MS, DETACHED_TTL_MS, MAX_BRANCHES, validBranchKey, covers, splitLegacyDoc } from './branchdocs.js'
 import { parsePublicKey, verifyChallenge } from './identity.js'
 import { verifyPass, PASS_TTL_MS } from './passes.js'
 import { cleanAccess, narrowAccess, relayAccess, fromRelay, sameAccess, mayChange, TALK_REFUSED } from './session-access.js'
@@ -756,7 +756,7 @@ class Room {
       e.bytes += update.length
       if (!was && e.bytes > this.cfg.maxRoomBytes) {
         // Only this branch: the room and the other branches carry on, and nobody is disconnected.
-        this.log(`[${this.name}] branch ${e.key} is over the size limit; further edits to it are refused`)
+        this.log(`[${this.name}] branch ${e.key} is over the size limit; further edits to it are refused (git checkout -b a new branch to keep syncing)`)
         this.broadcastBranches()
       }
       this.store.scheduleSave(e)
@@ -851,16 +851,21 @@ class Room {
     if (save) this.saveMeta()
   }
 
-  /** Branches nobody has been on for BRANCH_TTL_MS leave the session (never the default branch). */
+  /**
+   * Branches nobody has been on for BRANCH_TTL_MS leave the session (never the default
+   * branch); a detached checkout (key starting with '@', with no branch name to come back
+   * to) leaves sooner, after DETACHED_TTL_MS.
+   */
   pruneBranches (now = Date.now()) {
     let gone = 0
     for (const [key, b] of Object.entries(this.meta.branches)) {
-      if (key === this.defaultKey || now - (b.seen || b.at || 0) < BRANCH_TTL_MS) continue
+      const ttl = key.startsWith('@') ? DETACHED_TTL_MS : BRANCH_TTL_MS
+      if (key === this.defaultKey || now - (b.seen || b.at || 0) < ttl) continue
       this.removeBranch(key, { save: false })
       gone++
     }
     if (!gone) return
-    this.log(`[${this.name}] removed ${gone} branch(es) nobody was on for 30 days`)
+    this.log(`[${this.name}] removed ${gone} branch(es) nobody was on for a while`)
     if (this.exists) this.saveMeta()
   }
 

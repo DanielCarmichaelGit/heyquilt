@@ -11,7 +11,7 @@ import * as Y from 'yjs'
 import { startServer } from '../src/server.js'
 import { Connection, REMOTE } from '../src/connection.js'
 import { generateIdentity } from '../src/identity.js'
-import { validBranchKey, branchFileName, covers, MAX_BRANCHES } from '../src/branchdocs.js'
+import { validBranchKey, branchFileName, covers, MAX_BRANCHES, DETACHED_TTL_MS } from '../src/branchdocs.js'
 
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-rb-${n}-`))
 const quiet = () => {}
@@ -441,6 +441,23 @@ test('branches nobody was on for 30 days are dropped when the room loads; the ac
   assert.deepEqual(room.branchList().map((x) => x.key).sort(), ['fresh', 'main'])
   assert.equal(fs.existsSync(path.join(dataDir, 'branches', 'rb12', branchFileName('stale'))), false)
   assert.equal(room.activeBranch(), 'fresh')
+})
+
+test('a detached checkout nobody has been on leaves the session sooner than a named branch (DETACHED_TTL_MS, not BRANCH_TTL_MS)', async (t) => {
+  const dataDir = tmp('ttl-detached')
+  const old = Date.now() - 2 * 86400e3 // 2 days: past DETACHED_TTL_MS (1 day), well under BRANCH_TTL_MS (30 days)
+  assert.ok(2 * 86400e3 > DETACHED_TTL_MS, 'the scenario is actually past the detached TTL')
+  const detached = `@${'1'.repeat(12)}`
+  fs.writeFileSync(path.join(dataDir, 'rb14.json'), JSON.stringify({ secretHash: crypto.createHash('sha256').update('s').digest('hex'), layout: 2, defaultBranch: 'main', branches: { main: { by: 'a', at: old, seen: old }, [detached]: { by: 'a', at: old, seen: old } }, lastActive: Date.now() }))
+  fs.mkdirSync(path.join(dataDir, 'branches', 'rb14'), { recursive: true })
+  fs.writeFileSync(path.join(dataDir, 'branches', 'rb14', branchFileName(detached)), Y.encodeStateAsUpdate(new Y.Doc()))
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, dataDir })
+  t.after(() => srv.close())
+  const a = open(t, srv, 'rb14', 'a', 'main')
+  await a.c.waitForSync()
+  const room = srv.rooms.get('rb14')
+  assert.deepEqual(room.branchList().map((x) => x.key).sort(), ['main'], 'the detached checkout is gone, but a named branch of the same age stays')
+  assert.equal(fs.existsSync(path.join(dataDir, 'branches', 'rb14', branchFileName(detached))), false)
 })
 
 test('a relay restarted mid-migration (branch file written, room file swapped, meta not yet saved) keeps the default branch\'s stored files out of the sweep', async (t) => {

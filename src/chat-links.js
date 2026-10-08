@@ -838,7 +838,7 @@ class ChatPage {
   branchFull () {
     let k
     try { k = this.branch.key } catch { return null } // no branch to add to: placeRefusal says why
-    return this.room.branchFull && this.room.branchFull(k) ? `${k} is over the session's size limit for one branch, so no new files can be saved on it.` : null
+    return this.room.branchFull && this.room.branchFull(k) ? `${k} is over the session's size limit for one branch, so no new files can be saved on it. Start a fresh copy with \`git checkout -b <new name>\`: your changes since are kept in your folder.` : null
   }
 
   async addFromWeb (address, p, fetchFile) {

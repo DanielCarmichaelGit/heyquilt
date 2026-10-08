@@ -165,7 +165,7 @@ function sessionTools (server, ctx) {
   const me = ctx.me
   const writable = (room) => room.full ? 'This session is over its size limit, so nothing new can be saved.' : null
   // A branch over its own size limit takes no new files; the rest of the session carries on.
-  const branchWritable = (room, branch) => branch && room.branchFull && room.branchFull(branch.key) ? `${branch.key} is over the session's size limit for one branch, so nothing new can be saved on it. Other branches still take changes.` : null
+  const branchWritable = (room, branch) => branch && room.branchFull && room.branchFull(branch.key) ? `${branch.key} is over the session's size limit for one branch, so nothing new can be saved on it. Other branches still take changes. Start a fresh copy with \`git checkout -b <new name>\`: your changes since are kept in your folder.` : null
   // Which branch a file answer is about, when the session has more than one.
   const onBranchNote = (room, branch) => branch && room.meta && Object.keys(room.meta.branches || {}).length > 1 ? ` on ${branch.key}` : ''
   const visible = (m) => m && m.id && (!m.to || m.to === me || m.by === me)

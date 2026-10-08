@@ -34,14 +34,15 @@ export function cleanGit (g) {
  * working on it, from the room's branch list), upstream: { name, url,
  * behind, ahead, diverged, conflicts, waiting } | null, last: { author, ts, subject } | null,
  * session: true when the branch has a live document in this session (a copy, whether or not
- * anyone is on it right now), default: true for the room's default branch }.
+ * anyone is on it right now), default: true for the room's default branch, full: true when its
+ * document is over the session's size limit (it takes no new changes) }.
  * Branches someone is on come first, then the rest by last commit. `members`: [{ name, git, persona? }].
- * `sessionBranches`: the room's own branch list (Session.branchList / the relay's), [{ key, default }].
+ * `sessionBranches`: the room's own branch list (Session.branchList / the relay's), [{ key, default, full }].
  */
 export function branchBoard (members, sessionBranches = []) {
   const byName = new Map()
   const entry = (name) => {
-    if (!byName.has(name)) byName.set(name, { name, folders: [], ais: [], worktrees: [], hosted: [], upstream: null, last: null, session: false, default: false })
+    if (!byName.has(name)) byName.set(name, { name, folders: [], ais: [], worktrees: [], hosted: [], upstream: null, last: null, session: false, default: false, full: false })
     return byName.get(name)
   }
   for (const m of members) {
@@ -73,6 +74,7 @@ export function branchBoard (members, sessionBranches = []) {
     const e = entry(b.key)
     e.session = true
     if (b.default) e.default = true
+    if (b.full) e.full = true
     for (const n of (Array.isArray(b.hosted) ? b.hosted : [])) if (!e.hosted.includes(n)) e.hosted.push(n)
   }
   const active = (e) => e.folders.length + e.ais.length + e.worktrees.length + e.hosted.length

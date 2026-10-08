@@ -333,7 +333,7 @@ export class Session extends EventEmitter {
     const mine = this.branchList.find((b) => b.key === this.branch)
     if (mine && mine.full && this.fullSaid !== mine.key) {
       this.fullSaid = mine.key
-      const msg = `${mine.key} is over the session's size limit for one branch, so the relay takes no new changes on it; they stay in this folder. Other branches, chat and tasks carry on as usual.`
+      const msg = `${mine.key} is over the session's size limit for one branch, so the relay takes no new changes on it; they stay in this folder. Other branches, chat and tasks carry on as usual. To keep syncing, start a fresh copy with \`git checkout -b <new name>\`: your changes since are kept in this folder.`
       this.log(`⚠️ ${msg}`)
       this.notice(msg)
     } else if (mine && !mine.full && this.fullSaid === mine.key) this.fullSaid = null
@@ -4838,7 +4838,7 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
       chat: this.messages({ limit: 20, markRead: false }),
       unread: this.unreadCount(),
       fileCount: this.files.size + this.blobs.size,
-      git: this.git ? { branch: this.git.branch, key: this.git.key, hold: this.hold ? { kind: this.hold.kind, since: this.hold.since, to: this.hold.to || null, conflict: this.hold.conflict || null, waiting: this.hold.waiting || null } : null, pull: this.pull, upstream: this.upstream, repo: this.repo, others: (this.repo ? this.repo.branches.map((b) => b.name) : []).filter((b) => !this.branchList.some((x) => x.key === b)) } : null,
+      git: this.git ? { branch: this.git.branch, key: this.git.key, full: !!this.branchList.find((b) => b.key === this.branch)?.full, hold: this.hold ? { kind: this.hold.kind, since: this.hold.since, to: this.hold.to || null, conflict: this.hold.conflict || null, waiting: this.hold.waiting || null } : null, pull: this.pull, upstream: this.upstream, repo: this.repo, others: (this.repo ? this.repo.branches.map((b) => b.name) : []).filter((b) => !this.branchList.some((x) => x.key === b)) } : null,
       branches: branchBoard([{ name: this.name, git: this.gitSummary() }, ...peers.map((p) => ({ name: p.name, git: p.git, persona: !!p.persona }))], this.branchList)
     }
   }

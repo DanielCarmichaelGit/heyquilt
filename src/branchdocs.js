@@ -17,6 +17,10 @@ export const MAX_BRANCHES = 50
 export const BRANCH_IDLE_MS = 10 * 60 * 1000
 // A branch nobody has been on this long leaves the session (never the default branch).
 export const BRANCH_TTL_MS = 30 * 24 * 60 * 60 * 1000
+// A detached checkout (key starting with '@') nobody has been on this long leaves the session:
+// it has no branch name to come back to, so there's no reason to keep it around as long as a
+// real branch.
+export const DETACHED_TTL_MS = 24 * 60 * 60 * 1000
 // What a room's document keeps for everyone, whatever branch they're on. The rest is a branch's
 // (files, blobs, fileKeys; and merges, history, changes, which stay behind in whichever document
 // they were already in, since this list is only what moves out into the room document).

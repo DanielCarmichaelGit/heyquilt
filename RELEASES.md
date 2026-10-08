@@ -18,7 +18,7 @@ Each git branch gets its own live copy in the session.
 - **See who is on which branch.** The branch menu and `quilt_branches` show which branches have a live copy in the session and who is on each.
 - **Hosted agents choose a branch.** An agent connected over HTTP stays on the branch it first worked on, or picks one with `quilt_switch_branch` (`create: true` starts a new one from the files it has).
 - **Unused branches clear themselves out.** A branch's copy nobody has been on is put away after 10 minutes and deleted from the session after 30 days. Coming back later starts it fresh from your folder. Your own changes are kept in `.quilt/conflicts`.
-- **A very large branch doesn't stop the session.** Each branch has its own size limit. A branch over it stops taking changes and its people are told, while everyone else carries on.
+- **A very large branch doesn't stop the session.** Each branch has its own size limit. A branch over it is marked "full" in the branch menu, stops taking changes and its people are told to start a fresh copy with `git checkout -b`, while everyone else carries on.
 - **Older Quilt apps are asked to update** before they can join a session.
 
 ## 0.3.28 — 2026-10-09

@@ -36,7 +36,7 @@ export function agentGuide ({ apiUrl = 'https://api.heyquilt.com', via = 'both' 
     '',
     '### Who is in a session',
     '- People: the humans. Most work with their own AI (Claude Code, Cursor, Codex and others), which acts under the person\'s name: `quilt_status` shows it on an "AI:" line under them, and `quilt_partner_feed` shows what that AI is being asked and doing, so you do not duplicate or undo its work.',
-    '- Agents: AIs that joined as their own member, like you. `quilt_status` marks them [AI agent]. Some run on a computer with the CLI; some work over HTTP and show as online for 30 minutes after each call; chat AIs (ChatGPT, claude.ai and the like, on a chat link) can only read and send messages, read files, and read and add tasks.',
+    '- Agents: AIs that joined as their own member, like you. `quilt_status` marks them [AI agent]. Some run on a computer with the CLI; some work over HTTP and show as online for 30 minutes after each call; chat AIs (ChatGPT, claude.ai and the like, on a chat link) can read and send messages, read files, add new pictures, documents and notes, and add, assign, move and comment on tasks, but not change existing files.',
     '- The session owner lets people and agents in and sets what each may do: edit or view only, which folders, whether they may talk. A refused call says why.',
     '',
     '### Talking: to whom, how and when',

@@ -50,7 +50,7 @@ test('every first prompt carries the guide', () => {
     for (const re of COVERS) assert.match(text, re)
     assert.match(text, /https:\/\/api\.x\/mcp/)
   }
-  assert.match(agentPaste({ link }), /If you cannot run commands, open https:\/\/api\.x\/v1\/join\/qj_abc/)
+  assert.match(agentPaste({ link }), /make HTTP requests: open https:\/\/api\.x\/v1\/join\/qj_abc/)
 })
 
 test('every prompt says how to install on Linux, and to keep quilt join running in the background', () => {
@@ -64,4 +64,21 @@ test('every prompt says how to install on Linux, and to keep quilt join running 
   }
   assert.match(agentGuide({ via: 'cli' }), /nohup quilt join/)
   assert.doesNotMatch(agentGuide({ via: 'http' }), /nohup/)
+})
+
+test('every prompt makes an agent that can run commands use the CLI, and keeps HTTP for agents with no computer', () => {
+  const link = 'https://api.x/v1/join/qj_abc'
+  const paste = agentPaste({ link })
+  const page = joinInstructions({ link, apiUrl: 'https://api.x', status: 'waiting', expiresAt: Date.now() })
+  for (const text of [paste, page]) {
+    assert.match(text, /This is not optional: an agent that can run commands must join with the CLI/)
+    assert.match(text, /Never choose HTTP because it looks quicker/)
+    // The CLI comes before HTTP.
+    assert.ok(text.indexOf('quilt agent join') < text.indexOf('join over HTTP'), 'CLI first')
+  }
+  assert.match(paste, /Only if you have no computer and can do nothing but make HTTP requests/)
+  assert.match(page, /## Only if you have no computer: join over HTTP/)
+  const http = joinNext({ name: 'Larry', agentId: 'ag_1', apiUrl: 'https://api.x', hasKey: false })
+  assert.match(http, /stop and switch to the Quilt CLI now/)
+  assert.match(http, /quilt agent join <invite link> --name Larry --agent-id ag_1/)
 })

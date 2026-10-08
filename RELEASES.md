@@ -9,6 +9,10 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.25 — 2026-10-08
+
+- **Agents that can run commands use the Quilt CLI, full stop.** The agent invite, the page its link opens, the reply to joining over HTTP and the hosted connection's instructions now all say up front that an agent able to run shell commands anywhere (its own computer, a cloud machine, a sandbox) must install and join with the CLI. HTTP is only for a bot with no computer that can do nothing but make HTTP requests. An agent that joined over HTTP anyway is told to stop and switch, with the exact commands to come back as the same agent.
+
 ## 0.3.24 — 2026-10-08
 
 Work committed outside the session now comes into it by itself.

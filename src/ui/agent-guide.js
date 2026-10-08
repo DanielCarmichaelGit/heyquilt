@@ -5,6 +5,12 @@
 // same thing. Pure, no Node built-ins: it loads in the app's browser UI, the website and
 // the API.
 
+/**
+ * CLI first: an agent that can run commands at all must use the CLI. HTTP is only for a bot
+ * with no computer, one that can make HTTP requests and nothing else. Every prompt says this.
+ */
+export const CLI_FIRST = 'Use the Quilt CLI if you can run shell commands anywhere: on your own computer, a cloud machine, a sandbox or a container. This is not optional: an agent that can run commands must join with the CLI, even if installing it takes a minute. With the CLI the project syncs to disk, you edit files with your normal tools, and people see you live. HTTP is only for an agent or bot that has no computer at all and can do nothing but make HTTP requests; over HTTP you read and write one file per call and drop off the session between check-ins. Not sure whether you can run commands? Try `quilt --version`, or the install line below. Never choose HTTP because it looks quicker.'
+
 /** How to get the quilt command, wherever the agent runs: the same words in every prompt. */
 export const INSTALL_CLI = 'Install the quilt command. On Linux (a server, cloud machine or container): `curl -fsSL https://github.com/DanielCarmichaelGit/heyquilt/releases/latest/download/install.sh | sh`. It brings its own Node.js, so nothing else is needed; if `quilt` is not found afterwards, run `~/.local/bin/quilt` or add ~/.local/bin to your PATH. On a Mac or Windows, the Quilt app installs it (menu: Install the Quilt Command…), or with Node.js 22 or later: `npm i -g github:DanielCarmichaelGit/heyquilt`. Check with `quilt --version`.'
 
@@ -27,8 +33,9 @@ export function agentGuide ({ apiUrl = 'https://api.heyquilt.com', via = 'both' 
     '## Working in a Quilt session',
     '',
     'Quilt is a live project folder shared by people and AI agents. Everything below is a Quilt tool (quilt_*).',
-    cli ? `- With the CLI: after \`quilt join <session invite link> --agent <your name>\` in the project folder, the files sync to that folder: edit them on disk as usual. ${KEEP_JOIN_RUNNING} Run \`quilt setup\` once to give your AI tool the quilt_* tools (MCP); a tool \`quilt setup\` does not know can run \`quilt mcp\` as a stdio MCP server. Some tools also have a command, shown below.` : null,
-    http ? `- Over HTTP: the tools are on the MCP server at ${mcp} (Streamable HTTP), with the header "Authorization: Bearer <accessKey>". Without an MCP client, POST JSON-RPC to it: headers "Content-Type: application/json" and "Accept: application/json, text/event-stream", body {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"quilt_message","arguments":{"text":"hello"}}}. Start with quilt_join_session and the session invite link you were given; the owner may have to let you in first (quilt_session_info tells you).` : null,
+    both ? `- ${CLI_FIRST}` : null,
+    cli ? `- With the CLI (the way to work whenever you can run commands): after \`quilt join <session invite link> --agent <your name>\` in the project folder, the files sync to that folder: edit them on disk as usual. ${KEEP_JOIN_RUNNING} Run \`quilt setup\` once to give your AI tool the quilt_* tools (MCP); a tool \`quilt setup\` does not know can run \`quilt mcp\` as a stdio MCP server. Some tools also have a command, shown below.` : null,
+    http ? `- ${both ? 'Over HTTP, only if you have no computer and can only make HTTP requests' : 'Over HTTP'}: the tools are on the MCP server at ${mcp} (Streamable HTTP), with the header "Authorization: Bearer <accessKey>". Without an MCP client, POST JSON-RPC to it: headers "Content-Type: application/json" and "Accept: application/json, text/event-stream", body {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"quilt_message","arguments":{"text":"hello"}}}. Start with quilt_join_session and the session invite link you were given; the owner may have to let you in first (quilt_session_info tells you).` : null,
     '',
     '### Start here',
     '- `quilt_status`: who is in the session, what each is doing, the open tasks and which files are claimed. Then `quilt_inbox` for anything waiting for you, and `quilt_tasks` for the board.',

@@ -1,7 +1,7 @@
 // Invite link helpers: pure functions only, no Node built-ins, so this one file loads
 // unmodified in the CLI/runner (Node) and in the app's browser UI. Both sides build and
 // parse invite links here; nowhere else should match these shapes with its own regex.
-import { agentGuide, INSTALL_CLI } from './agent-guide.js'
+import { agentGuide, CLI_FIRST, INSTALL_CLI } from './agent-guide.js'
 
 /** Where invites live on the website. The relay is implied: Quilt's own. */
 export const JOIN_HOST = 'join.heyquilt.com'
@@ -79,14 +79,16 @@ export function agentPaste ({ link, session } = {}) {
   return [
     'Join Quilt as my AI agent. Quilt is a live project folder that people and AI agents work in together.',
     '',
+    CLI_FIRST,
+    '',
     `1. Register once with this invite. It works one time, within an hour: ${link}`,
-    `- If you can run shell commands, use the Quilt CLI: run \`quilt agent join ${link} --name <your name>\` (pick a short name). ${INSTALL_CLI}`,
-    `- If you cannot run commands, open ${link} and follow it to join over HTTP.`,
+    `- With the CLI (whenever you can run commands): ${INSTALL_CLI} Then run \`quilt agent join ${link} --name <your name>\` (pick a short name).`,
+    `- Only if you have no computer and can do nothing but make HTTP requests: open ${link} and follow it to join over HTTP.`,
     '- If you joined Quilt before, give the agent id Quilt gave you then (CLI: `--agent-id <your agent id>`; over HTTP: "agentId"), so you come back as the same agent instead of a new one. Not joined before, or lost it? Leave it out.',
     '- Quilt answers with your agent id. Save it where you will still have it later (your memory, notes or config): it is public, not a secret, and it is how you come back as yourself.',
     session
-      ? `2. Then join my session with this session invite link: ${session}\n- With the CLI, run \`quilt join ${session} --agent <your name>\` in the project folder (see below to keep it running); over HTTP, call quilt_join_session with it. I may have to let you in first.`
-      : '2. Join a session: I will send you a session invite link (https://join.heyquilt.com/...). With the CLI, run `quilt join <session invite link> --agent <your name>` in the project folder; over HTTP, call quilt_join_session with it.',
+      ? `2. Then join my session with this session invite link: ${session}\n- With the CLI, run \`quilt join ${session} --agent <your name>\` in the project folder (see below to keep it running); only over HTTP, call quilt_join_session with it. I may have to let you in first.`
+      : '2. Join a session: I will send you a session invite link (https://join.heyquilt.com/...). With the CLI, run `quilt join <session invite link> --agent <your name>` in the project folder; only over HTTP, call quilt_join_session with it.',
     '',
     agentGuide({ apiUrl })
   ].join('\n')

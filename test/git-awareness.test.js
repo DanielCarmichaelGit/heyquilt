@@ -279,41 +279,35 @@ test('a rebase with a conflict never shows git markers to the partner; continuin
   await waitFor(() => read(dirA, 'README.md') === 'both win\n', 10000)
 })
 
-test('checking out another branch pauses that folder; coming back resumes and merges', async (t) => {
+test('checking out another branch moves that folder to its document; coming back brings back main\'s work', async (t) => {
   const { B, dirA, dirB } = await pairRepos(t)
   git(dirB, 'checkout', '-qb', 'feature')
-  await waitFor(() => B.status().git.hold?.kind === 'switching')
-  assert.ok(B.logs.some((l) => l.includes("You're on feature; this session syncs main")), B.logs.join('\n'))
+  await waitFor(() => B.status().branch === 'feature' && B.status().git.hold === null, 10000)
+  assert.ok(B.logs.some((l) => l.includes("You're on feature now (you switched in git)")), B.logs.join('\n'))
   write(dirB, 'src/app.js', 'feature work\n')
   write(dirA, 'README.md', 'main work\n')
   await never(() => read(dirA, 'src/app.js') === 'feature work\n', 2000)
   await never(() => read(dirB, 'README.md') === 'main work\n', 500)
-  git(dirB, 'stash', '-q'); git(dirB, 'checkout', '-q', 'main')
-  await waitFor(() => B.status().git.hold === null, 10000)
+  git(dirB, 'commit', '-qam', 'feature'); git(dirB, 'checkout', '-q', 'main')
+  await waitFor(() => B.status().branch === 'main' && B.status().git.hold === null, 10000)
   await waitFor(() => read(dirB, 'README.md') === 'main work\n' && read(dirB, 'src/app.js') === 'line1\nline2\nline3\nline4\nline5\n')
-  assert.ok(B.logs.some((l) => l.includes('Back on main: caught up with the session')), B.logs.join('\n'))
+  await never(() => read(dirA, 'src/app.js') !== 'line1\nline2\nline3\nline4\nline5\n', 500)
 })
 
-test('stopped while paused on another branch: the next start stays paused, then resumes on the way back', async (t) => {
+test('stopped on main, restarted on another branch: the folder moves there, and main\'s room work never lands on it', async (t) => {
   const { A, B, dirA, dirB, room } = await pairRepos(t)
   write(dirA, 'README.md', 'main work\n')
   await waitFor(() => read(dirB, 'README.md') === 'main work\n')
-  git(dirB, 'stash', '-q'); git(dirB, 'checkout', '-qb', 'feature') // the room's work is not on feature
-  await waitFor(() => B.status().git.hold?.kind === 'switching')
   await close(B)
-  write(dirB, 'src/app.js', 'feature work\n'); git(dirB, 'commit', '-qam', 'feature')
+  git(dirB, 'checkout', '-qb', 'feature') // carries README.md's change over
+  write(dirB, 'src/app.js', 'feature work\n') // an edit on feature while Quilt was stopped
   write(dirA, 'src/app.js', 'line1\nline2 (alice, meanwhile)\nline3\nline4\nline5\n')
   const B2 = await open(t, dirB, 'bob', { room })
-  assert.equal(B2.status().git.hold?.kind, 'switching')
-  assert.equal(B2.status().git.key, 'main')
-  assert.ok(B2.logs.some((l) => l.includes("You're on feature; this session syncs main")), B2.logs.join('\n'))
-  await never(() => read(dirA, 'src/app.js') !== 'line1\nline2 (alice, meanwhile)\nline3\nline4\nline5\n' || read(dirA, 'README.md') !== 'main work\n', 2000)
-  assert.equal(read(dirB, 'src/app.js'), 'feature work\n', 'nothing of main is written onto feature')
-  git(dirB, 'checkout', '-q', 'main')
-  await waitFor(() => B2.status().git.hold === null, 10000)
-  await waitFor(() => read(dirB, 'README.md') === 'main work\n' && read(dirB, 'src/app.js') === 'line1\nline2 (alice, meanwhile)\nline3\nline4\nline5\n', 10000)
-  assert.equal(read(dirA, 'README.md'), 'main work\n')
-  assert.equal(A.status().git.hold, null)
+  await waitFor(() => B2.status().branch === 'feature' && B2.status().git.hold === null, 10000)
+  assert.equal(read(dirB, 'README.md'), 'main work\n', 'what git carried over stays where git put it')
+  assert.equal(B2.files.get('src/app.js')?.toString(), 'feature work\n', 'the edit made on feature is feature\'s')
+  await never(() => read(dirB, 'src/app.js') !== 'feature work\n' || read(dirA, 'src/app.js') !== 'line1\nline2 (alice, meanwhile)\nline3\nline4\nline5\n' || read(dirA, 'README.md') !== 'main work\n', 2000)
+  assert.equal(A.status().branch, 'main')
 })
 
 test('stopped mid-hold on the same branch: the next start puts the room\'s work back instead of sharing the discard', async (t) => {
@@ -334,22 +328,19 @@ test('stopped mid-hold on the same branch: the next start puts the room\'s work 
   assert.equal(read(dirA, 'README.md'), 'main work\n')
 })
 
-test('restarted on a branch with no commits yet, with a hold saved: nothing in that tree is captured', async (t) => {
+test('restarted on a branch with no commits yet: the folder moves to it, and main\'s work stays on main', async (t) => {
   const { A, B, dirA, dirB, room } = await pairRepos(t)
   write(dirA, 'README.md', 'main work\n')
   await waitFor(() => read(dirB, 'README.md') === 'main work\n')
-  git(dirB, 'checkout', '-q', '--orphan', 'scratch')
-  await waitFor(() => B.status().git.hold?.kind === 'switching')
   await close(B)
+  git(dirB, 'checkout', '-q', '--orphan', 'scratch')
   write(dirB, 'src/app.js', 'orphan work\n') // HEAD has no commit to read: headKey is null at the next start
   const B2 = await open(t, dirB, 'bob', { room })
-  assert.equal(B2.status().git.hold?.kind, 'switching')
-  assert.equal(B2.status().git.key, 'main')
-  assert.ok(B2.logs.some((l) => l.includes("You're on scratch; this session syncs main")), B2.logs.join('\n'))
+  await waitFor(() => B2.status().branch === 'scratch' && B2.status().git.hold === null, 10000)
   await never(() => read(dirA, 'src/app.js') !== 'line1\nline2\nline3\nline4\nline5\n' || read(dirA, 'README.md') !== 'main work\n', 2500)
   assert.equal(A.mergeList().filter((m) => m.state === 'open').length, 0)
   git(dirB, 'checkout', '-qf', 'main')
-  await waitFor(() => B2.status().git.hold === null && read(dirB, 'README.md') === 'main work\n', 10000)
+  await waitFor(() => B2.status().branch === 'main' && read(dirB, 'README.md') === 'main work\n', 10000)
   assert.equal(read(dirA, 'src/app.js'), 'line1\nline2\nline3\nline4\nline5\n')
 })
 
@@ -452,18 +443,6 @@ test('a hold resumed over 500 files settles without stalling the app', async (t)
   assert.equal(read(dirA, 'README.md'), 'main work\n')
 })
 
-test('git at work on the other branch keeps the pause as it is, said once; the hold is in state.json at once', async (t) => {
-  const { B, dirB } = await pairRepos(t)
-  git(dirB, 'checkout', '-qb', 'feature')
-  await waitFor(() => B.status().git.hold?.kind === 'switching')
-  assert.equal(JSON.parse(fs.readFileSync(path.join(dirB, '.quilt', 'state.json'), 'utf8')).gitHeld, true, 'written as the hold starts')
-  fs.writeFileSync(path.join(dirB, '.git', 'index.lock'), '')
-  await never(() => B.status().git.hold?.kind !== 'switching', 2500)
-  fs.rmSync(path.join(dirB, '.git', 'index.lock'))
-  await never(() => B.status().git.hold?.kind !== 'switching', 2500)
-  assert.equal(B.logs.filter((l) => l.includes("You're on feature")).length, 1, B.logs.join('\n'))
-})
-
 /** A git that runs, but fails any call with one of `failOn` in its arguments. */
 function failingGit (...failOn) {
   const bin = path.join(tmp('fakegit'), 'git')
@@ -483,22 +462,6 @@ test('a commit git fails to list is not taken as seen; one it lists is', async (
   assert.equal(B.gitSeen.sha, before, 'what the commit changed is unknown: not taken as the session\'s work')
   await B.noteCommits()
   assert.equal(B.gitSeen.sha, git(dirB, 'rev-parse', 'HEAD'))
-})
-
-test('while paused on another branch, a save asks no git (only .git/HEAD is read)', async (t) => {
-  const { B, dirB } = await pairRepos(t)
-  git(dirB, 'checkout', '-qb', 'feature')
-  await waitFor(() => B.status().git.hold?.kind === 'switching')
-  const calls = path.join(tmp('calls'), 'log')
-  const bin = path.join(tmp('countgit'), 'git')
-  fs.writeFileSync(bin, `#!/bin/sh\necho "$@" >> '${calls}'\nexec git "$@"\n`, { mode: 0o755 })
-  process.env.QUILT_GIT = bin
-  try {
-    for (let i = 0; i < 5; i++) { write(dirB, 'src/app.js', `feature ${i}\n`); await new Promise((resolve) => setTimeout(resolve, 120)) }
-    await new Promise((resolve) => setTimeout(resolve, 300))
-  } finally { delete process.env.QUILT_GIT }
-  assert.equal(B.status().git.hold?.kind, 'switching')
-  assert.equal(fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8') : '', '', 'no git call while away')
 })
 
 test('a pull over a Git LFS file whose filter fails settles; nothing is parked', async (t) => {
@@ -543,12 +506,14 @@ test('git status failing during a stash: held, then merged against the last comm
 test('a new branch with no commits yet (checkout --orphan) is a switch, not git gone missing', async (t) => {
   const { B, dirA, dirB } = await pairRepos(t)
   git(dirB, 'checkout', '-q', '--orphan', 'scratch')
-  await waitFor(() => B.status().git.hold?.kind === 'switching')
-  assert.ok(B.logs.some((l) => l.includes("You're on scratch; this session syncs main")), B.logs.join('\n'))
+  await waitFor(() => B.status().branch === 'scratch' && B.status().git.hold === null, 10000)
+  assert.ok(B.logs.some((l) => l.includes("You're on scratch now")), B.logs.join('\n'))
   write(dirA, 'README.md', 'main work\n')
   await never(() => read(dirB, 'README.md') === 'main work\n', 1000)
-  git(dirB, 'checkout', '-q', 'main')
-  await waitFor(() => B.status().git.hold === null && read(dirB, 'README.md') === 'main work\n', 10000)
+  write(dirB, 'notes.txt', 'on scratch\n') // a branch with no commits: a change is an edit there
+  await waitFor(() => B.files.get('notes.txt')?.toString() === 'on scratch\n')
+  git(dirB, 'checkout', '-qf', 'main')
+  await waitFor(() => B.status().branch === 'main' && read(dirB, 'README.md') === 'main work\n', 10000)
 })
 
 test('a folder without git is untouched by all of this', async (t) => {

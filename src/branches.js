@@ -107,7 +107,7 @@ export function branchesMarkdown (board, { now = Date.now(), limit = 12 } = {}) 
 export function describeBranchSync (r) {
   if (!r || !r.git) return 'This folder is not a git repository: there is no branch to bring commits into.'
   if (!r.branch) return 'This folder is not on a branch (detached HEAD): check out a branch first.'
-  if (r.busy) return `Not now: ${r.busy === 'switching' ? 'this folder is on another branch than the session syncs' : r.busy === 'busy' || r.busy === 'settling' ? 'git is at work in this folder' : r.busy}. Quilt looks again by itself in a minute.`
+  if (r.busy) return `Not now: ${r.busy === 'switching' ? 'this folder is moving to the branch you checked out' : r.busy === 'busy' || r.busy === 'settling' ? 'git is at work in this folder' : r.busy}. Quilt looks again by itself in a minute.`
   const u = r.upstream
   if (!u || !u.name) return `\`${r.branch}\` has no upstream (git branch --set-upstream-to sets one), so there is nothing to bring in.`
   if (r.moved) {

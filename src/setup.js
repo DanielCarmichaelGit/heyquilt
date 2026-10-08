@@ -69,8 +69,9 @@ ${TASK_WORKFLOW_MD}
 - Git works as usual here: commit, pull and push yourself. Quilt recognises git
   commands, so a stash or reset on this computer never erases the session's
   work (it comes back a moment later), a git conflict pauses this folder until
-  you resolve it and \`git add\` it, and switching branch pauses it until you
-  are back. Deleting a file deletes it for everyone.
+  you resolve it and \`git add\` it, and checking out another branch moves this
+  folder to that branch's work in the session (the old branch keeps its own).
+  Deleting a file deletes it for everyone.
 - If git refuses to pull because untracked files would be overwritten, those
   files came from the session: \`quilt_status\` lists them under "Pulling" and
   says whether they match the commits. Make way and pull with

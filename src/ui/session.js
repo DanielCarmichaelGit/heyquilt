@@ -568,16 +568,16 @@ function renderTop () {
   if (label) {
     $('#branch-wrap').hidden = !g
     if (g) {
-      // Paused on another branch: said at once. Git busy: only once it has lasted a moment.
+      // Moving to another branch: said at once. Git busy: only once it has lasted a moment.
       const held = g.hold ? Date.now() - g.hold.since : 0
       const note = g.hold && (g.hold.kind === 'switching' || held >= HOLD_NOTE_MS)
       clearTimeout(holdNoteTimer)
       if (g.hold && !note) holdNoteTimer = setTimeout(renderTop, HOLD_NOTE_MS - held + 20)
-      const tag = note ? (g.hold.kind === 'switching' ? `paused · you're on ${esc(g.hold.to || '?')}` : g.hold.conflict ? 'paused: resolve the git conflict' : 'syncing paused: git is busy') : ''
+      const tag = note ? (g.hold.kind === 'switching' ? `moving to ${esc(g.hold.to || '?')}…` : g.hold.conflict ? 'paused: resolve the git conflict' : 'syncing paused: git is busy') : ''
       const up = g.upstream
       const behind = !tag && up && (up.behind || up.diverged) ? `<span class="tag${needsHand(up) ? ' warn' : ''}">${needsHand(up) ? 'needs a pull' : `${up.behind} behind`}</span>` : ''
       label.innerHTML = `${I.branch}<span class="branch-name">${esc(g.key)}</span>${tag ? `<span class="tag" title="${tag}">${tag}</span>` : ''}${behind}`
-      label.title = g.hold ? (g.hold.kind === 'switching' ? `This session syncs ${g.key}. Sync resumes when you're back on it.` : g.hold.conflict ? `git left a conflict in ${g.hold.conflict.join(', ')} on this computer. Resolve it and git add it; Quilt then shares your resolution.` : 'Quilt waits for git to finish, then catches up.') : `This folder is on ${g.key}${up ? `, ${upstreamText(up)}` : ''}. Click for every branch in the session.`
+      label.title = g.hold ? (g.hold.kind === 'switching' ? `You checked out ${g.hold.to || 'another branch'} in git: this folder is moving to that branch's work in the session. The branch it left keeps its own.` : g.hold.conflict ? `git left a conflict in ${g.hold.conflict.join(', ')} on this computer. Resolve it and git add it; Quilt then shares your resolution.` : 'Quilt waits for git to finish, then catches up.') : `This folder is on ${g.key}${up ? `, ${upstreamText(up)}` : ''}. Click for every branch in the session.`
       if (!$('#branch-menu').hidden) renderBranchMenu()
     }
   }

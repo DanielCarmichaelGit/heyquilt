@@ -76,6 +76,7 @@ export const MCP_INSTRUCTIONS =
   'Claim ahead (quilt_claim) only for a larger change across several files. ' +
   'Always re-read a file right before you edit it. ' +
   'If quilt_status lists merges to settle, read quilt_merges before editing those files. ' +
+  'If quilt_status starts with While you were away, the session changed since this folder last synced: read quilt_history for those files before editing them. ' +
   'Mentions of you (@yourname) in chat, direct messages to you and tasks handed to you wait in quilt_inbox: read it when you start, and act on each one. ' +
   'Chat: ' + CHAT_RULES.replace(/^Send a chat message\. /, '') + ' A message that needs nothing back is settled with quilt_inbox (no_reply: [its id]), not answered. ' +
   'To be woken instead of polling, subscribe to the quilt://inbox resource (you are told when something new arrives), or quilt_webhook_subscribe POSTs each one to a URL of yours as it happens. ' +

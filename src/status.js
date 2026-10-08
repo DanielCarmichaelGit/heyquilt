@@ -3,6 +3,7 @@
 
 import { taskMarkdown } from './tasks.js'
 import { mergeAction } from './merges.js'
+import { catchUpMarkdown } from './catchup.js'
 
 /** A shell word for a path (quoted only when it needs to be). */
 const shellWord = (p) => /^[\w./@+-]+$/.test(p) ? p : `'${p.replace(/'/g, "'\\''")}'`
@@ -42,6 +43,9 @@ export function renderStatus (st, { asAi = false, mentionYours = false } = {}) {
   if (!st.connected && st.problem) out.push(`⚠️ ${st.problem}`)
   out.push(`You: **${st.me.name}** (${st.me.tool})${st.me.persona ? `, one of ${st.me.of}'s AI sessions` : ''}${st.me.focus ? ` · focus: ${st.me.focus}` : ''}`)
   out.push('')
+
+  const away = catchUpMarkdown(st.catchUp, { ago })
+  if (away.length) out.push(...away, '')
 
   out.push('## Partners online')
   if (!st.peers.length) out.push('_Nobody else is connected right now._')

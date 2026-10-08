@@ -108,6 +108,7 @@ export const STATIC = {
   '/tree.js': ['tree.js', 'text/javascript; charset=utf-8'],
   '/fileview.js': ['fileview.js', 'text/javascript; charset=utf-8'],
   '/merges.js': ['merges.js', 'text/javascript; charset=utf-8'],
+  '/catchup.js': ['catchup.js', 'text/javascript; charset=utf-8'],
   '/home.js': ['home.js', 'text/javascript; charset=utf-8'],
   '/signin.js': ['signin.js', 'text/javascript; charset=utf-8'],
   '/changes.js': ['changes.js', 'text/javascript; charset=utf-8'],
@@ -600,6 +601,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     },
     'GET /api/sessions/:id/tree': (b, id) => get(id).tree(),
     'GET /api/sessions/:id/changes': (b, id) => get(id).changes(),
+    'POST /api/sessions/:id/catch-up/dismiss': (b, id) => { const r = get(id).dismissCatchUp(); pushStatus(id); return r },
     'GET /api/sessions/:id/file': (b, id, url) => {
       const f = get(id).readShared(url.searchParams.get('path'))
       if (!f) throw httpError(404, 'That file is not in this session.')

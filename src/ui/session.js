@@ -13,6 +13,7 @@ import { fileCardHref, renderable, textHtml, mentionAt, mentionCandidates, compl
 import { renderBoard, taskNotesModalHtml } from './board.js'
 import { accessFormValues, accessSaveBody, grantsLoading, grantsLoaded, grantsFailed } from './access-form.js'
 import { renderMergeBar, bindMerges, renderMergeView } from './merges.js'
+import { renderCatchUp, bindCatchUp } from './catchup.js'
 
 let current = null // session id being shown
 let timers = []
@@ -109,6 +110,7 @@ export function mountSession (id) {
         <div class="tree-scroll" id="tree"></div>
       </aside>
       <main class="ws-main">
+        <div class="requests catchup" id="catchup" role="region" aria-label="While you were away" hidden></div>
         <div class="requests" id="requests" hidden></div>
         <div class="requests merges" id="merges" hidden></div>
         <div class="ws-mainbar" id="mainbar" hidden>
@@ -140,6 +142,7 @@ export function mountSession (id) {
   bindAccess()
   for (const el of [$('#merges'), $('#main')]) bindMerges(el, { sessionId: () => current, onCompare: openMerge, editors: editorsByPreference })
   bindChanges(id, mounted.signal, { onOpen: openFile })
+  bindCatchUp($('#catchup'), { sessionId: () => current, onOpen: openFile })
   bindMain()
   bindTreeEvents()
   applyTreeCollapsed()
@@ -526,6 +529,7 @@ function renderTop () {
   }
   if (!$('#people-menu').hidden) renderPeopleMenu()
   renderAccess()
+  renderCatchUp($('#catchup'), st.catchUp, { colors: new Map([st.me, ...st.peers].map((p) => [p.name, p.color])) })
   renderMerges()
   renderCommitChip()
   $('#rename-btn').hidden = !st.access?.owner

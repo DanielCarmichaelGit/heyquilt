@@ -9,6 +9,13 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.21 — 2026-10-08
+
+Coming back to a session now tells you what changed while you were away.
+
+- **While you were away.** When you rejoin a session, a card above your files says who changed which files while you were gone, with how much each one changed and whether it's new or deleted. Click a file to open it. It also says what became of the edits you made while away: which went straight into the session, which were combined with other people's changes, and which clashed and are waiting for you under Merges. When you join a session for the first time and your copy of a file differed from the session's, it says where your copy was kept. The card stays until you click **Got it**, even if you restart the app.
+- **Your AI knows too.** `quilt_status` starts with the same "While you were away" summary, for Claude Code, Cursor, Codex and every other tool, so your AI reads what changed before touching those files.
+
 ## 0.3.20 — 2026-10-08
 
 AIs working over a link or plain HTTP can now act on existing work, not just add to it.

@@ -24,6 +24,7 @@ import { withComments, addComment as putComment } from './task-comments.js'
 import { readTasks, addTask as putTask, updateTask as patchTask, deleteTask as dropTask, planAutoTask, nextTask, pickupMode } from './tasks.js'
 import { getSettings } from './settings.js'
 import { HistoryLog, queryHistory, parseSince, currentTask } from './history.js'
+import { historyMarks, awayChanges, mergeCatchUp, emptyCatchUp } from './catchup.js'
 import { Inbox } from './inbox.js'
 import { personaName, cleanLabel, labelFromBranch, labelFromText, gitBranch } from './persona.js'
 import { chatAbout, waitingOn, queuedFor, renderQueueNotice, askForIt, answered, addressees, unaddressed, sentByAnother, renderRepeat } from './duties.js'
@@ -49,6 +50,8 @@ const AUTO_CLAIM_QUIET_MS = 5 * 60 * 1000 // a file we stopped editing this long
 // for it to hand the file on itself, then Quilt hands it on for it.
 const HANDOFF_GRACE_MS = 2 * 60 * 1000
 const NOTICE_CAP = 20
+const CATCH_UP_KEEP_MS = 3 * 24 * 60 * 60 * 1000 // an unread "while you were away" goes after this
+const CATCH_UP_FILES = 200 // paths kept per person in it
 // A file removed to make way for a pull is kept for everyone this long; with no pull by then, the removal was meant.
 const PULL_WAIT_MS = 60 * 1000
 // chokidar drops a 'change' for a path within 50ms of the previous one (no
@@ -143,6 +146,8 @@ export class Session extends EventEmitter {
     this.agentPrompts = new Map() // conv -> latest prompt line, so an edit can be titled after the question that started it
     this.merges = this.doc.getMap('merges') // id -> merge record (see merges.js)
     this.merging = new Set() // paths held out of normal sync until their offline merge has run
+    this.catchUp = null // "while you were away" (catchup.js), until the person dismisses it
+    this.awayBackups = null // while joining: copies of ours kept in .quilt/conflicts, for the catch-up
     this.work = null // { state: 'working'|'done', note, ts }: what an agent says it's doing
     // Claims follow edits (see autoClaim): path -> when this person last changed it. Released when
     // their AI goes idle, when the file has been quiet for autoClaimQuietMs, and at stop.
@@ -306,19 +311,25 @@ export class Session extends EventEmitter {
     this.conn.on('members', (m) => this.setMembers(m))
     this.setupPresence()
 
+    this.loadCatchUp()
+    this.awayBackups = []
     if (hadState) {
       // We've synced this folder before: hold what was edited while we were
       // away, let the relay tell us what the others did, then merge the two.
       // Restarted on another branch, or mid-hold: nothing in this tree is the session's offline work.
+      const marks = historyMarks(this.history.entries()) // what we had seen: the catch-up is the rest
       const resumed = this.resumeHold()
       if (gitUnreadable) this.saysGitUnreadable(resumed)
       const offline = resumed ? { entries: [], take: [], downloads: [] } : this.captureOffline()
       this.goLive()
       if (offline.entries.length) this.log(`${offline.entries.length} file(s) changed while you were away; merging once the relay has synced…`)
       const synced = this.conn.waitForSync()
-      synced.then(() => this.mergeOffline(offline)).catch((err) => {
+      synced.then(() => this.mergeOffline(offline)).then((mine) => {
+        if (mine) this.noteCatchUp({ ...awayChanges(this.history.entries(), marks, this.name), since: this.savedSeenAt, mine })
+      }).catch((err) => {
         // Never synced (the relay refused us): nothing can be merged, so nothing stays held.
         for (const e of offline.entries) this.merging.delete(e.rel)
+        this.awayBackups = null
         this.emit('debug', `offline merge did not run: ${err && err.message}`)
       })
       if (resumed) {
@@ -344,7 +355,7 @@ export class Session extends EventEmitter {
         if (first === 'pending') {
           // Finish joining in the background once let in.
           this.admitted = sync.then(async () => {
-            this.reconcileFirstJoin()
+            this.noteFirstJoin(this.reconcileFirstJoin())
             this.goLive()
             this.ignoreQuiltState({ share: true })
             await this.startWatcher()
@@ -357,7 +368,7 @@ export class Session extends EventEmitter {
         clearTimeout(timer)
         this.conn.off('access', onAccess)
       }
-      this.reconcileFirstJoin()
+      this.noteFirstJoin(this.reconcileFirstJoin())
       this.goLive()
       this.ignoreQuiltState({ share: true })
     }
@@ -530,11 +541,71 @@ export class Session extends EventEmitter {
       this.known = meta.known ? new Map(Object.entries(meta.known)) : null
       // No gitKey (an older state file): taken as the branch the folder is on now.
       this.savedRole = typeof meta.role === 'string' ? meta.role : null
+      this.savedSeenAt = typeof meta.seenAt === 'number' ? meta.seenAt : null
       this.savedGit = typeof meta.gitKey === 'string' && meta.gitKey ? { key: meta.gitKey, sha: typeof meta.gitSha === 'string' ? meta.gitSha : null, held: !!meta.gitHeld } : null
       return true
     } catch {
       return false
     }
+  }
+
+  // ------------------------------------------------------------ catch-up --
+
+  get catchUpFile () { return path.join(this.stateDir, 'catchup.json') }
+
+  /** A catch-up the person hasn't dismissed yet survives a restart, for a few days. */
+  loadCatchUp () {
+    try {
+      const c = JSON.parse(fs.readFileSync(this.catchUpFile, 'utf8'))
+      if (c && Array.isArray(c.people) && Date.now() - (c.at || 0) < CATCH_UP_KEEP_MS) this.catchUp = c
+    } catch {}
+  }
+
+  saveCatchUp () {
+    try {
+      if (!this.catchUp) fs.rmSync(this.catchUpFile, { force: true })
+      else writePrivateJson(this.catchUpFile, this.catchUp)
+    } catch (err) {
+      this.emit('debug', `could not save the catch-up: ${err.message}`)
+    }
+  }
+
+  /** A copy of ours kept in .quilt/conflicts while joining: the catch-up says where. */
+  noteBackup (rel, dest) {
+    if (this.awayBackups) this.awayBackups.push({ path: rel, copy: path.relative(this.root, dest).split(path.sep).join('/') })
+  }
+
+  noteFirstJoin ({ pulled } = {}) {
+    this.noteCatchUp({ people: [], partial: false, first: true, pulled: pulled || 0, since: null, mine: null })
+  }
+
+  /** What changed while we were away, folded into any catch-up not yet dismissed. */
+  noteCatchUp ({ people, partial, first = false, pulled = 0, since, mine }) {
+    const next = {
+      at: Date.now(),
+      since: since || null,
+      first,
+      pulled,
+      partial,
+      // A few hundred paths at most: status goes out on every change.
+      people: people.map((p) => ({ ...p, fileCount: p.files.length, files: p.files.slice(0, CATCH_UP_FILES) })),
+      backups: (this.awayBackups || []).slice(0, CATCH_UP_FILES),
+      mine: { shared: mine?.shared || 0, merged: mine?.merged || [], conflicts: mine?.conflicts || [] }
+    }
+    this.awayBackups = null
+    if (emptyCatchUp(next)) return
+    this.catchUp = mergeCatchUp(this.catchUp, next)
+    this.saveCatchUp()
+    const others = next.people.map((p) => `${p.name} changed ${p.fileCount} file${p.fileCount === 1 ? '' : 's'}`)
+    if (others.length) this.log(`👋 while you were away: ${others.join(', ')}`)
+    this.scheduleStatusWrite()
+  }
+
+  dismissCatchUp () {
+    this.catchUp = null
+    this.saveCatchUp()
+    this.scheduleStatusWrite()
+    return { ok: true }
   }
 
   scheduleStateSave () {
@@ -557,7 +628,9 @@ export class Session extends EventEmitter {
     // tell a file the room changed behind our back from one edited offline.
     const known = {}
     for (const [rel, key] of this.lastKnown) known[rel] = sha1(key)
-    fs.writeFileSync(path.join(this.stateDir, 'state.json'), JSON.stringify({ room: this.room, server: this.server, storedOnDisk: Object.fromEntries(this.storedOnDisk), known, ...this.gitState(), ...this.roleState() }))
+    // When we were last in touch with the session: "you left 3h ago" on the next catch-up.
+    if (this.conn && this.conn.connected) this.savedSeenAt = Date.now()
+    fs.writeFileSync(path.join(this.stateDir, 'state.json'), JSON.stringify({ room: this.room, server: this.server, storedOnDisk: Object.fromEntries(this.storedOnDisk), known, ...this.gitState(), ...this.roleState(), ...(this.savedSeenAt ? { seenAt: this.savedSeenAt } : {}) }))
   }
 
   /** This member's role, so the next start knows it before the relay says (ignoreQuiltState). */
@@ -679,8 +752,9 @@ export class Session extends EventEmitter {
 
   /** Runs once the relay has synced: merges every captured path against the session's version. */
   async mergeOffline ({ entries, take, downloads }) {
-    if (this.stopped) { for (const e of entries) this.merging.delete(e.rel); return } // the next start captures them again
+    if (this.stopped) { for (const e of entries) this.merging.delete(e.rel); return null } // the next start captures them again
     const counts = { pushed: 0, merged: 0, ai: 0, conflict: 0 }
+    const paths = { merged: [], conflict: [] } // for the catch-up
     const queue = entries.slice()
     // Still to merge, as merging.json has them: a path drops out once merged,
     // and stays if its merge failed or the session stopped first.
@@ -691,6 +765,7 @@ export class Session extends EventEmitter {
         try {
           const r = await this.mergeOne(e)
           if (r) counts[r]++
+          if (paths[r]) paths[r].push(e.rel)
           if (this.stopped) continue // it may have stopped part way: keep its base
           held.delete(e.rel)
         } catch (err) {
@@ -698,13 +773,14 @@ export class Session extends EventEmitter {
           this.log(`could not merge ${e.rel}: ${err.message}`)
           if (this.setAside(e.rel)) held.delete(e.rel) // ours is in .quilt/conflicts: nothing left to merge
           counts.conflict++
+          paths.conflict.push(e.rel)
         }
         this.saveHeldBases([...held.values()])
       }
     }
     await Promise.all([worker(), worker()])
     for (const e of entries) this.merging.delete(e.rel)
-    if (this.stopped) return // merging.json keeps what's left, for the next start
+    if (this.stopped) return null // merging.json keeps what's left, for the next start
     // After the merges, not before: a take write can create a folder where a
     // file deleted offline was, and that deletion must be shared first.
     for (const rel of take) this.tryWrite(rel)
@@ -721,6 +797,7 @@ export class Session extends EventEmitter {
     if (parts.length) this.log(`${counts.conflict ? '⚠️ ' : '✅ '}your offline changes: ${parts.join(', ')}`)
     this.emit('merges', this.mergeList())
     this.scheduleStatusWrite()
+    return { shared: counts.pushed, merged: paths.merged, conflicts: paths.conflict }
   }
 
   /**
@@ -894,6 +971,7 @@ export class Session extends EventEmitter {
         const dest = path.join(backupDir, ...rel.split('/'))
         fs.mkdirSync(path.dirname(dest), { recursive: true })
         fs.copyFileSync(path.join(this.root, ...rel.split('/')), dest)
+        this.noteBackup(rel, dest)
         backedUp++
         // Already backed up: the download needn't keep another copy.
         if (b && b.stored && disk.key !== undefined) this.lastKnown.set(rel, disk.key)
@@ -916,6 +994,7 @@ export class Session extends EventEmitter {
     } finally { this.seeding = false }
     this.log(`initial sync: ${pulled} file(s) pulled, ${pushed} pushed` +
       (backedUp ? `, ${backedUp} local version(s) backed up to ${path.relative(this.root, backupDir)}` : ''))
+    return { pulled }
   }
 
   /** The shared content of a path in lastKnown format. */
@@ -1956,6 +2035,7 @@ export class Session extends EventEmitter {
     const dest = path.join(this.stateDir, 'conflicts', `${Date.now()}`, ...rel.split('/'))
     fs.mkdirSync(path.dirname(dest), { recursive: true })
     fs.writeFileSync(dest, disk.binary ? disk.buf : disk.text)
+    this.noteBackup(rel, dest)
     this.log(`⚠️  simultaneous edit on ${rel}; your version saved to ${path.relative(this.root, dest)}`)
   }
 
@@ -3726,6 +3806,7 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
       // Without the texts (up to 400 KB a record): status goes out on every
       // change. The full records are at GET /merges and the app's merges route.
       merges: this.mergeList().map((m) => this.mergeStatus(m)),
+      catchUp: this.catchUp,
       activity: this.activity.toArray().slice(-30),
       changes: this.changes().people.map((p) => ({ ...p, files: p.files.slice(0, 10), pulled: p.pulled && { ...p.pulled, files: p.pulled.files.slice(0, 10) } })),
       chat: this.messages({ limit: 20, markRead: false }),

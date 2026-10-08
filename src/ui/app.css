@@ -681,6 +681,27 @@ details.choice-foot .hint { display: block; margin-top: 6px; }
 .rq-main .hint { width: 100%; font-size: 12px; }
 .request .input { height: 30px; width: auto; font-size: 12.5px; padding: 0 8px; }
 .request input.input { width: 190px; }
+.requests.catchup { background: color-mix(in srgb, var(--accent) 6%, var(--bg)); max-height: 42vh; overflow-y: auto; gap: 6px; }
+.cu-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.cu-head b { font-weight: 600; }
+.cu-head .spacer, .cu-person summary .spacer { flex: 1; }
+.cu-line { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; }
+.cu-line svg { width: 14px; height: 14px; flex: none; margin-top: 2px; color: var(--ok); }
+.cu-line.warn svg { color: var(--warn); }
+.cu-line .linkish.mono { font-size: 12.5px; }
+.cu-person summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; font-size: 13px; padding: 4px 6px; margin: 0 -6px; border-radius: 4px; }
+.cu-person summary::-webkit-details-marker { display: none; }
+.cu-person summary:hover { background: var(--panel); }
+.cu-person summary .avatar { width: 22px; height: 22px; font-size: 10px; flex: none; }
+.cu-person summary b { font-weight: 600; }
+.cu-person summary .hint { font-size: 11.5px; white-space: nowrap; }
+.cu-person summary > svg { width: 13px; height: 13px; flex: none; transition: transform .15s ease; transform: rotate(-90deg); }
+.cu-person[open] summary > svg { transform: none; }
+.cu-person ul, .cu-backups { list-style: none; margin: 4px 0 2px; padding: 6px; background: var(--panel); border-radius: 4px; }
+.cu-person li, .cu-backups li { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 2px 0; flex-wrap: wrap; }
+.cu-person li .hint, .cu-backups li .hint { font-size: 11.5px; white-space: nowrap; }
+.cu-person .chg-file:hover, .cu-person .chg-file:focus-visible { background: var(--panel-2); }
+.cu-backups code { font-size: 12px; overflow-wrap: anywhere; }
 .requests.merges { background: color-mix(in srgb, var(--warn) 8%, var(--bg)); max-height: 38vh; overflow-y: auto; flex: none; }
 .merge-row > .ico { display: grid; color: var(--warn); }
 .merge-row > .ico svg { width: 18px; height: 18px; }

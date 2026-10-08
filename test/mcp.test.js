@@ -30,7 +30,16 @@ async function waitFor (fn, ms = 8000) {
   throw new Error('timed out')
 }
 
+// The update check (src/update-check.js) otherwise asks the real GitHub for the newest
+// release; a spawned `quilt mcp` picks up QUILT_RELEASES_URL (src/releases.js) from its
+// env, so every agent here gets a fixed, no-newer-release answer instead of the real
+// network, except the one test below that deliberately points a single agent at a stub
+// reporting a newer release, to keep "must update" covered without flakiness either way.
+let noUpdateGh
 before(async () => {
+  noUpdateGh = http.createServer((req, res) => { res.writeHead(404); res.end() })
+  await new Promise((r) => noUpdateGh.listen(0, '127.0.0.1', r))
+  process.env.QUILT_RELEASES_URL = `http://127.0.0.1:${noUpdateGh.address().port}/latest`
   relay = await startServer({ port: 0, host: '127.0.0.1', log: () => {} })
   humanDir = tmp('human')
   fs.mkdirSync(path.join(humanDir, 'src'))
@@ -52,6 +61,8 @@ after(async () => {
   await human?.stop()
   await relay?.close()
   await accounts?.close()
+  delete process.env.QUILT_RELEASES_URL
+  noUpdateGh?.close()
 })
 
 test('exposes the join and workspace tools', async () => {

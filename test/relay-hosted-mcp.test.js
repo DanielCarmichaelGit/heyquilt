@@ -6,6 +6,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import nodeHttp from 'node:http'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { startServer } from '../src/server.js'
@@ -37,7 +38,16 @@ async function client (pass, headers = {}) {
 }
 const call = (name, args = {}) => grok.callTool({ name, arguments: args })
 
+// The update check (src/update-check.js) otherwise asks the real GitHub for the newest
+// release; QUILT_RELEASES_URL (src/releases.js) points it at a fixed, no-newer-release
+// stub instead, so tool answers never flake with a surprise "must update" line. The one
+// test below that means to check that line uses an old image against this same relay, not
+// a newer GitHub release, so it stays deterministic too.
+let noUpdateGh
 before(async () => {
+  noUpdateGh = nodeHttp.createServer((req, res) => { res.writeHead(404); res.end() })
+  await new Promise((r) => noUpdateGh.listen(0, '127.0.0.1', r))
+  process.env.QUILT_RELEASES_URL = `http://127.0.0.1:${noUpdateGh.address().port}/latest`
   srv = await startServer({ port: 0, host: '127.0.0.1', dataDir: tmp('relay'), log: () => {}, passPublicKey: PASS_KEYS.publicKey, webhookFetch: (url, init) => hook.fetch(url, init), webhookDelays: [1, 1, 1] })
   http = `http://127.0.0.1:${srv.port}`
   const id = generateIdentity()
@@ -49,7 +59,11 @@ before(async () => {
   await waitFor(() => carl.isOwner)
   grok = await client(hostedPass())
 })
-after(async () => { await grok?.close(); await carl.stop(); await srv.close() })
+after(async () => {
+  await grok?.close(); await carl.stop(); await srv.close()
+  delete process.env.QUILT_RELEASES_URL
+  noUpdateGh?.close()
+})
 
 test('without a pass the hosted MCP is refused; with one, the tools are there', async () => {
   await assert.rejects(client(''), /sign in to continue/)

@@ -6,6 +6,7 @@ import FirstOrg from '@/components/FirstOrg.js'
 import Avatars from '@/components/Avatars.js'
 import SessionName from '@/components/SessionName.js'
 import TimeZoneCookie from '@/components/TimeZoneCookie.js'
+import InvitesWaiting from '@/components/InvitesWaiting.js'
 import { requireUser } from '@/lib/session.js'
 import { createClient } from '@/lib/supabase/server.js'
 import { apiCall } from '@/lib/api.js'
@@ -59,6 +60,8 @@ export default async function Dashboard ({ searchParams }) {
         {!orgs.length && user.orgName && profile?.kind === 'org' && <FirstOrg name={user.orgName} />}
         {q.asked && <p className='notice'>Asked. Someone at the org will let you in.</p>}
         {q.error && <p className='notice bad'>{safeMessage(q.error)}</p>}
+        {q.message && <p className='notice'>{safeMessage(q.message)}</p>}
+        <InvitesWaiting user={user} back='/dashboard' />
         {joinable.length > 0 && (
           <section className='card stack'>
             <h2>Orgs at {discover.data.domain}</h2>

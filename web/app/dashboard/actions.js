@@ -131,3 +131,24 @@ export async function askToJoin (formData) {
   const r = await apiCall(user, 'POST', `/v1/orgs/${slug}/requests`, {})
   redirect(r.ok ? '/dashboard?asked=1' : `/dashboard?error=${encodeURIComponent(r.data?.error || 'Could not send your request. Try again.')}`)
 }
+
+// Invites waiting for you (components/InvitesWaiting.js): back to the page they were on.
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const backTo = (raw) => {
+  const p = String(raw || '')
+  return p === '/dashboard' || /^\/org\/[a-z0-9-]{1,64}$/.test(p) ? p : '/dashboard'
+}
+async function answerInvite (formData, how) {
+  const back = backTo(formData.get('back'))
+  const user = await requireUser(back)
+  const id = String(formData.get('id') || '')
+  if (!UUID.test(id)) redirect(back)
+  const r = await apiCall(user, 'POST', `/v1/me/invites/${id}/${how}`, {})
+  revalidatePath(back)
+  revalidatePath('/dashboard/workspaces')
+  if (!r.ok) redirect(`${back}?error=${encodeURIComponent(r.data?.error || 'Could not answer the invite. Try again.')}`)
+  // A fixed message: a workspace's name may hold characters the notice won't show.
+  redirect(how === 'accept' ? `${back}?message=${encodeURIComponent("Invite accepted. You'll find the workspace under Workspaces.")}` : back)
+}
+export async function acceptInvite (formData) { return answerInvite(formData, 'accept') }
+export async function declineInvite (formData) { return answerInvite(formData, 'decline') }

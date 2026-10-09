@@ -884,7 +884,8 @@ function membersHtml (st) {
         <button type="button" class="btn sm ghost icon" data-remove title="Remove ${esc(m.name)}" aria-label="Remove ${esc(m.name)}">${I.x}</button>
       </form>`).join('') : '<div class="pm-empty">Only you so far. People you let in show up here.</div>'}
     </div>
-    ${wsAgents.id === current ? sessionAgentsHtml(wsAgents.agents, st) : ''}${githubTokenHtml(acc)}<div class="pm-foot"><button type="button" class="btn sm ghost danger" data-end-session>End session for everyone</button></div>`
+    ${githubTokenHtml(acc)}
+    ${wsAgents.id === current ? sessionAgentsHtml(wsAgents.agents, st) : ''}<div class="pm-foot"><button type="button" class="btn sm ghost danger" data-end-session>End session for everyone</button></div>`
 }
 
 /**

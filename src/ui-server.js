@@ -18,7 +18,7 @@ import * as gitops from './git.js'
 import { installedEditors, openIn } from './editors.js'
 import { migrateDir } from './legacy.js'
 import { writePrivateJson } from './private-file.js'
-import { readAccount, saveAccount, clearAccount, clearAccountIf, resumeAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession, createAgentInvite, listAgents, listAccessTypes, listCollaborators, listGrants, putGrant, deleteGrant, inviteToSession, listSessionInvites, cancelSessionInvite, listWorkspaces, listOrgs, createWorkspace, getWorkspace, updateWorkspace, deleteWorkspace, putWorkspaceMember, removeWorkspaceMember, getAgentPlacement, putAgentPlacement, listOrgAgents, putWorkspaceAgent, deleteWorkspaceAgent, createWorkspaceAgentInvite, excludeSessionAgent, listExcludedSessionAgents, listSessionAgents, includeSessionAgent, setSessionWorkspace, announceSessionStarted, announceWhenReported, listWorkspaceFiles, createWorkspaceFile, confirmWorkspaceFile, workspaceFileDownload, updateWorkspaceFile, deleteWorkspaceFile, createWorkspaceFolder, listWorkspaceFileVersions } from './account.js'
+import { readAccount, saveAccount, clearAccount, clearAccountIf, resumeAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession, createAgentInvite, listAgents, listAccessTypes, listCollaborators, listGrants, putGrant, deleteGrant, inviteToSession, listSessionInvites, cancelSessionInvite, listWorkspaces, listOrgs, createWorkspace, getWorkspace, updateWorkspace, deleteWorkspace, putWorkspaceMember, removeWorkspaceMember, getAgentPlacement, putAgentPlacement, listOrgAgents, putWorkspaceAgent, deleteWorkspaceAgent, createWorkspaceAgentInvite, excludeSessionAgent, listExcludedSessionAgents, listSessionAgents, includeSessionAgent, setSessionWorkspace, moveSessionToWorkspace, listWorkspaceInvites, inviteToWorkspace, cancelWorkspaceInvite, listMyInvites, answerMyInvite, announceSessionStarted, announceWhenReported, listWorkspaceFiles, createWorkspaceFile, confirmWorkspaceFile, workspaceFileDownload, updateWorkspaceFile, deleteWorkspaceFile, createWorkspaceFolder, listWorkspaceFileVersions } from './account.js'
 import { effectiveAccess, builtinType } from './session-access.js'
 import { cleanSessionName, BAD_SESSION_NAME, SESSION_NAME_MAX } from './session-name.js'
 import { personPasses } from './pass-source.js'
@@ -123,6 +123,7 @@ export const STATIC = {
   '/schedule.js': ['schedule.js', 'text/javascript; charset=utf-8'],
   '/branches.js': ['branches.js', 'text/javascript; charset=utf-8'],
   '/workspaces.js': ['workspaces.js', 'text/javascript; charset=utf-8'],
+  '/invites.js': ['invites.js', 'text/javascript; charset=utf-8'],
   '/agent-place.js': ['agent-place.js', 'text/javascript; charset=utf-8'],
   '/agent-kinds.js': ['agent-kinds.js', 'text/javascript; charset=utf-8'],
   '/files.js': ['files.js', 'text/javascript; charset=utf-8'],
@@ -492,6 +493,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       throw err
     }
   })
+  const needInviteId = (id) => { if (!/^[0-9a-f-]{36}$/i.test(String(id || ''))) throw httpError(400, 'Which invite?'); return String(id) }
   const needWorkspaceId = (id) => { if (!/^[0-9a-f-]{36}$/i.test(String(id || ''))) throw httpError(400, 'Which workspace?'); return id }
   const needAgentId = (id) => { if (!/^[0-9a-f-]{36}$/i.test(String(id || ''))) throw httpError(400, 'Which agent?'); return id }
   const needOrgSlug = (slug) => { if (!/^[a-z0-9][a-z0-9-]{0,63}$/i.test(String(slug || ''))) throw httpError(400, 'Which org?'); return slug }
@@ -645,15 +647,30 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     'POST /api/workspaces/:id/agents/:aid/remove': (b, id, url, aid) => asAccount(async (token) => { await deleteWorkspaceAgent({ token, id: needWorkspaceId(id), agentId: needAgentId(aid) }); return { ok: true } }),
     'POST /api/workspaces/:id/agent-invites': (b, id) => asAccount(async (token) => ({ link: (await createWorkspaceAgentInvite({ token, id: needWorkspaceId(id), access: String(b.access || 'edit'), sessions: String(b.sessions || 'invited') })).link })),
     'POST /api/workspaces/:id/members/remove': (b, id) => asAccount(async (token) => { await removeWorkspaceMember({ token, id: needWorkspaceId(id), account: String(b.account || '') }); return { ok: true } }),
+    // Moves a session (a running one by `session`, or any by its folder, `dir`) into the
+    // workspace. Its people and agents come along when you manage the workspace (`added`).
     'POST /api/workspaces/:id/sessions/move': (b, id) => asAccount(async (token) => {
-      const dir = path.resolve(expandHome(String(b.dir || '')))
+      const live = b.session ? runs.get(String(b.session)) : null
+      if (b.session && !live) throw httpError(404, 'That session is not open.')
+      const dir = live ? live.run.dir : path.resolve(expandHome(String(b.dir || '')))
       const saved = readConfig(dir)
       if (!saved) throw httpError(404, 'No session in that folder.')
-      await setSessionWorkspace({ token, id: needWorkspaceId(id), room: saved.room })
-      writePrivateJson(path.join(dir, '.quilt', 'config.json'), { ...saved, workspace: id })
+      const r = await moveSessionToWorkspace({ token, id: needWorkspaceId(id), room: saved.room })
+      writePrivateJson(path.join(dir, '.quilt', 'config.json'), { ...readConfig(dir), workspace: id })
       rememberWorkspace(dir, id)
-      return { ok: true }
+      if (live) pushStatus(String(b.session))
+      return { ok: true, added: r.added, peopleNeedAdmin: r.peopleNeedAdmin }
     }),
+    'GET /api/workspaces/:id/invites': (b, id) => asAccount(async (token) => ({ invites: await listWorkspaceInvites({ token, id: needWorkspaceId(id) }) })),
+    'POST /api/workspaces/:id/invites': (b, id) => asAccount(async (token) => {
+      const to = b.to && typeof b.to === 'object' ? (b.to.email !== undefined ? { email: String(b.to.email) } : { account: String(b.to.account || '') }) : {}
+      return { invite: await inviteToWorkspace({ token, id: needWorkspaceId(id), to, access: String(b.access || 'edit') }) }
+    }),
+    'POST /api/workspaces/:id/invites/:iid/cancel': (b, id, url, iid) => asAccount(async (token) => { await cancelWorkspaceInvite({ token, id: needWorkspaceId(id), inviteId: needInviteId(iid) }); return { ok: true } }),
+    // Invites waiting for you (workspaces, and sessions with their link); accept or decline them.
+    'GET /api/invites': () => asAccount(async (token) => ({ invites: await listMyInvites({ token }) })),
+    'POST /api/invites/:id/accept': (b, id) => asAccount(async (token) => answerMyInvite({ token, id: needInviteId(id), how: 'accept' })),
+    'POST /api/invites/:id/decline': (b, id) => asAccount(async (token) => answerMyInvite({ token, id: needInviteId(id), how: 'decline' })),
     'GET /api/workspaces/:id/files': (b, id, url) => asAccount(async (token) => ({ files: await listWorkspaceFiles({ token, id: needWorkspaceId(id), folder: url.searchParams.get('folder') ?? undefined }) })),
     'GET /api/workspaces/:id/files/:fid/versions': (b, id, url, fid) => asAccount(async (token) => ({ versions: await listWorkspaceFileVersions({ token, id: needWorkspaceId(id), fileId: fid }) })),
     'POST /api/workspaces/:id/files/:fid/update': (b, id, url, fid) => asAccount(async (token) => ({ file: await updateWorkspaceFile({ token, id: needWorkspaceId(id), fileId: fid, patch: { path: b.path, note: b.note } }) })),
@@ -855,12 +872,16 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
         .replace(/^\/api\/workspaces\/[^/]+/, '/api/workspaces/:id')
         .replace(/^\/api\/agents\/[^/]+\//, '/api/agents/:id/')
         .replace(/^\/api\/orgs\/[^/]+\//, '/api/orgs/:slug/')
-      const sid = (url.pathname.match(/^\/api\/sessions\/([a-f0-9]+)/) || url.pathname.match(/^\/api\/workspaces\/([^/]+)/) || url.pathname.match(/^\/api\/(?:agents|orgs)\/([^/]+)\//) || [])[1]
+        .replace(/^\/api\/invites\/[^/]+\//, '/api/invites/:id/')
+      const sid = (url.pathname.match(/^\/api\/sessions\/([a-f0-9]+)/) || url.pathname.match(/^\/api\/workspaces\/([^/]+)/) || url.pathname.match(/^\/api\/(?:agents|orgs|invites)\/([^/]+)\//) || [])[1]
       const fid = (url.pathname.match(/^\/api\/workspaces\/[^/]+\/files\/([^/]+)/) || [])[1]
       if (fid) pathKey = pathKey.replace(/\/files\/[^/]+/, '/files/:fid')
       // A workspace's agent (its override): passed where a file id would be.
       const aid = (url.pathname.match(/^\/api\/workspaces\/[^/]+\/agents\/([^/]+)/) || [])[1]
       if (aid) pathKey = pathKey.replace(/^(\/api\/workspaces\/:id\/agents)\/[^/]+/, '$1/:aid')
+      // A workspace's invite, the same way.
+      const iid = (url.pathname.match(/^\/api\/workspaces\/[^/]+\/invites\/([^/]+)\//) || [])[1]
+      if (iid) pathKey = pathKey.replace(/^(\/api\/workspaces\/:id\/invites)\/[^/]+/, '$1/:iid')
       const key = `${req.method} ${pathKey}`
       const handler = api[key]
       if (!handler) {
@@ -872,7 +893,7 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
       const body = raw ? JSON.parse(raw) : {}
       const startedAt = Date.now()
       try {
-        const out = await handler(body, sid, url, fid || aid)
+        const out = await handler(body, sid, url, fid || aid || iid)
         json(200, out)
         return recordRoute(key, { startedAt, status: 200, body })
       } catch (err) {

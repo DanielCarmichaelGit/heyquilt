@@ -8,6 +8,7 @@ import { quiltMark } from './mark.js'
 import { updateControl } from './releases.js'
 import { workspacesHtml, bindWorkspaces, workspacePageHtml, bindWorkspacePage, loadWorkspaces, openWorkspace, COLORS } from './workspaces.js'
 import { allFilesHtml, bindAllFiles } from './files.js'
+import { invitesHtml, bindInvites } from './invites.js'
 import { agentRow, bindPlacements, placeableWorkspaces } from './agent-place.js'
 
 export const tildify = (p) => state.defaults.home && String(p).startsWith(state.defaults.home) ? `~${String(p).slice(state.defaults.home.length)}` : p
@@ -225,6 +226,7 @@ function homeHtml () {
     <h1>${greeting()}, ${esc(firstName())}</h1>
     <p>${state.workspacesOn ? 'Your workspaces. Open one, or add a new one.' : rows.some((r) => r.live) ? 'Pick up a session, or start something new from the Sessions menu.' : 'Start a session on one of your folders, or join one a partner shared with you.'}</p>
   </header>
+  <section class="invites" id="invites-slot"${(state.invites || []).length ? '' : ' hidden'}>${invitesHtml()}</section>
 
   ${state.workspacesOn ? workspacesHtml() : rows.length ? `
   <section class="sessions">
@@ -253,6 +255,7 @@ function bindHome () {
   bindSessionActions(page)
   page.querySelectorAll('.session-list [data-go]').forEach((b) => { b.onclick = () => go(b.dataset.go) })
   if (state.workspacesOn) bindWorkspaces(page, { go, rerender: () => renderShell('home') })
+  bindInvites(page, { joinDialog: joinSessionDialog, after: async () => { await loadWorkspaces(); if (state.view === 'home') renderShell('home') } })
   page.querySelectorAll('[data-forget]').forEach((b) => {
     b.onclick = async () => {
       try {
@@ -328,10 +331,11 @@ export function newSessionDialog (workspace = '') {
 }
 
 /**
- * Add someone to a workspace: people you've worked with and the agents that can be added (your
- * own in a personal workspace, the org's in an org's), each with an Add button, at the access
- * picked above. Agents can also join every session here as it starts, and Invite a new agent
- * makes a link for an agent that joins the workspace once it registers.
+ * Invite someone to a workspace, at the access picked above: people you've worked with (an
+ * Invite button) or anyone by email get an invite in their Quilt (Home, and heyquilt.com) and
+ * by email, and are in once they accept; the agents that can be added (your own in a personal
+ * workspace, the org's in an org's) are added at once. Agents can also join every session here
+ * as it starts, and Invite a new agent makes a link for an agent that joins once it registers.
  */
 function workspaceInviteDialog (id) {
   const d = state.workspace
@@ -340,13 +344,17 @@ function workspaceInviteDialog (id) {
   const org = isOrg ? (state.workspaces || []).find((w) => w.id === id)?.space : null
   const orgName = org?.name || d?.owner?.name || 'the org'
   const { back, form, close } = dialog(`
-    <h3>Add to ${esc(d?.workspace?.name || 'this workspace')}</h3>
-    <p class="lead">They get into every session in this workspace once they sign in.</p>
+    <h3>Invite to ${esc(d?.workspace?.name || 'this workspace')}</h3>
+    <p class="lead">People get the invite in their Quilt and by email, and are in once they accept. Agents are added straight away.</p>
     <div class="field"><label for="wi-access">Access</label>
       <select class="input" id="wi-access"><option value="edit">Can edit</option><option value="view">View only</option></select></div>
     ${toggle('wiEvery', false, 'Also invite to every new session in this workspace', 'For your own agents. Each new session sends them its link, and its owner lets them in. Off: the agent is in the workspace and sees its files, and joins a session only when someone invites it there.')}
     <div class="label inv-sub">People you've worked with, and ${isOrg ? `${esc(orgName)}'s agents` : 'your agents'}</div>
     <div class="inv-list" id="wi-people"><p class="hint">Loading…</p></div>
+    <div class="field"><label for="wi-email">Invite by email</label>
+      <div class="row"><input class="input grow" id="wi-email" type="email" placeholder="name@example.com" autocomplete="off"><button class="btn" type="button" data-wi-email>Send invite</button></div></div>
+    <div class="label inv-sub">Waiting to accept</div>
+    <div class="inv-list" id="wi-pending"><p class="hint">Loading…</p></div>
     <div class="inv-agent wi-new-agent" id="wi-new-agent"><button class="btn sm" type="button" data-wi-invite-agent aria-haspopup="menu" aria-expanded="false">${I.bot}<span>Invite a new agent</span></button><span class="hint">You'll get a link to paste into your AI.</span></div>
     <p class="error" id="wi-error"></p>
     <div class="actions"><button type="button" class="btn primary" data-cancel>Done</button></div>`)
@@ -377,10 +385,55 @@ function workspaceInviteDialog (id) {
     list.innerHTML = rows.length
       ? rows.map((c) => `<div class="inv-row">${avatar(c.name, null)}<span class="grow">${esc(c.name)}${c.kind === 'agent' ? `<span class="tag bot">${I.bot}agent</span>` : ''}</span>${already.has(c.account)
         ? '<span class="hint">Already in</span>'
-        : `<button class="btn sm" type="button" data-add-account="${esc(c.account)}" data-name="${esc(c.name)}">Add</button>`}</div>`).join('') + why
+        : c.kind === 'agent'
+          ? `<button class="btn sm" type="button" data-add-account="${esc(c.account)}" data-name="${esc(c.name)}">Add</button>`
+          : `<button class="btn sm" type="button" data-invite-person="${esc(c.account)}" data-name="${esc(c.name)}">Invite</button>`}</div>`).join('') + why
       : why || "<p class=\"hint\">Nobody yet. People and agents you've been in a session with show up here.</p>"
   })
+  const wsInvites = `/api/workspaces/${encodeURIComponent(id)}/invites`
+  const pendingEl = $('#wi-pending', back)
+  async function pending () {
+    try {
+      const open = (await api('GET', wsInvites)).invites.filter((i) => i.status === 'waiting')
+      pendingEl.innerHTML = open.length
+        ? open.map((i) => `<div class="inv-row"><span class="grow">${esc(i.email || i.name)}<span class="hint"> · ${i.access === 'view' ? 'View only' : 'Can edit'}</span></span><button class="btn sm ghost" type="button" data-wi-cancel="${esc(i.id)}">Cancel</button></div>`).join('')
+        : '<p class="hint">Nobody yet.</p>'
+    } catch (err) { pendingEl.innerHTML = `<p class="hint">${esc(err.message)}</p>` }
+  }
+  pending()
+  const sendInvite = async (to) => {
+    $('#wi-error', back).textContent = ''
+    await api('POST', wsInvites, { to, access: $('#wi-access', back).value })
+    await pending()
+  }
+  pendingEl.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-wi-cancel]')
+    if (!b) return
+    b.disabled = true
+    try { await api('POST', `${wsInvites}/${encodeURIComponent(b.dataset.wiCancel)}/cancel`, {}); toast('Invite cancelled'); await pending() } catch (err) { $('#wi-error', back).textContent = err.message; b.disabled = false }
+  })
+  const emailBtn = $('[data-wi-email]', back)
+  const emailInput = $('#wi-email', back)
+  const byEmail = async () => {
+    const email = emailInput.value.trim()
+    if (!email) return emailInput.focus()
+    emailBtn.disabled = true
+    try { await sendInvite({ email }); emailInput.value = ''; toast(`Invite sent to ${email}`) } catch (err) { $('#wi-error', back).textContent = err.message }
+    emailBtn.disabled = false
+  }
+  emailBtn.onclick = byEmail
+  emailInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); byEmail() } })
   list.addEventListener('click', async (e) => {
+    const p = e.target.closest('[data-invite-person]')
+    if (p) {
+      p.disabled = true
+      try {
+        await sendInvite({ account: p.dataset.invitePerson })
+        p.outerHTML = '<span class="hint">Invited</span>'
+        toast(`Invited ${p.dataset.name}`)
+      } catch (err) { $('#wi-error', back).textContent = err.message; p.disabled = false }
+      return
+    }
     const b = e.target.closest('[data-add-account]')
     if (!b) return
     b.disabled = true

@@ -288,6 +288,40 @@ export async function setSessionWorkspace ({ token, id, room, api = apiUrl(), fe
   if (!r.session) throw new Error(BAD_REPLY)
   return r.session
 }
+/** Moves a session into workspace `id`: { session, added (the people and agents it brought in), peopleNeedAdmin? }. */
+export async function moveSessionToWorkspace ({ token, id, room, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'POST', `${ws$(id)}/sessions`, { room }, token)
+  if (!r.session) throw new Error(BAD_REPLY)
+  return { session: r.session, added: Array.isArray(r.added) ? r.added : [], peopleNeedAdmin: !!r.peopleNeedAdmin }
+}
+
+// Workspace invites: an admin invites a person ({ account } or { email }); they accept in their Quilt.
+export async function listWorkspaceInvites ({ token, id, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'GET', `${ws$(id)}/invites`, null, token)
+  if (!Array.isArray(r.invites)) throw new Error(BAD_REPLY)
+  return r.invites
+}
+export async function inviteToWorkspace ({ token, id, to, access, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'POST', `${ws$(id)}/invites`, { to, access }, token)
+  if (!r.invite) throw new Error(BAD_REPLY)
+  return r.invite
+}
+export async function cancelWorkspaceInvite ({ token, id, inviteId, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  await call(fetchImpl, api, 'DELETE', `${ws$(id)}/invites/${encodeURIComponent(inviteId)}`, null, token)
+}
+
+/** The invites waiting for this account: [{ kind: 'workspace' | 'session', id, from, ... }]. */
+export async function listMyInvites ({ token, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'GET', '/v1/me/invites', null, token)
+  if (!Array.isArray(r.invites)) throw new Error(BAD_REPLY)
+  return r.invites
+}
+/** `how` is 'accept' (a workspace invite) or 'decline' (either kind). */
+export async function answerMyInvite ({ token, id, how, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  if (how !== 'accept' && how !== 'decline') throw new Error('accept or decline')
+  return call(fetchImpl, api, 'POST', `/v1/me/invites/${encodeURIComponent(id)}/${how}`, {}, token)
+}
+
 /**
  * Tells the API the session in `room` (already in workspace `id`) has started, with its join
  * link, so every agent that joins it by itself is sent the link at once. The API never keeps

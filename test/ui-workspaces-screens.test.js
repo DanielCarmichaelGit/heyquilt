@@ -31,7 +31,7 @@ test('the grid: a card per workspace with cover, name, space pill, counts, avata
 
 test('the workspace page: back link, header, session cards with New session, people cards with access and Add, settings', () => {
   const w = ui('workspaces.js')
-  for (const bit of ['All workspaces', 'data-ws-back', 'class="ws-head"', 'class="sc-grid"', 'data-rejoin=', 'data-go=', 'data-new-session-in=', 'New session', 'People &amp; agents', '<div class="pc$' + '{admin && !isOwner ? \' has-x\' : \'\'}">', 'data-member-access=', 'data-member-remove=', 'Add a person or an agent', 'data-ws-settings', 'Delete workspace', "'/update'", "'/delete'", "'/members/remove'"]) assert.ok(w.includes(bit), bit)
+  for (const bit of ['All workspaces', 'data-ws-back', 'class="ws-head"', 'class="sc-grid"', 'data-rejoin=', 'data-go=', 'data-new-session-in=', 'New session', 'People &amp; agents', '<div class="pc$' + '{admin && !isOwner ? \' has-x\' : \'\'}">', 'data-member-access=', 'data-member-remove=', 'Invite a person or add an agent', 'data-ws-settings', 'Delete workspace', "'/update'", "'/delete'", "'/members/remove'"]) assert.ok(w.includes(bit), bit)
 })
 
 test('settings: Save sends archived only when it changed, and Delete shows only to who may delete', () => {

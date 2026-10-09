@@ -97,6 +97,49 @@ test('a session started in a workspace sends its link to a placed agent with a w
   await api('POST', `/api/sessions/${s.body.id}/stop`)
 })
 
+test('moving an open session into a workspace brings the people who were in it', async () => {
+  const s = await api('POST', '/api/sessions', { mode: 'create', dir: path.join(home, 'movable') })
+  assert.equal(s.status, 200, JSON.stringify(s.body))
+  const room = s.body.status.room
+  const until = Date.now() + 15_000
+  while (!(await accounts.store.sessionByRoom(room))?.ownerAccount && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 50))
+  await accounts.store.ingestPresence([{ id: crypto.randomUUID(), type: 'start', room, account: 'person:lim', name: 'Lin', at: Date.now() }], Date.now())
+  const id = (await api('POST', '/api/workspaces', { name: 'Destination' })).body.workspace.id
+  assert.equal((await api('POST', `/api/workspaces/${id}/sessions/move`, { session: 'nope' })).status, 404)
+  const moved = await api('POST', `/api/workspaces/${id}/sessions/move`, { session: s.body.id })
+  assert.equal(moved.status, 200, JSON.stringify(moved.body))
+  assert.deepEqual(moved.body.added.map((a) => [a.account, a.name, a.access]), [['person:lim', 'Lin', 'edit']])
+  assert.equal((await accounts.store.sessionByRoom(room)).workspaceId, id)
+  assert.equal(JSON.parse(fs.readFileSync(path.join(home, 'movable', '.quilt', 'config.json'), 'utf8')).workspace, id)
+  const st = await api('GET', '/api/state')
+  assert.equal(st.body.sessions.find((x) => x.id === s.body.id).workspace, id)
+  await api('POST', `/api/sessions/${s.body.id}/stop`)
+})
+
+test('workspace invites from the app, and the invites waiting for you: accept and decline', async () => {
+  const id = (await api('POST', '/api/workspaces', { name: 'Inviting' })).body.workspace.id
+  const sent = await api('POST', `/api/workspaces/${id}/invites`, { to: { email: 'pat@example.com' }, access: 'view' })
+  assert.equal(sent.status, 200, JSON.stringify(sent.body))
+  assert.deepEqual((await api('GET', `/api/workspaces/${id}/invites`)).body.invites.map((i) => [i.email, i.access, i.status]), [['pat@example.com', 'view', 'waiting']])
+  assert.equal((await api('POST', `/api/workspaces/${id}/invites/${sent.body.invite.id}/cancel`, {})).status, 200)
+  assert.equal((await api('GET', `/api/workspaces/${id}/invites`)).body.invites[0].status, 'cancelled')
+  assert.equal((await api('POST', `/api/workspaces/${id}/invites/not-an-id/cancel`, {})).status, 400)
+
+  // Someone invites Mo (this computer's account) to two of theirs.
+  const theirs = (await accounts.call('POST', '/v1/workspaces', { name: 'Theirs' }, 'lim')).body.workspace
+  const other = (await accounts.call('POST', '/v1/workspaces', { name: 'Other' }, 'lim')).body.workspace
+  for (const w of [theirs, other]) assert.equal((await accounts.call('POST', `/v1/workspaces/${w.id}/invites`, { to: { email: 'mo@acme.com' } }, 'lim')).status, 200)
+  const mine = (await api('GET', '/api/invites')).body.invites
+  const a = mine.find((i) => i.workspace?.id === theirs.id)
+  const b = mine.find((i) => i.workspace?.id === other.id)
+  assert.deepEqual([a.kind, a.from.name], ['workspace', 'Lin'])
+  assert.equal((await api('POST', `/api/invites/${a.id}/accept`, {})).status, 200)
+  assert.equal((await api('POST', `/api/invites/${b.id}/decline`, {})).status, 200)
+  const names = (await api('GET', '/api/workspaces')).body.workspaces.map((w) => w.name)
+  assert.ok(names.includes('Theirs') && !names.includes('Other'), names.join(', '))
+  assert.equal((await api('GET', '/api/invites')).body.invites.some((i) => i.id === a.id || i.id === b.id), false)
+})
+
 test('a session the API will not put in its workspace starts outside any workspace', async () => {
   const dir = path.join(home, 'nowhere')
   const s = await api('POST', '/api/sessions', { mode: 'create', dir, workspace: crypto.randomUUID() })

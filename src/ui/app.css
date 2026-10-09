@@ -641,6 +641,10 @@ details.choice-foot summary u { margin-left: auto; text-decoration: none; color:
 details.choice-foot .hint { display: block; margin-top: 6px; }
 
 .sessions { margin-top: 36px; }
+.invites { margin: 28px 0 8px; }
+.invite-row .name { font-weight: 400; }
+.invite-row .name b { font-weight: 650; }
+.invite-row .sub { font-family: var(--sans); }
 .sec-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
 .sec-head h2 { margin: 0; font-size: 17px; }
 .sec-head .count { font-size: 12px; font-weight: 700; color: var(--muted); background: var(--panel-2); border-radius: 999px; padding: 1px 8px; }

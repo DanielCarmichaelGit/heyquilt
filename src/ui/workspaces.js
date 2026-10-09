@@ -160,12 +160,14 @@ export function bindWorkspaces (root, { go, rerender }) {
       const choice = await ask({ title: `Move ${basename(b.dataset.moveSession)} to`, input: { select: options.map((w) => ({ value: w.id, label: w.name })) }, ok: 'Move' })
       if (!choice) return
       try {
-        await api('POST', wsUrl(choice, '/sessions/move'), { dir: b.dataset.moveSession })
+        const moved = await api('POST', wsUrl(choice, '/sessions/move'), { dir: b.dataset.moveSession })
         // The folder's workspace changed on this computer: take the fresh recent list and summaries.
         const st = await api('GET', '/api/state')
         state.recent = st.recent
         for (const sum of st.sessions) { const s = state.sessions.get(sum.id); if (s) s.workspace = sum.workspace }
-        await loadWorkspaces(); rerender(); toast('Moved')
+        await loadWorkspaces(); rerender()
+        const n = (moved.added || []).length
+        toast(moved.peopleNeedAdmin ? "Moved. Only the workspace's admins can add its people." : n ? `Moved, with ${n} ${n === 1 ? 'person or agent' : 'people and agents'} added to the workspace` : 'Moved')
       } catch (err) { toast(err.message) }
     }
   })
@@ -236,7 +238,7 @@ export function workspacePageHtml () {
     <div class="pc-grid">
       ${people.map((m) => peopleCardHtml(m, { admin, isOwner: !!m.owner })).join('')}
       ${agents.map((a) => workspaceAgentCardHtml(a, { admin, orgName })).join('')}
-      ${admin ? `<button class="pc add" data-add-member>${I.plus}<span>Add a person or an agent</span></button>` : ''}
+      ${admin ? `<button class="pc add" data-add-member>${I.plus}<span>Invite a person or add an agent</span></button>` : ''}
     </div>
   </section>`
 }

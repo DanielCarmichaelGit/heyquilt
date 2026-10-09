@@ -111,6 +111,7 @@ export function mountSession (id) {
         <button class="btn sm ghost icon" id="more-btn" title="More" aria-label="More" aria-haspopup="true" aria-expanded="false">${I.more}</button>
         <div class="popover more-menu" id="more-menu" role="menu" hidden>
           <button class="pop-item" role="menuitem" id="rename-btn" hidden>Rename session…</button>
+          <button class="pop-item" role="menuitem" id="move-ws-btn" hidden>Move to a workspace…</button>
           <button class="pop-item" role="menuitem" id="ask-commit">Ask for a commit…</button>
           <button class="pop-item" role="menuitem" id="leave-btn">Leave this session</button>
           <button class="pop-item" role="menuitem" data-shutdown>Shut down Quilt</button>
@@ -329,6 +330,7 @@ function bindTop () {
   bindOpenIn()
   $('#ask-commit').onclick = askForCommit
   $('#rename-btn').onclick = renameSession
+  $('#move-ws-btn').onclick = moveToWorkspace
   bindCommitChip()
   $('#leave-btn').onclick = async () => {
     if (!await ask({ title: 'Leave this session?', message: 'Quilt stops syncing this folder. Your files stay where they are, and you can rejoin later.', ok: 'Leave', danger: true })) return
@@ -600,6 +602,7 @@ function renderTop () {
   renderMerges()
   renderCommitChip()
   $('#rename-btn').hidden = !st.access?.owner
+  $('#move-ws-btn').hidden = !(st.access?.owner && state.workspacesOn && (state.workspaces || []).some((w) => w.access === 'edit'))
   renderTaskButton()
   $('#chat-sub').textContent = st.peers.length ? `with ${peopleHere(st).map((p) => p.sessions && p.mine ? 'your AI' : p.name).join(', ')}` : 'just you so far'
 }
@@ -740,6 +743,36 @@ async function renameSession () {
   const name = await ask({ title: 'Rename this session', message: 'Everyone in it sees the new name, here and on heyquilt.com.', ok: 'Rename', input: { label: 'Name', value: s.status.sessionName || basename(s.dir) } })
   if (!name) return
   try { await api('POST', `/api/sessions/${current}/rename`, { name }); toast('Renamed') } catch (err) { toast(err.message) }
+}
+
+/**
+ * The owner moves this session into a workspace (or from one to another). Its people and
+ * agents come along when you manage that workspace; the toast says who was added.
+ */
+async function moveToWorkspace () {
+  const s = sum()
+  const options = (state.workspaces || []).filter((w) => w.access === 'edit' && w.id !== s.workspace)
+  if (!options.length) return toast(s.workspace ? 'No other workspace you can edit.' : 'No workspace you can edit. Make one on Home first.')
+  const now = (state.workspaces || []).find((w) => w.id === s.workspace)
+  const choice = await ask({
+    title: 'Move to a workspace',
+    message: `${now ? `It is in ${now.name} now. ` : ''}Everyone with access to this session (people and agents) is added to the workspace, when you manage it.`,
+    input: { select: options.map((w) => ({ value: w.id, label: w.space?.kind === 'org' ? `${w.name} · ${w.space.name}` : w.name })) },
+    ok: 'Move'
+  })
+  if (!choice) return
+  try {
+    const r = await api('POST', `/api/workspaces/${encodeURIComponent(choice)}/sessions/move`, { session: current })
+    const name = options.find((w) => w.id === choice)?.name || 'the workspace'
+    s.workspace = choice
+    const who = (r.added || []).map((a) => a.name || 'someone')
+    toast(r.peopleNeedAdmin
+      ? `Moved to ${name}. Only its admins can add this session's people to it.`
+      : who.length ? `Moved to ${name}, with ${who.length <= 3 ? who.join(', ') : `${who.slice(0, 3).join(', ')} and ${who.length - 3} more`}` : `Moved to ${name}`)
+    // Workspace counts and members changed: refresh them, and this session's top bar.
+    try { const l = await api('GET', '/api/workspaces'); state.workspaces = l.workspaces || state.workspaces } catch {}
+    renderTop()
+  } catch (err) { toast(err.message) }
 }
 
 // ----------------------------------------------------------------- merges --

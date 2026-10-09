@@ -4,6 +4,10 @@
 // own git (Session.gitSummary, in presence); this folds those into one list.
 // Pure: Session.status() and the hosted relay both call it.
 
+// Who the relay is in the activity log, the chronology and the branch list, when it brings
+// commits in itself for a branch no folder is online on (relay-upstream.js).
+export const RELAY_BY = 'the relay'
+
 const str = (v, n) => typeof v === 'string' ? v.slice(0, n) : null
 const num = (v) => Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0
 
@@ -35,14 +39,15 @@ export function cleanGit (g) {
  * behind, ahead, diverged, conflicts, waiting } | null, last: { author, ts, subject } | null,
  * session: true when the branch has a live document in this session (a copy, whether or not
  * anyone is on it right now), default: true for the room's default branch, full: true when its
- * document is over the session's size limit (it takes no new changes) }.
+ * document is over the session's size limit (it takes no new changes), relay: what the relay
+ * brought in itself while no folder was on it, and when it last looked (relayLine) | null }.
  * Branches someone is on come first, then the rest by last commit. `members`: [{ name, git, persona? }].
  * `sessionBranches`: the room's own branch list (Session.branchList / the relay's), [{ key, default, full }].
  */
 export function branchBoard (members, sessionBranches = []) {
   const byName = new Map()
   const entry = (name) => {
-    if (!byName.has(name)) byName.set(name, { name, folders: [], ais: [], worktrees: [], hosted: [], upstream: null, last: null, session: false, default: false, full: false })
+    if (!byName.has(name)) byName.set(name, { name, folders: [], ais: [], worktrees: [], hosted: [], upstream: null, last: null, session: false, default: false, full: false, relay: null })
     return byName.get(name)
   }
   for (const m of members) {
@@ -75,6 +80,7 @@ export function branchBoard (members, sessionBranches = []) {
     e.session = true
     if (b.default) e.default = true
     if (b.full) e.full = true
+    if (b.relay && typeof b.relay === 'object') e.relay = b.relay
     for (const n of (Array.isArray(b.hosted) ? b.hosted : [])) if (!e.hosted.includes(n)) e.hosted.push(n)
   }
   const active = (e) => e.folders.length + e.ais.length + e.worktrees.length + e.hosted.length
@@ -103,6 +109,21 @@ export function upstreamLine (u) {
   return `up to date with ${u.name}`
 }
 
+/**
+ * One line on what the relay does for a branch no folder is online on: brought in by the relay
+ * (when, how many commits), a clash it handed out, why it can't, and when it last looked; or ''.
+ */
+export function relayLine (r, now = Date.now()) {
+  if (!r || !(r.checkedAt || (r.brought && r.brought.at))) return ''
+  const up = r.upstream || 'its upstream'
+  const bits = []
+  if (r.brought && r.brought.at) bits.push(`brought in by the relay ${ago(r.brought.at, now)} (${r.brought.count} commit${r.brought.count === 1 ? '' : 's'} from ${up}, ${r.brought.files} file${r.brought.files === 1 ? '' : 's'})`)
+  if (r.clashTask) bits.push(`the relay handed a clash with ${up} to task ${r.clashTask}`)
+  if (r.problem) bits.push(r.problem)
+  if (r.checkedAt) bits.push(`the relay last checked ${up} ${ago(r.checkedAt, now)}`)
+  return bits.join('; ')
+}
+
 /** The board as markdown for an AI (quilt_status, quilt_branches). `mine`: the caller's own branch, marked "(yours)". */
 export function branchesMarkdown (board, { now = Date.now(), limit = 12, mine = null } = {}) {
   if (!board.length) return '_No git branches: the folders in this session are not git repositories._'
@@ -120,6 +141,7 @@ export function branchesMarkdown (board, { now = Date.now(), limit = 12, mine = 
       b.session ? 'in the session' : '',
       who.length ? `on it: ${who.join(', ')}` : '',
       who.some((w) => w.includes(`(${line})`)) ? '' : line,
+      relayLine(b.relay, now),
       b.last ? `last commit ${ago(b.last.ts, now)} by ${b.last.author}: ${b.last.subject}` : ''
     ].filter(Boolean)
     out.push(`- \`${b.name}\`${b.name === mine ? ' (yours)' : ''}${bits.length ? ` · ${bits.join(' · ')}` : ''}`)

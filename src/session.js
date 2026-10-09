@@ -39,7 +39,7 @@ import { ensureQuiltIgnored } from './gitignore.js'
 import { gitDir, headKey, headRef, gitRuns, askTwice, lastCallTimedOut, busy as gitBusy, leftoverLock, STALE_LOCK_MS, indexStamp, classify, filesAt, changesBetween, commitsBetween, treeState, branchTip, watchGit, unmergedPaths, stashStamp, upstreamAdds, pullState, SETTLE_MS, BURST_PATHS, upstreamOf, fetchUpstream, isAncestor, stagedAgainst, fastForward, resetIndex, blobAt, hasFilesUnder, repoBranches } from './gitstate.js'
 import { planCatchUp, catchUpAdvice } from './upstream.js'
 import { clashTaskId, readClash, clashCandidates, clashOrder, holderOf, ownerLabel, clashTitle, clashFiles, clashBrief, leaveItNotice, clashFacts } from './clash.js'
-import { cleanGit, branchBoard } from './branches.js'
+import { cleanGit, branchBoard, RELAY_BY } from './branches.js'
 import { DEFAULT_KEY } from './branchdocs.js'
 
 export { applyTextDiff }
@@ -612,6 +612,18 @@ export class Session extends EventEmitter {
 
   /** Owner only: names the session for everyone in it (1 to 80 characters). */
   rename (name) { return this.conn.adminRequest({ op: 'name', name }) }
+
+  /**
+   * Owner only: the read-only GitHub token the relay uses to bring commits in from a private
+   * repository while no folder is online (relay-upstream.js); '' clears it. It goes to the relay
+   * and stays there: never in presence, the branch list or this app's status (only whether one is set).
+   */
+  async setGithubToken (token) {
+    if (!this.conn) throw new Error('not connected to the relay')
+    if (!this.isOwner) throw new Error('only the session owner can set the GitHub token')
+    const r = await this.conn.adminRequest({ op: 'githubToken', token: String(token ?? '').trim() })
+    return { ok: true, githubToken: !!r.githubToken }
+  }
 
   /** A new session is named after its folder, once, as soon as the relay lets us in as its owner. */
   sendStartName () {
@@ -2458,7 +2470,7 @@ export class Session extends EventEmitter {
     this.headChangedAt = 0
     this.upstreamDeferred = null
     const count = await commitsBetween(this.root, from, to)
-    if (following) this.log(`⬇️ ${branch} follows ${following}'s folder to ${to.slice(0, 7)} (${count ?? 'new'} commit${count === 1 ? '' : 's'} from ${upName}); the session already has their files`)
+    if (following) this.log(`⬇️ ${branch} follows ${following === RELAY_BY ? 'the relay' : `${following}'s folder`} to ${to.slice(0, 7)} (${count ?? 'new'} commit${count === 1 ? '' : 's'} from ${upName}); the session already has ${following === RELAY_BY ? 'the files it brought in' : 'their files'}`)
     const moves = plan.moves.length ? `; followed ${plan.moves.map((m) => `${m.from} → ${m.to}`).join(', ')}` : ''
     if (!following) this.log(`⬇️ brought in ${count ?? 'new'} commit${count === 1 ? '' : 's'} from ${upName} (${written} file${written === 1 ? '' : 's'})${moves}`)
     if (written && !following) await this.notePull({ from: { sha: from }, to: { sha: to, branch }, files: written })
@@ -2499,7 +2511,13 @@ export class Session extends EventEmitter {
     return { git: true, branch: this.git.branch, busy, upstream: this.upstream, moved: !!(this.gitSeen && before && this.gitSeen.sha !== before) }
   }
 
-  /** A member whose folder is on this branch at `sha`, in step with the session (not held), or null. */
+  /**
+   * A member whose folder is on this branch at `sha`, in step with the session (not held), or null.
+   * The relay counts as one at the commit it records for the branch (relay-upstream.js): the last
+   * commit a folder there was at in step with the session, or the one the relay brought the
+   * session's files to itself while no folder was online. Either way the session's files are
+   * that commit plus its work, so this folder follows without merging them again.
+   */
   memberAt (sha) {
     if (!this.conn || !this.conn.awareness) return null
     const me = this.conn.awareness.clientID
@@ -2507,6 +2525,8 @@ export class Session extends EventEmitter {
       if (id === me || !st || !st.git || !st.name) continue
       if (st.git.branch === this.git.branch && st.git.sha === sha && !st.git.held) return st.name
     }
+    const mine = this.branchList.find((b) => b.key === this.branch)
+    if (sha && mine && mine.relay && mine.relay.sha === sha) return RELAY_BY
     return null
   }
 
@@ -2524,7 +2544,7 @@ export class Session extends EventEmitter {
   setUpstream (up) {
     const prev = this.upstream
     const next = up ? {
-      name: up.name, url: up.url || null, sha: up.sha || null, behind: up.behind || 0, ahead: up.ahead || 0,
+      name: up.name, url: up.url || null, remote: up.remote || null, sha: up.sha || null, behind: up.behind || 0, ahead: up.ahead || 0,
       diverged: !!up.diverged, conflicts: up.conflicts || [], waiting: up.waiting || null, brought: up.brought || (prev && prev.brought) || null, checkedAt: Date.now(),
       // Who is merging a clash stays said until reviewClash looks again (no flicker in the branch list).
       mergedBy: (prev && prev.mergedBy) || null, clashTask: (prev && prev.clashTask) || null, clashMine: !!(prev && prev.clashMine)
@@ -2884,7 +2904,7 @@ export class Session extends EventEmitter {
       held: this.hold ? this.hold.kind : null,
       clash: 1, // this Quilt hands a clash to one AI (reviewClash): only such members are given one
       on: this.hold && this.hold.kind === 'switching' ? this.hold.to : this.git.key,
-      upstream: u ? { name: u.name, url: u.url, behind: u.behind, ahead: u.ahead, diverged: u.diverged, conflicts: u.conflicts.length, waiting: u.waiting, checkedAt: u.checkedAt, mergedBy: u.mergedBy || null, clashTask: u.clashTask || null, mayWrite: u.conflicts.length ? this.mayWriteAll(u.conflicts.map((c) => c.path)) : null } : null,
+      upstream: u ? { name: u.name, url: u.url, remote: u.remote || null, sha: u.sha || null, behind: u.behind, ahead: u.ahead, diverged: u.diverged, conflicts: u.conflicts.length, waiting: u.waiting, checkedAt: u.checkedAt, mergedBy: u.mergedBy || null, clashTask: u.clashTask || null, mayWrite: u.conflicts.length ? this.mayWriteAll(u.conflicts.map((c) => c.path)) : null } : null,
       repo: this.repo
     }
   }

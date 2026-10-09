@@ -124,3 +124,16 @@ export function clashFacts ({ branch, upstream, behind, conflicts = [] }) {
   const list = conflicts.slice(0, 4).map((c) => `${c.path} (${c.why})`).join('; ') + (conflicts.length > 4 ? `; and ${conflicts.length - 4} more` : '')
   return `${branch} is ${n(behind, 'commit')} behind ${upstream}, and the session's uncommitted work clashes with them in ${list}.`
 }
+
+/**
+ * The description of a clash the relay hands to a hosted agent (relay-upstream.js): no folder on
+ * the branch is online, so the agent merges in the session itself, file by file. The change from
+ * upstream for each file follows in the next comments.
+ */
+export function relayClashBrief ({ branch, upstream, sha, base, behind, conflicts = [], compare = '' }) {
+  const lines = [`${n(behind, 'commit')} on ${upstream} (${base.slice(0, 7)} → ${sha.slice(0, 7)}) clash with the session's uncommitted work on \`${branch}\`, and no folder on \`${branch}\` is online, so the relay brought nothing in:`]
+  for (const c of conflicts.slice(0, 20)) lines.push(`- ${c.path}: ${c.why}`)
+  if (conflicts.length > 20) lines.push(`- and ${conflicts.length - 20} more`)
+  lines.push('', `For each file: read it with quilt_read_file, fold in what ${upstream} changed (the next comments${compare ? `, or ${compare}` : ''}) while keeping the session's work, and write the merged file with quilt_write_file, without conflict markers. The relay looks again about every 10 minutes and brings the rest of the commits in once every file merges; Quilt closes this task by itself then: no need to move it.`)
+  return lines.join('\n').slice(0, 2000)
+}

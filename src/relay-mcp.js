@@ -84,6 +84,20 @@ const REMOVED = 'You are no longer in that session. Ask for a new invite and cal
 const NEEDS_ROOM_PASS = 'Reconnecting you to the session. Call the same tool again.'
 
 const id = () => crypto.randomBytes(8).toString('hex')
+const BRING_IN_NOTE = 'Commits pushed or merged elsewhere come into the session by themselves: the folder of a member on that branch fetches about once a minute and brings them in. While no folder is online on a branch hosted agents work on, the relay brings them in from GitHub itself, about every 10 minutes.'
+
+/** For a hosted agent: what the relay does about new commits on its branch, and when it last looked; or ''. */
+function relayStatus (room, key) {
+  const rec = room.meta && room.meta.upstreams ? room.meta.upstreams[room.resolveKey ? room.resolveKey(key) : key] : null
+  if (!rec || !rec.repo) return ''
+  const up = rec.name || 'its upstream'
+  if (!rec.checkedAt) return `The relay brings commits from ${up} into \`${key}\` while no folder on it is online; it hasn't looked yet.`
+  const bits = [`The relay last checked ${up} for new commits ${ago(rec.checkedAt)}.`]
+  if (rec.brought && rec.brought.at) bits.push(`It brought in ${rec.brought.count} commit${rec.brought.count === 1 ? '' : 's'} (${rec.brought.files} file${rec.brought.files === 1 ? '' : 's'}) ${ago(rec.brought.at)}.`)
+  if (rec.clash) bits.push(`Its clash with ${up} is task ${rec.clash.task} on the board.`)
+  if (rec.problem) bits.push(`Note: ${rec.problem}.`)
+  return bits.join(' ')
+}
 
 /** The chat `me` can see: public messages, and direct ones to or from them. */
 const chatFor = (doc, me) => doc.getArray('chat').toArray().filter((m) => m && m.id && (!m.to || m.to === me || m.by === me))
@@ -285,7 +299,7 @@ function sessionTools (server, ctx) {
     const cl = claimsOf(room)
     lines.push('', '## Claimed files', ...(cl.length ? cl.map((c) => `- ${c.pattern} by ${c.by}${c.note ? ` (${c.note})` : ''}${c.queue.length ? ` · waiting: ${c.queue.map((r) => `${r.by} ("${r.title}")`).join(', ')}` : ''}`) : ['- None.']))
     const acts = activity.toArray().filter(Boolean).slice(-12).reverse()
-    lines.push('', '## Recent file changes', ...(acts.length ? acts.map((x) => x.kind === 'pulled' ? `- ${x.by} pulled ${x.detail || 'commits'} (${ago(x.ts)})` : x.kind === 'switched' ? `- ${x.by} switched to ${x.branch} (${ago(x.ts)})` : `- ${x.by} ${x.kind} ${x.path} (${ago(x.ts)})`) : ['- None yet.']))
+    lines.push('', '## Recent file changes', ...(acts.length ? acts.map((x) => x.kind === 'pulled' ? `- ${x.by} pulled ${x.detail || 'commits'} (${ago(x.ts)})` : x.kind === 'brought' ? `- ${x.by} brought in ${x.detail || 'commits'}${x.branch ? ` on ${x.branch}` : ''} (${ago(x.ts)})` : x.kind === 'switched' ? `- ${x.by} switched to ${x.branch} (${ago(x.ts)})` : `- ${x.by} ${x.kind} ${x.path} (${ago(x.ts)})`) : ['- None yet.']))
     const msgs = chat.toArray().filter(visible).slice(-8)
     lines.push('', '## Recent messages', ...(msgs.length ? msgs.map(fmtMsg) : ['- None.']))
     lines.push('', '## Tasks', taskMarkdown(readTasks(doc.getMap('tasks')), me, { tool: ctx.tool(), asAi: false, mentionYours: true }))
@@ -293,6 +307,9 @@ function sessionTools (server, ctx) {
     if (br.length) {
       lines.push('', '## Branches', branchesMarkdown(br, { limit: 6, mine: branchOf(room) }))
       if (ctx.branch) lines.push('Work on another branch with quilt_switch_branch.')
+      // Hosted agents learn when the relay last looked for new commits on their branch (relay-upstream.js).
+      const said = relayStatus(room, branchOf(room))
+      if (said) lines.push(said)
     }
     if (ctx.webhook) { const w = ctx.webhook.get(); lines.push('', w ? `Webhook: Quilt POSTs to ${w.url} on ${w.events.join(', ')}.` : 'No webhook: subscribe with quilt_webhook_subscribe to be told of mentions, direct messages and tasks as they happen.') }
     return text(lines.join('\n') + ctx.warn(room))
@@ -303,7 +320,7 @@ function sessionTools (server, ctx) {
     inputSchema: {}
   }, (_, { room }) => {
     const br = branchesOf(room)
-    return text(`${branchesMarkdown(br, { limit: 40 })}\n\nCommits pushed or merged elsewhere come into the session by themselves: the folder of a member on that branch fetches about once a minute and brings them in.`)
+    return text(`${branchesMarkdown(br, { limit: 40 })}\n\n${BRING_IN_NOTE}`)
   })
 
   const taskMap = (doc) => doc.getMap('tasks')

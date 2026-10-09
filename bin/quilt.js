@@ -36,6 +36,7 @@ Usage:
   quilt release <path|glob|*>                         Release a claim
   quilt chat-link [name] [--minutes N]                Owner: a link for a chat-only AI (ChatGPT, claude.ai, Grok); 10 minutes
   quilt chat-link extend <name> <minutes>             Owner: keep a chat link working for that long from now
+  quilt github-token [--clear]                        Owner: a read-only GitHub token (read from stdin) so the relay brings in commits while everyone's offline
   quilt invite                                        Print this session's invite code
   quilt workspace list|files|get|put|write|mkdir|mv|rm  The workspace library (quilt workspace for help)
   quilt stop                                          Shut down everything quilt is running (relay, app, syncs)
@@ -88,6 +89,20 @@ async function main () {
       const minutes = i >= 0 ? Number(argv[i + 1]) : undefined
       const name = argv.filter((a, k) => !(i >= 0 && (k === i || k === i + 1))).join(' ')
       return simple('/chat-link', { name, minutes }, (r) => `Chat link for ${r.name}, until ${new Date(r.expiresAt).toLocaleTimeString()}:\n\n  ${r.url}\n\nPaste it into ChatGPT, claude.ai or Grok with "Open this link and follow it to join our Quilt session."\nAnyone with it can act as ${r.name}. Extend it with \`quilt chat-link extend ${r.name} <minutes>\`; once it runs out, make a new one.`)
+    }
+    case 'github-token': {
+      // Read from stdin, never the command line (where shell history and ps would keep it).
+      if (argv[0] === '--clear') return simple('/github-token', { token: '' }, () => 'The relay no longer has a GitHub token for this session.')
+      if (argv.length) fail('usage: quilt github-token [--clear]   (the token is read from stdin: pbpaste | quilt github-token)')
+      if (process.stdin.isTTY) process.stderr.write('Paste a read-only GitHub token (contents: read) and press Enter: ')
+      const token = await new Promise((resolve) => {
+        let buf = ''
+        process.stdin.setEncoding('utf8')
+        process.stdin.on('data', (d) => { buf += d; if (process.stdin.isTTY && buf.includes('\n')) { process.stdin.pause(); resolve(buf) } })
+        process.stdin.on('end', () => resolve(buf))
+      })
+      if (!token.trim()) fail('no token given')
+      return simple('/github-token', { token: token.trim() }, () => 'The relay has the token: it brings in commits from your private repository while nobody\'s folder is online.')
     }
     case 'invite': return invite()
     case 'workspace': case 'workspaces': return workspaceCmd()

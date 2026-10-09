@@ -47,6 +47,7 @@ import { JOIN_HOST } from './ui/invite.js'
 import { PresenceReporter, PRESENCE_FILE } from './presence.js'
 import { cleanSessionName, BAD_SESSION_NAME } from './session-name.js'
 import { hostedWebhooks } from './relay-webhooks.js'
+import { UPSTREAM_CHECK_MS, upstreamsOf, noteFolders, relayEntry, relayLooks, dueBranches, checkBranch, validToken } from './relay-upstream.js'
 
 const ROOM_RE = /^[A-Za-z0-9_-]{1,64}$/
 const MAX_NAME = 64
@@ -102,6 +103,10 @@ export function relayConfig (opts = {}) {
     idleUnloadMs: num(opts.idleUnloadMs, 60 * 1000),
     // A branch document nobody is on leaves memory this long after its last use (the room may stay).
     branchIdleMs: num(opts.branchIdleMs, BRANCH_IDLE_MS),
+    // How often the relay asks GitHub about a branch only hosted agents are working on (relay-upstream.js),
+    // and whether it does by itself (tests turn that off and ask with checkUpstreams).
+    upstreamCheckMs: num(opts.upstreamCheckMs, UPSTREAM_CHECK_MS),
+    upstreamAuto: opts.upstreamAuto !== false,
     // A claim whose holder has done nothing in the session this long is let go (see sweepClaims):
     // handed to the first one waiting in its file queue, or released.
     claimIdleMs: num(opts.claimIdleMs, 20 * 60 * 1000),
@@ -241,7 +246,11 @@ class Room {
       }
       const msg = awarenessMessage(this.awareness, changed)
       for (const ws of this.conns.keys()) send(ws, msg)
+      // Which upstream each branch follows, and where its folders are (relay-upstream.js).
+      if (origin && this.conns.has(origin)) this.noteUpstreams()
     })
+    this.githubFetch = globalThis.fetch // set by startServer (tests give their own: never the network)
+    this.upstreamRun = null // the relay's look at GitHub under way (checkUpstreams)
   }
 
   get exists () { return !!this.meta.secretHash }
@@ -529,6 +538,7 @@ class Room {
   hostedActive (id) {
     const was = this.hostedSeen.get(id) || 0
     this.hostedSeen.set(id, Date.now())
+    this.noteHostedUpstream(id)
     this.noteActivity([id])
     for (const [k, p] of this.pending) if (k.hosted && p.id === id) this.pending.delete(k)
     // Newly online, or a newer check-in time: everyone's member list shows it (once a minute at most).
@@ -978,7 +988,66 @@ class Room {
       const k = this.hostedBranch(h.id)
       hosted.set(k, [...(hosted.get(k) || []), h.name])
     }
-    return Object.entries(this.meta.branches).map(([key, b]) => ({ key, by: b.by || '', at: b.at || 0, base: b.base || null, default: key === this.defaultKey, hosted: hosted.get(key) || [], ...(this.branchFull(key) ? { full: true } : {}) }))
+    const ups = this.meta.upstreams || {}
+    return Object.entries(this.meta.branches).map(([key, b]) => {
+      const relay = relayEntry(ups[key])
+      return { key, by: b.by || '', at: b.at || 0, base: b.base || null, default: key === this.defaultKey, hosted: hosted.get(key) || [], ...(this.branchFull(key) ? { full: true } : {}), ...(relay ? { relay } : {}) }
+    })
+  }
+
+  // ------------------------------------------------------- upstream (relay-upstream.js) --
+  // Commits pushed to GitHub come into a branch through a member's folder. A branch only hosted
+  // agents are working on, with no folder online, is brought up to date by the relay instead.
+
+  /** Members' presence says which upstream each branch follows, and the commit its folders are at. */
+  noteUpstreams () {
+    if (!this.exists || this.ended || this.destroyed) return
+    if (noteFolders(this)) { this.saveMeta(); this.broadcastBranches() }
+  }
+
+  /** A hosted agent just called a tool: its branch counts as worked on (kept, so it outlasts the room leaving memory), and is looked at if due. */
+  noteHostedUpstream (id) {
+    const key = this.meta.layout === 2 ? this.hostedBranch(id) : null
+    const rec = key && (this.meta.upstreams || {})[key]
+    if (rec && Date.now() - (rec.hostedAt || 0) >= 60 * 1000) { rec.hostedAt = Date.now(); this.saveMeta() }
+    if (!this.cfg.upstreamAuto || this.upstreamSoonTimer) return
+    this.upstreamSoonTimer = setTimeout(() => {
+      this.upstreamSoonTimer = null
+      this.checkUpstreams().catch((err) => this.log(`[${this.name}] could not look for new commits: ${err.message}`))
+    }, 0)
+    this.upstreamSoonTimer.unref?.()
+  }
+
+  /**
+   * Looks at GitHub for the branches due (or, with `force`, every branch the relay looks after,
+   * except those GitHub told to wait), one at a time. One run at a time: an ask meanwhile gets that run.
+   */
+  checkUpstreams ({ force = false } = {}) {
+    if (this.upstreamRun) return this.upstreamRun
+    if (!this.exists || this.ended || this.destroyed || this.meta.layout !== 2) return Promise.resolve([])
+    const now = Date.now()
+    const keys = dueBranches(this, { now, everyMs: force ? 0 : this.cfg.upstreamCheckMs })
+    if (!keys.length) return Promise.resolve([])
+    this.upstreamRun = (async () => {
+      const out = []
+      for (const key of keys) {
+        if (this.destroyed || !relayLooks(this, key)) continue
+        try { out.push({ branch: key, ...await checkBranch(this, key, { fetch: this.githubFetch, log: this.log }) }) } catch (err) {
+          this.log(`[${this.name}] ${key}: could not look for new commits: ${err.message}`)
+          out.push({ branch: key, state: 'error' })
+        }
+      }
+      return out
+    })().finally(() => { this.upstreamRun = null })
+    return this.upstreamRun
+  }
+
+  /** The owner set (or cleared) the read-only GitHub token: every branch is looked at afresh. */
+  upstreamTokenChanged () {
+    for (const rec of Object.values(upstreamsOf(this))) { delete rec.problem; delete rec.backoffUntil; delete rec.backoffMs; delete rec.etag; rec.checkedAt = 0 }
+    this.saveMeta()
+    this.broadcastBranches()
+    if (this.cfg.upstreamAuto) this.checkUpstreams().catch(() => {})
   }
 
   broadcastBranches () {
@@ -1076,7 +1145,8 @@ class Room {
   personCanAdmit (a) { return canAdmit(a, this.admitBy) }
 
   accessMessage (a) {
-    return { state: 'approved', role: a.role, scopes: a.scopes || [], scopesExcept: a.scopesExcept || [], talk: a.talk !== false, owner: !!a.owner, controlled: this.controlled, admitBy: this.admitBy, canAdmit: this.personCanAdmit(a) }
+    // The owner learns whether a GitHub token is set (never the token itself); nobody else hears of it.
+    return { state: 'approved', role: a.role, scopes: a.scopes || [], scopesExcept: a.scopesExcept || [], talk: a.talk !== false, owner: !!a.owner, controlled: this.controlled, admitBy: this.admitBy, canAdmit: this.personCanAdmit(a), ...(a.owner ? { githubToken: !!this.meta.githubToken } : {}) }
   }
 
   /** Tracks restricted connections so their file changes are checked. */
@@ -1170,6 +1240,19 @@ class Room {
       // How long a chat link still works, from now. One that ran out is gone: a new link is needed.
       const l = extendChatLink(this, String(req.key || ''), req.minutes)
       return { ok: true, name: l.name, expiresAt: l.expiresAt }
+    }
+    if (req.op === 'githubToken') {
+      // A read-only token the relay uses to bring commits in from a private repository while no
+      // folder is online (relay-upstream.js). Kept on the relay only: never in presence, the
+      // branch list, a reply or the log. An empty token clears it.
+      const t = String(req.token ?? '').trim()
+      if (t && !validToken(t)) throw new Error("That doesn't look like a GitHub token (ghp_… or github_pat_…).")
+      if (t) this.meta.githubToken = t
+      else delete this.meta.githubToken
+      this.log(`[${this.name}] the owner ${t ? 'set' : 'cleared'} the GitHub token for bringing in commits`)
+      this.upstreamTokenChanged()
+      for (const [cws, a] of this.access) if (a.owner) send(cws, jsonMessage(MSG_ACCESS, this.accessMessage(a)))
+      return { ok: true, githubToken: !!t }
     }
     if (req.op === 'end') {
       // Reply first; the relay then sends everyone away and deletes the room.
@@ -1837,7 +1920,9 @@ class Room {
   }
 
   destroy () {
+    this.destroyed = true
     clearTimeout(this.unloadTimer)
+    clearTimeout(this.upstreamSoonTimer)
     this.save()
     this.store.destroy()
     this.guard.destroy()
@@ -2003,6 +2088,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       if (webhooks) webhooks.watch(room) // hosted agents' webhooks fire on its chat and board
       if (adoptHosted) adoptHosted(room)
       room.presence = presence
+      if (opts.githubFetch) room.githubFetch = opts.githubFetch
       // Idle rooms are saved and dropped from memory (only when they're on disk).
       room.onEmpty = () => {
         if (!dataDir || rooms.get(name) !== room) return
@@ -2447,9 +2533,14 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
   sweep()
   const sweeper = setInterval(sweep, 6 * 60 * 60 * 1000)
   sweeper.unref()
+  // Branches only hosted agents work on, with no folder online: the relay looks for new commits on GitHub itself.
+  const upstreamTicker = cfg.upstreamAuto && cfg.upstreamCheckMs > 0
+    ? setInterval(() => { for (const room of rooms.values()) if (!room.ended) room.checkUpstreams().catch((err) => log(`[${room.name}] could not look for new commits: ${err.message}`)) }, Math.min(60 * 1000, cfg.upstreamCheckMs))
+    : null
+  upstreamTicker?.unref()
 
   return new Promise((resolve, reject) => {
-    httpServer.once('error', (err) => { clearInterval(heartbeat); clearInterval(sweeper); features?.stop(); reject(err) })
+    httpServer.once('error', (err) => { clearInterval(heartbeat); clearInterval(sweeper); clearInterval(upstreamTicker); features?.stop(); reject(err) })
     httpServer.listen(port, host, () => {
       const actualPort = httpServer.address().port
       resolve({
@@ -2462,9 +2553,12 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
         sweepHosted: () => sweepHosted && sweepHosted(), // exposed for tests: ends quiet hosted agents' visits now
         features, // exposed for tests
         sweep,
+        // exposed for tests: the relay's look at GitHub for a loaded room now ({ force }: every branch it looks after, not only those due)
+        checkUpstreams: (name, o) => { const room = rooms.get(name); return room ? room.checkUpstreams(o) : Promise.resolve([]) },
         close: async () => {
           clearInterval(heartbeat)
           clearInterval(sweeper)
+          clearInterval(upstreamTicker)
           features?.stop()
           updates.stop()
           // A join or a denial in the last moments before a deploy is kept.

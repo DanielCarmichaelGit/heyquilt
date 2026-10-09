@@ -465,6 +465,11 @@ function bindTop () {
     loadSessionAgents()
   })
   menu.addEventListener('click', async (e) => {
+    if (e.target.closest('[data-gh-clear]')) {
+      try { await api('POST', `/api/sessions/${current}/github-token`, { token: '' }); toast('The relay no longer has a GitHub token') } catch (err) { toast(err.message) }
+      renderPeopleMenu({ force: true })
+      return
+    }
     if (e.target.closest('[data-end-session]')) {
       if (!await ask({ title: 'End this session for everyone?', message: 'Everyone is disconnected, and the session and its stored files are deleted from the relay. Your own folder is not touched.', ok: 'End session', danger: true })) return
       try { await api('POST', `/api/sessions/${current}/end`); toast('Session ended') } catch (err) { toast(err.message) }
@@ -490,8 +495,23 @@ function bindTop () {
     } catch (err) { toast(err.message) } finally { save.disabled = false }
   })
   menu.addEventListener('submit', async (e) => {
+    const f = e.target.closest('.pm-gh')
+    if (!f) return
     e.preventDefault()
-    if (e.target.closest('.pm-member')) return
+    const token = f.token.value.trim()
+    if (!token) return toast('Paste a token first')
+    const save = f.querySelector('[type=submit]')
+    save.disabled = true
+    try {
+      await api('POST', `/api/sessions/${current}/github-token`, { token })
+      f.token.value = ''
+      toast('Token saved: the relay brings in commits while everyone\'s offline')
+      renderPeopleMenu({ force: true })
+    } catch (err) { toast(err.message) } finally { save.disabled = false }
+  })
+  menu.addEventListener('submit', async (e) => {
+    e.preventDefault()
+    if (e.target.closest('.pm-member') || e.target.closest('.pm-gh')) return
     const input = menu.querySelector('#focus-input')
     await api('POST', `/api/sessions/${current}/focus`, { text: input.value }).catch((err) => toast(err.message))
     toast(input.value ? 'Focus shared' : 'Focus cleared')
@@ -864,7 +884,23 @@ function membersHtml (st) {
         <button type="button" class="btn sm ghost icon" data-remove title="Remove ${esc(m.name)}" aria-label="Remove ${esc(m.name)}">${I.x}</button>
       </form>`).join('') : '<div class="pm-empty">Only you so far. People you let in show up here.</div>'}
     </div>
-    ${wsAgents.id === current ? sessionAgentsHtml(wsAgents.agents, st) : ''}<div class="pm-foot"><button type="button" class="btn sm ghost danger" data-end-session>End session for everyone</button></div>`
+    ${wsAgents.id === current ? sessionAgentsHtml(wsAgents.agents, st) : ''}${githubTokenHtml(acc)}<div class="pm-foot"><button type="button" class="btn sm ghost danger" data-end-session>End session for everyone</button></div>`
+}
+
+/**
+ * The owner's read-only GitHub token, which the relay uses to bring commits in from a private
+ * repository while nobody's folder is online. Never shown back: only whether one is set.
+ */
+export function githubTokenHtml (acc) {
+  if (!acc || !acc.owner) return ''
+  const set = !!acc.githubToken
+  return `<div class="pm-section"><div class="pm-title">Commits while everyone's offline</div>
+    <form class="pm-gh pm-admit" autocomplete="off">
+      <label for="pm-gh-token"><span>GitHub read-only token for bringing in commits while everyone's offline</span></label>
+      <input class="input" id="pm-gh-token" type="password" name="token" autocomplete="off" spellcheck="false" placeholder="${set ? 'A token is set: paste another to replace it' : 'github_pat_… with contents: read'}" aria-label="GitHub read-only token">
+      <div class="pm-gh-row"><button type="submit" class="btn sm">Save token</button>${set ? '<button type="button" class="btn sm ghost" data-gh-clear>Remove token</button>' : ''}</div>
+      <div class="hint">Only private GitHub repositories need one. It stays on the relay and is never shown to anyone, you included.</div>
+    </form></div>`
 }
 
 /** With workspaces on, the agents this session's workspace invites (and the ones not invited), for its People. */

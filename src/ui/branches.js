@@ -19,6 +19,22 @@ export function upstreamText (u) {
   return `up to date with ${u.name}`
 }
 
+/**
+ * What the relay does for a branch no folder is online on: "brought in by the relay 5m ago (3
+ * commits)", a clash it handed out, why it can't, and when it last looked; '' when it hasn't.
+ */
+export function relayText (r, now = Date.now()) {
+  if (!r || !(r.checkedAt || (r.brought && r.brought.at))) return ''
+  const n = (k, w) => `${k} ${w}${k === 1 ? '' : 's'}`
+  const when = (ts) => { const a = ago(ts, now); return a === 'now' ? 'just now' : /^\d+[mh]$/.test(a) ? `${a} ago` : `on ${a}` }
+  const bits = []
+  if (r.brought && r.brought.at) bits.push(`brought in by the relay ${when(r.brought.at)} (${n(r.brought.count, 'commit')})`)
+  if (r.clashTask) bits.push(`a clash with ${r.upstream || 'upstream'} is with a hosted agent`)
+  if (r.problem) bits.push(r.problem)
+  if (r.checkedAt) bits.push(`relay checked ${when(r.checkedAt)}`)
+  return bits.join(' · ')
+}
+
 /** Whether the label should draw the eye: this folder is behind and Quilt can't bring it in by itself. */
 export function needsHand (u) {
   return !!(u && (u.diverged || (Array.isArray(u.conflicts) ? u.conflicts.length : u.conflicts)))
@@ -42,11 +58,13 @@ export function branchMenuHtml ({ git, branches = [], me = '', syncing = false, 
       ...b.worktrees.map((w) => `<span class="br-who wt" title="${esc(`Worktree ${w}`)}">${w === b.name ? 'worktree' : `worktree ${esc(w)}`}</span>`)
     ].join('')
     const status = upstreamText(b.upstream)
+    const relay = relayText(b.relay, now)
     const last = b.last && b.last.ts ? `${esc(b.last.author || 'someone')} · ${esc(ago(b.last.ts, now))}` : ''
     const tags = [b.default ? '<span class="br-tag">default</span>' : '', b.session ? '<span class="br-tag">in the session</span>' : '', b.full ? '<span class="br-tag warn" title="full: new changes aren\'t saved">full</span>' : ''].filter(Boolean).join('')
     return `<li class="br-row${git && b.name === git.key ? ' on' : ''}">
         <div class="br-line"><span class="br-name" title="${esc(b.name)}">${esc(b.name)}</span>${tags}${who ? `<span class="br-people">${who}</span>` : ''}</div>
         ${status || last ? `<div class="br-meta">${[status && `<span class="${needsHand(b.upstream) ? 'warn' : ''}">${esc(status)}</span>`, last && `<span title="${esc(b.last.subject || '')}">last commit ${last}</span>`].filter(Boolean).join(' · ')}</div>` : ''}
+        ${relay ? `<div class="br-meta br-relay${b.relay.problem ? ' warn' : ''}">${esc(relay)}</div>` : ''}
       </li>`
   }).join('')
   return `${here}${rows ? `<div class="br-head">Branches</div><ul class="br-list">${rows}</ul>` : ''}`

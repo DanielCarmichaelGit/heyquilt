@@ -762,6 +762,8 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     },
     'POST /api/sessions/:id/members/deny': async (b, id) => (await admitter(id).deny(b.key), { ok: true }),
     'POST /api/sessions/:id/admit-by': async (b, id) => (await owned(id).setAdmitBy(b.admitBy), { ok: true, admitBy: b.admitBy }),
+    // Owner only: the read-only GitHub token the relay brings commits in with while everyone's offline ('' clears it).
+    'POST /api/sessions/:id/github-token': (b, id) => owned(id).setGithubToken(b.token),
     'POST /api/sessions/:id/members/set': async (b, id) => (await get(id).setMember(b.key, { role: b.role, scopes: b.scopes }), { ok: true }),
     'POST /api/sessions/:id/members/remove': (b, id) => removeMember(id, b.key),
     // Owner only: a link a chat-only AI (ChatGPT, claude.ai, Grok…) works through (chat-links.js).

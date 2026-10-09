@@ -67,6 +67,8 @@ export async function startControl (session, extras = {}) {
     'POST /chat-link': (b) => session.createChatLink({ name: b.name, minutes: b.minutes }),
     // Owner only: how long a chat link still works. { who: name or key, minutes } -> { name, expiresAt }
     'POST /chat-link/extend': (b) => session.extendChatLink(String(b.who || ''), b.minutes),
+    // Owner only: the relay's read-only GitHub token, for commits while everyone's offline. { token } ('' clears) -> { githubToken }
+    'POST /github-token': (b) => session.setGithubToken(b.token),
     'POST /agent': (b) => { session.addAgent(b.client); return { ok: true } },
     'POST /feed': (b) => ({ entries: session.agentFeedFor(b.who, { limit: Math.min(Number(b.limit) || 40, 300) }) }),
     // The chronology: { path, by, since, task, limit } (see Session.historyQuery).

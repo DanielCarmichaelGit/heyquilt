@@ -351,7 +351,7 @@ function workspaceInviteDialog (id) {
     ${toggle('wiEvery', false, 'Also invite to every new session in this workspace', 'For your own agents. Each new session sends them its link, and its owner lets them in. Off: the agent is in the workspace and sees its files, and joins a session only when someone invites it there.')}
     <div class="label inv-sub">People you've worked with, and ${isOrg ? `${esc(orgName)}'s agents` : 'your agents'}</div>
     <div class="inv-list" id="wi-people"><p class="hint">Loading…</p></div>
-    <div class="field"><label for="wi-email">Invite by email</label>
+    <div class="field wi-email"><label for="wi-email">Invite by email</label>
       <div class="row"><input class="input grow" id="wi-email" type="email" placeholder="name@example.com" autocomplete="off"><button class="btn" type="button" data-wi-email>Send invite</button></div></div>
     <div class="label inv-sub">Waiting to accept</div>
     <div class="inv-list" id="wi-pending"><p class="hint">Loading…</p></div>
@@ -373,10 +373,13 @@ function workspaceInviteDialog (id) {
     : !org
         ? Promise.resolve({ list: [], note: `${orgName}'s agents can't be listed here.` })
         : api('GET', `/api/orgs/${encodeURIComponent(org.slug)}/agents`).then((r) => ({ list: r.agents }), (err) => ({ list: [], note: `${orgName}'s agents can't be listed: ${err.message}` }))
+  // People with an open invite show as Invited (inviting them again would be refused).
+  const invited = api('GET', `/api/workspaces/${encodeURIComponent(id)}/invites`).then((r) => new Set(r.invites.filter((i) => i.status === 'waiting' && i.account).map((i) => i.account)), () => new Set())
   Promise.all([
     api('GET', '/api/collaborators').then((r) => r.collaborators).catch(() => []),
-    agents
-  ]).then(([people, { list: mine, note, failed }]) => {
+    agents,
+    invited
+  ]).then(([people, { list: mine, note, failed }, waiting]) => {
     for (const a of mine) ownAgents.add(`agent:${a.id}`)
     ownKnown = !note && !failed
     const seen = new Set()
@@ -385,9 +388,11 @@ function workspaceInviteDialog (id) {
     list.innerHTML = rows.length
       ? rows.map((c) => `<div class="inv-row">${avatar(c.name, null)}<span class="grow">${esc(c.name)}${c.kind === 'agent' ? `<span class="tag bot">${I.bot}agent</span>` : ''}</span>${already.has(c.account)
         ? '<span class="hint">Already in</span>'
-        : c.kind === 'agent'
-          ? `<button class="btn sm" type="button" data-add-account="${esc(c.account)}" data-name="${esc(c.name)}">Add</button>`
-          : `<button class="btn sm" type="button" data-invite-person="${esc(c.account)}" data-name="${esc(c.name)}">Invite</button>`}</div>`).join('') + why
+        : waiting.has(c.account)
+          ? '<span class="hint">Invited</span>'
+          : c.kind === 'agent'
+            ? `<button class="btn sm" type="button" data-add-account="${esc(c.account)}" data-name="${esc(c.name)}">Add</button>`
+            : `<button class="btn sm" type="button" data-invite-person="${esc(c.account)}" data-name="${esc(c.name)}">Invite</button>`}</div>`).join('') + why
       : why || "<p class=\"hint\">Nobody yet. People and agents you've been in a session with show up here.</p>"
   })
   const wsInvites = `/api/workspaces/${encodeURIComponent(id)}/invites`

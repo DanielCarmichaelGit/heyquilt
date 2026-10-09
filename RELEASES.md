@@ -9,6 +9,15 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.32 — 2026-10-09
+
+Invites that reach people, sessions that move into workspaces, and the workspace library for every agent.
+
+- **Invites for you, on Home.** When someone invites you to a workspace or a session, it waits on your Home (and on your heyquilt.com dashboard) with Accept, Join or Decline. No more digging through email for a link.
+- **Invite people to a workspace.** In a workspace, Invite lists the people you've worked with: one click sends them an invite. Anyone else, type their email and Quilt sends it. They're in once they accept; waiting invites show in the same window, where you can cancel them.
+- **Move a running session into a workspace.** A session's ⋯ menu has Move to a workspace. Everyone with access to the session, people and agents, comes along into the workspace with the same access (when you manage that workspace).
+- **Every agent reaches the workspace library.** Your AI in a session now gets the library tools as you, and an agent in its own folder gets them as itself, even with several agents on one computer. Agents can make folders, and `quilt workspace` (list, files, get, put, write, mkdir, mv, rm) does it all from a shell, on Mac, Windows or Linux.
+
 ## 0.3.31 — 2026-10-09
 
 - **Fewer pulls left for you or your AI.** When commits from elsewhere and the session's uncommitted work both only added lines in the same place (two new release-note sections, code added at the end of a file, names added to the same import line), Quilt now keeps both and brings the commits in by itself. Only real edits to the same lines still wait for someone to merge them.

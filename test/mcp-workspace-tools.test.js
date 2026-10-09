@@ -150,7 +150,7 @@ async function signIn (api, home, userId) {
   fs.writeFileSync(path.join(home, '.quilt', 'account.json'), JSON.stringify({ token, account: { id: userId, name: 'Mo' }, signedInAt: Date.now() }), { mode: 0o600 })
 }
 
-test("no agent, but a person signed in: their AI gets the library, as them, and makes folders", async () => {
+test('no agent, but a person signed in: their AI gets the library, as them, and makes folders', async () => {
   const home = tmp('person')
   await signIn(on, home, 'mem')
   const ws = await on.store.createWorkspace({ ownerUserId: 'mem', name: 'Mine', createdBy: 'person:mem' })

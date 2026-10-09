@@ -1,6 +1,6 @@
 // Invites waiting for you, on Home: workspaces to accept or decline, and sessions to join
 // (with the link the owner sent) or decline. Loaded when Home opens and every minute after.
-import { I, state, $, esc, toast, api, avatar } from './common.js'
+import { state, esc, toast, api, avatar } from './common.js'
 
 const sessionAccess = (i) => (i.access ? ` · ${esc(i.access)}` : '')
 

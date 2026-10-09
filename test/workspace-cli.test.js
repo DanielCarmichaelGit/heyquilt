@@ -58,7 +58,7 @@ test('a signed-in person: list, mkdir, write, put, files, get, mv, rm', async ()
   assert.match(usage.out, /quilt workspace put/)
 })
 
-test("an agent in its own folder acts as that agent, whatever else is saved here", async () => {
+test('an agent in its own folder acts as that agent, whatever else is saved here', async () => {
   const home = tmp('ahome')
   const join = async (who, name) => agentJoin({ link: (await t.call('POST', '/v1/agent-invites', {}, who)).body.link.replace(API_URL, t.api.url), name, dir: path.join(home, '.quilt'), log: () => {} })
   const larry = await join('mem', 'larry')

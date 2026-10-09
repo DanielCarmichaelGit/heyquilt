@@ -47,7 +47,7 @@ import { JOIN_HOST } from './ui/invite.js'
 import { PresenceReporter, PRESENCE_FILE } from './presence.js'
 import { cleanSessionName, BAD_SESSION_NAME } from './session-name.js'
 import { hostedWebhooks } from './relay-webhooks.js'
-import { UPSTREAM_CHECK_MS, upstreamsOf, noteFolders, relayEntry, relayLooks, dueBranches, checkBranch, validToken } from './relay-upstream.js'
+import { UPSTREAM_CHECK_MS, SYNC_EVERY_MS, upstreamsOf, noteFolders, relayEntry, relayLooks, dueBranches, checkBranch, validToken, folderAble, describeRelayCheck, loadBranch, parseRepo } from './relay-upstream.js'
 
 const ROOM_RE = /^[A-Za-z0-9_-]{1,64}$/
 const MAX_NAME = 64
@@ -107,6 +107,9 @@ export function relayConfig (opts = {}) {
     // and whether it does by itself (tests turn that off and ask with checkUpstreams).
     upstreamCheckMs: num(opts.upstreamCheckMs, UPSTREAM_CHECK_MS),
     upstreamAuto: opts.upstreamAuto !== false,
+    // Whether a write to a file in an open relay clash (or its task moved to QA or Done by its
+    // assignee) makes the relay look again at once; on with upstreamAuto unless set.
+    upstreamOnChange: opts.upstreamOnChange ?? opts.upstreamAuto !== false,
     // A claim whose holder has done nothing in the session this long is let go (see sweepClaims):
     // handed to the first one waiting in its file queue, or released.
     claimIdleMs: num(opts.claimIdleMs, 20 * 60 * 1000),
@@ -117,6 +120,21 @@ export function relayConfig (opts = {}) {
     storageBucket: opts.storageBucket ?? env.QUILT_STORAGE_BUCKET ?? 'session-files',
     maxStoredFileBytes: num(opts.maxStoredFileBytes ?? env.QUILT_MAX_STORED_FILE_MB, 100) * (opts.maxStoredFileBytes !== undefined ? 1 : MB)
   }
+}
+
+/** The files a transaction changed in a branch document (entries in files or blobs, or text inside one). */
+function changedPaths (tr, e) {
+  const out = new Set()
+  for (const [type, events] of tr.changedParentTypes) {
+    if (type !== e.files && type !== e.blobs) continue
+    for (const ev of events) {
+      if (ev.target === type) { for (const k of ev.changes.keys.keys()) out.add(k); continue }
+      let t = ev.target
+      while (t && t._item && t._item.parent !== type) t = t._item.parent
+      if (t && t._item && t._item.parentSub) out.add(t._item.parentSub)
+    }
+  }
+  return out
 }
 
 class Room {
@@ -251,6 +269,20 @@ class Room {
     })
     this.githubFetch = globalThis.fetch // set by startServer (tests give their own: never the network)
     this.upstreamRun = null // the relay's look at GitHub under way (checkUpstreams)
+    this.syncAsked = new Map() // branch -> when quilt_sync_branch last made the relay ask GitHub (syncUpstreamNow)
+    this.upstreamSoonKeys = new Set() // branches to look at again at once (upstreamSoon)
+    // A relay clash's task moved to QA or Done by its assignee: the files count as merged (relay-upstream.js).
+    this.tasks.observe((ev, tr) => {
+      for (const [id, c] of ev.changes.keys) {
+        const t = this.tasks.get(id)
+        // A clash task done or gone: its files are let go of, whoever held them for it (online or not).
+        if (!t || t.column === 'done') this.dropClashClaims(id)
+        if (tr.origin === 'relay-upstream') continue
+        // Moved (or moved again, after someone else did) to QA or Done: whose move it was decides.
+        if (c.action !== 'update' || !t || (t.column !== 'qa' && t.column !== 'done')) continue
+        this.noteClashMoved(id, t, tr.origin)
+      }
+    })
   }
 
   get exists () { return !!this.meta.secretHash }
@@ -761,6 +793,9 @@ class Room {
       if (origin === e.guard && e.undoing) { e.undoing.push(update); return } // sent merged, by checkChange
       if (origin && origin !== e.guard && this.guard.trackedOrigins.has(origin) && !this.checkChange(origin, update, tr, e)) return
       if (origin && this.conns.has(origin)) this.noteActivity(this.holderKeys(origin))
+      // A member (hosted or connected) wrote a file in the relay's open clash on this branch: it looks again at once.
+      const rec = origin !== 'relay-upstream' && this.meta.upstreams ? this.meta.upstreams[e.key] : null
+      if (rec && rec.clash) for (const rel of changedPaths(tr, e)) this.noteClashWrite(e.key, rel)
       for (const ws of e.conns) if (ws !== origin) send(ws, updateMessage(update, ws.branchAs))
       const was = e.bytes > this.cfg.maxRoomBytes
       e.bytes += update.length
@@ -930,14 +965,25 @@ class Room {
    * `create`: a new branch in the session, started from a copy of the files on the branch it
    * is on (as `git switch -c` carries a folder's work). Returns { branch, created, from }.
    */
-  setHostedBranch (id, key, { create = false, by = '', editor = true } = {}) {
+  setHostedBranch (id, key, { create = false, by = '', editor = true, github = null } = {}) {
     if (!validBranchKey(key) || key === DEFAULT_KEY) throw new Error(`"${String(key).slice(0, 60)}" isn't a branch name.`)
     const to = this.resolveKey(key)
     const from = this.hostedBranch(id)
     const exists = !!this.meta.branches[to]
-    if (!exists && !create) throw new Error(`${key} isn't in this session. Pass create: true to start it from the files on ${from}.`)
+    if (!exists && !create) throw new Error(`${key} isn't in this session. Pass create: true to start it: from GitHub when the branch is there, otherwise from a copy of the files on ${from}.`)
     if (exists && create) throw new Error(`${key} is already in this session: switch to it without create.`)
-    if (!exists) {
+    if (!exists && github) {
+      // The branch as it is on GitHub (branchFromGitHub): its files at its head, and the commit
+      // they are, so the relay brings later commits on it in (relay-upstream.js).
+      this.assertMigrated()
+      this.assertBranchRoom(editor, github.bytes || 0)
+      const e = this.branchDoc(to, { by, base: null, editor })
+      e.doc.transact(() => {
+        for (const [rel, t] of github.texts) { const y = new Y.Text(); y.insert(0, t); e.files.set(rel, y) }
+        for (const [rel, b] of github.blobs) e.blobs.set(rel, b)
+      }, 'hosted-branch')
+      upstreamsOf(this)[to] = { ...github.upstream, head: github.upstream.sha, checkedAt: Date.now(), hostedAt: Date.now() }
+    } else if (!exists) {
       this.assertMigrated()
       this.assertBranchRoom(editor, this.store.size(from)) // a copy of `from`'s files
       const src = this.branchDoc(from, { by })
@@ -1020,17 +1066,18 @@ class Room {
 
   /**
    * Looks at GitHub for the branches due (or, with `force`, every branch the relay looks after,
-   * except those GitHub told to wait), one at a time. One run at a time: an ask meanwhile gets that run.
+   * except those GitHub told to wait), one at a time; only `keys` when given. One run at a time:
+   * an ask meanwhile gets that run.
    */
-  checkUpstreams ({ force = false } = {}) {
+  checkUpstreams ({ force = false, keys = null } = {}) {
     if (this.upstreamRun) return this.upstreamRun
     if (!this.exists || this.ended || this.destroyed || this.meta.layout !== 2) return Promise.resolve([])
     const now = Date.now()
-    const keys = dueBranches(this, { now, everyMs: force ? 0 : this.cfg.upstreamCheckMs })
-    if (!keys.length) return Promise.resolve([])
+    const due = dueBranches(this, { now, everyMs: force ? 0 : this.cfg.upstreamCheckMs, keys })
+    if (!due.length) return Promise.resolve([])
     this.upstreamRun = (async () => {
       const out = []
-      for (const key of keys) {
+      for (const key of due) {
         if (this.destroyed || !relayLooks(this, key)) continue
         try { out.push({ branch: key, ...await checkBranch(this, key, { fetch: this.githubFetch, log: this.log }) }) } catch (err) {
           this.log(`[${this.name}] ${key}: could not look for new commits: ${err.message}`)
@@ -1040,6 +1087,146 @@ class Room {
       return out
     })().finally(() => { this.upstreamRun = null })
     return this.upstreamRun
+  }
+
+  /** Looks at branches `keys` now, after any look under way (not the one under way: it may not include them). */
+  async checkUpstreamsNow (keys) {
+    while (this.upstreamRun) { try { await this.upstreamRun } catch {} }
+    return this.checkUpstreams({ force: true, keys })
+  }
+
+  /** The claims held for clash task `id` (and its holder's requests for its files) let go of: the merge is done. */
+  dropClashClaims (id) {
+    const held = Object.values(this.meta.claims || {}).some((c) => c.clash === id || (c.queue || []).some((r) => r.clash === id))
+    if (!held) return
+    this.dropRequests((r) => r.clash === id)
+    this.dropClaims((c) => c.clash === id, (c) => `the merge ${c.by} held it for (task ${id}) is done.`)
+    this.broadcastClaims()
+  }
+
+  /**
+   * Claims the files of clash task `id` for its assignee `who` (a claimant: { name, id, talk, branch })
+   * on that branch, taking them over from whoever held them for the task before. A file someone else
+   * holds is asked for in its file queue instead. Returns { claimed: [path], asked: [{ path, holder }] }.
+   */
+  claimClashFiles (who, id, paths, { upstream = 'upstream' } = {}) {
+    const claimed = []
+    const asked = []
+    for (const rel of paths) {
+      try {
+        this.claimRequest(who, { op: 'claim', pattern: rel, note: `Merging commits from ${upstream} (task ${id})`, clash: id })
+        claimed.push(rel)
+      } catch {
+        const c = this.claimFor(rel, who.branch)
+        if (!c) continue
+        try {
+          this.claimRequest(who, { op: 'request', path: rel, title: `Merging commits from ${upstream}`, description: `Task ${id}: the commits clash with the session's work in this file. I merge it once you hand it over.`, task: id, clash: id })
+          asked.push({ path: rel, holder: c.by })
+        } catch {}
+      }
+    }
+    if (claimed.length || asked.length) this.broadcastClaims()
+    return { claimed, asked }
+  }
+
+  /** Branch `key` is looked at again at once, a moment from now (several asks make one look). */
+  upstreamSoon (key) {
+    if (!this.cfg.upstreamOnChange || !key) return
+    this.upstreamSoonKeys.add(key)
+    if (this.upstreamAgainTimer) return
+    this.upstreamAgainTimer = setTimeout(() => {
+      this.upstreamAgainTimer = null
+      const keys = [...this.upstreamSoonKeys]
+      this.upstreamSoonKeys.clear()
+      this.checkUpstreamsNow(keys).catch((err) => this.log(`[${this.name}] could not look for new commits: ${err.message}`))
+    }, 50)
+    this.upstreamAgainTimer.unref?.()
+  }
+
+  /** A file on branch `key` changed by a member: when it is in the relay's open clash there, the relay looks again at once. */
+  noteClashWrite (key, rel) {
+    const rec = (this.meta.upstreams || {})[key]
+    if (rec && rec.clash && rec.clash.files && rel in rec.clash.files) this.upstreamSoon(key)
+  }
+
+  /**
+   * A task moved to QA or Done: when it is a relay clash's and its assignee moved it, the files it
+   * lists count as merged as they are (for that commit), and the relay looks again at once.
+   * Who moved it: the connection's member (or one of its AI sessions), or the hosted agent whose tool ran.
+   */
+  noteClashMoved (id, task, origin) {
+    const recs = this.meta.upstreams || {}
+    const key = Object.keys(recs).find((k) => recs[k] && recs[k].clash && recs[k].clash.task === id)
+    if (!key || !task.assignee) return
+    const names = []
+    if (origin && this.conns.has(origin)) {
+      names.push(this.names.get(origin))
+      const states = this.awareness.getStates()
+      for (const cid of this.conns.get(origin)) for (const p of (states.get(cid)?.personas || [])) if (p && p.name) names.push(p.name)
+    } else if (this.auditAs && this.meta.members[this.auditAs]) names.push(this.meta.members[this.auditAs].name)
+    if (!names.includes(task.assignee)) return
+    const rec = recs[key]
+    rec.clash.settled = { by: task.assignee, at: Date.now() }
+    this.saveMeta()
+    this.log(`[${this.name}] ${key}: ${task.assignee} moved the clash task ${id} to ${task.column}: its files count as merged`)
+    this.upstreamSoon(key)
+  }
+
+  /**
+   * quilt_sync_branch where no folder can do it: the relay asks GitHub about branch `key` now
+   * (at most once a minute per branch) and brings commits in as on its own looks.
+   * Returns { state, said } (said: for the AI that asked).
+   */
+  async syncUpstreamNow (key) {
+    key = this.resolveKey ? this.resolveKey(key) : key
+    const rec = upstreamsOf(this)[key]
+    if (!rec || !rec.repo || !rec.ref) return { state: 'unknown-repo', said: `The relay doesn't know which GitHub repository \`${key}\` follows yet: a member's folder on it (a git clone) tells it once it is online.` }
+    if (!rec.sha) return { state: 'unknown-commit', said: `The relay doesn't know which commit of ${rec.name || 'the upstream'} the session's files on \`${key}\` are at yet: a member's folder on it, in step with the session, tells it.` }
+    const folder = folderAble(this, key)
+    if (folder) return { state: 'folder', said: `${folder}'s folder on \`${key}\` brings commits in itself (it fetches ${rec.name} about once a minute), so the relay leaves it to that folder.` }
+    if (!relayLooks(this, key)) return { state: 'not-looking', said: `The relay isn't looking after \`${key}\` right now.` }
+    const now = Date.now()
+    const last = this.syncAsked.get(key) || 0
+    if (now - last < SYNC_EVERY_MS) {
+      const ago = Math.max(1, Math.round((now - (rec.checkedAt || last)) / 1000))
+      return { state: 'recent', said: `The relay asked GitHub about ${rec.name} for \`${key}\` ${ago}s ago, and asks at most once a minute per branch. ${rec.clash ? `Its clash is task ${rec.clash.task} on the board.` : rec.problem ? `Note: ${rec.problem}.` : rec.sha === rec.head ? `\`${key}\` was up to date with ${rec.name} then.` : ''}`.trim() }
+    }
+    this.syncAsked.set(key, now)
+    if (rec.backoffUntil > now) return { state: 'backoff', said: `Not now: ${rec.problem || 'GitHub asked the relay to slow down'}.` }
+    const out = await this.checkUpstreamsNow([key])
+    const r = out.find((x) => x.branch === key)
+    return { state: r ? r.state : 'not-looking', said: describeRelayCheck(r, upstreamsOf(this)[key] || rec, key, this) }
+  }
+
+  /** The owner sets (or clears, with '') the read-only GitHub token. Never echoed or logged. */
+  setGithubToken (token) {
+    const t = String(token ?? '').trim()
+    if (t && !validToken(t)) throw new Error("That doesn't look like a GitHub token (ghp_… or github_pat_…).")
+    if (t) this.meta.githubToken = t
+    else delete this.meta.githubToken
+    this.log(`[${this.name}] the owner ${t ? 'set' : 'cleared'} the GitHub token for bringing in commits`)
+    this.upstreamTokenChanged()
+    for (const [cws, a] of this.access) if (a.owner) send(cws, jsonMessage(MSG_ACCESS, this.accessMessage(a)))
+    return { ok: true, githubToken: !!t }
+  }
+
+  /**
+   * A branch on GitHub a hosted agent switches to with create (quilt_switch_branch): its files at
+   * the branch's head, from the repository the session follows (the agent's branch's, else any
+   * branch's). { state: 'loaded', texts, blobs, skipped, bytes, upstream: { repo, name, ref, sha } }
+   * or { state, repo } saying why not ('no-repo', 'not-github', 'no-branch', 'private', ...).
+   */
+  async branchFromGitHub (id, key) {
+    const recs = upstreamsOf(this)
+    const mine = recs[this.hostedBranch(id)]
+    const src = mine && mine.repo ? mine : Object.values(recs).find((r) => r && r.repo)
+    if (!src) return { state: 'no-repo' }
+    const repo = parseRepo(`https://${src.repo}`)
+    if (!repo || !repo.github) return { state: 'not-github', repo: src.repo }
+    const token = validToken(this.meta.githubToken) ? this.meta.githubToken : null
+    const r = await loadBranch({ repo: src.repo, ref: key, token, fetch: this.githubFetch })
+    const remote = src.name && src.ref && src.name.endsWith(`/${src.ref}`) ? src.name.slice(0, -(src.ref.length + 1)) : 'origin'
+    return { ...r, repo: src.repo, ...(r.state === 'loaded' ? { upstream: { repo: src.repo, name: `${remote}/${key}`, ref: key, sha: r.head } } : {}) }
   }
 
   /** The owner set (or cleared) the read-only GitHub token: every branch is looked at afresh. */
@@ -1204,6 +1391,7 @@ class Room {
       }
       return { ok: true }
     }
+    if (req.op === 'syncUpstream') throw new Error('syncUpstream is answered by itself') // see the MSG_ADMIN handler
     // A chat link lets a chat AI in, so whoever may let people in may make one, and set how long it lasts.
     if (req.op === 'approve' || req.op === 'deny' || req.op === 'chatlink' || req.op === 'chatextend') {
       if (!this.personCanAdmit(me)) throw new Error('you cannot let people into this session')
@@ -1245,14 +1433,7 @@ class Room {
       // A read-only token the relay uses to bring commits in from a private repository while no
       // folder is online (relay-upstream.js). Kept on the relay only: never in presence, the
       // branch list, a reply or the log. An empty token clears it.
-      const t = String(req.token ?? '').trim()
-      if (t && !validToken(t)) throw new Error("That doesn't look like a GitHub token (ghp_… or github_pat_…).")
-      if (t) this.meta.githubToken = t
-      else delete this.meta.githubToken
-      this.log(`[${this.name}] the owner ${t ? 'set' : 'cleared'} the GitHub token for bringing in commits`)
-      this.upstreamTokenChanged()
-      for (const [cws, a] of this.access) if (a.owner) send(cws, jsonMessage(MSG_ACCESS, this.accessMessage(a)))
-      return { ok: true, githubToken: !!t }
+      return this.setGithubToken(req.token)
     }
     if (req.op === 'end') {
       // Reply first; the relay then sends everyone away and deletes the room.
@@ -1523,7 +1704,7 @@ class Room {
   handOff (c, r, { context = '', auto = false } = {}) {
     const now = Date.now()
     const queue = (c.queue || []).filter((x) => x.id !== r.id)
-    const next = { ...(c.branch ? { branch: c.branch } : {}), by: r.by, ...(r.byId ? { byId: r.byId } : {}), ...(r.of ? { of: r.of } : {}), pattern: c.pattern, note: String(r.title || '').slice(0, 500), ts: now, from: c.by }
+    const next = { ...(c.branch ? { branch: c.branch } : {}), by: r.by, ...(r.byId ? { byId: r.byId } : {}), ...(r.of ? { of: r.of } : {}), pattern: c.pattern, note: String(r.title || '').slice(0, 500), ts: now, from: c.by, ...(r.clash ? { clash: r.clash } : {}) }
     if (queue.length) next.queue = queue
     this.meta.claims[this.claimKey(c.branch, c.pattern)] = next
     this.meta.seen[this.holderKey(next)] = now
@@ -1593,11 +1774,19 @@ class Room {
       if (pattern.length > MAX_PATTERN) throw new Error('pattern too long')
       if (CONTROL_CHARS.test(pattern)) throw new Error('a pattern cannot contain control characters')
       const existing = this.meta.claims[at(pattern)]
-      if (existing && !mine(existing)) throw new Error(`${pattern} is already claimed by ${existing.by}`)
+      // A clash task's files (clash.js): claimed for its assignee while it merges, and taken over
+      // from the one before when the task is handed on (only by whoever it is assigned to now).
+      const clash = typeof req.clash === 'string' && /^[0-9a-f]{16}$/.test(req.clash) ? req.clash : null
+      if (clash) {
+        const t = this.tasks.get(clash)
+        if (!t || t.column === 'done' || t.assignee !== name) throw new Error(`task ${clash} isn't yours to merge`)
+      }
+      const takeOver = (c) => !!clash && c.clash === clash
+      if (existing && !mine(existing) && !takeOver(existing)) throw new Error(`${pattern} is already claimed by ${existing.by}`)
       const paths = this.branchPaths(branch)
-      const other = this.claimList(branch).find((c) => !mine(c) && patternsOverlap(c.pattern, pattern, paths))
+      const other = this.claimList(branch).find((c) => !mine(c) && !takeOver(c) && patternsOverlap(c.pattern, pattern, paths))
       if (other) throw new Error(`${pattern} overlaps ${other.by}'s claim on ${other.pattern}`)
-      this.meta.claims[at(pattern)] = { ...onBranch, by: name, ...(id ? { byId: id } : {}), pattern, note: who.talk === false ? '' : String(req.note ?? '').slice(0, 500), ts: Date.now(), ...(who.persona ? { of: who.of } : {}), ...(existing?.queue ? { queue: existing.queue } : {}) }
+      this.meta.claims[at(pattern)] = { ...onBranch, by: name, ...(id ? { byId: id } : {}), pattern, note: who.talk === false ? '' : String(req.note ?? '').slice(0, 500), ts: Date.now(), ...(who.persona ? { of: who.of } : {}), ...(clash ? { clash } : {}), ...(existing?.queue ? { queue: existing.queue } : {}) }
       return { ok: true }
     }
     if (req.op === 'release') {
@@ -1639,6 +1828,8 @@ class Room {
       if (!prev && c.queue.length >= MAX_QUEUE) throw new Error(`${c.queue.length} are already waiting for ${c.pattern}`)
       const r = prev || { id: crypto.randomBytes(6).toString('hex'), by: name, ...(id ? { byId: id } : {}), ...(who.persona ? { of: who.of } : {}), ts: Date.now() }
       Object.assign(r, { path: file, title, description, ...(task ? { task } : {}) })
+      // Asked for by a clash task's assignee for the merge: let go of when the task is done (dropClashClaims).
+      if (typeof req.clash === 'string' && /^[0-9a-f]{16}$/.test(req.clash) && this.tasks.get(req.clash)?.assignee === name) r.clash = req.clash
       if (!prev) c.queue.push(r)
       this.postChat({ by: name, to: c.by, kind: 'queue', path: file, text: `📥 File queue · ${file}: ${`${title}${description ? ` — ${description}` : ''}`.replace(/[.!?]+$/, '')}. When you're done with it, hand it off to me with your context.` })
       return { ok: true, request: r.id, position: c.queue.indexOf(r) + 1, holder: c.by, pattern: c.pattern }
@@ -1907,6 +2098,15 @@ class Room {
       let reply
       try {
         req = JSON.parse(decoding.readVarString(dec))
+        // quilt_sync_branch from a folder that can't bring commits in itself (no git, or its fetch
+        // fails): any member let in may ask the relay to look at GitHub for its branch now.
+        if (req.op === 'syncUpstream') {
+          const id = req.id
+          if (!this.access.get(ws) || !ws.branch) throw new Error('not in this session')
+          this.syncUpstreamNow(ws.branch).then((sync) => ({ id, ok: true, sync }), (err) => ({ id, ok: false, error: err.message }))
+            .then((r) => { if (this.conns.has(ws)) send(ws, jsonMessage(MSG_MEMBERS, { members: this.memberList(), sessionName: this.meta.name || '', admitBy: this.admitBy, pending: this.personCanAdmit(this.access.get(ws)) ? this.pendingList() : [], reply: r })) })
+          return
+        }
         reply = { id: req.id, ...this.adminRequest(ws, req) }
       } catch (err) {
         reply = { id: req.id, ok: false, error: err.message }
@@ -1923,6 +2123,7 @@ class Room {
     this.destroyed = true
     clearTimeout(this.unloadTimer)
     clearTimeout(this.upstreamSoonTimer)
+    clearTimeout(this.upstreamAgainTimer)
     this.save()
     this.store.destroy()
     this.guard.destroy()

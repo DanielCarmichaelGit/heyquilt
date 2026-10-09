@@ -247,6 +247,8 @@ export class Session extends EventEmitter {
     this.upstreamFetch = false
     this.upstreamPoll = null
     this.upstreamSaid = '' // the advice last given, so it's given once per state
+    this.fetchState = null // the last git fetch of the upstream: { ok, error, at } (noteFetch)
+    this.clashClaims = null // the files held for this member's clash task: { task, via, paths } (claimClashFiles)
     this.upstreamDeferred = null // the commit this folder let another member's folder bring in first
     this.clashAbsent = null // { task, name, since }: a clash task's assignee seen gone from the branch
     this.clashWait = null // { sha, since }: since when this folder has waited for the first in line to write the clash task
@@ -1618,6 +1620,7 @@ export class Session extends EventEmitter {
     fs.rmSync(this.branchStateDir(to), { recursive: true, force: true }) // in state.bin from here
     // The upstream is the new branch's now.
     this.upstream = null
+    this.fetchState = null
     this.upstreamSaid = ''
     this.upstreamDeferred = null
     this.indexLate = null
@@ -2343,7 +2346,11 @@ export class Session extends EventEmitter {
     if (!head || head.key !== this.git.key) return this.upstream
     await this.fixIndex()
     let up = await upstreamOf(this.root)
-    if (up && fetch && up.remote && await fetchUpstream(this.root, up.remote)) up = await upstreamOf(this.root)
+    if (up && fetch && up.remote && up.remote !== '.') {
+      const f = await fetchUpstream(this.root, up.remote, up.url)
+      this.noteFetch(f, up)
+      if (f.ok) up = await upstreamOf(this.root)
+    }
     this.refreshRepo()
     if (this.stopped || !this.quietForUpstream()) return this.upstream
     // The branch moved without this folder's files moving with it: another worktree of the
@@ -2400,7 +2407,8 @@ export class Session extends EventEmitter {
     for (const rel of paths) {
       if (!this.syncable(rel)) continue
       const claim = this.claimFor(rel)
-      if (claim && !this.ownClaim(claim)) { state({ waiting: `${claim.by} holds ${rel}` }); return }
+      // A file held for a clash's merge (clash.js) is reported as clashing below; written, never.
+      if (claim && !this.ownClaim(claim) && !claim.clash) { state({ waiting: `${claim.by} holds ${rel}` }); return }
       if (this.writeRefusal(rel)) { state({ waiting: `you may not change ${rel} in this session` }); return }
     }
     const diskKey = (rel) => {
@@ -2436,6 +2444,11 @@ export class Session extends EventEmitter {
       const behind = up ? up.behind : await commitsBetween(this.root, from, to)
       state({ behind, conflicts: plan.conflicts })
       return
+    }
+    // Clean, but a file it would write is held for a clash's merge by someone else: it waits for them.
+    for (const rel of [...plan.writes.keys(), ...plan.moves.flatMap((m) => [m.from, m.to])]) {
+      const claim = this.syncable(rel) ? this.claimFor(rel) : null
+      if (claim && !this.ownClaim(claim)) { state({ waiting: `${claim.by} holds ${rel}` }); return }
     }
     // The branch first: if it moved meanwhile, nothing has been written.
     if (moveRef ? !(await fastForward(this.root, branch, from, to)) : !(await resetIndex(this.root, to))) {
@@ -2501,14 +2514,47 @@ export class Session extends EventEmitter {
    * the next look or another member's folder. What happened: { branch, upstream, moved, busy }.
    */
   async syncBranchNow () {
-    if (!this.git) return { git: false }
+    // A folder that can't bring commits in itself (no git here, or its fetch fails) asks the
+    // relay to look at GitHub for its branch now (relay-upstream.js), as a hosted agent can.
+    const relay = () => this.askRelaySync()
+    if (!this.git) return { git: false, relay: await relay() }
     if (!this.git.branch) return { git: true, branch: null }
     // A save or a git command a moment ago: give it a few seconds to settle first.
     for (let i = 0; i < 30 && !this.quietForUpstream() && !this.hold; i++) await new Promise((r) => setTimeout(r, 200))
     const before = this.gitSeen && this.gitSeen.sha
     const busy = this.hold ? this.hold.kind : this.quietForUpstream() ? null : 'files are still changing here'
     if (!busy) await this.gitTask(() => this.checkUpstream({ fetch: true, now: true }))
-    return { git: true, branch: this.git.branch, busy, upstream: this.upstream, moved: !!(this.gitSeen && before && this.gitSeen.sha !== before) }
+    const failed = this.upstream && this.upstream.fetchOk === false
+    return { git: true, branch: this.git.branch, busy, upstream: this.upstream, moved: !!(this.gitSeen && before && this.gitSeen.sha !== before), ...(failed ? { relay: await relay() } : {}) }
+  }
+
+  /** Asks the relay to look at GitHub for this branch now; what it said ({ state, ... }), or { error }. Never throws. */
+  async askRelaySync () {
+    try {
+      if (!this.conn || !this.conn.adminRequest) return { error: 'not connected to the relay' }
+      const r = await this.conn.adminRequest({ op: 'syncUpstream' })
+      return r && r.sync ? r.sync : { error: 'the relay did not say' }
+    } catch (err) { return { error: err.message } }
+  }
+
+  /**
+   * What the last git fetch of the upstream said: recorded, shared in presence (upstream.fetchOk
+   * false: the relay then brings commits in for this branch itself) and said once per reason.
+   */
+  noteFetch (f, up) {
+    if (!f || f.skipped) return
+    const prev = this.fetchState
+    this.fetchState = { ok: !!f.ok, error: f.ok ? null : (f.error || 'git fetch failed'), at: Date.now() }
+    if (this.upstream) this.upstream = { ...this.upstream, fetchOk: this.fetchState.ok, fetchError: this.fetchState.error, fetchAt: this.fetchState.at }
+    if (prev && prev.ok === this.fetchState.ok && prev.error === this.fetchState.error) return
+    const name = up && up.name ? up.name : 'the upstream'
+    if (!this.fetchState.ok) {
+      const said = `Couldn't fetch ${name}: ${this.fetchState.error}. Commits pushed elsewhere can't come in through this folder until it can (git needs credentials that work without a prompt); meanwhile the relay brings them in from GitHub for \`${this.git ? this.git.branch : this.branch}\` when it knows the repository.`
+      this.log(`⚠️ ${said}`)
+      this.notice(said)
+    } else if (prev && !prev.ok) this.log(`✅ fetching ${name} works again`)
+    this.shareGit()
+    this.scheduleStatusWrite()
   }
 
   /**
@@ -2546,6 +2592,8 @@ export class Session extends EventEmitter {
     const next = up ? {
       name: up.name, url: up.url || null, remote: up.remote || null, sha: up.sha || null, behind: up.behind || 0, ahead: up.ahead || 0,
       diverged: !!up.diverged, conflicts: up.conflicts || [], waiting: up.waiting || null, brought: up.brought || (prev && prev.brought) || null, checkedAt: Date.now(),
+      // The last fetch: false with a reason when it failed, so nobody reads "up to date" from stale refs.
+      fetchOk: this.fetchState ? this.fetchState.ok : null, fetchError: this.fetchState ? this.fetchState.error : null, fetchAt: this.fetchState ? this.fetchState.at : null,
       // Who is merging a clash stays said until reviewClash looks again (no flicker in the branch list).
       mergedBy: (prev && prev.mergedBy) || null, clashTask: (prev && prev.clashTask) || null, clashMine: !!(prev && prev.clashMine)
     } : null
@@ -2616,6 +2664,11 @@ export class Session extends EventEmitter {
   async reviewClashNow () {
     const branch = this.git && this.git.branch
     if (!branch || this.stopped || !this.conn || !this.conn.awareness) return null
+    // The files held for our clash task: let go of once it is done or someone else's.
+    if (this.clashClaims) {
+      const t = readTasks(this.tasks).find((x) => x.id === this.clashClaims.task)
+      if (!t || t.column === 'done' || !this.isMine(t.assignee)) await this.releaseClashClaims(t && t.column !== 'done' ? `task ${this.clashClaims.task} went to ${t.assignee}` : `the merge (task ${this.clashClaims.task}) is done`)
+    }
     const u = this.upstream
     let info = null
     if (u && u.diverged) this.sayUpstream(catchUpAdvice({ branch, upstream: u.name, ...u }))
@@ -2816,6 +2869,7 @@ export class Session extends EventEmitter {
       const t = readTasks(this.tasks).find((x) => x.id === id)
       if (t && t.column !== 'done' && t.assignee === assignee) {
         if (comment) this.clashComment(id, comment)
+        this.claimClashFiles(t, assignee).catch((err) => this.log(`could not claim the clashing files for task ${id}: ${err.message}`))
         for (const p of this.personas.values()) p.inbox.forget(id)
         this.inboxTracker.forget(id)
         this.scanInbox({ quiet: false, personas: false })
@@ -2824,6 +2878,57 @@ export class Session extends EventEmitter {
     }, this.clashSettleMs)
     timer.unref()
     this.clashPending = { id, timer }
+  }
+
+  /**
+   * The clash task `t` survived as this member's (its AI session `assignee`'s): every clashing file
+   * is claimed for that session while it merges, so nobody else edits them meanwhile (taken over
+   * from whoever held them for the task before). A file someone else holds is asked for in its file
+   * queue instead, and the task says so. The relay lets go of them when the task is done.
+   */
+  async claimClashFiles (t, assignee) {
+    if (!this.conn || this.stopped) return
+    const u = this.upstream
+    const paths = t.files && t.files.length ? t.files : u ? u.conflicts.map((c) => c.path) : []
+    const entry = [...this.personas.entries()].find(([, q]) => q.name === assignee || q.aliases.includes(assignee))
+    const via = entry ? entry[0] : null
+    const upstream = (u && u.name) || 'upstream'
+    const claimed = []
+    const asked = []
+    for (const rel of paths) {
+      try {
+        await this.conn.claimRequest({ op: 'claim', pattern: rel, note: `Merging commits from ${upstream} (task ${t.id})`, clash: t.id, ...this.as(via) })
+        claimed.push(rel)
+        // Held for the merge now, not because an edit followed: an AI going idle doesn't let go of it.
+        this.autoClaims.delete(rel)
+        this.autoVia.delete(rel)
+      } catch (err) {
+        const c = this.claimFor(rel)
+        if (!c || this.ownClaim(c)) { this.log(`could not claim ${rel} for the merge: ${err.message}`); continue }
+        try {
+          await this.conn.claimRequest({ op: 'request', path: rel, title: `Merging commits from ${upstream}`, description: `Task ${t.id}: the commits clash with the session's work in this file. I merge it once you hand it over.`, task: t.id, clash: t.id, ...this.as(via) })
+          asked.push(`${c.by} holds ${rel}`)
+        } catch (e2) { this.log(`could not ask for ${rel} for the merge: ${e2.message}`) }
+      }
+    }
+    this.clashClaims = { task: t.id, via, paths: claimed }
+    if (claimed.length) this.log(`🔒 holding ${claimed.join(', ')} for the merge (task ${t.id})`)
+    if (asked.length) this.clashComment(t.id, `${asked.join('; ')}: asked for ${asked.length === 1 ? 'it' : 'them'} in the file queue for ${assignee}, who gets ${asked.length === 1 ? 'it' : 'them'} with their context when they hand ${asked.length === 1 ? 'it' : 'them'} over.`)
+  }
+
+  /** Lets go of the files held for our clash task (handed to whoever waits, with `why`). */
+  async releaseClashClaims (why) {
+    const held = this.clashClaims
+    this.clashClaims = null
+    if (!held || !this.conn) return
+    for (const rel of held.paths) {
+      const c = this.claimFor(rel)
+      if (!c || c.clash !== held.task || !this.ownClaim(c)) continue
+      try {
+        if (c.queue && c.queue.length) await this.conn.claimRequest({ op: 'handoff', pattern: c.pattern, context: `Quilt let go of it: ${why}.`, ...this.as(held.via) })
+        else await this.conn.claimRequest({ op: 'release', pattern: c.pattern, ...this.as(held.via) })
+      } catch {}
+    }
   }
 
   /** The record of this branch's clash task, and old records pruned (a finished or dismissed one after a few days). */
@@ -2904,7 +3009,7 @@ export class Session extends EventEmitter {
       held: this.hold ? this.hold.kind : null,
       clash: 1, // this Quilt hands a clash to one AI (reviewClash): only such members are given one
       on: this.hold && this.hold.kind === 'switching' ? this.hold.to : this.git.key,
-      upstream: u ? { name: u.name, url: u.url, remote: u.remote || null, sha: u.sha || null, behind: u.behind, ahead: u.ahead, diverged: u.diverged, conflicts: u.conflicts.length, waiting: u.waiting, checkedAt: u.checkedAt, mergedBy: u.mergedBy || null, clashTask: u.clashTask || null, mayWrite: u.conflicts.length ? this.mayWriteAll(u.conflicts.map((c) => c.path)) : null } : null,
+      upstream: u ? { name: u.name, url: u.url, remote: u.remote || null, sha: u.sha || null, behind: u.behind, ahead: u.ahead, diverged: u.diverged, conflicts: u.conflicts.length, waiting: u.waiting, checkedAt: u.checkedAt, mergedBy: u.mergedBy || null, clashTask: u.clashTask || null, mayWrite: u.conflicts.length ? this.mayWriteAll(u.conflicts.map((c) => c.path)) : null, ...(u.fetchOk === false ? { fetchOk: false, fetchError: u.fetchError || 'git fetch failed' } : {}) } : null,
       repo: this.repo
     }
   }

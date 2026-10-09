@@ -122,6 +122,14 @@ test('a clash seen by two folders becomes one task, for one member; the other fo
   const row = other.status().branches.find((b) => b.name === 'main')
   assert.match(branchesMarkdown([row]), new RegExp(`being merged by ${owner.name} \\(task ${id}\\)`))
   assert.match(upstreamLine(other.status().git.upstream), /being merged by/)
+  // Its assignee holds the clashing file while it merges: a partner's edit is refused with the usual claim.
+  const held = await waitFor(() => other.claimFor('src/app.js'))
+  assert.equal(held.by, owner.name)
+  assert.equal(held.clash, id)
+  assert.equal(held.note, `Merging commits from origin/main (task ${id})`)
+  const before = await other.prepareEdit(['src/app.js'])
+  assert.equal(before.files[0].ok, false)
+  assert.equal(before.files[0].claim.by, owner.name)
 })
 
 test('resolving it in the assignee\'s folder closes the task; the other folder follows without merging again', async (t) => {
@@ -147,6 +155,9 @@ test('resolving it in the assignee\'s folder closes the task; the other folder f
   await sleep(1000) // not opened again
   assert.equal(clashTasks(A).length, 1)
   assert.equal(clashTasks(A)[0].column, 'done')
+  // The merge is done: the file it was held for is let go of, and a partner may edit it again.
+  await waitFor(() => !other.claimFor('src/app.js')?.clash)
+  assert.equal((await other.prepareEdit(['src/app.js'])).files[0].ok, true)
 })
 
 test('when the assignee leaves the session, the clash task goes to the next member after a while', async (t) => {
@@ -166,6 +177,23 @@ test('when the assignee leaves the session, the clash task goes to the next memb
   assert.equal(task.id, id)
   assert.match(task.comments.at(-1).text, new RegExp(`^Handed to ${other.name}: ${owner.name} has been away from \`main\``))
   assert.equal(clashTasks(other).length, 1)
+  // The file held for the merge moved with the task: the new assignee holds it now.
+  const held = await waitFor(() => other.claimFor('src/app.js')?.by === other.name && other.claimFor('src/app.js'))
+  assert.equal(held.clash, id)
+})
+
+test('a bring-in never writes a file someone else holds: it waits until they let go of it', async (t) => {
+  // Alice's Quilt doesn't bring commits in itself here, so only Bob's folder could.
+  const ctx = await setup(t, { alice: { bringInUpstream: false } })
+  const { A, B, dirB, push } = ctx
+  await A.claim('README.md', 'editing the intro')
+  await waitFor(() => B.claimFor('README.md')?.by === 'alice')
+  const sha = push('README.md', 'hello, pushed\n')
+  await waitFor(() => B.status().git.upstream?.waiting === 'alice holds README.md', 15000)
+  assert.equal(read(dirB, 'README.md'), 'hello\n', 'not written under her')
+  assert.notEqual(git(dirB, 'rev-parse', 'HEAD'), sha)
+  await A.release('README.md')
+  await waitFor(() => read(dirB, 'README.md') === 'hello, pushed\n' && git(dirB, 'rev-parse', 'HEAD') === sha, 15000)
 })
 
 test('two members that race to hand out the same clash write one task, and exactly one AI is told it is theirs', async (t) => {

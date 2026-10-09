@@ -131,9 +131,9 @@ export function clashFacts ({ branch, upstream, behind, conflicts = [] }) {
  * upstream for each file follows in the next comments.
  */
 export function relayClashBrief ({ branch, upstream, sha, base, behind, conflicts = [], compare = '' }) {
-  const lines = [`${n(behind, 'commit')} on ${upstream} (${base.slice(0, 7)} → ${sha.slice(0, 7)}) clash with the session's uncommitted work on \`${branch}\`, and no folder on \`${branch}\` is online, so the relay brought nothing in:`]
+  const lines = [`${n(behind, 'commit')} on ${upstream} (${base.slice(0, 7)} → ${sha.slice(0, 7)}) clash with the session's uncommitted work on \`${branch}\`, and no folder on \`${branch}\` that can bring commits in is online, so the relay brought nothing in:`]
   for (const c of conflicts.slice(0, 20)) lines.push(`- ${c.path}: ${c.why}`)
   if (conflicts.length > 20) lines.push(`- and ${conflicts.length - 20} more`)
-  lines.push('', `For each file: read it with quilt_read_file, fold in what ${upstream} changed (the next comments${compare ? `, or ${compare}` : ''}) while keeping the session's work, and write the merged file with quilt_write_file, without conflict markers. The relay looks again about every 10 minutes and brings the rest of the commits in once every file merges; Quilt closes this task by itself then: no need to move it.`)
+  lines.push('', `For each file: read it with quilt_read_file, fold in what ${upstream} changed (the next comments${compare ? `, or ${compare}` : ''}) while keeping the session's work, and write the merged file (quilt_write_file, or in your folder), without conflict markers. Each write of one of these files makes the relay look again at once: a file counts as merged when the lines that clashed were rewritten. If you merged a file differently (kept one side whole, say), move this task to QA when every file is done: that tells the relay the files are merged as they are. The rest of the commits then come in, and Quilt closes this task by itself. quilt_sync_branch asks the relay to look again too.`)
   return lines.join('\n').slice(0, 2000)
 }

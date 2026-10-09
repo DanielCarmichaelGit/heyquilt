@@ -849,9 +849,17 @@ export async function runMcp () {
   }))
 
   server.registerTool('quilt_sync_branch', {
-    description: 'Bring commits made outside the session into it now: fetches this folder\'s upstream (say origin/main after a PR merged, or a push from a worktree) and moves the branch forward, with the session\'s uncommitted work merged in. Quilt also does this by itself about once a minute; call it right after you push or merge elsewhere. It never merges git history: a branch that has diverged, or files that clash with the session\'s work, become one task on the board for one AI to resolve with git (the others are told to leave those files to them).',
+    description: 'Bring commits made outside the session into it now: fetches this folder\'s upstream (say origin/main after a PR merged, or a push from a worktree) and moves the branch forward, with the session\'s uncommitted work merged in. Quilt also does this by itself about once a minute; call it right after you push or merge elsewhere. It says when the fetch fails (git has no credentials here, say). A folder that is not a git clone, or can\'t fetch, asks the relay to bring the commits in from GitHub instead. It never merges git history: a branch that has diverged, or files that clash with the session\'s work, become one task on the board for one AI to resolve (the others are told to leave those files to them).',
     inputSchema: {}
   }, () => withDaemon(async (d) => describeBranchSync(await call(d, 'POST', '/branches/sync'))))
+
+  server.registerTool('quilt_github_token', {
+    description: 'Session owner only: set (or clear, with an empty token) the read-only GitHub token the relay uses to bring commits in from a private repository while no folder can, and to load branches from it for hosted agents. A fine-grained token with read access to the repository\'s contents is enough. It goes to the relay and stays there: never shown again.',
+    inputSchema: { token: z.string().max(300).describe('The token (github_pat_… or ghp_…), or "" to remove it') }
+  }, ({ token }) => withDaemon(async (d) => {
+    const r = await call(d, 'POST', '/github-token', { token })
+    return r.githubToken ? 'Saved the GitHub token on the relay. It looks at the session\'s branches again now.' : 'Removed the GitHub token.'
+  }))
 
   server.registerTool('quilt_commit_status', {
     description: 'Is it a good moment to commit? Lists open commit requests and whose AI is still working (not counting yours).',

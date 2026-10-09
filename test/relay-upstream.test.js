@@ -179,6 +179,14 @@ test('commits come in when only a hosted agent is on the branch: one transaction
   // The session's own uncommitted work on src/a.js, then a push that changes another part of it and adds a file.
   assert.ok(!(await grok.call('quilt_write_file', { path: 'src/a.js', content: 'ALPHA (session)\nbeta\n' })).isError)
   c1 = push(pusherW, { 'src/a.js': 'alpha\nbeta\ngamma (pushed)\n', 'docs/new.md': 'new doc\n' })
+  // Grok holds src/a.js (its write claimed it): the relay never writes a file someone holds, it waits.
+  const [held] = await srv.checkUpstreams(W, { force: true })
+  assert.equal(held.state, 'waiting', JSON.stringify(held))
+  assert.equal(held.by, 'Grok-Bot')
+  assert.match(room.meta.upstreams.main.problem, /Grok-Bot holds src\/a\.js: the relay brings origin\/main in once they let go of it/)
+  assert.equal((await grok.call('quilt_read_file', { path: 'docs/new.md' })).isError, true, 'nothing written meanwhile')
+  assert.ok(!(await grok.call('quilt_release', { pattern: 'src/a.js' })).isError)
+  assert.ok(!(await grok.call('quilt_release', { pattern: 'README.md' })).isError)
   const updates = []
   const e = room.store.get('main')
   const onUpdate = (u, origin) => updates.push(origin)
@@ -318,7 +326,7 @@ test('a private repository without a token: the status says so, once', async () 
   const n = logs.length
   const [r] = await srv.checkUpstreams(S, { force: true })
   assert.equal(r.state, 'private')
-  const said = "the relay can't read github.com/acme/secret: add a read-only token in session settings"
+  const said = "the relay can't read github.com/acme/secret: ask the session owner to add a read-only GitHub token (session settings, or quilt_github_token)"
   assert.equal(room.meta.upstreams.main.problem, said)
   assert.equal(room.branchList().find((b) => b.key === 'main').relay.problem, said)
   assert.match(out(await kim.call('quilt_status')), new RegExp(`Note: ${said.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
@@ -456,8 +464,8 @@ test('due: hosted agents on the branch (or a call in the last 30 minutes), no fo
   assert.deepEqual(dueBranches(fakeRoom({ upstreams: rec({ hostedAt: now - 60000 }) }), { now }), ['main'], 'a hosted call a minute ago')
   assert.deepEqual(dueBranches(fakeRoom({ hosted: [{ id: 'agent:x', name: 'X' }], upstreams: rec({ checkedAt: now - 60000 }) }), { now }), [], 'looked at a minute ago')
   assert.deepEqual(dueBranches(fakeRoom({ hosted: [{ id: 'agent:x', name: 'X' }], upstreams: rec({ backoffUntil: now + 1000 }) }), { now }), [])
-  const folder = { name: 'P', git: { branch: 'main', sha: 'a'.repeat(40), upstream: null } }
-  assert.deepEqual(dueBranches(fakeRoom({ states: [folder], hosted: [{ id: 'agent:x', name: 'X' }], upstreams: rec({}) }), { now }), [], 'a folder is online on it')
+  const folder = { name: 'P', git: { branch: 'main', sha: 'a'.repeat(40), upstream: { name: 'origin/main', behind: 0 } } }
+  assert.deepEqual(dueBranches(fakeRoom({ states: [folder], hosted: [{ id: 'agent:x', name: 'X' }], upstreams: rec({}) }), { now }), [], 'a folder that can bring commits in is online on it')
 })
 
 test('the branch board shows what the relay brought in and when it last looked', () => {

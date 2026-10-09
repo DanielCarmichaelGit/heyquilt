@@ -21,7 +21,7 @@ export function cleanGit (g) {
     key: str(g.key, 200),
     on: str(g.on, 200),
     held: str(g.held, 20),
-    upstream: u ? { name: str(u.name, 200), url: str(u.url, 500), behind: num(u.behind), ahead: num(u.ahead), diverged: !!u.diverged, conflicts: num(u.conflicts), waiting: str(u.waiting, 300), mergedBy: str(u.mergedBy, 120), clashTask: typeof u.clashTask === 'string' && /^[0-9a-f]{16}$/.test(u.clashTask) ? u.clashTask : null } : null,
+    upstream: u ? { name: str(u.name, 200), url: str(u.url, 500), behind: num(u.behind), ahead: num(u.ahead), diverged: !!u.diverged, conflicts: num(u.conflicts), waiting: str(u.waiting, 300), mergedBy: str(u.mergedBy, 120), clashTask: typeof u.clashTask === 'string' && /^[0-9a-f]{16}$/.test(u.clashTask) ? u.clashTask : null, ...(u.fetchOk === false ? { fetchOk: false, fetchError: str(u.fetchError, 200) || 'git fetch failed' } : {}) } : null,
     repo: r ? {
       worktrees: (Array.isArray(r.worktrees) ? r.worktrees : []).slice(0, 50).map((w) => ({ name: str(w && w.name, 200), branch: str(w && w.branch, 200) })),
       branches: (Array.isArray(r.branches) ? r.branches : []).slice(0, 30).map((b) => ({
@@ -56,7 +56,9 @@ export function branchBoard (members, sessionBranches = []) {
     if (g.branch || g.key) {
       const e = entry(g.on || g.key || g.branch)
       e.folders.push({ name: m.name, held: g.held === 'switching' ? null : g.held, upstream: g.upstream })
-      if (g.upstream && (!e.upstream || g.upstream.behind < e.upstream.behind)) e.upstream = g.upstream
+      // The folder that sees the most: one whose fetch works over one whose doesn't, then the least behind.
+      const better = (a, b) => !b || ((a.fetchOk === false) !== (b.fetchOk === false) ? b.fetchOk === false : a.behind < b.behind)
+      if (g.upstream && better(g.upstream, e.upstream)) e.upstream = g.upstream
     }
     if (!g.repo) continue
     for (const b of g.repo.branches) {
@@ -98,6 +100,8 @@ const ago = (ts, now) => {
 /** One line on how a branch stands against its upstream, or ''. */
 export function upstreamLine (u) {
   if (!u || !u.name) return ''
+  // A fetch that failed: what git last knew is stale, so never "up to date".
+  if (u.fetchOk === false) return `can't fetch ${u.name}: ${u.fetchError || 'git fetch failed'}${u.behind ? ` (${u.behind} behind at the last fetch that worked)` : ''}`
   // A clash is handed to one AI as a task (clash.js): who, when it is.
   const by = u.mergedBy ? `; being merged by ${u.mergedBy}${u.clashTask ? ` (task ${u.clashTask})` : ''}` : ''
   if (u.diverged) return `diverged from ${u.name} (${u.ahead} ahead, ${u.behind} behind)${by}`
@@ -130,7 +134,7 @@ export function branchesMarkdown (board, { now = Date.now(), limit = 12, mine = 
   const out = []
   for (const b of board.slice(0, limit)) {
     const who = [
-      ...b.folders.map((f) => `${f.name}'s folder${f.held ? ` (${f.held})` : ''}${f.upstream && (f.upstream.conflicts || f.upstream.diverged) ? ` (${upstreamLine(f.upstream)})` : ''}`),
+      ...b.folders.map((f) => `${f.name}'s folder${f.held ? ` (${f.held})` : ''}${f.upstream && (f.upstream.conflicts || f.upstream.diverged || f.upstream.fetchOk === false) ? ` (${upstreamLine(f.upstream)})` : ''}`),
       ...b.ais.map((n) => `AI session ${n}`),
       ...b.hosted.map((n) => `hosted agent ${n}`),
       ...b.worktrees.map((w) => `worktree \`${w}\``)
@@ -150,13 +154,27 @@ export function branchesMarkdown (board, { now = Date.now(), limit = 12, mine = 
   return out.join('\n')
 }
 
+/** What the relay said when asked to look at GitHub now (Room.syncUpstreamNow), for an AI; '' when it wasn't asked. */
+export function describeRelaySync (r, branch = '') {
+  if (!r) return ''
+  if (r.error) return `The relay couldn't be asked to look at GitHub for \`${branch}\` (${r.error}).`
+  return r.said || ''
+}
+
 /** What quilt_sync_branch did, for the AI that asked. */
 export function describeBranchSync (r) {
-  if (!r || !r.git) return 'This folder is not a git repository: there is no branch to bring commits into.'
+  if (!r || !r.git) {
+    const relay = r && r.relay && !r.relay.error && r.relay.state !== 'unknown-repo' ? describeRelaySync(r.relay) : ''
+    return `This folder is not a git repository, so it can't bring commits in itself: clone the repository into this folder (\`git clone <url> .\`, with credentials that work without a prompt) and join again from there.${relay ? `\n\nMeanwhile the relay brings commits in for this branch from GitHub: ${relay}` : ' Until then, the relay brings commits in for this branch from GitHub once a member\'s folder on it has told it which repository the branch follows.'}`
+  }
   if (!r.branch) return 'This folder is not on a branch (detached HEAD): check out a branch first.'
   if (r.busy) return `Not now: ${r.busy === 'switching' ? 'this folder is moving to the branch you checked out' : r.busy === 'busy' || r.busy === 'settling' ? 'git is at work in this folder' : r.busy}. Quilt looks again by itself in a minute.`
   const u = r.upstream
   if (!u || !u.name) return `\`${r.branch}\` has no upstream (git branch --set-upstream-to sets one), so there is nothing to bring in.`
+  if (u.fetchOk === false) {
+    const relay = describeRelaySync(r.relay, r.branch)
+    return `Couldn't fetch ${u.name}: ${u.fetchError || 'git fetch failed'}. Nothing new could be looked for through this folder, so \`${r.branch}\` may be behind ${u.name}. Give git in this folder credentials that work without a prompt (a credential helper, an SSH key, or a token in the remote's URL) and call quilt_sync_branch again.${relay ? `\n\nThe relay brings commits in for \`${r.branch}\` from GitHub while no folder on it can: ${relay}` : ''}`
+  }
   if (r.moved) {
     const b = u.brought
     return `Brought ${b && b.count ? `${b.count} commit${b.count === 1 ? '' : 's'}` : 'the new commits'} from ${u.name} into the session (${b ? b.files : 0} file${b && b.files === 1 ? '' : 's'}), merged with its uncommitted work. \`${r.branch}\` is up to date.`

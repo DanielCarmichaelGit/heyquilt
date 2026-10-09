@@ -9,6 +9,8 @@ import { esc, ago } from './common.js'
 export function upstreamText (u) {
   if (!u || !u.name) return ''
   const n = (k, w) => `${k} ${w}${k === 1 ? '' : 's'}`
+  // A failed fetch: what git last knew is stale, so never "up to date".
+  if (u.fetchOk === false) return `can't fetch ${u.name}: ${u.fetchError || 'git fetch failed'}`
   const by = u.mergedBy ? `; being merged by ${u.clashMine ? 'your AI' : u.mergedBy}` : ''
   if (u.diverged) return `diverged from ${u.name}: ${n(u.ahead, 'commit')} here, ${n(u.behind, 'commit')} there${by}`
   const clash = Array.isArray(u.conflicts) ? u.conflicts.length : u.conflicts
@@ -29,7 +31,7 @@ export function relayText (r, now = Date.now()) {
   const when = (ts) => { const a = ago(ts, now); return a === 'now' ? 'just now' : /^\d+[mh]$/.test(a) ? `${a} ago` : `on ${a}` }
   const bits = []
   if (r.brought && r.brought.at) bits.push(`brought in by the relay ${when(r.brought.at)} (${n(r.brought.count, 'commit')})`)
-  if (r.clashTask) bits.push(`a clash with ${r.upstream || 'upstream'} is with a hosted agent`)
+  if (r.clashTask) bits.push(`a clash with ${r.upstream || 'upstream'} is with an agent`)
   if (r.problem) bits.push(r.problem)
   if (r.checkedAt) bits.push(`relay checked ${when(r.checkedAt)}`)
   return bits.join(' · ')
@@ -37,7 +39,7 @@ export function relayText (r, now = Date.now()) {
 
 /** Whether the label should draw the eye: this folder is behind and Quilt can't bring it in by itself. */
 export function needsHand (u) {
-  return !!(u && (u.diverged || (Array.isArray(u.conflicts) ? u.conflicts.length : u.conflicts)))
+  return !!(u && (u.diverged || u.fetchOk === false || (Array.isArray(u.conflicts) ? u.conflicts.length : u.conflicts)))
 }
 
 /** The menu's markup. `git`: this folder's (status.git); `branches`: status.branches; `me`: our name. */

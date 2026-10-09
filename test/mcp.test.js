@@ -123,6 +123,18 @@ test('quilt_commit_request_done with nothing open says so', async () => {
   assert.equal(text(await call('quilt_commit_request_done')), 'No open commit requests.')
 })
 
+test('git from a folder that is not a clone: quilt_sync_branch says to clone it, and the GitHub token is the owner\'s to set', async () => {
+  const sync = await call('quilt_sync_branch')
+  assert.ok(!sync.isError, text(sync))
+  assert.match(text(sync), /This folder is not a git repository, so it can't bring commits in itself: clone the repository into this folder/)
+  const names = (await client.listTools()).tools.map((t) => t.name)
+  assert.ok(names.includes('quilt_github_token'))
+  const r = await call('quilt_github_token', { token: 'github_pat_TESTONLY0123456789abcdefMCP' })
+  assert.equal(r.isError, true)
+  assert.match(text(r), /only the session owner can set the GitHub token/)
+  assert.doesNotMatch(text(r), /TESTONLY/)
+})
+
 test('the agent can read a partner\'s AI feed and the file tree', async () => {
   human.pushAgentEntries([
     { id: 'p', tool: 'Cursor', conv: 'c', kind: 'prompt', text: 'Refactor the auth module', ts: Date.now() },

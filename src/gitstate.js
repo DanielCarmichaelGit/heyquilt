@@ -50,9 +50,9 @@ function call (root, args, { buffer = false, input, timeout = GIT_TIMEOUT_MS, en
   // the "git is unreachable" path without touching the real PATH.
   const bin = gitBinary()
   return new Promise((resolve) => {
-    const done = (out, missing, late) => {
+    const done = (out, missing, late, stderr = '') => {
       timedOut.set(root, late); lastTimedOut = late
-      resolve({ out, missing, timedOut: late })
+      resolve({ out, missing, timedOut: late, stderr })
     }
     let child
     try {
@@ -62,11 +62,11 @@ function call (root, args, { buffer = false, input, timeout = GIT_TIMEOUT_MS, en
         timeout,
         maxBuffer: MAX_OUTPUT,
         env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', ...env }
-      }, (err, stdout) => {
+      }, (err, stdout, stderr) => {
         if (!err) { runs.add(bin); return done(stdout, false, false) }
         const missing = err.code === 'ENOENT' || err.code === 'EACCES'
         if (!missing) runs.add(bin) // it started, then failed or ran too long: git is there
-        done(null, missing, !missing && (err.killed === true || err.signal === 'SIGTERM'))
+        done(null, missing, !missing && (err.killed === true || err.signal === 'SIGTERM'), String(stderr || ''))
       })
     } catch (err) { // a cwd that is gone, say
       return done(null, err.code === 'ENOENT' || err.code === 'EACCES', false)
@@ -494,15 +494,46 @@ export async function upstreamOf (root) {
 /**
  * Fetches the branch's upstream remote in the background: only remote-tracking refs move, never
  * a file, the index or a branch. No prompt ever waits for a password (GIT_TERMINAL_PROMPT=0, no
- * askpass): a remote that needs one the folder doesn't have just isn't fetched. Returns whether it ran.
+ * askpass): a remote that needs one the folder doesn't have just isn't fetched. Returns
+ * { ok, error }: `error` says in plain English why it failed (fetchProblem), null when it worked.
  */
-export async function fetchUpstream (root, remote) {
-  if (!remote || remote === '.') return false
+export async function fetchUpstream (root, remote, url = null) {
+  if (!remote || remote === '.') return { ok: false, error: null, skipped: true }
   const r = await call(root, ['-c', 'core.askPass=', 'fetch', '--quiet', '--no-tags', '--no-write-fetch-head', '--prune', remote], {
     timeout: FETCH_TIMEOUT_MS,
     env: { GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '', SSH_ASKPASS: '', GCM_INTERACTIVE: 'never', GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND || 'ssh -o BatchMode=yes' }
   })
-  return r.out !== null
+  if (r.out !== null) return { ok: true, error: null }
+  return { ok: false, error: fetchProblem({ stderr: r.stderr, url, remote, timedOut: r.timedOut, missing: r.missing }) }
+}
+
+/** The host a remote URL points at ("github.com"), or null for a local path. */
+export function remoteHost (url) {
+  if (typeof url !== 'string' || !url) return null
+  const scp = /^[A-Za-z0-9._-]+@([A-Za-z0-9.-]+):(?!\/)/.exec(url)
+  if (scp) return scp[1].toLowerCase()
+  try { const u = new URL(url); return u.protocol === 'file:' ? null : (u.hostname || null) } catch { return null }
+}
+
+/**
+ * Why `git fetch` failed, in plain English, from what git printed: "git can't sign in to
+ * github.com from this folder", "can't reach github.com (no network?)", and so on. Never the
+ * URL itself (it may carry credentials).
+ */
+export function fetchProblem ({ stderr = '', url = null, remote = 'origin', timedOut = false, missing = false } = {}) {
+  const host = remoteHost(url) || remote || 'the remote'
+  const e = String(stderr || '').toLowerCase()
+  if (missing) return "git can't be run here"
+  if (timedOut) return `fetching from ${host} took over a minute and was stopped`
+  if (/does not appear to be a git repository|not a git repository|no such remote/.test(e)) return `${remote} isn't a repository git can fetch from`
+  if (/could not read (username|password)|terminal prompts disabled|authentication failed|permission denied \(publickey|host key verification failed|invalid username or password|access denied|returned error: 40[13]|support for password authentication was removed|repository not found|could not read from remote repository/.test(e)) {
+    return `git can't sign in to ${host} from this folder`
+  }
+  if (/could not resolve host|failed to connect|connection (timed out|refused)|network is unreachable|operation timed out|couldn't connect|unable to access|no route to host|temporary failure in name resolution/.test(e)) {
+    return `can't reach ${host} (no network?)`
+  }
+  const line = String(stderr || '').split('\n').map((l) => l.replace(/^(fatal|error):\s*/i, '').trim()).find(Boolean)
+  return line ? `git fetch failed: ${line.replace(/[a-z]+:\/\/[^\s'"]*@/gi, '').slice(0, 120)}` : 'git fetch failed'
 }
 
 /** Whether commit a is an ancestor of (or the same as) b; null when git can't say. */

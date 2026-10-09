@@ -24,8 +24,30 @@ test('tools only the CLI has are marked when both ways are explained, and left o
   assert.match(g, /quilt_merges`.*\(CLI only\)\./)
   assert.match(g, /quilt_send_file`.*\(CLI only\)\./)
   const h = agentGuide({ via: 'http' })
-  for (const tool of ['quilt_merges', 'quilt_send_file', 'quilt_request_commit', 'quilt_set_work', 'quilt_before_edit']) assert.doesNotMatch(h, new RegExp(tool))
+  for (const tool of ['quilt_merges', 'quilt_send_file', 'quilt_wait_until_idle', 'quilt_set_work', 'quilt_before_edit']) assert.doesNotMatch(h, new RegExp(tool))
   assert.doesNotMatch(agentGuide({ via: 'cli' }), /CLI only/)
+})
+
+test('git: each way in is told how commits really come in, and the tools it has for them', () => {
+  const h = agentGuide({ via: 'http' })
+  // Over HTTP the relay brings commits in: no "git pull in your folder", and the git tools hosted agents have.
+  assert.doesNotMatch(h, /git pull in your folder/)
+  assert.match(h, /the relay brings them in from GitHub about every 10 minutes/)
+  assert.match(h, /`quilt_sync_branch` brings in new commits now.*the relay asks GitHub, at most once a minute per branch/)
+  assert.match(h, /`quilt_write_file` it without conflict markers; each such write makes the relay look again at once/)
+  assert.match(h, /move the task to QA/)
+  assert.match(h, /`quilt_switch_branch`.*on GitHub but not yet in the session is loaded at its latest commit/)
+  for (const tool of ['quilt_branches', 'quilt_request_commit', 'quilt_commit_status', 'quilt_commit_request_done', 'quilt_github_token']) assert.match(h, new RegExp(tool))
+  assert.match(h, /ask the session owner/)
+  // With the CLI: a git clone with fetch credentials that work without a prompt, or the relay covers the branch.
+  const c = agentGuide({ via: 'cli' })
+  assert.match(c, /join from a git clone of the repository/)
+  assert.match(c, /fetch credentials that work without a prompt/)
+  assert.match(c, /the relay then brings them in from GitHub for that branch/)
+  assert.match(c, /git pull in your folder/)
+  assert.doesNotMatch(c, /quilt_switch_branch/, 'a folder switches with git checkout')
+  // Both: quilt_branches is not marked CLI only any more.
+  assert.doesNotMatch(agentGuide({}), /quilt_branches`[^.]*\(CLI only\)/)
 })
 
 test('over HTTP only, the guide leaves out the CLI', () => {

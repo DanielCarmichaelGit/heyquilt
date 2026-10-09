@@ -8,7 +8,7 @@ globalThis.sessionStorage = { getItem () { return null }, setItem () {} }
 globalThis.history = { replaceState () {} }
 globalThis.window = { addEventListener () {} } // common.js installs the error reporter at load
 
-const { branchMenuHtml } = await import('../src/ui/branches.js')
+const { branchMenuHtml, upstreamText, needsHand } = await import('../src/ui/branches.js')
 
 const branch = (over) => ({ name: 'main', folders: [], ais: [], worktrees: [], hosted: [], upstream: null, last: null, session: true, default: true, ...over })
 
@@ -29,4 +29,11 @@ test('the full tag sits alongside the default and in-the-session tags, not inste
 test('a branch with no `full` field (older callers) renders with no full tag, not a crash', () => {
   const html = branchMenuHtml({ git: null, branches: [{ name: 'main', folders: [], ais: [], worktrees: [], hosted: [], upstream: null, last: null, session: false, default: false }] })
   assert.doesNotMatch(html, />full</)
+})
+
+test('a folder whose fetch fails: the menu says why instead of "up to date", and draws the eye', () => {
+  const failing = { name: 'origin/main', behind: 0, ahead: 0, conflicts: [], fetchOk: false, fetchError: "git can't sign in to github.com from this folder" }
+  assert.equal(upstreamText(failing), "can't fetch origin/main: git can't sign in to github.com from this folder")
+  assert.equal(needsHand(failing), true)
+  assert.match(branchMenuHtml({ git: { branch: 'main', upstream: failing }, branches: [] }), /can&#39;t fetch origin\/main|can't fetch origin\/main/)
 })

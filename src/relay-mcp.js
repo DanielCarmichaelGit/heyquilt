@@ -29,6 +29,8 @@ import { aiName } from './persona.js'
 import { chatAbout, renderChatAbout, waitingOn, renderUnanswered, heldRefusal, queuedFor, renderQueueNotice, renderQueued, answered, unaddressed, CHAT_RULES } from './duties.js'
 import { describeSubscription, WEBHOOK_EVENTS } from './webhooks.js'
 import { registerWorkspaceTools, bytesFetcher, WORKSPACE_GUIDE } from './workspace-tools.js'
+import { DEFAULT_KEY, validBranchKey } from './branchdocs.js'
+import { LOAD_FILES } from './relay-upstream.js'
 
 const FEED_CAP = 300
 const ACTIVITY_CAP = 300
@@ -70,7 +72,10 @@ export const HOSTED_INSTRUCTIONS =
   'call quilt_webhook_subscribe with a URL of yours: Quilt POSTs each one there as it happens. ' +
   'You are connected over HTTP, so you show as online for 30 minutes after each tool call: while idle, call quilt_inbox at least every 30 minutes so people can see you are still there. ' +
   'HTTP is only for an agent with no computer. If you can run shell commands anywhere (a computer, a cloud machine, a sandbox), you must use the Quilt CLI there instead (`quilt agent join`, then `quilt join <invite> --agent <your name>`): files sync to disk and you show as live. ' +
-  'A session has a branch for each git branch its members work on, each with its own files: quilt_status lists them and who is on each, and your first call on files puts you on the busiest one, where you stay until you pick another with quilt_switch_branch (create: true starts a new one from the files you have). ' +
+  'A session has a branch for each git branch its members work on, each with its own files: quilt_status and quilt_branches list them and who is on each, and your first call on files puts you on the busiest one, where you stay until you pick another with quilt_switch_branch (create: true loads a branch that is on GitHub but not yet in the session, at its latest commit; any other new branch starts from a copy of the files you have). ' +
+  'Commits pushed or merged on GitHub come into your branch by themselves: through a member\'s folder on it when one is online and can fetch, otherwise the relay brings them in from GitHub about every 10 minutes. quilt_sync_branch asks for that now (at most once a minute per branch), for example after a PR merged. ' +
+  'When those commits clash with the session\'s uncommitted work, nothing is brought in and the relay gives one agent a task ("Bring N commits from origin/main into the session"), with each file and what changed upstream in its comments. If it is yours: for each file, quilt_read_file, fold in the upstream change while keeping the session\'s work, and quilt_write_file the merged file without conflict markers; each such write makes the relay look again at once, and the rest of the commits come in when every file merges. If you kept one side whole, move the task to QA once all files are done: the relay then takes the files as merged. The task closes itself. ' +
+  'A private repository needs a read-only GitHub token on the relay: when quilt_status says the relay can\'t read it, ask the session owner (quilt_github_token sets it, owner only). Ask for a commit with quilt_request_commit; quilt_commit_status shows open requests and who is still working; quilt_commit_request_done marks them done once someone committed. ' +
   TASK_WORKFLOW
 
 const NOT_LINKED = 'Your user is not in a quilt session in their browser right now. Ask them to open quilt in their ' +
@@ -84,7 +89,7 @@ const REMOVED = 'You are no longer in that session. Ask for a new invite and cal
 const NEEDS_ROOM_PASS = 'Reconnecting you to the session. Call the same tool again.'
 
 const id = () => crypto.randomBytes(8).toString('hex')
-const BRING_IN_NOTE = 'Commits pushed or merged elsewhere come into the session by themselves: the folder of a member on that branch fetches about once a minute and brings them in. While no folder is online on a branch hosted agents work on, the relay brings them in from GitHub itself, about every 10 minutes.'
+const BRING_IN_NOTE = 'Commits pushed or merged elsewhere come into the session by themselves: the folder of a member on that branch fetches about once a minute and brings them in. While no folder on a branch can (none online, or only ones that can\'t fetch, are held or diverged, or are a viewer\'s), the relay brings them in from GitHub itself, about every 10 minutes; quilt_sync_branch asks it to look now.'
 
 /** For a hosted agent: what the relay does about new commits on its branch, and when it last looked; or ''. */
 function relayStatus (room, key) {
@@ -244,7 +249,8 @@ function sessionTools (server, ctx) {
     }
     const timer = setTimeout(() => {
       autoHeld.delete(key)
-      if (!(room.claimList ? room.claimList(branch) : []).some((c) => c.pattern === rel && c.by === me)) return
+      // Held for a clash's merge (relay-upstream.js) is not a claim that followed a write: it stays until the merge is done.
+      if (!(room.claimList ? room.claimList(branch) : []).some((c) => c.pattern === rel && c.by === me && !c.clash)) return
       try { room.claimRequest({ ...ctx.who(room), branch }, { op: 'release', pattern: rel }); room.broadcastClaims() } catch {}
     }, HOSTED_AUTO_CLAIM_QUIET_MS)
     if (timer.unref) timer.unref()
@@ -591,6 +597,72 @@ function sessionTools (server, ctx) {
   }, ({ limit }, { chat }) => {
     const msgs = chat.toArray().filter(visible).slice(-(limit || 20))
     return text(msgs.length ? msgs.map(fmtMsg).join('\n') : 'No messages yet.')
+  })
+
+  // ------------------------------------------------------ commit timing --
+  // The same requests as a folder's quilt_request_commit (Session.requestCommit): a message to
+  // whoever commits, so viewers and members who may not post are refused.
+  const commitMap = (doc) => doc.getMap('commitRequests')
+  const commitState = (room, doc) => {
+    const busy = []
+    for (const st of room.awareness.getStates().values()) {
+      if (!st || !st.name || st.name === me) continue
+      const a = st.agent
+      if (a && a.sharing !== false && a.status === 'working') busy.push(`${st.name}'s ${a.tool || 'AI'} is working`)
+      else if (st.work && st.work.state === 'working') busy.push(`${st.name} is working${st.work.note ? `: ${String(st.work.note).slice(0, 200)}` : ''}`)
+    }
+    const requests = [...commitMap(doc).values()].filter((r) => r && r.id).sort((a, b) => a.ts - b.ts)
+    return { busy, open: requests.filter((r) => r.state === 'open') }
+  }
+  const describeCommits = (c) => [
+    c.busy.length ? `⏳ Still working: ${c.busy.join('; ')}` : '✅ Everyone else\'s AI is idle: a good moment to commit.',
+    ...(c.open.length ? ['Open commit requests:', ...c.open.map((r) => `- ${r.id} ${r.by}${r.branch && r.branch !== DEFAULT_KEY ? ` asked for a commit on \`${r.branch}\`` : ''}: ${r.message}`)] : ['No open commit requests.']),
+    'When a commit is made, mark the requests done with quilt_commit_request_done.'
+  ].join('\n')
+
+  tool('quilt_request_commit', {
+    description: 'Ask the people in the session for a commit, e.g. because your changes are ready or you need one to test or deploy. Someone commits with git on their machine and marks the request done.',
+    inputSchema: { message: z.string().min(1).max(500).describe('What the commit should say / why you need it') }
+  }, ({ message }, { room, doc }) => {
+    { const w = waitRefusal(doc, 'quilt_request_commit'); if (w) return fail(w) }
+    const err = writable(room)
+    if (err) return fail(err)
+    const a = ctx.access(room)
+    if (a && a.role === 'viewer') return fail('Viewers can\'t ask for commits.')
+    if (a && a.talk === false) return fail(TALK_REFUSED)
+    const msg = String(message).trim().slice(0, 500)
+    if (!msg) return fail('Say what the commit is for.')
+    const key = branchOf(room)
+    const r = { id: crypto.randomBytes(6).toString('hex'), by: me, message: msg, ...(key ? { branch: key } : {}), ts: Date.now(), state: 'open' }
+    doc.transact(() => {
+      const map = commitMap(doc)
+      map.set(r.id, r)
+      const done = [...map.values()].filter((x) => x && x.state === 'done').sort((x, y) => x.ts - y.ts)
+      for (const x of done.slice(0, Math.max(0, done.length - 20))) map.delete(x.id)
+    }, AGENT)
+    return text(`Asked for a commit (${r.id}).\n${describeCommits(commitState(room, doc))}`)
+  })
+
+  tool('quilt_commit_status', {
+    description: 'Is it a good moment to commit? Lists open commit requests and whose AI is still working (not counting yours).',
+    inputSchema: {}
+  }, (_, { room, doc }) => text(describeCommits(commitState(room, doc))))
+
+  tool('quilt_commit_request_done', {
+    description: 'Mark commit requests done after a commit was made with git (yours or someone\'s). Without an id, every open request is marked done.',
+    inputSchema: {
+      id: z.string().max(40).optional().describe('One request id; omit for all open ones'),
+      hash: z.string().max(64).optional().describe('The commit that did it, if you know it')
+    }
+  }, ({ id: one, hash }, { room, doc }) => {
+    { const w = waitRefusal(doc, 'quilt_commit_request_done'); if (w) return fail(w) }
+    const err = writable(room)
+    if (err) return fail(err)
+    const open = [...commitMap(doc).values()].filter((r) => r && r.state === 'open' && (!one || r.id === one))
+    if (!open.length) return text(one ? `No open commit request ${one}.` : 'No open commit requests.')
+    const h = typeof hash === 'string' && /^[0-9a-f]{7,64}$/.test(hash) ? hash : ''
+    doc.transact(() => { for (const r of open) commitMap(doc).set(r.id, { ...r, state: 'done', doneBy: me, hash: h, doneAt: Date.now() }) }, AGENT)
+    return text(`Marked ${open.length} commit request${open.length === 1 ? '' : 's'} done.`)
   })
 
   tool('quilt_list_files', {
@@ -1026,20 +1098,74 @@ export async function handleHostedMcp ({ req, res, pass, relay, workspaces = nul
   })
 
   mcp.registerTool('quilt_switch_branch', {
-    description: 'Work on another branch of the session: your file tools, claims and history then read and write that branch. quilt_status lists the branches and who is on each. create: true starts a new branch from a copy of the files on the one you are on.',
+    description: 'Work on another branch of the session: your file tools, claims and history then read and write that branch. quilt_status lists the branches and who is on each. create: true adds a branch that isn\'t in the session yet: one that is on GitHub is loaded at its latest commit (and the relay brings later commits on it in); any other starts from a copy of the files on the one you are on.',
     inputSchema: {
       branch: z.string().min(1).max(200).describe('The branch, e.g. feature/login'),
-      create: z.boolean().optional().describe('Start it: a new branch from the files on your current one')
+      create: z.boolean().optional().describe('Add it to the session: from GitHub when it is there, otherwise a copy of your current branch\'s files')
     }
-  }, ({ branch, create }) => ctx.withSession((room) => {
+  }, async ({ branch, create }) => {
+    const c = current()
+    if (c.error) return fail(c.error)
+    const room = c.room
+    const key = String(branch).trim()
+    const editor = ctx.access(room)?.role !== 'viewer'
+    let gh = null
     try {
-      const editor = ctx.access(room)?.role !== 'viewer'
-      const r = room.setHostedBranch(account, String(branch).trim(), { create: !!create, by: me, editor })
-      return text(r.created
-        ? `Started ${r.branch} from ${r.from}, with a copy of its files. Your file tools, claims and history use ${r.branch} now. It isn't in git yet: people work on it with \`git checkout -b ${r.branch}\` (or \`git checkout ${r.branch}\` once it is pushed), and their folder follows.`
-        : `You are on ${r.branch} now: your file tools, claims and history use it.`)
+      if (create && validBranchKey(key) && key !== DEFAULT_KEY && !room.meta.branches[room.resolveKey(key)]) {
+        room.assertMigrated()
+        room.assertBranchRoom(editor, 0) // refused before asking GitHub anything
+        gh = await room.branchFromGitHub(account, key)
+      }
+      const r = room.setHostedBranch(account, key, { create: !!create, by: me, editor, github: gh && gh.state === 'loaded' ? gh : null })
+      if (r.created && gh && gh.state === 'loaded') {
+        const n = gh.texts.size + gh.blobs.size
+        const left = gh.skipped.length ? ` ${gh.skipped.length} file${gh.skipped.length === 1 ? ' was' : 's were'} too large for the relay and left out (${gh.skipped.slice(0, 5).join(', ')}${gh.skipped.length > 5 ? ', …' : ''}): a member's folder on it brings ${gh.skipped.length === 1 ? 'it' : 'them'} in.` : ''
+        return text(`Loaded ${r.branch} from GitHub (${gh.repo} at ${gh.head.slice(0, 7)}, ${n} file${n === 1 ? '' : 's'}).${left} Your file tools, claims and history use ${r.branch} now. People work on it with \`git checkout ${r.branch}\`, and their folder follows. The relay brings new commits on ${gh.upstream.name} in while no folder on it can; quilt_sync_branch asks for them now.`)
+      }
+      if (r.created) {
+        const why = !gh ? '' : {
+          'not-github': `The session's repository (${gh.repo}) isn't on GitHub, so the relay can't load ${r.branch} from it: `,
+          'no-branch': `${r.branch} isn't a branch on GitHub (${gh.repo}), so `,
+          private: `The relay can't read ${gh.repo} on GitHub (a private repository needs a read-only token: ask the session owner to add one), so `,
+          'token-refused': `The relay's GitHub token can't read ${gh.repo} (ask the session owner to give it read access), so `,
+          'too-many': `${r.branch} on GitHub has more files than the relay loads at once (${LOAD_FILES}), so `,
+          backoff: 'GitHub asked the relay to slow down, so ',
+          error: `The relay couldn't read ${r.branch} from GitHub (${gh.message || 'no answer'}), so `
+        }[gh.state] || ''
+        const said = `Started ${r.branch} from ${r.from}, with a copy of its files. Your file tools, claims and history use ${r.branch} now. It isn't in git yet: people work on it with \`git checkout -b ${r.branch}\` (or \`git checkout ${r.branch}\` once it is pushed), and their folder follows.`
+        return text(why ? `${why}${said[0].toLowerCase()}${said.slice(1)}` : said)
+      }
+      return text(`You are on ${r.branch} now: your file tools, claims and history use it.`)
     } catch (e) { return fail(e.message) }
-  }))
+  })
+
+  mcp.registerTool('quilt_sync_branch', {
+    description: 'Bring commits made outside the session (a PR merged on GitHub, a push) into your branch now. A member\'s folder on the branch that can fetch does this about once a minute; otherwise the relay asks GitHub itself, about every 10 minutes, and this asks it now (at most once a minute per branch). It never merges git history: files that clash with the session\'s work become one task on the board for one agent to merge.',
+    inputSchema: {}
+  }, async () => {
+    const c = current()
+    if (c.error) return fail(c.error)
+    const room = c.room
+    if (room.meta.layout !== 2 || !room.syncUpstreamNow) return fail('This session has no branches on the relay.')
+    try {
+      const key = room.hostedBranch(account)
+      const r = await room.syncUpstreamNow(key)
+      return text(r.said)
+    } catch (e) { return fail(e.message) }
+  })
+
+  mcp.registerTool('quilt_github_token', {
+    description: 'Session owner only: set (or clear, with an empty token) the read-only GitHub token the relay uses to bring commits in from a private repository while no folder can, and to load branches from it. A fine-grained token with read access to the repository\'s contents is enough. It stays on the relay: it is never shown again, in any answer, status or log.',
+    inputSchema: { token: z.string().max(300).describe('The token (github_pat_… or ghp_…), or "" to remove it') }
+  }, ({ token }) => {
+    const c = current()
+    if (c.error) return fail(c.error)
+    if (!c.access || !c.access.owner) return fail('Only the session owner can set the GitHub token: ask them.')
+    try {
+      const r = c.room.setGithubToken(token)
+      return text(r.githubToken ? 'Saved the GitHub token on the relay. It looks at the session\'s branches again now.' : 'Removed the GitHub token.')
+    } catch (e) { return fail(e.message) }
+  })
 
   sessionTools(mcp, ctx)
   // The library works whether or not the agent is in a session (it never touches relay.hosted).

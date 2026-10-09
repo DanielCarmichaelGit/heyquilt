@@ -13,7 +13,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import * as Y from 'yjs'
 import { signPass, PASS_TTL_MS } from '../src/passes.js'
 import { PASS_KEYS, testPasses } from './pass-helpers.js'
-import { parseRepo, upstreamRef, backoffFor, noteFolders, dueBranches, FIRST_BACKOFF_MS, MAX_BACKOFF_MS } from '../src/relay-upstream.js'
+import { parseRepo, upstreamRef, backoffFor, noteFolders, dueBranches, resetGithubBudgets, FIRST_BACKOFF_MS, MAX_BACKOFF_MS } from '../src/relay-upstream.js'
 import { clashTaskId } from '../src/clash.js'
 import { branchBoard, branchesMarkdown } from '../src/branches.js'
 
@@ -142,7 +142,7 @@ async function hosted (sub, name, room, owner) {
 
 before(async () => {
   gh = fakeGitHub({ 'acme/widgets': { dir: bareW }, 'acme/secret': { dir: bareS, private: true, token: TOKEN } })
-  srv = await startServer({ port: 0, host: '127.0.0.1', dataDir: tmp('relay'), log: (m) => logs.push(m), passPublicKey: PASS_KEYS.publicKey, upstreamAuto: false, githubFetch: gh.fetch, idleUnloadMs: 10 * 60 * 1000 })
+  srv = await startServer({ port: 0, host: '127.0.0.1', dataDir: tmp('relay'), log: (m) => logs.push(m), passPublicKey: PASS_KEYS.publicKey, upstreamAuto: false, githubAnonPerHour: 100000, githubFetch: gh.fetch, idleUnloadMs: 10 * 60 * 1000 })
   server = `ws://127.0.0.1:${srv.port}`
 })
 after(async () => { await srv.close() })
@@ -381,6 +381,12 @@ test('GitHub saying slow down (403 with the rate limit spent, or 429) backs the 
   const n = gh.calls.length
   assert.deepEqual(await srv.checkUpstreams(S, { force: true }), [], 'not asked again while backing off')
   assert.equal(gh.calls.length, n)
+  // The spent limit pauses the relay's GitHub budget for every session until its reset, not just this branch.
+  rec.backoffUntil = Date.now() - 1
+  const [paused] = await srv.checkUpstreams(S, { force: true })
+  assert.equal(paused.state, 'backoff')
+  assert.equal(gh.calls.length, n, 'GitHub is not asked while the budget waits for its reset')
+  resetGithubBudgets()
   // Time passes: asked again; a 429 with Retry-After waits that long.
   rec.backoffUntil = Date.now() - 1
   gh.state.throttle = { status: 429, headers: { 'retry-after': '30' } }

@@ -900,7 +900,7 @@ export function githubTokenHtml (acc) {
       <label for="pm-gh-token"><span>GitHub read-only token for bringing in commits while everyone's offline</span></label>
       <input class="input" id="pm-gh-token" type="password" name="token" autocomplete="off" spellcheck="false" placeholder="${set ? 'A token is set: paste another to replace it' : 'github_pat_… with contents: read'}" aria-label="GitHub read-only token">
       <div class="pm-gh-row"><button type="submit" class="btn sm">Save token</button>${set ? '<button type="button" class="btn sm ghost" data-gh-clear>Remove token</button>' : ''}</div>
-      <div class="hint">Only private GitHub repositories need one. It stays on the relay and is never shown to anyone, you included.</div>
+      <div class="hint">Private GitHub repositories need one, and it also spares the relay GitHub's limit on requests without a token. It stays on the relay and is never shown to anyone, you included.</div>
     </form></div>`
 }
 

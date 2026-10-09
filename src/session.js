@@ -48,6 +48,7 @@ const LOCAL = Symbol('local')
 const CLASH = Symbol('clash') // clash tasks this Quilt writes (quiet for its own inbox until settleClash)
 const CLASH_REASSIGN_MS = 5 * 60 * 1000 // a clash task's assignee gone this long: the next member takes it
 const CLASH_WAIT_MS = 30 * 1000 // no clash task from the first in line this long: the next one writes it
+const CLASH_IDLE_MS = 15 * 60 * 1000 // a clash assignee with no progress this long is handed on
 const CLASH_SETTLE_MS = 2000 // a clash task this member wrote is told to its AI after this long, if it survived a race
 const CLASH_KEEP_MS = 3 * 24 * 60 * 60 * 1000 // a finished clash record is kept this long
 const CLASH_RECORDS = 100
@@ -93,13 +94,15 @@ const UPSTREAM_MS = Number(process.env.QUILT_UPSTREAM_MS) || 60 * 1000
 const INDEX_WATCH_MS = 8000 // after a bring-in, how long the index is checked against what another git may write back
 
 export class Session extends EventEmitter {
-  constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, summarize = null, identity = null, passes = null, startName = '', autoClaimQuietMs = AUTO_CLAIM_QUIET_MS, handoffGraceMs = HANDOFF_GRACE_MS, aiTasks = null, webhookTransport = null, pullWaitMs = PULL_WAIT_MS, bringInUpstream = true, clashReassignMs = CLASH_REASSIGN_MS, clashWaitMs = CLASH_WAIT_MS, clashSettleMs = CLASH_SETTLE_MS }) {
+  constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, summarize = null, identity = null, passes = null, startName = '', autoClaimQuietMs = AUTO_CLAIM_QUIET_MS, handoffGraceMs = HANDOFF_GRACE_MS, aiTasks = null, webhookTransport = null, pullWaitMs = PULL_WAIT_MS, bringInUpstream = true, clashReassignMs = CLASH_REASSIGN_MS, clashWaitMs = CLASH_WAIT_MS, clashSettleMs = CLASH_SETTLE_MS, clashIdleMs = CLASH_IDLE_MS }) {
     super()
     this.pullWaitMs = pullWaitMs
     this.bringInUpstream = bringInUpstream // false: commits come in only when someone pulls (tests of the pull path)
     this.clashReassignMs = clashReassignMs // a clash task's assignee away this long is replaced (reviewClash)
     this.clashWaitMs = clashWaitMs // the first in line wrote no clash task in this long: the next one does
     this.clashSettleMs = clashSettleMs // a clash task written for our AI is told to it after this long, if the write survived
+    this.clashIdleMs = clashIdleMs // a clash assignee with no progress this long is handed on (or, with nobody next, everyone pulls again)
+    this.clashProgress = null
     this.pull = null // { upstream, behind, adds: [{ path, same, waiting }] }: what a pull would bring over files the session put here
     this.pullWait = new Map() // path -> { since, stash, timer }: removed to make way for a pull, kept for everyone meanwhile
     this.pullWaitOver = new Set() // waited for and no pull came: not waited for again until the next fetch
@@ -2352,6 +2355,10 @@ export class Session extends EventEmitter {
       if (f.ok) up = await upstreamOf(this.root)
     }
     this.refreshRepo()
+    // Whether the upstream descends from the commit the relay records for this branch: the relay
+    // only moves its record forward on a folder's word (relay-upstream.js noteFolders).
+    const rs = this.relaySha()
+    this.upstreamPast = rs && up && up.sha ? (rs === up.sha || await isAncestor(this.root, rs, up.sha) ? rs : null) : null
     if (this.stopped || !this.quietForUpstream()) return this.upstream
     // The branch moved without this folder's files moving with it: another worktree of the
     // repository moved it (a commit made here was taken in by noteCommits instead).
@@ -2394,6 +2401,14 @@ export class Session extends EventEmitter {
     }
     const staged = await stagedAgainst(this.root, from)
     if (staged !== false) { state({ waiting: staged ? 'changes are staged for a commit here' : 'git could not say what is staged' }); return }
+    // The relay brought the session to a commit between here and `to` while this folder was away:
+    // follow it first (git only, the session has those files), then bring in only what came after.
+    const mid = this.relaySha()
+    if (moveRef && mid && mid !== from && mid !== to && !this.memberAt(to) && await isAncestor(this.root, from, mid) && await isAncestor(this.root, mid, to)) {
+      await this.bringIn(from, mid, { moveRef, up, now: true })
+      if (!this.gitSeen || this.gitSeen.sha !== mid || this.stopped) return
+      from = mid
+    }
     const changes = await changesBetween(this.root, from, to)
     if (!changes) return
     // A member's folder on this branch is already at `to`, in step with the session: the session's
@@ -2534,7 +2549,7 @@ export class Session extends EventEmitter {
       if (!this.conn || !this.conn.adminRequest) return { error: 'not connected to the relay' }
       const r = await this.conn.adminRequest({ op: 'syncUpstream' })
       return r && r.sync ? r.sync : { error: 'the relay did not say' }
-    } catch (err) { return { error: err.message } }
+    } catch (err) { return { error: /not connected/.test(err.message) ? 'not connected to the relay' : err.message } }
   }
 
   /**
@@ -2545,7 +2560,8 @@ export class Session extends EventEmitter {
     if (!f || f.skipped) return
     const prev = this.fetchState
     this.fetchState = { ok: !!f.ok, error: f.ok ? null : (f.error || 'git fetch failed'), at: Date.now() }
-    if (this.upstream) this.upstream = { ...this.upstream, fetchOk: this.fetchState.ok, fetchError: this.fetchState.error, fetchAt: this.fetchState.at }
+    // In place: a clash review under way holds this object, and a new one would make it give up.
+    if (this.upstream) Object.assign(this.upstream, { fetchOk: this.fetchState.ok, fetchError: this.fetchState.error, fetchAt: this.fetchState.at })
     if (prev && prev.ok === this.fetchState.ok && prev.error === this.fetchState.error) return
     const name = up && up.name ? up.name : 'the upstream'
     if (!this.fetchState.ok) {
@@ -2574,6 +2590,12 @@ export class Session extends EventEmitter {
     const mine = this.branchList.find((b) => b.key === this.branch)
     if (sha && mine && mine.relay && mine.relay.sha === sha) return RELAY_BY
     return null
+  }
+
+  /** The commit the relay records for this folder's branch (the session's files are it plus the session's work), or null. */
+  relaySha () {
+    const mine = (this.branchList || []).find((b) => b.key === this.branch)
+    return mine && mine.relay && typeof mine.relay.sha === 'string' ? mine.relay.sha : null
   }
 
   /** Whether another member's folder on this branch is first in line to bring commits in (the lowest client id). */
@@ -2753,7 +2775,15 @@ export class Session extends EventEmitter {
       }
       if (superseded) this.closeClash(superseded.rec, `Superseded: ${u.name} was rewritten without ${superseded.rec.sha.slice(0, 7)}; the clash with ${u.sha.slice(0, 7)} is task ${id}.`)
       const assignee = this.clashAssignee()
-      const t = putTask(this.doc, this.tasks, { id, title: clashTitle({ upstream: u.name, ...u }), by: this.name, assignee, forAi: false, tool: '', files: clashFiles(u.conflicts) }, CLASH)
+      let t
+      try {
+        t = putTask(this.doc, this.tasks, { id, title: clashTitle({ upstream: u.name, ...u }), by: this.name, assignee, forAi: false, tool: '', files: clashFiles(u.conflicts) }, CLASH)
+      } catch (err) {
+        // A full board (or a refused write): no task, so everyone keeps the advice to pull and resolve.
+        this.log(`could not put the clash on the board: ${err.message}`)
+        this.sayUpstream(advice)
+        return null
+      }
       this.writeClashRecord(branch, { task: t.id, sha: u.sha, upstream: u.name })
       this.clashWait = null
       this.log(`🔀 the clash with ${u.name} on ${branch} is this folder's to merge (task ${t.id}, for ${assignee})`)
@@ -2789,6 +2819,23 @@ export class Session extends EventEmitter {
     // Its assignee: gone from this branch for a while, or a person without an AI while someone with one reports it.
     const holder = holderOf(states, task.assignee, branch)
     let handOn = ''
+    let stalled = false
+    // Present but making no progress (the clashing files unchanged, the task not moved) for a while.
+    const progress = JSON.stringify([task.assignee, task.column, (task.files || []).map((rel) => this.sharedKey(rel) ?? null)])
+    if (!this.clashProgress || this.clashProgress.task !== task.id || this.clashProgress.key !== progress) this.clashProgress = { task: task.id, key: progress, since: now }
+    const idleFor = now - this.clashProgress.since
+    if (holder && idleFor < this.clashIdleMs) this.reviewClashSoon(this.clashIdleMs - idleFor + 50)
+    if (holder && idleFor >= this.clashIdleMs && task.column !== 'done') {
+      const mins = Math.max(1, Math.round(this.clashIdleMs / 60000))
+      const next = order.find((c) => c.id !== holder.id)
+      if (!next) {
+        // Nobody else to hand it to: everyone behind may pull and resolve again, as before; its files are let go of.
+        if (this.clashClaims && this.clashClaims.task === task.id) await this.releaseClashClaims(`${task.assignee} made no progress on the merge for ${mins} minutes`)
+        this.sayUpstream(advice)
+        return null
+      }
+      if (next.id === me) { stalled = true; handOn = `${task.assignee} made no progress on it for ${mins} minute${mins === 1 ? '' : 's'}` }
+    }
     if (!holder) {
       if (!this.clashAbsent || this.clashAbsent.task !== task.id || this.clashAbsent.name !== task.assignee) this.clashAbsent = { task: task.id, name: task.assignee, since: now }
       const left = this.clashAbsent.since + this.clashReassignMs - now
@@ -2801,9 +2848,9 @@ export class Session extends EventEmitter {
       this.clashAbsent = null
       // Given to a person (they had no AI session then): to the first member with an AI now (them too, once they have one).
       const toPerson = holder.st.kind !== 'agent' && holder.st.name === task.assignee
-      if (toPerson && first && first.rank < 2) handOn = first.id === holder.id ? `${task.assignee} has an AI session now` : `${task.assignee} has no AI session, and ${first.name} has one`
+      if (!stalled && toPerson && first && first.rank < 2) handOn = first.id === holder.id ? `${task.assignee} has an AI session now` : `${task.assignee} has no AI session, and ${first.name} has one`
     }
-    if (handOn && firstIsMe && task.assignee !== this.clashAssignee()) {
+    if (handOn && (firstIsMe || stalled) && task.assignee !== this.clashAssignee()) {
       const gone = task.assignee
       const assignee = this.clashAssignee()
       task = patchTask(this.doc, this.tasks, { id: task.id, assignee, forAi: false, tool: '' }, CLASH)
@@ -2923,7 +2970,8 @@ export class Session extends EventEmitter {
     if (!held || !this.conn) return
     for (const rel of held.paths) {
       const c = this.claimFor(rel)
-      if (!c || c.clash !== held.task || !this.ownClaim(c)) continue
+      // Ours for this task, or ours with no task mark (a relay that predates it drops the mark).
+      if (!c || (c.clash && c.clash !== held.task) || !this.ownClaim(c)) continue
       try {
         if (c.queue && c.queue.length) await this.conn.claimRequest({ op: 'handoff', pattern: c.pattern, context: `Quilt let go of it: ${why}.`, ...this.as(held.via) })
         else await this.conn.claimRequest({ op: 'release', pattern: c.pattern, ...this.as(held.via) })
@@ -3009,7 +3057,7 @@ export class Session extends EventEmitter {
       held: this.hold ? this.hold.kind : null,
       clash: 1, // this Quilt hands a clash to one AI (reviewClash): only such members are given one
       on: this.hold && this.hold.kind === 'switching' ? this.hold.to : this.git.key,
-      upstream: u ? { name: u.name, url: u.url, remote: u.remote || null, sha: u.sha || null, behind: u.behind, ahead: u.ahead, diverged: u.diverged, conflicts: u.conflicts.length, waiting: u.waiting, checkedAt: u.checkedAt, mergedBy: u.mergedBy || null, clashTask: u.clashTask || null, mayWrite: u.conflicts.length ? this.mayWriteAll(u.conflicts.map((c) => c.path)) : null, ...(u.fetchOk === false ? { fetchOk: false, fetchError: u.fetchError || 'git fetch failed' } : {}) } : null,
+      upstream: u ? { name: u.name, url: u.url, remote: u.remote || null, sha: u.sha || null, behind: u.behind, ahead: u.ahead, diverged: u.diverged, conflicts: u.conflicts.length, waiting: u.waiting, checkedAt: u.checkedAt, mergedBy: u.mergedBy || null, clashTask: u.clashTask || null, mayWrite: u.conflicts.length ? this.mayWriteAll(u.conflicts.map((c) => c.path)) : null, ...(u.fetchOk === false ? { fetchOk: false, fetchError: u.fetchError || 'git fetch failed' } : {}), past: this.upstreamPast || null } : null,
       repo: this.repo
     }
   }

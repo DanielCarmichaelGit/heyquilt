@@ -45,7 +45,8 @@ export function clashCandidates (states, { branch, upstream }) {
     const g = st.git
     const u = g.upstream
     if (g.clash !== 1 || g.branch !== branch || !u || u.name !== upstream) continue
-    if (!(u.conflicts > 0) || u.diverged || u.mayWrite !== true) continue
+    // A folder whose fetch fails can't pull, so its AI couldn't merge.
+    if (!(u.conflicts > 0) || u.diverged || u.mayWrite !== true || u.fetchOk === false) continue
     const agent = st.kind === 'agent'
     const ai = !agent && hasAi(st)
     out.push({ id, name: st.name, kind: agent ? 'agent' : 'human', ai, rank: agent ? 0 : ai ? 1 : 2 })

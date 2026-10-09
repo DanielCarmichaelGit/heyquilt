@@ -506,3 +506,46 @@ test('old finished clash records are pruned when a new one is written', () => {
   Session.prototype.writeClashRecord.call(fake, 'main', { task: 'e'.repeat(16), sha: 'f'.repeat(40), upstream: 'origin/main' })
   assert.deepEqual([...fake.clashes.keys()].sort(), ['main', 'recent'])
 })
+
+test('an assignee present but making no progress is handed on to the next in line, who takes its files', async (t) => {
+  const ctx = await setup(t, { clashIdleMs: 2500 })
+  const { A, B } = ctx
+  const { sha } = await clash(ctx)
+  const id = clashTaskId('main', sha)
+  await waitFor(() => clashTasks(A).length === 1 && clashTasks(B).length === 1)
+  const first = clashTasks(A)[0].assignee
+  const [owner, other] = first === 'alice' ? [A, B] : [B, A]
+  await waitFor(() => owner.claimFor('src/app.js')?.by === owner.name)
+  // Nothing changes in src/app.js and the task isn't moved: after a while it is the other's, files included.
+  await waitFor(() => clashTasks(other)[0]?.assignee === other.name, 15000)
+  await waitFor(() => clashTasks(other)[0].comments.some((c) => c.text.startsWith(`Handed to ${other.name}: ${owner.name} made no progress on it`)))
+  const held = await waitFor(() => other.claimFor('src/app.js')?.by === other.name && other.claimFor('src/app.js'))
+  assert.equal(held.clash, id)
+})
+
+test('with nobody to hand it to, an assignee making no progress lets go: everyone behind is told to pull and resolve again', async (t) => {
+  const ctx = await setup(t, { clashIdleMs: 2500, clashWaitMs: 60000 })
+  const { A, B } = ctx
+  // Bob's Quilt is older (never chosen), so Alice is the only one who can take it.
+  const summary = B.gitSummary.bind(B)
+  B.gitSummary = () => { const g = summary(); if (g) delete g.clash; return g }
+  B.reviewClash = () => null
+  B.shareGit()
+  await clash(ctx)
+  await waitFor(() => clashTasks(A)[0]?.assignee === 'alice')
+  await waitFor(() => A.claimFor('src/app.js')?.clash)
+  await waitFor(() => !A.claimFor('src/app.js'), 15000)
+  await waitFor(() => A.told.some((n) => /Run git pull in this folder and resolve those/.test(n) && !/This merge is yours/.test(n)))
+  assert.equal(A.status().git.upstream.mergedBy, null)
+})
+
+test('the files held for a merge are let go of even when the relay dropped their task mark (an older relay)', async (t) => {
+  const ctx = await setup(t)
+  const { A, B } = ctx
+  await A.claim('README.md', 'held for a merge by an older relay')
+  await waitFor(() => B.claimFor('README.md')?.by === 'alice')
+  assert.equal(A.claimFor('README.md').clash, undefined)
+  A.clashClaims = { task: 'a'.repeat(16), via: null, paths: ['README.md'] }
+  await A.releaseClashClaims('the merge is done')
+  await waitFor(() => !B.claimFor('README.md'))
+})

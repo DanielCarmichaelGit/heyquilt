@@ -36,6 +36,8 @@ export const MAX_BACKOFF_MS = 6 * 60 * 60 * 1000
 export const FIRST_BACKOFF_MS = 15 * 60 * 1000
 /** GitHub's compare lists at most this many files: more and the relay leaves it to a folder. */
 const COMPARE_FILES = 300
+/** A clash assignee with no progress this long (files unchanged, task not moved) is handed on. */
+export const CLASH_IDLE_MS = 15 * 60 * 1000
 /** quilt_sync_branch asks GitHub at most this often per branch (Room.syncUpstreamNow). */
 export const SYNC_EVERY_MS = 60 * 1000
 /** The most files the relay loads to start a branch from GitHub (loadBranch). */
@@ -86,21 +88,31 @@ export function upstreamsOf (room) {
   return room.meta.upstreams
 }
 
+/** Whether a member (its access on connection `ws`) may change every file: an approved editor with no folder limits, owner included. */
+export function editsAll (room, ws) {
+  if (!room.access || !room.access.get) return true // a stand-in room with no access (unit tests)
+  const a = room.access.get(ws)
+  return !!a && a.role !== 'viewer' && !(Array.isArray(a.scopes) && a.scopes.length) && !(Array.isArray(a.scopesExcept) && a.scopesExcept.length)
+}
+
 /**
  * What members' presence says about each branch's upstream, recorded per branch document:
- * the repository, the upstream branch, and the commit a folder on it was at while in step
- * with the session (not held, not diverged). Once the relay itself moved the session to a
- * commit, a folder still behind it (or that hasn't fetched yet) is not taken as newer:
- * only a folder at that commit, or one that sees the same upstream and is not behind it.
- * Returns whether anything changed (the caller saves and tells everyone).
+ * the repository, the upstream branch, and the commit the session's files are (that commit plus
+ * the session's work). Only a member who may change every file is trusted with it (a viewer or a
+ * member limited to some folders could point the relay at another repository, or at a commit
+ * whose files they were refused). Taken only from a folder that isn't behind, diverged, held or
+ * clashing; one that is only ahead (commits not pushed yet) gives its upstream's tip, which
+ * GitHub has. A newer commit replaces the recorded one only when that folder's git says it
+ * descends from it (upstream.past); an older app, which doesn't say, never moves it backwards
+ * past what the relay brought in. Returns whether anything changed (the caller saves and tells everyone).
  */
-export function noteFolders (room) {
+export function noteFolders (room, log = () => {}) {
   const recs = upstreamsOf(room)
   const states = room.awareness.getStates()
   let changed = false
   for (const [ws, ids] of room.conns) {
     const key = ws.branch
-    if (!key || !room.meta.branches[key]) continue
+    if (!key || !room.meta.branches[key] || !editsAll(room, ws)) continue
     for (const id of ids) {
       const g = states.get(id)?.git
       if (!g || typeof g !== 'object' || typeof g.branch !== 'string') continue
@@ -110,35 +122,77 @@ export function noteFolders (room) {
       if (u && typeof u.name === 'string') {
         const repo = parseRepo(u.url)
         const ref = upstreamRef(u.name, typeof u.remote === 'string' ? u.remote : null)
-        if (repo && ref) { next.repo = repo.slug; next.name = u.name.slice(0, 200); next.ref = ref }
-      }
-      const sha = typeof g.sha === 'string' && SHA.test(g.sha) ? g.sha : null
-      const inStep = sha && !g.held && !(u && u.diverged)
-      if (inStep && sha !== rec.sha) {
-        const relayMoved = !!rec.relayHead
-        const seesSame = u && typeof u.sha === 'string' && u.sha === rec.head && !(u.behind > 0)
-        if (!relayMoved || sha === rec.relayHead || seesSame) {
-          next.sha = sha
-          if (sha === rec.relayHead || seesSame) delete next.relayHead // folders are past what the relay brought in
+        if (repo && ref) {
+          if (rec.repo && rec.repo !== repo.slug) log(`[${room.name}] ${key}: the relay follows ${repo.slug} now (was ${rec.repo}), as ${(room.names && room.names.get(ws)) || 'a member'}'s folder says`)
+          next.repo = repo.slug; next.name = u.name.slice(0, 200); next.ref = ref
         }
-      } else if (inStep && sha === rec.relayHead) delete next.relayHead
+      }
+      const head = typeof g.sha === 'string' && SHA.test(g.sha) ? g.sha : null
+      const tip = u && typeof u.sha === 'string' && SHA.test(u.sha) ? u.sha : null
+      const inStep = head && !g.held && u && !u.diverged && !(u.behind > 0) && !(u.conflicts > 0) && u.fetchOk !== false
+      // Only ahead: the local commits are the session's work as far as GitHub knows; the base is the upstream tip.
+      const sha = !inStep ? null : u.ahead > 0 ? tip : head
+      if (sha && sha !== rec.sha) {
+        const tells = 'past' in u // a newer app says whether its upstream descends from the recorded commit
+        const descends = !rec.sha || (tells ? u.past === rec.sha : !rec.relayHead || sha === rec.relayHead || (tip && tip === rec.head))
+        if (descends) {
+          next.sha = sha
+          delete next.relayHead // folders are at or past what the relay brought in
+          if (rec.clash && rec.clash.sha === sha) delete next.clash // a folder landed that clash's merge
+        }
+      } else if (sha && sha === rec.relayHead) delete next.relayHead
       if (JSON.stringify(next) !== JSON.stringify(rec)) { recs[key] = next; changed = true }
     }
   }
   return changed
 }
 
+/** A hold this long (busy or settling, not switching branches) no longer keeps the relay out of a branch. */
+export const LONG_HOLD_MS = 30 * 60 * 1000
+
+/** Since when the relay has seen each connected folder held (kind and time, its own clock), kept up from presence. */
+export function noteHolds (room, now = Date.now()) {
+  if (!room.heldSince) room.heldSince = new WeakMap()
+  const states = room.awareness.getStates()
+  for (const [ws, ids] of room.conns) {
+    let held = null
+    for (const id of ids) { const g = states.get(id)?.git; if (g && typeof g === 'object' && g.held) held = String(g.held) }
+    const was = room.heldSince.get(ws)
+    if (!held) room.heldSince.delete(ws)
+    else if (!was || was.kind !== held) room.heldSince.set(ws, { kind: held, since: now })
+  }
+}
+
 /**
- * Whether a member's folder (its presence `g` on connection `ws`) can bring commits in itself:
- * git on a branch with an upstream, in step (not held, not diverged), its last fetch worked,
- * and its member may change files. Any other folder leaves the branch to the relay.
+ * Whether a member's folder (its presence `g` on connection `ws`) keeps the relay out of its
+ * branch: git on a branch with an upstream, its last fetch worked, and its member may change
+ * files. A folder that is held (git at work: a pull, a merge being resolved, a branch switch) or
+ * diverged still does: its own git is under way, and the relay writing into the branch would
+ * collide with it. Only a hold the relay has seen for over 30 minutes (never a branch switch) lets it in.
  */
-export function canBringIn (room, ws, g) {
-  if (!g || typeof g !== 'object' || typeof g.branch !== 'string' || !g.branch || g.held) return false
+export function canBringIn (room, ws, g, now = Date.now()) {
+  if (!g || typeof g !== 'object' || typeof g.branch !== 'string' || !g.branch) return false
   const u = g.upstream && typeof g.upstream === 'object' ? g.upstream : null
-  if (!u || typeof u.name !== 'string' || !u.name || u.diverged || u.fetchOk === false) return false
+  if (!u || typeof u.name !== 'string' || !u.name || u.fetchOk === false) return false
   const a = room.access && room.access.get ? room.access.get(ws) : null
-  return !(a && a.role === 'viewer')
+  if (a && a.role === 'viewer') return false
+  if (g.held && g.held !== 'switching') {
+    const h = room.heldSince && room.heldSince.get(ws)
+    if (h && now - h.since > LONG_HOLD_MS) return false
+  }
+  return true
+}
+
+/** Whether `name` (a member, or one of its AI sessions) is connected on branch `key`. */
+export function connectedAs (room, key, name) {
+  if (!name) return false
+  const states = room.awareness.getStates()
+  for (const [ws, ids] of room.conns) {
+    if (ws.branch !== key) continue
+    if (room.names && room.names.get(ws) === name) return true
+    for (const id of ids) for (const p of (states.get(id)?.personas || [])) if (p && p.name === name) return true
+  }
+  return false
 }
 
 /** The member whose folder on branch `key` brings commits in itself (canBringIn), or null. */
@@ -213,13 +267,49 @@ class GitHubError extends Error {
   }
 }
 
+// GitHub's API allows 60 requests an hour per IP without a token (5000 with one), shared by every
+// session on this relay: one budget for the whole process, kept under the limit with headroom, and
+// paused for everyone when GitHub says the limit is nearly spent. raw.githubusercontent.com isn't counted.
+const HOUR = 60 * 60 * 1000
+const HEADROOM = 10
+const budgets = new Map() // 'anon' | sha1(token) -> { used: [ts], pausedUntil }
+let anonPerHour = 50
+/** Sets how many API requests an hour the relay makes without a token (tests raise it). */
+export function configureGithubBudget ({ anonPerHour: n } = {}) { if (Number.isFinite(n) && n > 0) anonPerHour = n }
+/** Forgets what was spent (tests). */
+export function resetGithubBudgets () { budgets.clear() }
+function budgetOf (token) {
+  const k = token ? sha1(Buffer.from(token, 'utf8')) : 'anon'
+  if (!budgets.has(k)) budgets.set(k, { used: [], pausedUntil: 0 })
+  return budgets.get(k)
+}
+/** Spends one API request, or throws a 429-like GitHubError saying how long to wait. */
+function spend (token, now = Date.now()) {
+  const b = budgetOf(token)
+  const wait = (until) => new GitHubError(429, new Headers({ 'retry-after': String(Math.max(1, Math.ceil((until - now) / 1000))) }), 'the relay\'s own GitHub budget')
+  if (b.pausedUntil > now) throw wait(b.pausedUntil)
+  while (b.used.length && b.used[0] <= now - HOUR) b.used.shift()
+  if (!token && b.used.length >= anonPerHour) { b.pausedUntil = b.used[0] + HOUR; throw wait(b.pausedUntil) }
+  b.used.push(now)
+}
+/** What GitHub said is left: nearly spent pauses every room until its reset. */
+function heard (token, headers) {
+  const rem = Number(headers && headers.get && headers.get('x-ratelimit-remaining'))
+  const reset = Number(headers && headers.get && headers.get('x-ratelimit-reset'))
+  if (headers && headers.get && headers.get('x-ratelimit-remaining') !== null && Number.isFinite(rem) && rem <= HEADROOM && Number.isFinite(reset)) budgetOf(token).pausedUntil = reset * 1000
+}
+/** A 403 or 429 that is GitHub's rate limit (back off), not a refusal to read (no access). */
+const rateLimited = (err) => err.status === 429 || (err.status === 403 && !!err.headers && !!err.headers.get && (err.headers.get('x-ratelimit-remaining') === '0' || err.headers.get('retry-after') !== null))
+
 /** The few GitHub calls the relay makes, read only. The token (when set) goes in a header, never a URL. */
 function github ({ fetch, token, owner, name }) {
   const auth = token ? { authorization: `Bearer ${token}` } : {}
   const base = { 'user-agent': 'quilt-relay', 'x-github-api-version': '2022-11-28', ...auth }
   const enc = (p) => p.split('/').map(encodeURIComponent).join('/')
   const get = async (url, headers, what) => {
+    spend(token)
     const res = await fetch(url, { headers: { ...base, ...headers }, redirect: 'follow' })
+    heard(token, res.headers)
     if (res.status === 304) return { res, notModified: true }
     if (!res.ok) throw new GitHubError(res.status, res.headers, what)
     return { res }
@@ -250,7 +340,9 @@ function github ({ fetch, token, owner, name }) {
     /** A file at a commit: its bytes, null when it isn't there, or { tooLarge } past `max` bytes. */
     async file (sha, path, max) {
       const url = token ? `${API}/repos/${owner}/${name}/contents/${enc(path)}?ref=${sha}` : `${RAW}/${owner}/${name}/${sha}/${enc(path)}`
+      if (token) spend(token)
       const res = await fetch(url, { headers: { ...base, accept: 'application/vnd.github.raw' }, redirect: 'follow' })
+      if (token) heard(token, res.headers)
       if (res.status === 404) return null
       if (!res.ok) throw new GitHubError(res.status, res.headers, `${path} at ${sha.slice(0, 7)}`)
       const len = Number(res.headers.get('content-length'))
@@ -322,7 +414,7 @@ const clashRegions = (b, o, t) => isText(b) && isText(o) && isText(t) ? mergeAdd
  * ends and merges them into the branch document, or hands the clash to a hosted agent.
  * Returns what happened: { state, ... } for tests and the log. Never throws.
  */
-export async function checkBranch (room, key, { fetch, now = () => Date.now(), log = () => {} } = {}) {
+export async function checkBranch (room, key, { fetch, now = () => Date.now(), log = () => {}, fallbackToken = null } = {}) {
   const recs = upstreamsOf(room)
   const rec = recs[key]
   if (!rec || !rec.repo || !rec.ref || !rec.sha) return { state: 'unknown' }
@@ -335,7 +427,9 @@ export async function checkBranch (room, key, { fetch, now = () => Date.now(), l
   const done = (out) => { if (!room.destroyed) { room.saveMeta(); room.broadcastBranches() } return out }
   const repo = parseRepo(`https://${rec.repo}`)
   if (!repo || !repo.github) { said(`the relay only brings in commits from GitHub, and ${rec.repo.split('/')[0]} isn't GitHub: a member's folder on ${key} brings them in`); return done({ state: 'not-github' }) }
-  const token = validToken(room.meta.githubToken) ? room.meta.githubToken : null
+  // The owner's token, else the relay's own (public repositories only), else none.
+  const own = validToken(room.meta.githubToken) ? room.meta.githubToken : null
+  const token = own || (validToken(fallbackToken) ? fallbackToken : null)
   const gh = github({ fetch, token, owner: repo.owner, name: repo.name })
   const base = rec.sha
   let head, cmp
@@ -391,24 +485,31 @@ export async function checkBranch (room, key, { fetch, now = () => Date.now(), l
       }
       return r.toString('utf8')
     }
-    for (const [rel, kind] of changes) {
-      files.set(rel, {
-        base: kind === 'A' ? null : await read(base, rel),
-        head: kind === 'D' ? null : await read(head, rel),
-        kind
-      })
+    const all = [...changes]
+    for (let i = 0; i < all.length; i += 8) {
+      await Promise.all(all.slice(i, i + 8).map(async ([rel, kind]) => {
+        const [b, t] = await Promise.all([kind === 'A' ? null : read(base, rel), kind === 'D' ? null : read(head, rel)])
+        files.set(rel, { base: b, head: t, kind })
+      }))
     }
   } catch (err) {
-    if (err instanceof GitHubError && (err.status === 403 || err.status === 429)) {
+    if (err instanceof GitHubError && rateLimited(err)) {
       const wait = backoffFor(err, rec, now())
       rec.backoffMs = wait
       rec.backoffUntil = now() + wait
       said(`GitHub asked the relay to slow down; it looks at ${rec.name} again after ${new Date(rec.backoffUntil).toISOString().slice(11, 16)} UTC`)
       return done({ state: 'backoff', wait })
     }
-    if (err instanceof GitHubError && (err.status === 404 || err.status === 401)) {
-      said(token ? tokenRefused(rec.repo) : noToken(rec.repo))
-      return done({ state: token ? 'token-refused' : 'private' })
+    if (err instanceof GitHubError && (err.status === 404 || err.status === 401 || err.status === 403)) {
+      // A public repository answers this without a token: then the commit or branch is what's missing, not access.
+      let open = false
+      try { await github({ fetch, token: null, owner: repo.owner, name: repo.name }).repo(); open = true } catch {}
+      if (open) {
+        said(`${rec.name} or ${base.slice(0, 7)} (the commit the session's files on ${key} are at) isn't on GitHub (not pushed yet, or the branch is gone): the relay waits for a member's folder on ${key} at a pushed commit`)
+        return done({ state: 'not-on-github' })
+      }
+      said(own ? tokenRefused(rec.repo) : noToken(rec.repo))
+      return done({ state: own ? 'token-refused' : 'private' })
     }
     said(`the relay couldn't reach GitHub for ${rec.name} (${String(err.message).slice(0, 120)}); it tries again later`)
     return done({ state: 'error' })
@@ -435,7 +536,7 @@ export async function checkBranch (room, key, { fetch, now = () => Date.now(), l
     resolved = plan.conflicts.map((c) => c.path).filter((rel) => {
       const d = disk(rel)
       if (!(rel in was) || d === undefined) return false
-      if (settled) return true
+      if (settled) return !hasMarkers(d) // the assignee says it's merged: never with conflict markers left
       if (was[rel] === fingerprint(d) || hasMarkers(d)) return false
       const b = baseMap.get(rel)
       const t = theirs.get(rel)
@@ -469,9 +570,11 @@ export async function checkBranch (room, key, { fetch, now = () => Date.now(), l
     const c = room.claimFor ? room.claimFor(rel, key) : null
     if (c && !(rec.clash && c.clash === rec.clash.task)) {
       said(`${c.by} holds ${rel}: the relay brings ${rec.name} in once they let go of it (quilt_release, or quilt_handoff)`)
+      rec.waitingOn = { path: rel, by: c.by, pattern: c.pattern } // looked at again as soon as that claim goes (Room.noteClaimsChanged)
       return done({ state: 'waiting', head, held: rel, by: c.by })
     }
   }
+  delete rec.waitingOn
   // Clean: the whole bring-in in one transaction from the relay, with one line in the activity log.
   const history = e.historyLog || (e.historyLog = new HistoryLog(e.doc, e.doc.getArray('history'), { origin: ORIGIN }))
   let written = 0
@@ -572,9 +675,20 @@ function handClash (room, key, rec, { head, base, behind, conflicts, disk, baseM
       post(`${intro}\n\`\`\`diff\n${d.slice(0, room4)}\n\`\`\``)
     }
   }
+  // Its assignee (or the member whose AI session it is) connected on the branch: its own Quilt
+  // carries the merge on; the relay never hands it on nor takes its files.
+  const present = !!task && connectedAs(room, key, task.assignee)
+  // No progress (the clashing files unchanged, the task not moved) for a while: handed on to the next agent.
+  const progressKey = JSON.stringify([task && task.assignee, task && task.column, paths.map((rel) => fingerprint(disk(rel)))])
+  const idleMs = (room.cfg && Number.isFinite(room.cfg.clashIdleMs)) ? room.cfg.clashIdleMs : CLASH_IDLE_MS
+  const was = rec.clash && rec.clash.task === id && rec.clash.progress
+  const progress = was && was.key === progressKey ? was : { key: progressKey, since: now }
+  const stalled = !!task && !present && now - progress.since > idleMs && agents.some((a) => a.name !== task.assignee)
   if (!task) {
     const to = agents[0]
-    task = addTask(room.doc, room.tasks, { id, title: clashTitle({ upstream, behind, conflicts }), by: RELAY_BY, assignee: to.name, forAi: false, tool: '', files: clashFiles(conflicts) }, ORIGIN)
+    try {
+      task = addTask(room.doc, room.tasks, { id, title: clashTitle({ upstream, behind, conflicts }), by: RELAY_BY, assignee: to.name, forAi: false, tool: '', files: clashFiles(conflicts) }, ORIGIN)
+    } catch (err) { return { problem: `${n} clash with the session's work on ${key}, and the relay couldn't put the merge on the board (${err.message})` } }
     room.log(`[${room.name}] ${key}: the clash with ${upstream} ${head.slice(0, 7)} went to ${to.name} (task ${id})`)
     post(brief())
     diffs()
@@ -582,15 +696,20 @@ function handClash (room, key, rec, { head, base, behind, conflicts, disk, baseM
     const fresh = !rec.clash || rec.clash.sha !== head
     const patch = { id: task.id }
     if (fresh) { patch.title = clashTitle({ upstream, behind, conflicts }); patch.files = clashFiles(conflicts) }
-    // Its assignee left the branch (no longer a hosted agent on it) and another is there: theirs now.
-    const assigneeHere = agents.some((a) => a.name === task.assignee)
-    if (!assigneeHere && agents.length) { patch.assignee = agents[0].name; patch.forAi = false; patch.tool = '' }
+    // Its assignee left the branch (no longer an agent on it), or made no progress for a while, and
+    // another agent is there: theirs now. Never while its assignee's member is connected on the branch.
+    const assigneeHere = present || agents.some((a) => a.name === task.assignee)
+    const next = agents.find((a) => a.name !== task.assignee)
+    if (!present && next && (!assigneeHere || stalled)) { patch.assignee = next.name; patch.forAi = false; patch.tool = '' }
+    const why = patch.assignee && assigneeHere ? `${task.assignee} made no progress on it for ${Math.round(idleMs / 60000)} minutes` : `the last assignee is no longer on \`${key}\``
     // Moved to Done while it still clashes (by someone else, or for an older commit): open again.
     if (task.column === 'done') patch.column = 'doing'
     if (Object.keys(patch).length > 1) {
       try { task = updateTask(room.doc, room.tasks, patch, ORIGIN) } catch {}
     }
-    if (!rec.clash || rec.clash.task !== task.id) {
+    if (present) {
+      // Its member's own Quilt has it: nothing to add.
+    } else if (!rec.clash || rec.clash.task !== task.id) {
       // A task a member's Quilt wrote for this commit, its folder now offline: the relay carries it on.
       post(`${patch.assignee ? `Handed to ${patch.assignee}: no folder on \`${key}\` is online, so the relay carries this merge on in the session.\n\n` : ''}${brief()}`)
       diffs()
@@ -598,7 +717,7 @@ function handClash (room, key, rec, { head, base, behind, conflicts, disk, baseM
       post(`${upstream} moved on to ${head.slice(0, 7)}.\n\n${brief()}`)
       diffs()
     } else if (patch.assignee) {
-      post(`Handed to ${patch.assignee}: the last assignee is no longer on \`${key}\`.\n\n${brief()}`)
+      post(`Handed to ${patch.assignee}: ${why}.\n\n${brief()}`)
     } else if (patch.column) {
       post(`Open again: ${head.slice(0, 7)} from ${upstream} still clashes with the session's work on \`${key}\`. Quilt closes this task by itself once the merge lands: no need to move it.`)
     }
@@ -606,7 +725,7 @@ function handClash (room, key, rec, { head, base, behind, conflicts, disk, baseM
   const keep = rec.clash && rec.clash.task === task.id
   // Its assignee holds the clashing files while it merges (asked for in their queues when someone
   // else holds one), so nobody else edits them meanwhile; let go of when the task is done (Room.dropClashClaims).
-  const holder = agents.find((a) => a.name === task.assignee)
+  const holder = present ? null : agents.find((a) => a.name === task.assignee)
   const had = keep && rec.clash.claims && rec.clash.claims.by === task.assignee ? rec.clash.claims : { by: task.assignee, paths: [] }
   const toClaim = paths.filter((rel) => !had.paths.includes(rel))
   if (holder && toClaim.length && room.claimClashFiles) {
@@ -614,7 +733,8 @@ function handClash (room, key, rec, { head, base, behind, conflicts, disk, baseM
     had.paths = [...had.paths, ...r.claimed, ...r.asked.map((x) => x.path)]
     if (r.asked.length) post(`${r.asked.map((x) => `${x.holder} holds ${x.path}`).join('; ')}: asked for ${r.asked.length === 1 ? 'it' : 'them'} in the file queue for ${task.assignee}, who gets ${r.asked.length === 1 ? 'it' : 'them'} with their context when they hand ${r.asked.length === 1 ? 'it' : 'them'} over.`)
   }
-  rec.clash = { task: task.id, sha: head, base, files, regions, claims: had, at: keep ? rec.clash.at : now, ...(keep && rec.clash.settled && rec.clash.sha === head ? { settled: rec.clash.settled } : {}) }
+  const moved = progress.key !== JSON.stringify([task.assignee, task.column, paths.map((rel) => fingerprint(disk(rel)))])
+  rec.clash = { task: task.id, sha: head, base, files, regions, claims: had, progress: moved ? { key: JSON.stringify([task.assignee, task.column, paths.map((rel) => fingerprint(disk(rel)))]), since: now } : progress, at: keep ? rec.clash.at : now, ...(keep && rec.clash.settled && rec.clash.sha === head ? { settled: rec.clash.settled } : {}) }
   // The room's clash record, as a member's Quilt keeps it: a folder that comes back finds the same task.
   try { room.doc.transact(() => room.doc.getMap('clashes').set(key, { task: task.id, sha: head, upstream, ts: now }), ORIGIN) } catch {}
   return { task: task.id }
@@ -698,8 +818,8 @@ export async function loadBranch ({ repo, ref, token = null, fetch, maxFiles = L
     }
     return { state: 'loaded', head, texts, blobs, skipped: skipped.sort(), bytes }
   } catch (err) {
-    if (err instanceof GitHubError && (err.status === 403 || err.status === 429)) return { state: 'backoff' }
-    if (err instanceof GitHubError && (err.status === 404 || err.status === 401)) return { state: token ? 'token-refused' : 'private' }
+    if (err instanceof GitHubError && rateLimited(err)) return { state: 'backoff' }
+    if (err instanceof GitHubError && (err.status === 404 || err.status === 401 || err.status === 403)) return { state: token ? 'token-refused' : 'private' }
     return { state: 'error', message: String(err.message).slice(0, 160) }
   }
 }

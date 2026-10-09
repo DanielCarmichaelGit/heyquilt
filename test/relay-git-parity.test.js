@@ -13,7 +13,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { signPass, PASS_TTL_MS } from '../src/passes.js'
 import { PASS_KEYS, testPasses } from './pass-helpers.js'
-import { relayLooks, canBringIn } from '../src/relay-upstream.js'
+import { relayLooks, canBringIn, noteFolders, loadBranch, configureGithubBudget, resetGithubBudgets, LONG_HOLD_MS } from '../src/relay-upstream.js'
+import { addTask } from '../src/tasks.js'
 import { clashTaskId } from '../src/clash.js'
 import { fetchProblem } from '../src/gitstate.js'
 import { describeBranchSync, branchBoard, branchesMarkdown, upstreamLine } from '../src/branches.js'
@@ -81,6 +82,7 @@ function fakeGitHub (repos) {
     }
     if ((m = /^compare\/([0-9a-f]+)\.\.\.([0-9a-f]+)$/.exec(rest))) {
       const [, base, head] = m
+      if (gitBuf(dir, 'cat-file', '-e', `${base}^{commit}`) === null) return res('{"message":"Not Found"}', 404)
       if (base === head) return res(JSON.stringify({ status: 'identical', ahead_by: 0, files: [] }))
       const isAnc = (a, b) => gitBuf(dir, 'merge-base', '--is-ancestor', a, b) !== null
       const status = isAnc(base, head) ? 'ahead' : isAnc(head, base) ? 'behind' : 'diverged'
@@ -156,7 +158,7 @@ async function hosted (sub, name, room, owner, { role = 'editor', kind = 'agent'
 
 before(async () => {
   gh = fakeGitHub({ 'acme/widgets': { dir: bareW }, 'acme/secret': { dir: bareS, private: true, token: TOKEN } })
-  srv = await startServer({ port: 0, host: '127.0.0.1', dataDir: tmp('relay'), log: () => {}, passPublicKey: PASS_KEYS.publicKey, upstreamAuto: false, upstreamOnChange: true, githubFetch: gh.fetch, idleUnloadMs: 10 * 60 * 1000 })
+  srv = await startServer({ port: 0, host: '127.0.0.1', dataDir: tmp('relay'), log: () => {}, passPublicKey: PASS_KEYS.publicKey, upstreamAuto: false, githubAnonPerHour: 100000, upstreamOnChange: true, githubFetch: gh.fetch, idleUnloadMs: 10 * 60 * 1000 })
   server = `ws://127.0.0.1:${srv.port}`
 })
 const sessions = []
@@ -241,7 +243,14 @@ test('a clash whose assignee keeps its side moves the task to QA: the files coun
   assert.ok(!(await hal.call('quilt_move_task', { id, column: 'qa', qaNotes: 'Looked at y.js and it seemed fine to me, so moving it along to QA now.' })).isError)
   await new Promise((r) => setTimeout(r, 400))
   assert.notEqual(room.meta.upstreams.main.sha, c3)
+  // Grok moving it with conflict markers still in y.js is not a merge either.
+  const marked = X_JS.replace('two', '<<<<<<< session\ntwo (session)\n=======\ntwo (pushed)\n>>>>>>> origin/main')
+  assert.ok(!(await grok.call('quilt_write_file', { path: 'y.js', content: marked })).isError)
+  assert.ok(!(await grok.call('quilt_move_task', { id, column: 'qa', qaNotes: 'Merged y.js line two by hand, keeping both versions of the line for review.' })).isError)
+  await new Promise((r) => setTimeout(r, 400))
+  assert.notEqual(room.meta.upstreams.main.sha, c3, 'conflict markers left: not merged')
   // Grok keeps the session's line and moves it to QA: brought in, y.js as it is.
+  assert.ok(!(await grok.call('quilt_write_file', { path: 'y.js', content: mine })).isError)
   assert.ok(!(await grok.call('quilt_move_task', { id, column: 'qa', qaNotes: 'Kept the session version of y.js line two on purpose; upstream change superseded.' })).isError)
   await waitFor(() => room.meta.upstreams.main.sha === c3, 8000)
   assert.equal(out(await grok.call('quilt_read_file', { path: 'y.js' })), mine)
@@ -387,8 +396,14 @@ test('fetch problems in plain English; who can bring commits in; the board prefe
   const room = { access: new Map([['viewer', { role: 'viewer' }]]) }
   const g = (o = {}, up = {}) => ({ branch: 'main', sha: 'a'.repeat(40), held: null, ...o, upstream: { name: 'origin/main', behind: 0, ...up } })
   assert.equal(canBringIn(room, 'ws', g()), true)
-  assert.equal(canBringIn(room, 'ws', g({ held: 'busy' })), false, 'held')
-  assert.equal(canBringIn(room, 'ws', g({}, { diverged: true })), false, 'diverged')
+  // Held (git at work in it) or diverged: its own git is under way, so it still keeps the relay out.
+  assert.equal(canBringIn(room, 'ws', g({ held: 'busy' })), true, 'held')
+  assert.equal(canBringIn(room, 'ws', g({ held: 'switching' })), true, 'switching branches')
+  assert.equal(canBringIn(room, 'ws', g({}, { diverged: true })), true, 'diverged')
+  // Only a hold the relay has seen for over 30 minutes lets it in, never a branch switch.
+  const long = { ...room, heldSince: new Map([['ws', { kind: 'busy', since: Date.now() - LONG_HOLD_MS - 1000 }]]) }
+  assert.equal(canBringIn(long, 'ws', g({ held: 'busy' })), false, 'held for over 30 minutes')
+  assert.equal(canBringIn({ ...room, heldSince: new Map([['ws', { kind: 'switching', since: 0 }]]) }, 'ws', g({ held: 'switching' })), true)
   assert.equal(canBringIn(room, 'ws', g({}, { fetchOk: false })), false, 'its fetch fails')
   assert.equal(canBringIn(room, 'viewer', g()), false, "a viewer's folder")
   assert.equal(canBringIn(room, 'ws', { ...g(), upstream: null }), false, 'no upstream')
@@ -406,4 +421,206 @@ test('hosted agents are told how commits come in, how to pull now, and how to me
   assert.match(HOSTED_INSTRUCTIONS, /move the task to QA once all files are done/)
   assert.match(HOSTED_INSTRUCTIONS, /ask the session owner \(quilt_github_token sets it, owner only\)/)
   assert.match(HOSTED_INSTRUCTIONS, /quilt_request_commit/)
+})
+
+/** A stand-in room for noteFolders: connections on main with presence, and each one's access. */
+function presenceRoom (members, upstreams = {}) {
+  const states = new Map(members.map((m, i) => [i + 1, { name: m.name, git: m.git }]))
+  const conns = new Map(members.map((m, i) => [m.ws = { branch: 'main' }, new Set([i + 1])]))
+  const access = new Map(members.map((m) => [m.ws, m.access || { role: 'editor', scopes: [], scopesExcept: [] }]))
+  return { name: 'r', meta: { branches: { main: {} }, upstreams }, awareness: { getStates: () => states }, conns, access, names: new Map(members.map((m) => [m.ws, m.name])) }
+}
+
+test('the relay records the repository and base only from members who may change every file; ahead gives the upstream tip; newer only when it descends', () => {
+  const A = 'a'.repeat(40); const B = 'b'.repeat(40); const L = 'c'.repeat(40)
+  const git = (sha, up = {}) => ({ branch: 'main', sha, held: null, upstream: { name: 'origin/main', url: 'https://github.com/acme/widgets.git', behind: 0, ahead: 0, conflicts: 0, sha, past: null, ...up } })
+  // A viewer, or a member limited to some folders, can't point the relay anywhere.
+  let r = presenceRoom([{ name: 'Vic', git: git(A, { url: 'https://github.com/evil/repo.git' }), access: { role: 'viewer', scopes: [] } }], { main: { repo: 'github.com/acme/widgets', name: 'origin/main', ref: 'main', sha: B } })
+  assert.equal(noteFolders(r), false)
+  assert.deepEqual([r.meta.upstreams.main.repo, r.meta.upstreams.main.sha], ['github.com/acme/widgets', B])
+  r = presenceRoom([{ name: 'Sam', git: git(A, { url: 'https://github.com/evil/repo.git' }), access: { role: 'editor', scopes: ['docs'] } }])
+  assert.equal(noteFolders(r), false)
+  // Only ahead (not pushed yet): the upstream tip, which GitHub has, not the local commit.
+  r = presenceRoom([{ name: 'Ann', git: git(L, { ahead: 1, sha: A }) }])
+  noteFolders(r)
+  assert.equal(r.meta.upstreams.main.sha, A)
+  // Behind, or clashing: not taken.
+  r = presenceRoom([{ name: 'Ann', git: git(A, { behind: 1, sha: B }) }])
+  noteFolders(r)
+  assert.equal(r.meta.upstreams.main?.sha, undefined)
+  // A newer commit only when the folder says it descends from the recorded one.
+  r = presenceRoom([{ name: 'Ann', git: git(B) }], { main: { repo: 'github.com/acme/widgets', name: 'origin/main', ref: 'main', sha: A } })
+  noteFolders(r)
+  assert.equal(r.meta.upstreams.main.sha, A, 'an older or unrelated commit never replaces it')
+  r = presenceRoom([{ name: 'Ann', git: git(B, { past: A }) }], { main: { repo: 'github.com/acme/widgets', name: 'origin/main', ref: 'main', sha: A } })
+  noteFolders(r)
+  assert.equal(r.meta.upstreams.main.sha, B)
+})
+
+test('the GitHub budget is the whole relay\'s: spent requests wait, GitHub saying it is nearly spent pauses everyone, and a plain 403 is no access', async () => {
+  const H = 'd'.repeat(40)
+  const answer = (status, body, headers = {}) => new Response(body, { status, headers })
+  try {
+    resetGithubBudgets()
+    configureGithubBudget({ anonPerHour: 2 })
+    let asked = 0
+    const ok = async (url) => { asked++; return /\/commits\//.test(url) ? answer(200, H) : /\/git\/trees\//.test(url) ? answer(200, JSON.stringify({ tree: [{ path: 'a.txt', type: 'blob', mode: '100644', size: 2 }] })) : answer(200, 'a\n') }
+    assert.equal((await loadBranch({ repo: 'github.com/acme/w', ref: 'main', fetch: ok })).state, 'loaded', 'two API requests (head and tree); the file is raw')
+    const before = asked
+    assert.equal((await loadBranch({ repo: 'github.com/acme/w', ref: 'main', fetch: ok })).state, 'backoff', 'the third in the hour waits')
+    assert.equal(asked, before, 'without asking GitHub')
+    // GitHub says only a few are left: every room waits until its reset.
+    resetGithubBudgets()
+    configureGithubBudget({ anonPerHour: 1000 })
+    const low = async () => { asked++; return answer(200, H, { 'x-ratelimit-remaining': '3', 'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 600) }) }
+    await loadBranch({ repo: 'github.com/acme/w', ref: 'main', fetch: low })
+    const n = asked
+    assert.equal((await loadBranch({ repo: 'github.com/acme/other', ref: 'main', fetch: ok })).state, 'backoff')
+    assert.equal(asked, n)
+    // A 403 without rate-limit headers is a refusal to read, not a reason to slow down.
+    resetGithubBudgets()
+    assert.equal((await loadBranch({ repo: 'github.com/acme/w', ref: 'main', fetch: async () => answer(403, 'Forbidden') })).state, 'private')
+  } finally { resetGithubBudgets(); configureGithubBudget({ anonPerHour: 100000 }) }
+})
+
+test('a held or diverged folder keeps the relay out and keeps its clash; after a hold of over 30 minutes the relay looks, but never hands on its task or takes its files', async () => {
+  const H = 'gp-h'
+  const odir = tmp('olga'); git(odir, 'clone', '-q', bareW, '.')
+  const olga = new Session({ dir: odir, server, room: H, secret: 's', viewSecret: 'v', name: 'Olga', tool: 'Claude Code', identity: identityOf('Olga'), passes: testPasses(identityOf('Olga'), { name: 'Olga', sub: 'user-olga' }) })
+  const set = olga.setUpstream.bind(olga)
+  olga.setUpstream = (up) => set(up ? { ...up, url: W_URL } : up)
+  sessions.push(olga)
+  await olga.start({ waitTimeoutMs: 5000 })
+  await waitFor(() => olga.isOwner)
+  const gus = await hosted('agent-gus', 'Gus', H, olga)
+  // A viewer's folder pointing at another repository changes nothing.
+  const vdir = tmp('vic'); git(vdir, 'clone', '-q', bareW, '.')
+  const vic = await open(vdir, 'Vic', { room: H, url: 'https://github.com/evil/repo.git', sub: 'user-vic' })
+  await waitFor(() => olga.waiting.some((p) => p.name === 'Vic'))
+  await olga.approve(olga.waiting.find((p) => p.name === 'Vic').key, { role: 'viewer' })
+  const room = srv.rooms.get(H)
+  await waitFor(() => room.meta.upstreams?.main?.sha && room.meta.upstreams.main.repo === 'github.com/acme/widgets')
+  await waitFor(() => [...room.awareness.getStates().values()].some((s) => s.name === 'Vic' && s.git?.upstream))
+  assert.equal(room.meta.upstreams.main.repo, 'github.com/acme/widgets', "a viewer can't redirect the relay")
+  await vic.stop()
+  olga.bringInUpstream = false // her folder is busy with git from here: it brings nothing in itself
+  // Olga's folder is mid-merge (held): the relay stays out, even with Gus on the branch.
+  assert.ok(!(await gus.call('quilt_write_file', { path: 'q.js', content: X_JS.replace('one', 'one (session)') })).isError)
+  assert.ok(!(await gus.call('quilt_release', { pattern: 'q.js' })).isError)
+  const head = push(pusherW, { 'q.js': X_JS.replace('one', 'one (pushed)') })
+  const summary = olga.gitSummary.bind(olga)
+  olga.gitSummary = () => { const g = summary(); return g ? { ...g, held: 'busy' } : g }
+  olga.shareGit()
+  await waitFor(() => [...room.awareness.getStates().values()].some((s) => s.name === 'Olga' && s.git?.held === 'busy'))
+  assert.equal(relayLooks(room, 'main'), false)
+  assert.deepEqual(await srv.checkUpstreams(H, { force: true }), [])
+  assert.match(out(await gus.call('quilt_sync_branch')), /^Olga's folder on `main`/)
+  // Her clash task, for her AI. After a hold of over 30 minutes the relay looks, but the task and its file stay hers.
+  const id = clashTaskId('main', head)
+  addTask(room.doc, room.tasks, { id, title: 'Bring 1 commit from origin/main into the session: q.js clashes', by: 'Olga', assignee: 'Olga', forAi: false, tool: '', files: ['q.js'] }, 'test')
+  const ws = [...room.conns.keys()].find((w) => room.names.get(w) === 'Olga')
+  room.heldSince.set(ws, { kind: 'busy', since: Date.now() - LONG_HOLD_MS - 1000 })
+  assert.equal(relayLooks(room, 'main'), true)
+  const [r] = await srv.checkUpstreams(H, { force: true })
+  assert.equal(r.state, 'clash', JSON.stringify(r))
+  assert.equal(room.tasks.get(id).assignee, 'Olga', 'never handed on while she is connected')
+  assert.ok(!room.claimList('main').some((c) => c.by === 'Gus'), 'nor her files taken')
+  assert.ok(!(room.taskComments.get(id) || []).some((c) => c.by === 'the relay'), 'nothing posted over her merge')
+})
+
+test('a public repository whose recorded commit isn\'t on GitHub says so, not "add a token"', async () => {
+  const room = srv.rooms.get(W)
+  assert.ok(!(await grok.call('quilt_switch_branch', { branch: 'main' })).isError)
+  const rec = room.meta.upstreams.main
+  const was = rec.sha
+  rec.sha = 'e'.repeat(40)
+  delete rec.etag
+  try {
+    room.syncAsked.clear()
+    const said = out(await grok.call('quilt_sync_branch'))
+    assert.match(said, /isn't on GitHub \(not pushed yet, or the branch is gone\)/)
+    assert.doesNotMatch(said, /token/)
+  } finally { rec.sha = was; delete rec.problem }
+})
+
+test('a file the relay waited on is let go of: the bring-in follows at once', async () => {
+  const room = srv.rooms.get(W)
+  room.syncAsked.clear()
+  push(pusherW, { 'held.md': 'a\nb\nc\nd\n' })
+  assert.match(out(await hal.call('quilt_sync_branch')), /^Brought/)
+  room.syncAsked.clear()
+  assert.ok(!(await grok.call('quilt_write_file', { path: 'held.md', content: 'a (grok)\nb\nc\nd\n' })).isError)
+  const sha = push(pusherW, { 'held.md': 'a\nb\nc\nd (pushed)\n', 'other.md': 'other\n' })
+  assert.match(out(await hal.call('quilt_sync_branch')), /Grok-Bot holds held\.md/)
+  assert.ok(!(await grok.call('quilt_release', { pattern: 'held.md' })).isError)
+  await waitFor(() => room.meta.upstreams.main.sha === sha, 8000)
+  assert.equal(out(await hal.call('quilt_read_file', { path: 'other.md' })), 'other\n')
+  assert.equal(out(await hal.call('quilt_read_file', { path: 'held.md' })), 'a (grok)\nb\nc\nd (pushed)\n')
+})
+
+test('a relay clash whose hosted assignee makes no progress is handed to the next agent', async () => {
+  const room = srv.rooms.get(W)
+  room.syncAsked.clear()
+  assert.ok(!(await grok.call('quilt_write_file', { path: 'idle.js', content: X_JS })).isError)
+  assert.ok(!(await grok.call('quilt_release', { pattern: 'idle.js' })).isError)
+  push(pusherW, { 'idle.js': X_JS })
+  assert.match(out(await grok.call('quilt_sync_branch')), /Brought|up to date/)
+  room.syncAsked.clear()
+  assert.ok(!(await grok.call('quilt_write_file', { path: 'idle.js', content: X_JS.replace('five', 'five (session)') })).isError)
+  const sha = push(pusherW, { 'idle.js': X_JS.replace('five', 'five (pushed)') })
+  assert.match(out(await grok.call('quilt_sync_branch')), /Nothing brought in/)
+  const id = clashTaskId('main', sha)
+  assert.equal(room.tasks.get(id).assignee, 'Grok-Bot')
+  const idle = room.cfg.clashIdleMs
+  room.cfg.clashIdleMs = 0
+  try {
+    await new Promise((r) => setTimeout(r, 20))
+    room.syncAsked.clear()
+    await hal.call('quilt_sync_branch')
+    assert.equal(room.tasks.get(id).assignee, 'Hal')
+    assert.match(room.taskComments.get(id).at(-1).text, /^Handed to Hal: Grok-Bot made no progress on it/)
+    assert.equal(room.claimList('main').find((c) => c.pattern === 'idle.js').by, 'Hal')
+  } finally { room.cfg.clashIdleMs = idle }
+  assert.ok(!(await hal.call('quilt_write_file', { path: 'idle.js', content: X_JS.replace('five', 'five (session, pushed)') })).isError)
+  await waitFor(() => room.meta.upstreams.main.sha === sha, 8000)
+})
+
+test('a folder back after the relay brought commits in, with more pushed since, follows the relay first and brings in only the rest', async () => {
+  const M = 'gp-m'
+  const pdir = tmp('pam'); git(pdir, 'clone', '-q', bareW, '.')
+  const pam = await open(pdir, 'Pam', { room: M, url: W_URL, sub: 'user-pam' })
+  pam.logs = []
+  pam.on('log', (m) => pam.logs.push(m))
+  await waitFor(() => pam.isOwner)
+  const gil = await hosted('agent-gil', 'Gil', M, pam)
+  const room = srv.rooms.get(M)
+  const at = git(pdir, 'rev-parse', 'HEAD')
+  await waitFor(() => room.meta.upstreams?.main?.sha === at && room.meta.upstreams.main.repo)
+  await pam.stop()
+  const p1 = push(pusherW, { 'm1.md': 'one\n' })
+  assert.match(out(await gil.call('quilt_sync_branch')), /^Brought 1 commit/)
+  const p2 = push(pusherW, { 'm2.md': 'two\n' })
+  const back = await open(pdir, 'Pam', { room: M, url: W_URL, sub: 'user-pam' })
+  back.logs = []
+  back.on('log', (m) => back.logs.push(m))
+  await waitFor(() => git(pdir, 'rev-parse', 'HEAD') === p2 && read(pdir, 'm2.md') === 'two\n', 20000)
+  assert.equal(read(pdir, 'm1.md'), 'one\n')
+  assert.ok(back.logs.some((l) => l.includes(`follows the relay to ${p1.slice(0, 7)}`)), back.logs.join('\n'))
+  // Back in step past the relay's commit: its record follows her folder.
+  await waitFor(() => room.meta.upstreams.main.sha === p2)
+  await back.stop()
+})
+
+test('the relay\'s own token (QUILT_GITHUB_TOKEN) reads for a session that has none', async () => {
+  git(pusherS, 'checkout', '-q', '-b', 'dev4'); write(pusherS, 'dev4.txt', 'four\n'); git(pusherS, 'add', '.'); git(pusherS, 'commit', '-qm', 'dev4'); git(pusherS, 'push', '-q', 'origin', 'dev4')
+  const room = srv.rooms.get('gp-s')
+  const kim = await hosted('agent-kim', 'Kim', 'gp-s', null, { approve: false })
+  const was = room.cfg.githubToken
+  room.cfg.githubToken = TOKEN
+  try {
+    const n = gh.calls.length
+    assert.match(out(await kim.call('quilt_switch_branch', { branch: 'dev4', create: true })), /^Loaded dev4 from GitHub \(github\.com\/acme\/secret/)
+    assert.ok(gh.calls.slice(n).every((c) => c.headers.authorization === `Bearer ${TOKEN}`))
+    assert.equal(room.meta.githubToken, undefined, 'the session itself has no token')
+  } finally { room.cfg.githubToken = was }
 })

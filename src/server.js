@@ -47,7 +47,7 @@ import { JOIN_HOST } from './ui/invite.js'
 import { PresenceReporter, PRESENCE_FILE } from './presence.js'
 import { cleanSessionName, BAD_SESSION_NAME } from './session-name.js'
 import { hostedWebhooks } from './relay-webhooks.js'
-import { UPSTREAM_CHECK_MS, SYNC_EVERY_MS, upstreamsOf, noteFolders, relayEntry, relayLooks, dueBranches, checkBranch, validToken, folderAble, describeRelayCheck, loadBranch, parseRepo } from './relay-upstream.js'
+import { UPSTREAM_CHECK_MS, SYNC_EVERY_MS, upstreamsOf, noteFolders, relayEntry, relayLooks, dueBranches, checkBranch, validToken, folderAble, noteHolds, connectedAs, describeRelayCheck, loadBranch, parseRepo, configureGithubBudget, CLASH_IDLE_MS } from './relay-upstream.js'
 
 const ROOM_RE = /^[A-Za-z0-9_-]{1,64}$/
 const MAX_NAME = 64
@@ -107,6 +107,13 @@ export function relayConfig (opts = {}) {
     // and whether it does by itself (tests turn that off and ask with checkUpstreams).
     upstreamCheckMs: num(opts.upstreamCheckMs, UPSTREAM_CHECK_MS),
     upstreamAuto: opts.upstreamAuto !== false,
+    // A read-only GitHub token of the relay's own (a Fly secret, public repositories only), used when
+    // a session has none: GitHub allows 60 requests an hour per IP without one, 5000 with.
+    githubToken: opts.githubToken ?? env.QUILT_GITHUB_TOKEN ?? '',
+    // How many GitHub API requests an hour the relay makes without a token, for every session together.
+    githubAnonPerHour: num(opts.githubAnonPerHour ?? env.QUILT_GITHUB_ANON_PER_HOUR, 50),
+    // A clash assignee with no progress this long is handed on to the next agent (relay-upstream.js).
+    clashIdleMs: num(opts.clashIdleMs, CLASH_IDLE_MS),
     // Whether a write to a file in an open relay clash (or its task moved to QA or Done by its
     // assignee) makes the relay look again at once; on with upstreamAuto unless set.
     upstreamOnChange: opts.upstreamOnChange ?? opts.upstreamAuto !== false,
@@ -601,6 +608,19 @@ class Room {
   broadcastClaims () {
     this.saveMeta()
     for (const other of this.conns.keys()) send(other, jsonMessage(MSG_CLAIMS, { claims: this.claimList(other.branch) }))
+    this.noteClaimsChanged()
+  }
+
+  /** A claim the relay's bring-in waits on (rec.waitingOn) was let go of, handed on or swept: that branch is looked at again at once. */
+  noteClaimsChanged () {
+    for (const [key, rec] of Object.entries(this.meta.upstreams || {})) {
+      const w = rec && rec.waitingOn
+      if (!w) continue
+      const c = this.meta.branches[key] ? this.claimFor(w.path, key) : null
+      if (c && c.by === w.by && c.pattern === w.pattern) continue
+      delete rec.waitingOn
+      this.upstreamSoon(key)
+    }
   }
 
   /** May this connection change this file? */
@@ -1048,7 +1068,8 @@ class Room {
   /** Members' presence says which upstream each branch follows, and the commit its folders are at. */
   noteUpstreams () {
     if (!this.exists || this.ended || this.destroyed) return
-    if (noteFolders(this)) { this.saveMeta(); this.broadcastBranches() }
+    noteHolds(this)
+    if (noteFolders(this, this.log)) { this.saveMeta(); this.broadcastBranches() }
   }
 
   /** A hosted agent just called a tool: its branch counts as worked on (kept, so it outlasts the room leaving memory), and is looked at if due. */
@@ -1079,7 +1100,7 @@ class Room {
       const out = []
       for (const key of due) {
         if (this.destroyed || !relayLooks(this, key)) continue
-        try { out.push({ branch: key, ...await checkBranch(this, key, { fetch: this.githubFetch, log: this.log }) }) } catch (err) {
+        try { out.push({ branch: key, ...await checkBranch(this, key, { fetch: this.githubFetch, log: this.log, fallbackToken: this.cfg.githubToken }) }) } catch (err) {
           this.log(`[${this.name}] ${key}: could not look for new commits: ${err.message}`)
           out.push({ branch: key, state: 'error' })
         }
@@ -1223,8 +1244,10 @@ class Room {
     if (!src) return { state: 'no-repo' }
     const repo = parseRepo(`https://${src.repo}`)
     if (!repo || !repo.github) return { state: 'not-github', repo: src.repo }
-    const token = validToken(this.meta.githubToken) ? this.meta.githubToken : null
-    const r = await loadBranch({ repo: src.repo, ref: key, token, fetch: this.githubFetch })
+    const own = validToken(this.meta.githubToken) ? this.meta.githubToken : null
+    const token = own || (validToken(this.cfg.githubToken) ? this.cfg.githubToken : null)
+    const r0 = await loadBranch({ repo: src.repo, ref: key, token, fetch: this.githubFetch })
+    const r = r0.state === 'token-refused' && !own ? { ...r0, state: 'private' } : r0
     const remote = src.name && src.ref && src.name.endsWith(`/${src.ref}`) ? src.name.slice(0, -(src.ref.length + 1)) : 'origin'
     return { ...r, repo: src.repo, ...(r.state === 'loaded' ? { upstream: { repo: src.repo, name: `${remote}/${key}`, ref: key, sha: r.head } } : {}) }
   }
@@ -2093,6 +2116,7 @@ class Room {
         const claims = this.claimList(other.branch)
         send(other, jsonMessage(MSG_CLAIMS, other === ws ? { claims, reply } : { claims }))
       }
+      this.noteClaimsChanged()
     } else if (type === MSG_ADMIN) {
       let req = {}
       let reply
@@ -2211,6 +2235,7 @@ function closeSoon (ws, code, reason, ms = 2000) {
 
 export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, log = console.log, presenceOptions = {}, ...opts } = {}) {
   const cfg = relayConfig(opts)
+  configureGithubBudget({ anonPerHour: cfg.githubAnonPerHour })
   const passKey = cfg.passPublicKey ? parsePublicKey(cfg.passPublicKey) : null
   if (cfg.passPublicKey && !passKey) throw new Error('QUILT_PASS_PUBLIC_KEY is not an Ed25519 public key (spki, base64url)')
   /** With sign-in on: the request's valid pass, or null. With it off: an empty pass. */

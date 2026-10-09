@@ -37,7 +37,7 @@ export async function startControl (session, extras = {}) {
     },
     'POST /claim': (b) => session.claim(b.pattern, b.note, b.via),
     // What this person's AI should hear (an edit of its that Quilt undone); handed over once.
-    'POST /notices': () => ({ notices: session.takeNotices() }),
+    'POST /notices': (b) => ({ notices: session.takeNotices(b && b.via ? String(b.via) : null) }),
     'POST /release': async (b) => ({ released: await session.release(b.pattern, b.via) }),
     // The file queue: ask for a file someone holds, hand one we hold to someone waiting, take a request back.
     'POST /request-file': (b) => session.requestFile(b.path, { title: b.title, description: b.description, task: b.task, via: b.via }),

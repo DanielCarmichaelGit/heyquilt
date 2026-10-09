@@ -257,6 +257,7 @@ export class Session extends EventEmitter {
     this.clashPending = null // { id, timer }: a clash task this member just wrote, until the write has settled
     this.clashAncestry = new Map() // "a>b" -> whether commit a is in b's history (clashAncestor)
     this.clashSeen = '' // the presence that bears on clashes, last looked at
+    this.clashDoneSeen = new Set() // clash tasks seen moved to Done by hand (told again when opened again)
     this.indexLate = null // the commit the last bring-in moved to: its index is checked for a few seconds (fixIndex)
     this.indexWatchUntil = 0
     this.repo = null // every branch and worktree of the repository (repoBranches), shown to the room
@@ -2681,10 +2682,10 @@ export class Session extends EventEmitter {
       const assignee = this.clashAssignee()
       const t = putTask(this.doc, this.tasks, { id, title: clashTitle({ upstream: u.name, ...u }), by: this.name, assignee, forAi: false, tool: '', files: clashFiles(u.conflicts) }, CLASH)
       this.writeClashRecord(branch, { task: t.id, sha: u.sha, upstream: u.name })
-      this.clashComment(t.id, clashBrief({ branch, upstream: u.name, ...u }))
       this.clashWait = null
       this.log(`🔀 the clash with ${u.name} on ${branch} is this folder's to merge (task ${t.id}, for ${assignee})`)
-      this.settleClash(t.id, assignee)
+      // Its description is posted once the write has survived (two that raced would post it twice).
+      this.settleClash(t.id, assignee, clashBrief({ branch, upstream: u.name, ...u }))
       this.sayUpstream(this.clashSettling(facts))
       return { task: t.id, label: ownerLabel(t), mine: true }
     }
@@ -2695,9 +2696,13 @@ export class Session extends EventEmitter {
       const someoneAt = this.memberAt(u.sha)
       if (landed || someoneAt) { if (!someoneAt) this.sayUpstream(advice); return null }
       // Moved to Done by hand while the commit still clashes and no folder has it: open again, same assignee.
+      this.clashDoneSeen.add(task.id)
       if (firstIsMe) {
         task = patchTask(this.doc, this.tasks, { id: task.id, column: 'doing' }, CLASH)
-        this.clashComment(task.id, `Open again: ${u.sha.slice(0, 7)} from ${u.name} still clashes with the session's work and no folder has it yet. Quilt closes this task by itself once the merge lands: no need to move it.`)
+        const why = `Open again: ${u.sha.slice(0, 7)} from ${u.name} still clashes with the session's work and no folder has it yet. Quilt closes this task by itself once the merge lands: no need to move it.`
+        // Our own AI's task: written quietly, so it is woken (and told again) once the write has settled.
+        if (this.isMine(task.assignee)) this.settleClash(task.id, task.assignee, why)
+        else this.clashComment(task.id, why)
       }
       return this.clashTold(task, advice, facts, u)
     }
@@ -2729,10 +2734,9 @@ export class Session extends EventEmitter {
       const gone = task.assignee
       const assignee = this.clashAssignee()
       task = patchTask(this.doc, this.tasks, { id: task.id, assignee, forAi: false, tool: '' }, CLASH)
-      this.clashComment(task.id, `Handed to ${assignee}: ${handOn}, and the clash on \`${branch}\` is still there.\n\n${clashBrief({ branch, upstream: u.name, ...u })}`)
       this.log(`🔀 took over the clash on ${branch} (task ${task.id}) from ${gone}`)
       this.clashAbsent = null
-      this.settleClash(task.id, assignee)
+      this.settleClash(task.id, assignee, `Handed to ${assignee}: ${handOn}, and the clash on \`${branch}\` is still there.\n\n${clashBrief({ branch, upstream: u.name, ...u })}`)
     }
     return this.clashTold(task, advice, facts, u)
   }
@@ -2741,11 +2745,38 @@ export class Session extends EventEmitter {
   clashTold (task, advice, facts, u) {
     const mine = this.isMine(task.assignee)
     const label = ownerLabel(task)
+    // Open again after Done: whoever has it is told again.
+    if (task.column !== 'done' && this.clashDoneSeen.delete(task.id)) this.forgetClashSaid()
     if (mine) {
-      if (!this.clashPending || this.clashPending.id !== task.id) this.sayUpstream(`${advice} This merge is yours: task ${task.id} on the board. Quilt closes it by itself once the merge lands here.`)
-      else this.sayUpstream(this.clashSettling(facts))
+      if (this.clashPending && this.clashPending.id === task.id) this.sayUpstream(this.clashSettling(facts))
+      else this.sayClash(task.assignee, `${advice} This merge is yours: task ${task.id} on the board. Quilt closes it by itself once the merge lands here.`, leaveItNotice({ label, upstream: u.name, task: task.id, facts }))
     } else this.sayUpstream(leaveItNotice({ label, upstream: u.name, task: task.id, facts }))
     return { task: task.id, label, mine }
+  }
+
+  /**
+   * The clash task is this member's: when it is one of its AI sessions', only that session is
+   * told it owns the merge and the others to leave it to that session (each session's own
+   * notices); otherwise every session of this member hears `own`.
+   */
+  sayClash (assignee, own, others) {
+    const p = [...this.personas.values()].find((q) => q.name === assignee || q.aliases.includes(assignee))
+    if (!p) return this.sayUpstream(own)
+    for (const q of this.personas.values()) this.personaNotice(q, q === p ? own : others)
+    if (own !== this.upstreamSaid) { this.upstreamSaid = own; this.log(`⬇️ ${p.name}: ${own}`) }
+  }
+
+  /** A line for one AI session of this member only (takeNotices with its `via`), once per state. */
+  personaNotice (p, text) {
+    if (!text || p.clashSaid === text) return
+    p.clashSaid = text
+    p.notices = [...(p.notices || []), text].slice(-NOTICE_CAP)
+  }
+
+  /** The clash lines said so far are said again when they come up (a task opened again, handed back). */
+  forgetClashSaid () {
+    this.upstreamSaid = ''
+    for (const p of this.personas.values()) p.clashSaid = ''
   }
 
   /** What this folder's AI is told while its clash task settles: the facts, not yet whose it is. */
@@ -2756,13 +2787,15 @@ export class Session extends EventEmitter {
    * board keeps one. After a moment, the AI is woken and told only if the write survived;
    * otherwise it is told quietly who has it.
    */
-  settleClash (id, assignee) {
+  settleClash (id, assignee, comment = '') {
     clearTimeout(this.clashPending && this.clashPending.timer)
+    this.forgetClashSaid()
     const timer = setTimeout(() => {
       if (this.clashPending && this.clashPending.id === id) this.clashPending = null
       if (this.stopped) return
       const t = readTasks(this.tasks).find((x) => x.id === id)
       if (t && t.column !== 'done' && t.assignee === assignee) {
+        if (comment) this.clashComment(id, comment)
         for (const p of this.personas.values()) p.inbox.forget(id)
         this.inboxTracker.forget(id)
         this.scanInbox({ quiet: false, personas: false })
@@ -3046,9 +3079,12 @@ export class Session extends EventEmitter {
     if (this.notices.length > NOTICE_CAP) this.notices.splice(0, this.notices.length - NOTICE_CAP)
   }
 
-  takeNotices () {
+  /** Pending notices: this member's, and, for one of its AI sessions (`via`), that session's own. */
+  takeNotices (via = null) {
     const out = this.notices
     this.notices = []
+    const p = this.persona(via)
+    if (p && p.notices && p.notices.length) { out.push(...p.notices); p.notices = [] }
     return out
   }
 

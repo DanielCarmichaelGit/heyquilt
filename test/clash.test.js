@@ -161,10 +161,10 @@ test('when the assignee leaves the session, the clash task goes to the next memb
   await owner.stop()
   await waitFor(() => clashTasks(other)[0]?.assignee === other.name, 15000)
   assert.ok(Date.now() - left >= 1400, 'not before the assignee had been away a while')
+  await waitFor(() => yours(other).some((n) => n.includes(`task ${id}`)))
   const task = clashTasks(other)[0]
   assert.equal(task.id, id)
   assert.match(task.comments.at(-1).text, new RegExp(`^Handed to ${other.name}: ${owner.name} has been away from \`main\``))
-  await waitFor(() => yours(other).some((n) => n.includes(`task ${id}`)))
   assert.equal(clashTasks(other).length, 1)
 })
 
@@ -196,6 +196,9 @@ test('two members that race to hand out the same clash write one task, and exact
   assert.equal(yours(won).length, 1, 'the one whose write stayed is told')
   assert.equal(yours(lost).length, 0, 'the other never is')
   assert.match(lost.told.join('\n'), new RegExp(`${winner} is merging the commits from origin/main \\(task ${id}\\)`))
+  // Its description is posted once, by the writer whose task stayed.
+  const briefs = clashTasks(A)[0].comments.filter((c) => /^1 commit on origin\/main/.test(c.text))
+  assert.deepEqual(briefs.map((c) => c.by), [winner])
   await waitFor(() => lost.status().git.upstream?.mergedBy === winner)
 })
 
@@ -295,6 +298,7 @@ test('the task goes to one AI session of the chosen member, and from a person wi
   other.publishPersonas()
   const lead = other.persona('bbbbbbbb').name
   await waitFor(() => clashTasks(A)[0]?.assignee === lead && clashTasks(B)[0]?.assignee === lead, 10000)
+  await waitFor(() => clashTasks(A)[0].comments.some((c) => c.text.startsWith('Handed to')))
   const task = clashTasks(A)[0]
   assert.equal(task.id, id)
   assert.equal(task.forAi, false)
@@ -302,6 +306,55 @@ test('the task goes to one AI session of the chosen member, and from a person wi
   // That session is woken for it (once the write settled); the other session is not.
   await waitFor(() => other.inbox({ via: 'bbbbbbbb' }).events.some((e) => e.kind === 'task' && e.id === id))
   assert.ok(!other.inbox({ via: 'aaaaaaaa' }).events.some((e) => e.kind === 'task'))
+})
+
+/** Everything handed to one AI session of `s` (its own notices and this member's), kept across calls. */
+function sessionNotices (s, via) {
+  s.byVia = s.byVia || {}
+  s.byVia[via] = [...(s.byVia[via] || []), ...s.takeNotices(via)]
+  return s.byVia[via].join('\n')
+}
+
+test('of a member with two AI sessions, only the one the clash task went to is told the merge is its own', async (t) => {
+  const ctx = await setup(t)
+  const { A, B } = ctx
+  // Alice has two AI sessions (Codex active last), so she is first in line; bob has none.
+  A.registerPersona({ via: 'aaaaaaaa', tool: 'Claude Code', cwd: tmp('x') })
+  A.registerPersona({ via: 'bbbbbbbb', tool: 'Codex', cwd: tmp('y') })
+  A.persona('aaaaaaaa').seenAt = Date.now() - 60 * 1000
+  A.publishPersonas()
+  const lead = A.persona('bbbbbbbb').name
+  const quiet = A.persona('aaaaaaaa').name
+  await waitFor(() => B.status().peers.filter((p) => p.persona).length === 2)
+  const { sha } = await clash(ctx)
+  const id = clashTaskId('main', sha)
+  await waitFor(() => clashTasks(B)[0]?.assignee === lead, 10000)
+  await waitFor(() => /This merge is yours/.test(sessionNotices(A, 'bbbbbbbb')), 10000)
+  await waitFor(() => sessionNotices(A, 'aaaaaaaa').includes(`${lead} is merging the commits from origin/main (task ${id}); leave those files to them.`))
+  await sleep(1000)
+  assert.doesNotMatch(sessionNotices(A, 'aaaaaaaa'), /This merge is yours/)
+  assert.match(sessionNotices(A, 'bbbbbbbb'), new RegExp(`This merge is yours: task ${id}`))
+  assert.ok(A.inbox({ via: 'bbbbbbbb' }).events.some((e) => e.kind === 'task' && e.id === id))
+  assert.ok(!A.inbox({ via: 'aaaaaaaa' }).events.some((e) => e.kind === 'task'), `${quiet} is not woken`)
+  assert.match(B.told.join('\n'), new RegExp(`${lead.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} is merging`))
+})
+
+test('a clash task its own AI moved to Done too early is opened again, and that AI is woken and told again', async (t) => {
+  const ctx = await setup(t)
+  const { A } = ctx
+  A.registerPersona({ via: 'aaaaaaaa', tool: 'Codex', cwd: tmp('x') })
+  A.publishPersonas()
+  const ai = A.persona('aaaaaaaa').name
+  const { sha } = await clash(ctx)
+  const id = clashTaskId('main', sha)
+  const woken = () => A.inbox({ via: 'aaaaaaaa' }).events.filter((e) => e.kind === 'task' && e.id === id).length
+  const toldYours = () => (sessionNotices(A, 'aaaaaaaa').match(/This merge is yours/g) || []).length
+  await waitFor(() => clashTasks(A)[0]?.assignee === ai && woken() === 1 && toldYours() === 1, 10000)
+  // Its AI moves it to Done before the merge has landed.
+  A.updateTask({ id, column: 'done', verified: 'merged, I think' })
+  await waitFor(() => clashTasks(A)[0].column === 'doing', 10000)
+  assert.equal(clashTasks(A)[0].assignee, ai)
+  await waitFor(() => woken() === 2 && toldYours() === 2, 10000)
 })
 
 test('a diverged branch is its own folder\'s history: never handed out, and told as before', async (t) => {
@@ -331,6 +384,7 @@ test('a clash task moved to Done by hand while the commit still clashes is opene
   const other = assignee === 'alice' ? B : A
   other.updateTask({ id, column: 'done', verified: 'looked done to me' })
   await waitFor(() => clashTasks(A)[0].column === 'doing' && clashTasks(B)[0].column === 'doing', 10000)
+  await waitFor(() => clashTasks(A)[0].comments.some((c) => c.text.startsWith('Open again')))
   assert.equal(clashTasks(A)[0].assignee, assignee)
   assert.match(clashTasks(A)[0].comments.at(-1).text, /^Open again: .* Quilt closes this task by itself once the merge lands/)
   assert.equal(other.status().git.upstream.mergedBy, assignee)

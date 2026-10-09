@@ -22,21 +22,21 @@ export function readClash (value, branch) {
   if (typeof value.task !== 'string' || !HEX_ID.test(value.task)) return null
   if (typeof value.sha !== 'string' || !SHA.test(value.sha)) return null
   if (typeof value.upstream !== 'string' || !value.upstream || value.upstream.length > 200) return null
-  return { branch, task: value.task, sha: value.sha, upstream: value.upstream }
+  const ts = Number.isFinite(value.ts) ? value.ts : 0
+  return { branch, task: value.task, sha: value.sha, upstream: value.upstream, ts }
 }
 
-/** Whether a presence state's folder has an AI working for it: an AI session through its app, or a chat reader that found one. */
+/** Whether a member's presence shows a live AI session working through its app (persona.js). */
 export function hasAi (st) {
-  if (!st) return false
-  if (Array.isArray(st.personas) && st.personas.some((p) => p && typeof p.name === 'string' && p.name)) return true
-  const tool = st.agent && st.agent.tool
-  return typeof tool === 'string' && !!tool && tool !== 'unknown'
+  return !!st && Array.isArray(st.personas) && st.personas.some((p) => p && typeof p.name === 'string' && p.name)
 }
 
 /**
- * The members whose folder reports this clash: on `branch`, with `upstream` as its upstream,
- * and either clashing files or a diverged branch. `states`: [[clientID, presence state]].
- * Each: { id, name, kind, ai, rank } (rank 0 an agent member, 1 a person with an AI, 2 a person).
+ * The members who may take this clash: their folder is on `branch` with `upstream` as its
+ * upstream and reports clashing files (not a diverged branch: that history is the folder's own),
+ * their Quilt hands clashes out (git.clash 1), and they may change the clashing files.
+ * `states`: [[clientID, presence state]], this member's own included.
+ * Each: { id, name, kind, ai, rank } (rank 0 an agent member, 1 a person with an AI session, 2 a person).
  */
 export function clashCandidates (states, { branch, upstream }) {
   const out = []
@@ -44,8 +44,8 @@ export function clashCandidates (states, { branch, upstream }) {
     if (!st || typeof st.name !== 'string' || !st.name || !st.git || typeof st.git !== 'object') continue
     const g = st.git
     const u = g.upstream
-    if (g.branch !== branch || !u || u.name !== upstream) continue
-    if (!(u.conflicts > 0 || u.diverged)) continue
+    if (g.clash !== 1 || g.branch !== branch || !u || u.name !== upstream) continue
+    if (!(u.conflicts > 0) || u.diverged || u.mayWrite !== true) continue
     const agent = st.kind === 'agent'
     const ai = !agent && hasAi(st)
     out.push({ id, name: st.name, kind: agent ? 'agent' : 'human', ai, rank: agent ? 0 : ai ? 1 : 2 })
@@ -53,11 +53,26 @@ export function clashCandidates (states, { branch, upstream }) {
   return out
 }
 
-/** Who takes the clash: an agent member first, then a person with an AI, then anyone; the lowest client id among equals. */
+/** The candidates in the order they take the clash: an agent member first, then a person with an AI, then anyone; the lowest client id among equals. */
+export function clashOrder (candidates) {
+  return [...candidates].sort((a, b) => a.rank - b.rank || a.id - b.id)
+}
+
+/** Who takes the clash (the first in clashOrder not in `except`), or null. */
 export function pickClashOwner (candidates, { except = [] } = {}) {
-  const list = candidates.filter((c) => !except.includes(c.name))
-  list.sort((a, b) => a.rank - b.rank || a.id - b.id)
-  return list[0] || null
+  return clashOrder(candidates.filter((c) => !except.includes(c.name)))[0] || null
+}
+
+/**
+ * The presence state of whoever `assignee` is (a member, or one of a member's AI sessions),
+ * counted only when that member's folder is on `branch`; null when they are not here.
+ */
+export function holderOf (states, assignee, branch) {
+  for (const [id, st] of states) {
+    if (!st || !st.git || st.git.branch !== branch) continue
+    if (st.name === assignee || (Array.isArray(st.personas) && st.personas.some((p) => p && p.name === assignee))) return { id, st, rank: st.kind === 'agent' ? 0 : hasAi(st) ? 1 : 2 }
+  }
+  return null
 }
 
 /** How a task's assignee is named in a notice and on the branch list: an agent by name, a person as "<name>'s AI". */
@@ -68,8 +83,7 @@ export function ownerLabel ({ assignee, forAi }) {
 const n = (k, w) => `${k} ${w}${k === 1 ? '' : 's'}`
 
 /** The task's title: "Bring 4 commits from origin/main into the session: src/a.js, src/b.js clash". */
-export function clashTitle ({ upstream, behind, ahead, diverged, conflicts = [] }) {
-  if (diverged) return `Bring ${n(behind, 'commit')} from ${upstream} into the session: the branch has ${n(ahead, 'commit')} of its own`.slice(0, MAX_TITLE)
+export function clashTitle ({ upstream, behind, conflicts = [] }) {
   const head = `Bring ${n(behind, 'commit')} from ${upstream} into the session: `
   const paths = conflicts.map((c) => c.path)
   const tail = paths.length === 1 ? ' clashes' : ' clash'
@@ -92,17 +106,11 @@ export function clashFiles (conflicts = []) {
 }
 
 /** The task's description, as its first comment: each file and why, and what to do. */
-export function clashBrief ({ branch, upstream, sha, behind, ahead, diverged, conflicts = [] }) {
-  const lines = []
-  if (diverged) {
-    lines.push(`\`${branch}\` and ${upstream} have both moved on (${n(ahead, 'commit')} here, ${n(behind, 'commit')} there, at ${sha.slice(0, 7)}). Quilt never merges git history.`)
-    lines.push('', `In your folder on \`${branch}\`: pull or rebase onto ${upstream}, resolve anything git stops on and git add it. Quilt takes in the result and every other folder on \`${branch}\` follows yours. Then move this task to QA or Done.`)
-  } else {
-    lines.push(`${n(behind, 'commit')} on ${upstream} (up to ${sha.slice(0, 7)}) clash with the session's uncommitted work, so Quilt brought nothing in:`)
-    for (const c of conflicts.slice(0, 30)) lines.push(`- ${c.path}: ${c.why}`)
-    if (conflicts.length > 30) lines.push(`- and ${conflicts.length - 30} more`)
-    lines.push('', `In your folder on \`${branch}\`: run git pull, resolve those files and git add them. Quilt takes in the result and every other folder on \`${branch}\` follows yours, without merging again. Then move this task to QA or Done (Quilt closes it by itself once a folder is at ${sha.slice(0, 7)} with nothing clashing).`)
-  }
+export function clashBrief ({ branch, upstream, sha, behind, conflicts = [] }) {
+  const lines = [`${n(behind, 'commit')} on ${upstream} (up to ${sha.slice(0, 7)}) clash with the session's uncommitted work, so Quilt brought nothing in:`]
+  for (const c of conflicts.slice(0, 30)) lines.push(`- ${c.path}: ${c.why}`)
+  if (conflicts.length > 30) lines.push(`- and ${conflicts.length - 30} more`)
+  lines.push('', `In your folder on \`${branch}\`: run git pull, resolve those files and git add them. Quilt takes in the result and every other folder on \`${branch}\` follows yours, without merging again. Quilt closes this task by itself once the merge lands (a folder at ${sha.slice(0, 7)} or later with nothing clashing): no need to move it.`)
   return lines.join('\n')
 }
 
@@ -112,8 +120,7 @@ export function leaveItNotice ({ label, upstream, task, facts }) {
 }
 
 /** What a folder that reports the clash knows about it, without the advice to pull. */
-export function clashFacts ({ branch, upstream, behind, ahead, diverged, conflicts = [] }) {
-  if (diverged) return `${branch} and ${upstream} have both moved on (${n(ahead, 'commit')} here, ${n(behind, 'commit')} there).`
+export function clashFacts ({ branch, upstream, behind, conflicts = [] }) {
   const list = conflicts.slice(0, 4).map((c) => `${c.path} (${c.why})`).join('; ') + (conflicts.length > 4 ? `; and ${conflicts.length - 4} more` : '')
   return `${branch} is ${n(behind, 'commit')} behind ${upstream}, and the session's uncommitted work clashes with them in ${list}.`
 }

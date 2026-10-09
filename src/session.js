@@ -38,16 +38,19 @@ import { openMerge, updateMerge, readMerges, pruneMerges, cleanName } from './me
 import { ensureQuiltIgnored } from './gitignore.js'
 import { gitDir, headKey, headRef, gitRuns, askTwice, lastCallTimedOut, busy as gitBusy, leftoverLock, STALE_LOCK_MS, indexStamp, classify, filesAt, changesBetween, commitsBetween, treeState, branchTip, watchGit, unmergedPaths, stashStamp, upstreamAdds, pullState, SETTLE_MS, BURST_PATHS, upstreamOf, fetchUpstream, isAncestor, stagedAgainst, fastForward, resetIndex, blobAt, hasFilesUnder, repoBranches } from './gitstate.js'
 import { planCatchUp, catchUpAdvice } from './upstream.js'
-import { clashTaskId, readClash, clashCandidates, pickClashOwner, ownerLabel, clashTitle, clashFiles, clashBrief, leaveItNotice, clashFacts, hasAi } from './clash.js'
+import { clashTaskId, readClash, clashCandidates, clashOrder, holderOf, ownerLabel, clashTitle, clashFiles, clashBrief, leaveItNotice, clashFacts } from './clash.js'
 import { cleanGit, branchBoard } from './branches.js'
 import { DEFAULT_KEY } from './branchdocs.js'
 
 export { applyTextDiff }
 
 const LOCAL = Symbol('local')
-const CLASH = Symbol('clash') // clash tasks this Quilt writes: not LOCAL, so they wake this member's own AI too
+const CLASH = Symbol('clash') // clash tasks this Quilt writes (quiet for its own inbox until settleClash)
 const CLASH_REASSIGN_MS = 5 * 60 * 1000 // a clash task's assignee gone this long: the next member takes it
-const CLASH_WAIT_MS = 30 * 1000 // no clash task from the chosen member this long (an older Quilt): another writes it
+const CLASH_WAIT_MS = 30 * 1000 // no clash task from the first in line this long: the next one writes it
+const CLASH_SETTLE_MS = 2000 // a clash task this member wrote is told to its AI after this long, if it survived a race
+const CLASH_KEEP_MS = 3 * 24 * 60 * 60 * 1000 // a finished clash record is kept this long
+const CLASH_RECORDS = 100
 const STILL_MARKED = 'this file has conflict markers in it; finish editing it (or choose Keep mine) first'
 const COLORS = ['#b9432b', '#3b6a9a', '#4a7a45', '#855a9c', '#a8701c', '#2e7a80', '#9c4f6b']
 const RECENT_MS = 2 * 60 * 1000
@@ -90,12 +93,13 @@ const UPSTREAM_MS = Number(process.env.QUILT_UPSTREAM_MS) || 60 * 1000
 const INDEX_WATCH_MS = 8000 // after a bring-in, how long the index is checked against what another git may write back
 
 export class Session extends EventEmitter {
-  constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, summarize = null, identity = null, passes = null, startName = '', autoClaimQuietMs = AUTO_CLAIM_QUIET_MS, handoffGraceMs = HANDOFF_GRACE_MS, aiTasks = null, webhookTransport = null, pullWaitMs = PULL_WAIT_MS, bringInUpstream = true, clashReassignMs = CLASH_REASSIGN_MS, clashWaitMs = CLASH_WAIT_MS }) {
+  constructor ({ dir, server, room, secret, key = '', viewSecret = '', name, tool = 'unknown', color = null, prefer = 'remote', kind = 'human', shareAgent = true, summarize = null, identity = null, passes = null, startName = '', autoClaimQuietMs = AUTO_CLAIM_QUIET_MS, handoffGraceMs = HANDOFF_GRACE_MS, aiTasks = null, webhookTransport = null, pullWaitMs = PULL_WAIT_MS, bringInUpstream = true, clashReassignMs = CLASH_REASSIGN_MS, clashWaitMs = CLASH_WAIT_MS, clashSettleMs = CLASH_SETTLE_MS }) {
     super()
     this.pullWaitMs = pullWaitMs
     this.bringInUpstream = bringInUpstream // false: commits come in only when someone pulls (tests of the pull path)
     this.clashReassignMs = clashReassignMs // a clash task's assignee away this long is replaced (reviewClash)
-    this.clashWaitMs = clashWaitMs // the chosen member's Quilt wrote no clash task in this long: this one does
+    this.clashWaitMs = clashWaitMs // the first in line wrote no clash task in this long: the next one does
+    this.clashSettleMs = clashSettleMs // a clash task written for our AI is told to it after this long, if the write survived
     this.pull = null // { upstream, behind, adds: [{ path, same, waiting }] }: what a pull would bring over files the session put here
     this.pullWait = new Map() // path -> { since, stash, timer }: removed to make way for a pull, kept for everyone meanwhile
     this.pullWaitOver = new Set() // waited for and no pull came: not waited for again until the next fetch
@@ -244,10 +248,15 @@ export class Session extends EventEmitter {
     this.upstreamPoll = null
     this.upstreamSaid = '' // the advice last given, so it's given once per state
     this.upstreamDeferred = null // the commit this folder let another member's folder bring in first
-    this.clashAbsent = null // { task, name, since }: a clash task's assignee seen gone from the session
-    this.clashWaitSince = 0 // when this folder began waiting for the chosen member to write the clash task
+    this.clashAbsent = null // { task, name, since }: a clash task's assignee seen gone from the branch
+    this.clashWait = null // { sha, since }: since when this folder has waited for the first in line to write the clash task
     this.clashTimer = null
-    this.clashClosing = null
+    this.clashDue = 0
+    this.clashReview = null // the look under way (reviewClash)
+    this.clashAgain = false
+    this.clashPending = null // { id, timer }: a clash task this member just wrote, until the write has settled
+    this.clashAncestry = new Map() // "a>b" -> whether commit a is in b's history (clashAncestor)
+    this.clashSeen = '' // the presence that bears on clashes, last looked at
     this.indexLate = null // the commit the last bring-in moved to: its index is checked for a few seconds (fixIndex)
     this.indexWatchUntil = 0
     this.repo = null // every branch and worktree of the repository (repoBranches), shown to the room
@@ -639,10 +648,15 @@ export class Session extends EventEmitter {
     })
     this.activity.observe(() => this.scheduleStatusWrite())
     this.tasks.observe((ev, tr) => {
-      this.scanInbox({ quiet: tr.origin === LOCAL })
-      if (tr.origin !== CLASH) this.reviewClashSoon()
+      this.scanInbox({ quiet: tr.origin === LOCAL || tr.origin === CLASH })
+      // A clash task moved, reassigned or taken off the board by someone else: looked at again.
+      if (tr.origin !== CLASH) {
+        const clashTasks = new Set([...this.clashes.values()].map((r) => r && r.task))
+        if ([...ev.keysChanged].some((k) => clashTasks.has(k))) this.reviewClashSoon()
+      }
       this.scheduleStatusWrite()
     })
+    this.clashes.observe((ev, tr) => { if (tr.origin !== CLASH) this.reviewClashSoon() })
     this.taskComments.observe(() => this.scheduleStatusWrite())
     this.commitRequests.observe((ev, tr) => {
       for (const [id, change] of ev.changes.keys) {
@@ -2507,9 +2521,12 @@ export class Session extends EventEmitter {
   }
 
   setUpstream (up) {
+    const prev = this.upstream
     const next = up ? {
       name: up.name, url: up.url || null, sha: up.sha || null, behind: up.behind || 0, ahead: up.ahead || 0,
-      diverged: !!up.diverged, conflicts: up.conflicts || [], waiting: up.waiting || null, brought: up.brought || (this.upstream && this.upstream.brought) || null, checkedAt: Date.now()
+      diverged: !!up.diverged, conflicts: up.conflicts || [], waiting: up.waiting || null, brought: up.brought || (prev && prev.brought) || null, checkedAt: Date.now(),
+      // Who is merging a clash stays said until reviewClash looks again (no flicker in the branch list).
+      mergedBy: (prev && prev.mergedBy) || null, clashTask: (prev && prev.clashTask) || null, clashMine: !!(prev && prev.clashMine)
     } : null
     this.upstream = next
     if (!next || !(next.diverged || next.conflicts.length)) this.upstreamSaid = ''
@@ -2527,135 +2544,252 @@ export class Session extends EventEmitter {
     this.log(`⬇️ ${said}`)
   }
 
-  // A catch-up that stopped on a clash is handed to ONE AI as a task (clash.js): the member
-  // chosen from presence among the folders reporting it writes the task for itself, everyone
-  // else behind on the branch is told to leave those files to them, and whoever's folder gets
-  // past that commit with nothing clashing closes it.
+  // A catch-up that stopped on clashing files is handed to ONE AI as a task (clash.js). Every
+  // folder reporting it works out the same order from presence (clashOrder); only the first
+  // writes the task, for its own AI, under an id derived from the branch and the commit, and its
+  // AI is told once the write has survived a moment on the board. Everyone else behind on the
+  // branch is told to leave those files to them; whoever's folder gets past that commit with
+  // nothing clashing closes it. A diverged branch is the folder's own history: never handed out.
 
+  /** Looks again in `ms`; a sooner ask moves the look earlier. */
   reviewClashSoon (ms = 100) {
-    if (this.clashTimer || this.stopped) return
-    this.clashTimer = setTimeout(() => { this.clashTimer = null; this.reviewClash() }, ms)
+    if (this.stopped) return
+    const due = Date.now() + ms
+    if (this.clashTimer && this.clashDue <= due) return
+    clearTimeout(this.clashTimer)
+    this.clashDue = due
+    this.clashTimer = setTimeout(() => { this.clashTimer = null; this.clashDue = 0; this.reviewClash() }, ms)
     this.clashTimer.unref()
   }
 
+  /** Looks at this branch's clash now (one look at a time; an ask meanwhile looks again after). Resolves to reviewClashNow's answer. */
+  reviewClash () {
+    if (this.clashReview) { this.clashAgain = true; return this.clashReview }
+    this.clashReview = this.reviewClashNow()
+      .catch((err) => { this.log(`could not hand the clash on ${this.git && this.git.branch} to one AI: ${err.message}`); return null })
+      .finally(() => {
+        this.clashReview = null
+        if (this.clashAgain) { this.clashAgain = false; this.reviewClashSoon(0) }
+      })
+    return this.clashReview
+  }
+
+  /** Whether commit a is in b's history, asked of git once per pair; null when git can't say. */
+  async clashAncestor (a, b) {
+    if (a === b) return true
+    const key = `${a}>${b}`
+    if (this.clashAncestry.has(key)) return this.clashAncestry.get(key)
+    const r = await isAncestor(this.root, a, b)
+    if (r !== null) {
+      this.clashAncestry.set(key, r)
+      if (this.clashAncestry.size > 200) this.clashAncestry.delete(this.clashAncestry.keys().next().value)
+    }
+    return r
+  }
+
   /**
-   * Looks at this branch's clash and the board: writes or updates the clash task when this
-   * member is the one to (`asOwner` forces it, for tests of two members racing), closes it once
-   * this folder is past the commit, and tells this folder's AI who is merging. Returns
-   * { task, label, mine } while this folder reports the clash, else null.
+   * The look itself: writes, updates, reopens or hands on the clash task when this folder is
+   * first in line, closes it once this folder is past the commit, and tells this folder's AI who
+   * is merging. Returns { task, label, mine } while this folder reports a file clash, else null.
    */
-  reviewClash ({ asOwner = false } = {}) {
+  async reviewClashNow () {
     const branch = this.git && this.git.branch
     if (!branch || this.stopped || !this.conn || !this.conn.awareness) return null
     const u = this.upstream
-    let rec = readClash(this.clashes.get(branch), branch)
-    const tasks = readTasks(this.tasks)
-    let task = rec ? tasks.find((t) => t.id === rec.task) || null : null
-    let open = task && task.column !== 'done' ? task : null
-    const clashing = !!(u && u.sha && (u.diverged || u.conflicts.length))
-    if (!open && clashing) {
-      // Its record lost to another member's write (two that raced): the task for this commit is the one.
-      const id = clashTaskId(branch, u.sha)
-      const same = tasks.find((t) => t.id === id && t.column !== 'done')
-      if (same) { rec = { branch, task: id, sha: u.sha, upstream: u.name }; task = open = same }
-    }
     let info = null
-    try {
-      if (clashing) info = this.ownClash({ branch, u, rec, task, open, tasks, asOwner })
-      else {
-        this.clashWaitSince = 0
-        if (open && u && u.name === rec.upstream && !u.behind && !u.diverged) this.closeClashIfPast(rec, open)
-      }
-    } catch (err) { this.log(`could not hand the clash on ${branch} to one AI: ${err.message}`) }
+    if (u && u.diverged) this.sayUpstream(catchUpAdvice({ branch, upstream: u.name, ...u }))
+    else if (u && u.sha && u.conflicts.length) info = await this.clashHere(branch, u)
+    else if (u && u.sha && !u.behind) await this.clashCaughtUp(branch, u)
+    if (this.stopped || this.upstream !== u || !u) return info
     // The branch list says who is merging it (gitSummary).
-    if (this.upstream) {
-      const was = JSON.stringify([this.upstream.mergedBy, this.upstream.clashTask, this.upstream.clashMine])
-      this.upstream.mergedBy = info ? info.label : null
-      this.upstream.clashTask = info ? info.task : null
-      this.upstream.clashMine = info ? info.mine : false
-      if (was !== JSON.stringify([this.upstream.mergedBy, this.upstream.clashTask, this.upstream.clashMine])) { this.shareGit(); this.scheduleStatusWrite() }
-    }
+    const was = JSON.stringify([u.mergedBy, u.clashTask, u.clashMine])
+    u.mergedBy = info ? info.label : null
+    u.clashTask = info ? info.task : null
+    u.clashMine = info ? info.mine : false
+    if (was !== JSON.stringify([u.mergedBy, u.clashTask, u.clashMine])) { this.shareGit(); this.scheduleStatusWrite() }
     return info
   }
 
-  /** This folder reports the clash: see reviewClash. */
-  ownClash ({ branch, u, rec, task, open, tasks, asOwner }) {
+  /** The commit this folder's files are at. */
+  syncedSha () { return (this.gitSeen && this.gitSeen.sha) || (this.git && this.git.sha) || null }
+
+  /** Who this member's clash task goes to: an agent member by name, else its AI session active last, else the person. */
+  clashAssignee () {
+    if (this.kind === 'agent') return this.name
+    const published = this.conn.awareness.getLocalState()?.personas
+    if (Array.isArray(published) && published.length) {
+      const lead = this.leadPersona()
+      return lead ? lead.name : published[0].name
+    }
+    return this.name
+  }
+
+  /** How a member that may take the clash is named before the task exists. */
+  candidateLabel (c) {
+    if (c.kind === 'agent' || !c.ai) return c.name
+    return `${c.name}'s AI`
+  }
+
+  /** This folder reports clashing files: see reviewClashNow. */
+  async clashHere (branch, u) {
     const now = Date.now()
     const me = this.conn.awareness.clientID
-    const states = [...this.conn.awareness.getStates()].filter(([id]) => id !== me)
-    const agent = this.kind === 'agent'
-    const ai = !agent && (this.personas.size > 0 || hasAi({ agent: this.agentState }))
-    const cands = [...clashCandidates(states, { branch, upstream: u.name }), { id: me, name: this.name, kind: agent ? 'agent' : 'human', ai, rank: agent ? 0 : ai ? 1 : 2 }]
-    const owner = pickClashOwner(cands)
-    let mineToWrite = asOwner || owner.id === me
     const facts = clashFacts({ branch, upstream: u.name, ...u })
     const advice = catchUpAdvice({ branch, upstream: u.name, ...u })
-    const yours = (id) => `${advice} This merge is yours: task ${id} on the board. Once git pull is resolved here, move it to QA or Done (Quilt closes it by itself when this folder is past those commits).`
-
-    if (open) {
-      let t = open
-      // Its assignee gone from the session for a while, with the clash still here: the next member takes it.
-      const present = new Set([this.name, ...[...this.conn.awareness.getStates().values()].map((st) => st && st.name).filter(Boolean)])
-      if (!present.has(t.assignee)) {
-        if (!this.clashAbsent || this.clashAbsent.task !== t.id || this.clashAbsent.name !== t.assignee) this.clashAbsent = { task: t.id, name: t.assignee, since: now }
-        const left = this.clashAbsent.since + this.clashReassignMs - now
-        if (mineToWrite && left <= 0) {
-          const gone = t.assignee
-          const mins = Math.max(1, Math.round(this.clashReassignMs / 60000))
-          t = patchTask(this.doc, this.tasks, { id: t.id, assignee: this.name, forAi: !agent, tool: agent ? '' : this.tool }, CLASH)
-          this.clashComment(t.id, `Handed to ${ownerLabel(t)}: ${gone} has been away from the session for ${mins} minute${mins === 1 ? '' : 's'} and the clash on \`${branch}\` is still there.\n\n${clashBrief({ branch, upstream: u.name, ...u })}`)
-          this.log(`🔀 took over the clash on ${branch} (task ${t.id}): ${gone} has been away`)
-          this.clashAbsent = null
-        } else if (left > 0) this.reviewClashSoon(left + 50)
-      } else this.clashAbsent = null
-      // Newer commits on the upstream: the same task, brought up to date.
-      if (mineToWrite && rec.sha !== u.sha) {
-        t = patchTask(this.doc, this.tasks, { id: t.id, title: clashTitle({ upstream: u.name, ...u }), files: clashFiles(u.conflicts) }, CLASH)
-        this.doc.transact(() => this.clashes.set(branch, { task: t.id, sha: u.sha, upstream: u.name }), CLASH)
-        this.clashComment(t.id, `${u.name} moved on to ${u.sha.slice(0, 7)}.\n\n${clashBrief({ branch, upstream: u.name, ...u })}`)
-      }
-      const mine = t.assignee === this.name && t.forAi === !agent
-      const label = ownerLabel(t)
-      this.sayUpstream(mine ? yours(t.id) : leaveItNotice({ label, upstream: u.name, task: t.id, facts }))
-      return { task: t.id, label, mine }
-    }
-
-    // Handed out for this commit already, and closed: never a second task for it. A folder still
-    // reporting it follows the one that resolved it (bringIn, memberAt), or is told as before.
     const id = clashTaskId(branch, u.sha)
-    const done = (rec && task && rec.sha === u.sha) || tasks.some((x) => x.id === id)
-    if (done) {
-      if (!this.memberAt(u.sha)) this.sayUpstream(advice)
-      return null
+    let rec = readClash(this.clashes.get(branch), branch)
+    if (rec && rec.upstream !== u.name) rec = null
+    let tasks = readTasks(this.tasks)
+    let task = rec ? tasks.find((t) => t.id === rec.task) || null : null
+    // A task about an older commit, still open: brought up to date when the new commit follows it,
+    // closed as superseded when the upstream was rewritten without it.
+    let superseded = null
+    if (task && rec.sha !== u.sha) {
+      if (task.column === 'done') task = null
+      else {
+        const follows = await this.clashAncestor(rec.sha, u.sha)
+        if (this.stopped || this.upstream !== u) return null
+        if (follows === false) { superseded = { rec, task }; task = null } else if (follows === null) return this.clashTold(task, advice, facts, u)
+      }
     }
-    if (!mineToWrite) {
-      // The chosen member's Quilt writes the task (it reports the clash too, so it is on its way).
-      // One that never does (an older Quilt) leaves it to this one after a while.
-      if (!this.clashWaitSince) this.clashWaitSince = now
-      const left = this.clashWaitSince + this.clashWaitMs - now
-      if (left > 0) {
-        this.reviewClashSoon(left + 50)
-        const label = ownerLabel({ assignee: owner.name, forAi: owner.kind !== 'agent' })
+    // The record lost to a racing write: the task for this commit is the one.
+    if (!task) {
+      tasks = readTasks(this.tasks)
+      const same = tasks.find((t) => t.id === id)
+      if (same) { rec = { branch, task: id, sha: u.sha, upstream: u.name, ts: now }; task = same }
+    }
+    const states = [...this.conn.awareness.getStates()]
+    const order = clashOrder(clashCandidates(states, { branch, upstream: u.name }))
+    const first = order[0] || null
+    const firstIsMe = !!first && first.id === me
+
+    if (!task) {
+      // Handed out for this commit before and taken off the board: not again (a newer commit may be).
+      if (rec && rec.sha === u.sha) { this.sayUpstream(advice); return null }
+      if (!order.length) { this.sayUpstream(advice); return null }
+      // The first in line writes it. One whose Quilt doesn't within a while is passed over, in order.
+      if (!this.clashWait || this.clashWait.sha !== u.sha) this.clashWait = { sha: u.sha, since: now }
+      const k = Math.min(order.length - 1, Math.floor((now - this.clashWait.since) / this.clashWaitMs))
+      const writer = order[k]
+      if (writer.id !== me) {
+        this.reviewClashSoon(this.clashWait.since + (k + 1) * this.clashWaitMs - now + 50)
+        const label = this.candidateLabel(writer)
         this.sayUpstream(leaveItNotice({ label, upstream: u.name, task: id, facts }))
         return { task: id, label, mine: false }
       }
-      mineToWrite = true
+      if (superseded) this.closeClash(superseded.rec, `Superseded: ${u.name} was rewritten without ${superseded.rec.sha.slice(0, 7)}; the clash with ${u.sha.slice(0, 7)} is task ${id}.`)
+      const assignee = this.clashAssignee()
+      const t = putTask(this.doc, this.tasks, { id, title: clashTitle({ upstream: u.name, ...u }), by: this.name, assignee, forAi: false, tool: '', files: clashFiles(u.conflicts) }, CLASH)
+      this.writeClashRecord(branch, { task: t.id, sha: u.sha, upstream: u.name })
+      this.clashComment(t.id, clashBrief({ branch, upstream: u.name, ...u }))
+      this.clashWait = null
+      this.log(`🔀 the clash with ${u.name} on ${branch} is this folder's to merge (task ${t.id}, for ${assignee})`)
+      this.settleClash(t.id, assignee)
+      this.sayUpstream(this.clashSettling(facts))
+      return { task: t.id, label: ownerLabel(t), mine: true }
     }
-    const t = putTask(this.doc, this.tasks, {
-      id,
-      title: clashTitle({ upstream: u.name, ...u }),
-      by: this.name,
-      assignee: this.name,
-      forAi: !agent,
-      tool: agent ? '' : this.tool,
-      files: clashFiles(u.conflicts)
+
+    if (task.column === 'done') {
+      // Landed (or superseded) and this folder hasn't followed yet: it will, by itself.
+      const landed = /^(Brought in at|Superseded)/.test(task.verified || '')
+      const someoneAt = this.memberAt(u.sha)
+      if (landed || someoneAt) { if (!someoneAt) this.sayUpstream(advice); return null }
+      // Moved to Done by hand while the commit still clashes and no folder has it: open again, same assignee.
+      if (firstIsMe) {
+        task = patchTask(this.doc, this.tasks, { id: task.id, column: 'doing' }, CLASH)
+        this.clashComment(task.id, `Open again: ${u.sha.slice(0, 7)} from ${u.name} still clashes with the session's work and no folder has it yet. Quilt closes this task by itself once the merge lands: no need to move it.`)
+      }
+      return this.clashTold(task, advice, facts, u)
+    }
+
+    // Newer commits that follow the task's: the same task, brought up to date.
+    if (rec.sha !== u.sha && firstIsMe) {
+      task = patchTask(this.doc, this.tasks, { id: task.id, title: clashTitle({ upstream: u.name, ...u }), files: clashFiles(u.conflicts) }, CLASH)
+      this.writeClashRecord(branch, { task: task.id, sha: u.sha, upstream: u.name })
+      this.clashComment(task.id, `${u.name} moved on to ${u.sha.slice(0, 7)}.\n\n${clashBrief({ branch, upstream: u.name, ...u })}`)
+    }
+    // Its assignee: gone from this branch for a while, or a person without an AI while someone with one reports it.
+    const holder = holderOf(states, task.assignee, branch)
+    let handOn = ''
+    if (!holder) {
+      if (!this.clashAbsent || this.clashAbsent.task !== task.id || this.clashAbsent.name !== task.assignee) this.clashAbsent = { task: task.id, name: task.assignee, since: now }
+      const left = this.clashAbsent.since + this.clashReassignMs - now
+      if (left > 0) this.reviewClashSoon(left + 50)
+      else {
+        const mins = Math.max(1, Math.round(this.clashReassignMs / 60000))
+        handOn = `${task.assignee} has been away from \`${branch}\` for ${mins} minute${mins === 1 ? '' : 's'}`
+      }
+    } else {
+      this.clashAbsent = null
+      // Given to a person (they had no AI session then): to the first member with an AI now (them too, once they have one).
+      const toPerson = holder.st.kind !== 'agent' && holder.st.name === task.assignee
+      if (toPerson && first && first.rank < 2) handOn = first.id === holder.id ? `${task.assignee} has an AI session now` : `${task.assignee} has no AI session, and ${first.name} has one`
+    }
+    if (handOn && firstIsMe && task.assignee !== this.clashAssignee()) {
+      const gone = task.assignee
+      const assignee = this.clashAssignee()
+      task = patchTask(this.doc, this.tasks, { id: task.id, assignee, forAi: false, tool: '' }, CLASH)
+      this.clashComment(task.id, `Handed to ${assignee}: ${handOn}, and the clash on \`${branch}\` is still there.\n\n${clashBrief({ branch, upstream: u.name, ...u })}`)
+      this.log(`🔀 took over the clash on ${branch} (task ${task.id}) from ${gone}`)
+      this.clashAbsent = null
+      this.settleClash(task.id, assignee)
+    }
+    return this.clashTold(task, advice, facts, u)
+  }
+
+  /** Tells this folder's AI about an existing clash task: it is theirs (once settled), or someone else's to leave alone. */
+  clashTold (task, advice, facts, u) {
+    const mine = this.isMine(task.assignee)
+    const label = ownerLabel(task)
+    if (mine) {
+      if (!this.clashPending || this.clashPending.id !== task.id) this.sayUpstream(`${advice} This merge is yours: task ${task.id} on the board. Quilt closes it by itself once the merge lands here.`)
+      else this.sayUpstream(this.clashSettling(facts))
+    } else this.sayUpstream(leaveItNotice({ label, upstream: u.name, task: task.id, facts }))
+    return { task: task.id, label, mine }
+  }
+
+  /** What this folder's AI is told while its clash task settles: the facts, not yet whose it is. */
+  clashSettling (facts) { return `${facts} Quilt is handing this merge to one AI; you are told if it is you.` }
+
+  /**
+   * This member just wrote the clash task for its own AI. Two members that raced both did; the
+   * board keeps one. After a moment, the AI is woken and told only if the write survived;
+   * otherwise it is told quietly who has it.
+   */
+  settleClash (id, assignee) {
+    clearTimeout(this.clashPending && this.clashPending.timer)
+    const timer = setTimeout(() => {
+      if (this.clashPending && this.clashPending.id === id) this.clashPending = null
+      if (this.stopped) return
+      const t = readTasks(this.tasks).find((x) => x.id === id)
+      if (t && t.column !== 'done' && t.assignee === assignee) {
+        for (const p of this.personas.values()) p.inbox.forget(id)
+        this.inboxTracker.forget(id)
+        this.scanInbox({ quiet: false, personas: false })
+      }
+      this.reviewClash()
+    }, this.clashSettleMs)
+    timer.unref()
+    this.clashPending = { id, timer }
+  }
+
+  /** The record of this branch's clash task, and old records pruned (a finished or dismissed one after a few days). */
+  writeClashRecord (branch, rec) {
+    const now = Date.now()
+    const tasks = new Map(readTasks(this.tasks).map((t) => [t.id, t]))
+    this.doc.transact(() => {
+      this.clashes.set(branch, { ...rec, ts: now })
+      const kept = []
+      for (const [key, value] of [...this.clashes.entries()]) {
+        if (key === branch) continue
+        const r = readClash(value, key)
+        const t = r && tasks.get(r.task)
+        if (!r || ((!t || t.column === 'done') && now - r.ts > CLASH_KEEP_MS)) this.clashes.delete(key)
+        else kept.push(r)
+      }
+      kept.sort((a, b) => a.ts - b.ts)
+      for (const r of kept.slice(0, Math.max(0, kept.length - CLASH_RECORDS + 1))) this.clashes.delete(r.branch)
     }, CLASH)
-    this.doc.transact(() => this.clashes.set(branch, { task: t.id, sha: u.sha, upstream: u.name }), CLASH)
-    this.clashComment(t.id, clashBrief({ branch, upstream: u.name, ...u }))
-    this.clashWaitSince = 0
-    this.log(`🔀 the clash with ${u.name} on ${branch} is this folder's to merge (task ${t.id})`)
-    this.sayUpstream(yours(t.id))
-    return { task: t.id, label: ownerLabel(t), mine: true }
   }
 
   /** A note on a clash task (its description, a handover), from this member when they may post. */
@@ -2664,27 +2798,32 @@ export class Session extends EventEmitter {
     try { putComment(this.doc, this.taskComments, readTasks(this.tasks), { taskId: id, by: this.name, text }, CLASH) } catch (err) { this.log(`could not note the clash on task ${id}: ${err.message}`) }
   }
 
-  /** This folder is caught up with no clash: when that is at or past the clash's commit, the task is done. */
-  closeClashIfPast (rec, task) {
-    if (this.clashClosing === task.id) return
-    const u = this.upstream
-    const head = (this.gitSeen && this.gitSeen.sha) || (this.git && this.git.sha)
+  /** Moves a clash task to Done with `verified` (any member may; again is a no-op). */
+  closeClash (rec, verified) {
+    const t = readTasks(this.tasks).find((x) => x.id === rec.task)
+    if (!t || t.column === 'done') return
+    patchTask(this.doc, this.tasks, { id: rec.task, column: 'done', verified }, CLASH)
+    this.log(`✅ clash task ${rec.task} (${rec.upstream} on ${rec.branch}) done: ${verified}`)
+    this.reviewClashSoon()
+  }
+
+  /**
+   * This folder is caught up with nothing clashing. At or past the clash's commit: it landed, the
+   * task is done. The upstream rewritten without that commit (a force-push): superseded.
+   */
+  async clashCaughtUp (branch, u) {
+    const rec = readClash(this.clashes.get(branch), branch)
+    if (!rec || rec.upstream !== u.name) return
+    const task = readTasks(this.tasks).find((t) => t.id === rec.task)
+    if (!task || task.column === 'done') return
+    const head = this.syncedSha()
     if (!head) return
-    this.clashClosing = task.id
-    const past = u.sha === rec.sha || head === rec.sha ? Promise.resolve(true) : isAncestor(this.root, rec.sha, head)
-    past.then((ok) => {
-      if (!ok || this.stopped) return
-      const now = readTasks(this.tasks).find((t) => t.id === task.id)
-      if (!now || now.column === 'done') return
-      const branch = rec.branch
-      patchTask(this.doc, this.tasks, {
-        id: task.id,
-        column: 'done',
-        verified: `Brought in at ${head.slice(0, 7)}: ${this.name}'s folder on ${branch} is at or past ${rec.sha.slice(0, 7)} from ${rec.upstream}, with nothing clashing. Every other folder on ${branch} follows it.`
-      }, CLASH)
-      this.log(`✅ the clash with ${rec.upstream} on ${branch} is merged (task ${task.id}, at ${head.slice(0, 7)})`)
-      this.reviewClashSoon()
-    }).catch(() => {}).finally(() => { if (this.clashClosing === task.id) this.clashClosing = null })
+    const past = head === rec.sha || u.sha === rec.sha ? true : await this.clashAncestor(rec.sha, head)
+    if (this.stopped || this.upstream !== u) return
+    if (past) return this.closeClash(rec, `Brought in at ${head.slice(0, 7)}: ${this.name}'s folder on ${branch} is at or past ${rec.sha.slice(0, 7)} from ${rec.upstream}, with nothing clashing. Every other folder on ${branch} follows it.`)
+    if (await this.clashAncestor(rec.sha, u.sha) === false && !this.stopped) {
+      this.closeClash(rec, `Superseded: ${rec.upstream} was rewritten without ${rec.sha.slice(0, 7)} (now at ${u.sha.slice(0, 7)}), and ${this.name}'s folder on ${branch} is caught up with it with nothing clashing.`)
+    }
   }
 
   /** Reads every branch and worktree of the repository again (for the room's branch list). */
@@ -2710,10 +2849,26 @@ export class Session extends EventEmitter {
       key: this.git.key,
       sha: this.gitSeen ? this.gitSeen.sha : this.git.sha,
       held: this.hold ? this.hold.kind : null,
+      clash: 1, // this Quilt hands a clash to one AI (reviewClash): only such members are given one
       on: this.hold && this.hold.kind === 'switching' ? this.hold.to : this.git.key,
-      upstream: u ? { name: u.name, url: u.url, behind: u.behind, ahead: u.ahead, diverged: u.diverged, conflicts: u.conflicts.length, waiting: u.waiting, checkedAt: u.checkedAt, mergedBy: u.mergedBy || null, clashTask: u.clashTask || null } : null,
+      upstream: u ? { name: u.name, url: u.url, behind: u.behind, ahead: u.ahead, diverged: u.diverged, conflicts: u.conflicts.length, waiting: u.waiting, checkedAt: u.checkedAt, mergedBy: u.mergedBy || null, clashTask: u.clashTask || null, mayWrite: u.conflicts.length ? this.mayWriteAll(u.conflicts.map((c) => c.path)) : null } : null,
       repo: this.repo
     }
+  }
+
+  /** Whether this member may change every one of these files (its role and folders). */
+  mayWriteAll (paths) { return paths.every((rel) => !this.writeRefusal(rel)) }
+
+  /** The parts of everyone's presence that bear on who merges a clash (reviewClash looks again when they change). */
+  clashPresence () {
+    const out = []
+    for (const [id, st] of this.conn.awareness.getStates()) {
+      if (!st || !st.git) continue
+      const g = st.git
+      const u = g.upstream || {}
+      out.push([id, st.name, st.kind, (Array.isArray(st.personas) ? st.personas : []).map((p) => p && p.name), g.branch, g.sha, g.held, g.clash, u.name, u.behind, u.conflicts, u.diverged, u.mayWrite])
+    }
+    return JSON.stringify(out)
   }
 
   shareGit () {
@@ -3534,7 +3689,10 @@ export class Session extends EventEmitter {
       this.scheduleStatusWrite()
     })
     // Who reports a clash, and who is still here, decide who merges it (reviewClash).
-    this.conn.awareness.on('change', (_, origin) => { if (origin !== 'local') this.reviewClashSoon() })
+    this.conn.awareness.on('change', () => {
+      const seen = this.clashPresence()
+      if (seen !== this.clashSeen) { this.clashSeen = seen; this.reviewClashSoon() }
+    })
   }
 
   updatePresence () {
@@ -5048,6 +5206,7 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
     clearInterval(this.reconcileTimer)
     clearInterval(this.upstreamPoll)
     clearTimeout(this.clashTimer)
+    if (this.clashPending) clearTimeout(this.clashPending.timer)
     clearTimeout(this.upstreamTimer)
     if (this.gitWatcher) await this.gitWatcher.close()
     this.flushPending()

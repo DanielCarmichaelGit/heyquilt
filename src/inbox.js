@@ -142,6 +142,11 @@ export class Inbox {
     return r.events
   }
 
+  /** Forgets that task `id` was already the reader's, so the next scan wakes them for it (a task they took quietly). */
+  forget (id) {
+    if (this.state && Array.isArray(this.state.assigned)) this.state = { ...this.state, assigned: this.state.assigned.filter((x) => x !== id) }
+  }
+
   /** Events after sequence number `after`, and the latest number to pass next time. */
   since (after = 0) {
     const from = Number(after) || 0

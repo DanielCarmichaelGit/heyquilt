@@ -30,7 +30,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
   const events = new Map(); const issues = new Map()
   const relaySessions = new Map(); const visits = new Map(); const seenEvents = new Map(); const actions = new Map()
   const accessTypes = new Map(); const grants = new Map(); const sessionInvites = new Map()
-  const workspaces = new Map(); const workspaceMembers = new Map()
+  const workspaces = new Map(); const workspaceMembers = new Map(); const workspaceInvites = new Map()
   const workspaceFiles = new Map(); const workspaceFileVersions = new Map()
   const agentPlacements = new Map(); const workspaceAgentOverrides = new Map()
   const sessionAgentExclusions = new Map(); const agentWebhooks = new Map()
@@ -39,6 +39,9 @@ export function createMemoryStore ({ now = Date.now } = {}) {
   const waoKey = (workspaceId, agentId) => `${workspaceId}\n${agentId}`
   const saeKey = (room, agentId) => `${room}\n${agentId}`
   const inviteOpenAt = (i, at) => !i.usedAt && !i.cancelledAt && i.expiresAt > at
+  const wiWaiting = (i) => !i.acceptedAt && !i.declinedAt && !i.cancelledAt
+  // A session invite as the owner's routes see it: its link is only for whoever it was sent to.
+  const noLink = (i) => { const { link, ...rest } = copy(i); return rest }
   const all = (m, keep) => [...m.values()].filter(keep)
   const nameOf = (userId) => profiles.get(userId)?.name || ''
   const findMember = (orgId, userId) => all(members, (m) => m.orgId === orgId && m.userId === userId)[0]
@@ -383,25 +386,35 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     },
     async deleteGrant (room, account) { return grants.delete(grantKey(room, account)) },
 
-    // Session invites: the link is never kept.
+    // Session invites: the link is kept only for the account or address it was sent to (invitesFor).
     // Mirrors the unique indexes on open invites, and clearing that key's expired ones first.
-    async createSessionInvite ({ room, email = null, account = null, accountName = '', typeId, invitedBy, expiresAt, at = now() }) {
+    async createSessionInvite ({ room, email = null, account = null, accountName = '', typeId, invitedBy, expiresAt, link = null, at = now() }) {
       if (!relaySessions.has(room)) throw fkViolation('session', 'does not exist')
       if ((email == null) === (account == null)) throw checkViolation('an invite is for an email or an account')
       email = email && email.toLowerCase()
       const same = (i) => i.room === room && (email ? i.email === email : i.account === account) && !i.usedAt && !i.cancelledAt
       for (const [id, i] of sessionInvites) if (same(i) && i.expiresAt <= at) sessionInvites.delete(id)
       if (all(sessionInvites, same).length) throw duplicate('an open invite')
-      const row = { id: uuid(), room, email: email && email.toLowerCase(), account, accountName, typeId, invitedBy, createdAt: now(), expiresAt, usedAt: null, usedBy: null, cancelledAt: null }
-      sessionInvites.set(row.id, row); return copy(row)
+      const row = { id: uuid(), room, email: email && email.toLowerCase(), account, accountName, typeId, invitedBy, createdAt: now(), expiresAt, usedAt: null, usedBy: null, cancelledAt: null, link }
+      sessionInvites.set(row.id, row); return noLink(row)
     },
     async listSessionInvites (room) {
-      return all(sessionInvites, (i) => i.room === room).sort((a, b) => b.createdAt - a.createdAt).slice(0, 50).map(copy)
+      return all(sessionInvites, (i) => i.room === room).sort((a, b) => b.createdAt - a.createdAt).slice(0, 50).map(noLink)
     },
-    async sessionInviteById (room, id) { const i = sessionInvites.get(id); return i && i.room === room ? copy(i) : null },
+    async sessionInviteById (room, id) { const i = sessionInvites.get(id); return i && i.room === room ? noLink(i) : null },
+    // The open session invites sent to an account or a (confirmed) address, with their links.
+    async sessionInvitesFor ({ account = null, email = null }, at) {
+      return all(sessionInvites, (i) => ((account && i.account === account) || (email && i.email === email)) && inviteOpenAt(i, at))
+        .sort((a, b) => b.createdAt - a.createdAt).slice(0, 50).map((i) => ({ ...copy(i), sessionName: relaySessions.get(i.room)?.name || '' }))
+    },
+    // A session invite, only when it was sent to this account or address.
+    async sessionInviteForMe (id, { account = null, email = null }) {
+      const i = sessionInvites.get(id)
+      return i && ((account && i.account === account) || (email && i.email === email)) ? noLink(i) : null
+    },
     async openSessionInvite (room, { email = null, account = null }, at, exceptId = null) {
       const found = all(sessionInvites, (i) => i.room === room && i.id !== exceptId && (email ? i.email === email : i.account === account) && inviteOpenAt(i, at))
-      return copy(found[0] || null)
+      return found[0] ? noLink(found[0]) : null
     },
     // Check-and-set: only a waiting invite is cancelled.
     async cancelSessionInvite (id) {
@@ -710,6 +723,7 @@ export function createMemoryStore ({ now = Date.now } = {}) {
     async deleteWorkspace (id) {
       for (const s of relaySessions.values()) if (s.workspaceId === id) s.workspaceId = null
       for (const [k, m] of workspaceMembers) if (m.workspaceId === id) workspaceMembers.delete(k)
+      for (const [k, i] of workspaceInvites) if (i.workspaceId === id) workspaceInvites.delete(k)
       for (const [k, f] of workspaceFiles) {
         if (f.workspaceId !== id) continue
         for (const vk of [...workspaceFileVersions.keys()]) if (vk.startsWith(`${f.id}\n`)) workspaceFileVersions.delete(vk)
@@ -732,6 +746,38 @@ export function createMemoryStore ({ now = Date.now } = {}) {
       workspaceMembers.set(k, row); return copy(row)
     },
     async removeWorkspaceMember (workspaceId, account) { return workspaceMembers.delete(wmKey(workspaceId, account)) },
+
+    // Workspace invites (20261009000000_invite_inbox.sql): one open per address or account,
+    // that key's expired ones cleared first. Answered once: accepted, declined or cancelled.
+    async createWorkspaceInvite ({ workspaceId, email = null, account = null, accountName = '', access, invitedBy, expiresAt, at = now() }) {
+      if (!workspaces.has(workspaceId)) throw fkViolation('workspace', 'does not exist')
+      if ((email == null) === (account == null)) throw checkViolation('an invite is for an email or an account')
+      email = email && email.toLowerCase()
+      const same = (i) => i.workspaceId === workspaceId && (email ? i.email === email : i.account === account) && wiWaiting(i)
+      for (const [id, i] of workspaceInvites) if (same(i) && i.expiresAt <= at) workspaceInvites.delete(id)
+      if (all(workspaceInvites, same).length) throw duplicate('an open invite')
+      const row = { id: uuid(), workspaceId, email, account, accountName, access, invitedBy, createdAt: now(), expiresAt, acceptedAt: null, acceptedBy: null, declinedAt: null, cancelledAt: null }
+      workspaceInvites.set(row.id, row); return copy(row)
+    },
+    async listWorkspaceInvites (workspaceId) {
+      return all(workspaceInvites, (i) => i.workspaceId === workspaceId).sort((a, b) => b.createdAt - a.createdAt).slice(0, 50).map(copy)
+    },
+    async workspaceInviteById (id) { return copy(workspaceInvites.get(id)) },
+    async openWorkspaceInvite (workspaceId, { email = null, account = null }, at) {
+      return copy(all(workspaceInvites, (i) => i.workspaceId === workspaceId && (email ? i.email === email : i.account === account) && wiWaiting(i) && i.expiresAt > at)[0] || null)
+    },
+    async workspaceInvitesFor ({ account = null, email = null }, at) {
+      return all(workspaceInvites, (i) => ((account && i.account === account) || (email && i.email === email)) && wiWaiting(i) && i.expiresAt > at)
+        .sort((a, b) => b.createdAt - a.createdAt).slice(0, 50).map(copy)
+    },
+    // Check-and-set: only a waiting invite is answered. `how` is accepted, declined or cancelled.
+    async answerWorkspaceInvite (id, how, by = null) {
+      const i = workspaceInvites.get(id)
+      if (!i || !wiWaiting(i)) return false
+      i[`${how}At`] = now()
+      if (how === 'accepted') i.acceptedBy = by
+      return true
+    },
     // Links a room to a workspace (or none), recording who linked it. The relay may not have
     // reported the room yet: then the API makes the row, with no owner (only the relay sets that).
     async setSessionWorkspace (room, workspaceId, { linkedBy = null, at }) {

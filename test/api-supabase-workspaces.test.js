@@ -50,3 +50,21 @@ test('deleteWorkspace calls the service-role function', async () => {
   await createSupabaseStore({ client }).deleteWorkspace('w1')
   assert.deepEqual(client.calls[0], { rpc: 'delete_workspace', args: { p_id: 'w1' } })
 })
+
+test('workspace invites: insert after clearing that key\'s expired ones; answering is check-and-set', async () => {
+  const row = { id: 'i1', workspace_id: 'w1', email: 'pat@x.com', account: null, account_name: '', access: 'edit', invited_by: 'person:u1', created_at: '2026-10-09T00:00:00Z', expires_at: '2026-10-16T00:00:00Z', accepted_at: null, accepted_by: null, declined_at: null, cancelled_at: null }
+  const client = fakeClient({ workspace_invites: { data: row, error: null } })
+  const store = createSupabaseStore({ client })
+  const i = await store.createWorkspaceInvite({ workspaceId: 'w1', email: 'Pat@X.com', access: 'edit', invitedBy: 'person:u1', expiresAt: Date.parse('2026-10-16T00:00:00Z'), at: Date.parse('2026-10-09T00:00:00Z') })
+  assert.deepEqual(client.calls[0].ops.map(([op]) => op), ['delete', 'eq', 'eq', 'is', 'is', 'is', 'lte'])
+  assert.deepEqual(client.calls[1].ops.find(([op]) => op === 'insert')[1][0], { workspace_id: 'w1', email: 'pat@x.com', account: null, account_name: '', access: 'edit', invited_by: 'person:u1', expires_at: '2026-10-16T00:00:00.000Z' })
+  assert.deepEqual([i.workspaceId, i.expiresAt, i.acceptedAt], ['w1', Date.parse('2026-10-16T00:00:00Z'), null])
+
+  const answer = fakeClient({ workspace_invites: { data: [{ id: 'i1' }], error: null } })
+  assert.equal(await createSupabaseStore({ client: answer }).answerWorkspaceInvite('i1', 'accepted', 'person:u2'), true)
+  const ops = answer.calls[0].ops
+  const patch = ops.find(([op]) => op === 'update')[1][0]
+  assert.deepEqual([Object.keys(patch).sort(), patch.accepted_by], [['accepted_at', 'accepted_by'], 'person:u2'])
+  assert.deepEqual(ops.filter(([op]) => op === 'is').map(([, [col]]) => col), ['accepted_at', 'declined_at', 'cancelled_at'])
+  await assert.rejects(createSupabaseStore({ client: answer }).answerWorkspaceInvite('i1', 'deleted'))
+})

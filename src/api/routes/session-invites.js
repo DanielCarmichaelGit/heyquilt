@@ -1,7 +1,8 @@
 // Inviting people and agents to a session, as an access type: by email, or someone the
 // owner has worked with. The grant is made up front (keyed by the account, or by the
 // email until someone signs in with it), so they get straight in. The invite link holds
-// the room secret: it only passes through here into the email, and is never stored.
+// the room secret: it goes into the email, and is kept with the invite only so the person
+// it was sent to sees it in their Quilt (GET /v1/me/invites); the owner's views never show it.
 import { HttpError, UUID, stripInvisible } from '../http.js'
 import { emailDomain } from '../domains.js'
 import { sessionInviteEmail } from '../invite-email.js'
@@ -77,7 +78,7 @@ export function sessionInviteRoutes ({ store, person, now, site, mailer, log, li
         const email = cleanEmail(to.email)
         const taken = 'That address already has an open invite. Cancel it first.'
         if (await store.openSessionInvite(room, { email }, now())) throw new HttpError(409, taken)
-        const invite = await createInvite({ room, email, typeId: type.id, invitedBy: owner.me, expiresAt: now() + SESSION_INVITE_TTL_MS }, taken,
+        const invite = await createInvite({ room, email, typeId: type.id, invitedBy: owner.me, expiresAt: now() + SESSION_INVITE_TTL_MS, link }, taken,
           { room, account: `email:${email}`, typeId: type.id, grantedBy: owner.me })
         await send(email, { ...owner, link })
         return { invite: await view(invite) }
@@ -93,7 +94,7 @@ export function sessionInviteRoutes ({ store, person, now, site, mailer, log, li
       // Inviting them again would overwrite the access they have, and cancelling that invite
       // would then take it all away.
       if (await store.grantFor(room, account)) throw new HttpError(409, 'They already have access to this session. Change it from the people menu.')
-      const invite = await createInvite({ room, account, accountName: who.name, typeId: type.id, invitedBy: owner.me, expiresAt: now() + SESSION_INVITE_TTL_MS }, taken,
+      const invite = await createInvite({ room, account, accountName: who.name, typeId: type.id, invitedBy: owner.me, expiresAt: now() + SESSION_INVITE_TTL_MS, link }, taken,
         { room, account, typeId: type.id, grantedBy: owner.me })
       // A person hears about it at their sign-in email (looked up here, never sent back). An
       // agent has no email: its grant just lets it straight in.

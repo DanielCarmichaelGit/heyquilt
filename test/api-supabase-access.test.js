@@ -55,14 +55,25 @@ test('grants upsert on (room, account), and an email invite is claimed by one fu
   assert.ok(!Number.isNaN(Date.parse(claim.args.p_now)))
 })
 
-test('session invites keep a lowercase email and never a link', async () => {
+test('session invites keep a lowercase email, and the link only in its own column', async () => {
   const { client, calls } = fakeClient(() => ({ id: 'i1', room: 'r1', email: 'lin@acme.com', account: null, account_name: '', type_id: 'builtin:edit', invited_by: 'person:u1', created_at: '2026-10-02T00:00:00Z', expires_at: '2026-10-09T00:00:00Z', used_at: null, used_by: null, cancelled_at: null }))
   const s = createSupabaseStore({ client })
   const i = await s.createSessionInvite({ room: 'r1', email: 'Lin@Acme.com', typeId: 'builtin:edit', invitedBy: 'person:u1', expiresAt: Date.parse('2026-10-09T00:00:00Z'), at: Date.parse('2026-10-02T00:00:00Z') })
   // That address's expired, unused invite goes first, so the unique index lets the new one in.
   assert.deepEqual(calls[0].ops, [['delete'], ['eq', 'room', 'r1'], ['eq', 'email', 'lin@acme.com'], ['is', 'used_at', null], ['is', 'cancelled_at', null], ['lte', 'expires_at', '2026-10-02T00:00:00.000Z']])
-  assert.deepEqual(calls[1].ops[0], ['insert', { room: 'r1', email: 'lin@acme.com', account: null, account_name: '', type_id: 'builtin:edit', invited_by: 'person:u1', expires_at: '2026-10-09T00:00:00.000Z' }])
+  assert.deepEqual(calls[1].ops[0], ['insert', { room: 'r1', email: 'lin@acme.com', account: null, account_name: '', type_id: 'builtin:edit', invited_by: 'person:u1', expires_at: '2026-10-09T00:00:00.000Z', link: null }])
+  assert.doesNotMatch(calls[1].ops.find(([op]) => op === 'select')[1], /link/, 'the owner\'s reads never select it')
   assert.deepEqual([i.typeId, i.expiresAt, i.usedAt], ['builtin:edit', Date.parse('2026-10-09T00:00:00Z'), null])
+})
+
+test("the invites waiting for someone: one query by account or address, with the link and the session's name", async () => {
+  const row = { id: 'i1', room: 'r1', email: null, account: 'person:lin', account_name: 'Lin', type_id: 'builtin:edit', invited_by: 'person:u1', created_at: '2026-10-02T00:00:00Z', expires_at: '2026-10-09T00:00:00Z', used_at: null, used_by: null, cancelled_at: null, link: 'https://join.heyquilt.com/r1#s', relay_sessions: { name: 'Pricing' } }
+  const { client, calls } = fakeClient(() => [row])
+  const s = createSupabaseStore({ client })
+  const [i] = await s.sessionInvitesFor({ account: 'person:lin', email: 'lin@acme.com' }, Date.parse('2026-10-03T00:00:00Z'))
+  assert.deepEqual([i.link, i.sessionName, i.room], ['https://join.heyquilt.com/r1#s', 'Pricing', 'r1'])
+  assert.deepEqual(calls[0].ops.find(([op]) => op === 'or'), ['or', 'account.eq.person:lin,email.eq.lin@acme.com'])
+  assert.deepEqual(await s.sessionInvitesFor({ account: null, email: 'a,b@x.com' }, 0), [], 'nothing that could break out of the filter')
 })
 
 test("an address or account's open invite is one query, not a page of the list", async () => {

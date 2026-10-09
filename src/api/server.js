@@ -29,6 +29,7 @@ import { sessionInviteRoutes } from './routes/session-invites.js'
 import { workspaceRoutes } from './routes/workspaces.js'
 import { workspaceFileRoutes } from './routes/workspace-files.js'
 import { workspaceAgentRoutes } from './routes/workspace-agents.js'
+import { workspaceInviteRoutes } from './routes/workspace-invites.js'
 import { HOSTED_RELAY } from '../settings.js'
 import { roomAccess } from './access.js'
 import { parseInvite } from '../ui/invite.js'
@@ -315,7 +316,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   // Always routed: with the flag off each answers a plain 404 of its own, so the app's
   // check at every launch isn't filed as a missing route.
   // Only these take a hosted agent's pass (workspaceReach), so they alone get the pass key.
-  routes.push(...workspaceRoutes({ ...ctx, workspaces, passKey }), ...workspaceAgentRoutes({ ...ctx, workspaces, passKey, relayUrl, webhookFetch, webhookLookup, allowLocalWebhooks, trackDelivery, limitAnnounce }))
+  routes.push(...workspaceRoutes({ ...ctx, workspaces, passKey }), ...workspaceInviteRoutes({ ...ctx, workspaces, passKey }), ...workspaceAgentRoutes({ ...ctx, workspaces, passKey, relayUrl, webhookFetch, webhookLookup, allowLocalWebhooks, trackDelivery, limitAnnounce }))
   const wsFiles = workspaceFileRoutes({ ...ctx, workspaces, passKey })
   routes.push(...wsFiles.routes)
 

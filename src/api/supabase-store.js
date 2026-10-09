@@ -4,6 +4,10 @@ import { createClient } from '@supabase/supabase-js'
 
 const toCamel = (row) => row && Object.fromEntries(Object.entries(row).map(([k, v]) => [k.replace(/_([a-z])/g, (m, c) => c.toUpperCase()), v]))
 const toSnake = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined).map(([k, v]) => [k.replace(/[A-Z]/g, (c) => '_' + c.toLowerCase()), v]))
+// A PostgREST or= filter for "sent to this account or this address"; a value that could
+// break out of the filter (a comma, quote or bracket) is left out rather than escaped.
+const SAFE_OR = /^[^\s,()"\\]+$/
+const orFor = ({ account, email }) => [account && SAFE_OR.test(account) && `account.eq.${account}`, email && SAFE_OR.test(email) && `email.eq.${email}`].filter(Boolean).join(',')
 const ts = (v) => (v == null ? v : typeof v === 'number' ? new Date(v).toISOString() : v)
 const ms = (v) => (v == null ? v : Date.parse(v))
 // Postgres's foreign-key-violation code, for the same checks memory-store.js mirrors.
@@ -27,6 +31,7 @@ const GRANT = 'room, account, type_id, tighten, granted_by, created_at, updated_
 const SESSION_INVITE = 'id, room, email, account, account_name, type_id, invited_by, created_at, expires_at, used_at, used_by, cancelled_at'
 const WORKSPACE = 'id, owner_user_id, org_id, name, description, color, created_by, created_at, archived_at, quota_bytes, used_bytes, file_count'
 const WORKSPACE_MEMBER = 'workspace_id, account, access, sessions, added_by, added_at'
+const WORKSPACE_INVITE = 'id, workspace_id, email, account, account_name, access, invited_by, created_at, expires_at, accepted_at, accepted_by, declined_at, cancelled_at'
 const WORKSPACE_FILE = 'id, workspace_id, path, kind, size, mime, sha256, version, object_key, note, uploaded_by, uploaded_at, confirmed_at, deleted_at'
 const WORKSPACE_FILE_VERSION = 'file_id, version, size, sha256, object_key, note, uploaded_by, uploaded_at'
 const AGENT_PLACEMENT = 'agent_id, reach, workspace_ids, sessions, access, scopes, updated_by, updated_at'
@@ -262,6 +267,38 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
       const rows = await one(db.from('workspace_members').delete().eq('workspace_id', workspaceId).eq('account', account).select('account'))
       return rows.length > 0
     },
+    // Workspace invites (20261009000000_invite_inbox.sql): one open per address or account
+    // (a unique index; a second is a 23505), that key's expired ones deleted first.
+    async createWorkspaceInvite ({ workspaceId, email = null, account = null, accountName = '', access, invitedBy, expiresAt, at = Date.now() }) {
+      email = email && email.toLowerCase()
+      await one(db.from('workspace_invites').delete().eq('workspace_id', workspaceId).eq(email ? 'email' : 'account', email || account)
+        .is('accepted_at', null).is('declined_at', null).is('cancelled_at', null).lte('expires_at', ts(at)))
+      return rowFrom(await one(db.from('workspace_invites')
+        .insert({ workspace_id: workspaceId, email, account, account_name: accountName, access, invited_by: invitedBy, expires_at: ts(expiresAt) })
+        .select(WORKSPACE_INVITE).single()))
+    },
+    async listWorkspaceInvites (workspaceId) {
+      return (await one(db.from('workspace_invites').select(WORKSPACE_INVITE).eq('workspace_id', workspaceId).order('created_at', { ascending: false }).limit(50))).map(rowFrom)
+    },
+    async workspaceInviteById (id) { return rowFrom(await one(db.from('workspace_invites').select(WORKSPACE_INVITE).eq('id', id).maybeSingle())) },
+    async openWorkspaceInvite (workspaceId, { email = null, account = null }, at) {
+      const rows = await one(db.from('workspace_invites').select(WORKSPACE_INVITE).eq('workspace_id', workspaceId).eq(email ? 'email' : 'account', email || account)
+        .is('accepted_at', null).is('declined_at', null).is('cancelled_at', null).gt('expires_at', ts(at)).limit(1))
+      return rowFrom(rows[0] || null)
+    },
+    async workspaceInvitesFor ({ account = null, email = null }, at) {
+      const who = orFor({ account, email })
+      if (!who) return []
+      return (await one(db.from('workspace_invites').select(WORKSPACE_INVITE).or(who)
+        .is('accepted_at', null).is('declined_at', null).is('cancelled_at', null).gt('expires_at', ts(at)).order('created_at', { ascending: false }).limit(50))).map(rowFrom)
+    },
+    // Check-and-set: only a waiting invite is answered. `how` is accepted, declined or cancelled.
+    async answerWorkspaceInvite (id, how, by = null) {
+      if (!['accepted', 'declined', 'cancelled'].includes(how)) throw new Error('accepted, declined or cancelled')
+      const patch = { [`${how}_at`]: new Date().toISOString(), ...(how === 'accepted' ? { accepted_by: by } : {}) }
+      const rows = await one(db.from('workspace_invites').update(patch).eq('id', id).is('accepted_at', null).is('declined_at', null).is('cancelled_at', null).select('id'))
+      return rows.length > 0
+    },
     async setSessionWorkspace (room, workspaceId, { linkedBy = null, at }) {
       return rowFrom(await one(db.rpc('set_session_workspace', { p_room: room, p_workspace: workspaceId || null, p_linked_by: linkedBy || null, p_at: ts(at) })))
     },
@@ -375,18 +412,31 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
     },
     // One open invite per address or account (a unique index; a second one is a 23505). That
     // key's expired, unused invites go first, so they never block a new one.
-    async createSessionInvite ({ room, email = null, account = null, accountName = '', typeId, invitedBy, expiresAt, at = Date.now() }) {
+    async createSessionInvite ({ room, email = null, account = null, accountName = '', typeId, invitedBy, expiresAt, link = null, at = Date.now() }) {
       email = email && email.toLowerCase()
       await one(db.from('session_invites').delete().eq('room', room).eq(email ? 'email' : 'account', email || account)
         .is('used_at', null).is('cancelled_at', null).lte('expires_at', ts(at)))
       return rowFrom(await one(db.from('session_invites')
-        .insert({ room, email: email && email.toLowerCase(), account, account_name: accountName, type_id: typeId, invited_by: invitedBy, expires_at: ts(expiresAt) })
+        .insert({ room, email: email && email.toLowerCase(), account, account_name: accountName, type_id: typeId, invited_by: invitedBy, expires_at: ts(expiresAt), link })
         .select(SESSION_INVITE).single()))
     },
     async listSessionInvites (room) {
       return (await one(db.from('session_invites').select(SESSION_INVITE).eq('room', room).order('created_at', { ascending: false }).limit(50))).map(rowFrom)
     },
     async sessionInviteById (room, id) { return rowFrom(await one(db.from('session_invites').select(SESSION_INVITE).eq('room', room).eq('id', id).maybeSingle())) },
+    // The open session invites sent to an account or a (confirmed) address, with their links.
+    async sessionInvitesFor ({ account = null, email = null }, at) {
+      const who = orFor({ account, email })
+      if (!who) return []
+      const rows = await one(db.from('session_invites').select(`${SESSION_INVITE}, link, relay_sessions (name)`).or(who)
+        .is('used_at', null).is('cancelled_at', null).gt('expires_at', ts(at)).order('created_at', { ascending: false }).limit(50))
+      return rows.map(({ relay_sessions: s, ...r }) => ({ ...rowFrom(r), sessionName: s?.name || '' }))
+    },
+    // A session invite, only when it was sent to this account or address.
+    async sessionInviteForMe (id, { account = null, email = null }) {
+      const i = rowFrom(await one(db.from('session_invites').select(SESSION_INVITE).eq('id', id).maybeSingle()))
+      return i && ((account && i.account === account) || (email && i.email === email)) ? i : null
+    },
     // The open (unused, not cancelled, not expired) invite for an address or account, but `exceptId`.
     async openSessionInvite (room, { email = null, account = null }, at, exceptId = null) {
       let q = db.from('session_invites').select(SESSION_INVITE).eq('room', room).eq(email ? 'email' : 'account', email || account)

@@ -7,6 +7,8 @@ import { workspaceReach, canSeeFiles } from '../workspace-reach.js'
 import { listedFiles, usageView, removeObjects } from './workspace-files.js'
 import { workspaceAgents, cleanMemberSessions, placementCandidates, FOREIGN_JOINS } from './workspace-agents.js'
 import { sameOwnerAgent } from '../agent-placement.js'
+import { typeOfGrant } from '../access.js'
+import { effectiveAccess } from '../../session-access.js'
 
 const ROOM = /^[A-Za-z0-9_-]{1,64}$/
 const ACCOUNT = /^(person|agent):[A-Za-z0-9_-]{1,64}$/
@@ -29,6 +31,37 @@ export function workspaceRoutes (ctx) {
   const kindOf = (account) => account.split(':')[0]
   const isOpen = (s, t) => t - s.lastActiveAt < OPEN_MS
   const sessionView = (s, t) => ({ room: s.room, name: s.name, ownerAccount: s.ownerAccount, lastActiveAt: s.lastActiveAt, open: isOpen(s, t) })
+
+  /**
+   * Moving a session into a workspace brings its people and agents along: everyone with a
+   * grant there (edit or view, as the grant gives files) and everyone who has been in it
+   * (edit, as an invite link lets them), except its owner, agents kept out of it, people
+   * the owner removed last time, and, in an org's workspace, anyone outside the org. Nobody
+   * loses access they already had here. Answers who was added.
+   */
+  async function bringPeople (ws, room, by) {
+    const want = new Map()
+    for (const g of await store.listGrants(room)) {
+      if (!ACCOUNT.test(g.account)) continue // an email's grant waits for that person to sign in
+      want.set(g.account, effectiveAccess(await typeOfGrant(store, g), g.tighten).files === 'edit' ? 'edit' : 'view')
+    }
+    const last = new Map()
+    for (const v of await store.visitsInRooms([room])) if (ACCOUNT.test(v.account)) last.set(v.account, v)
+    for (const [account, v] of last) if (!want.has(account) && v.endReason !== 'removed') want.set(account, 'edit')
+    const keptOut = new Set((await store.listSessionAgentExclusions(room).catch(() => [])).map((e) => `agent:${e.agentId}`))
+    const added = []
+    for (const [account, access] of want) {
+      if (account === by || keptOut.has(account) || (ws.ownerUserId && account === `person:${ws.ownerUserId}`)) continue
+      const [kind, id] = account.split(':')
+      if (kind === 'agent' ? !(await store.agentById(id).catch(() => null)) : !(await store.profile(id))) continue
+      if (ws.orgId && !(kind === 'agent' ? await store.memberByAgent(ws.orgId, id) : await store.memberOf(ws.orgId, id))) continue
+      const had = await store.workspaceMember(ws.id, account)
+      if (had && (had.access === 'edit' || access === 'view')) continue
+      await store.putWorkspaceMember({ workspaceId: ws.id, account, access, addedBy: by })
+      added.push({ account, name: (await nameOf(account)) || last.get(account)?.accountName || '', kind, access })
+    }
+    return added
+  }
 
   async function spaceOf (ws) {
     if (!ws.orgId) return { kind: 'personal' }
@@ -170,7 +203,13 @@ export function workspaceRoutes (ctx) {
       if (!ROOM.test(room)) throw new HttpError(400, 'room must be a session name')
       const existing = await store.sessionByRoom(room)
       if (existing && existing.ownerAccount && existing.ownerAccount !== r.me.account) throw new HttpError(403, 'only the session owner can move it')
-      return { session: await store.setSessionWorkspace(room, r.ws.id, { linkedBy: r.me.account, at: now() }) }
+      const session = await store.setSessionWorkspace(room, r.ws.id, { linkedBy: r.me.account, at: now() })
+      // Its people come along when the owner manages the workspace; an editor's move leaves
+      // the workspace's people as they are, and says so (`peopleNeedAdmin`).
+      const owner = existing && existing.ownerAccount === r.me.account
+      if (!owner) return { session, added: [] }
+      if (!r.access.admin) return { session, added: [], peopleNeedAdmin: true }
+      return { session, added: await bringPeople(r.ws, room, r.me.account) }
     }],
 
     ['DELETE', /^\/v1\/workspaces\/([^/]+)\/sessions\/([^/]+)$/, async (req, body, [id, room]) => {

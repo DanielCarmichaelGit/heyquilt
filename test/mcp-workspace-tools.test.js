@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js'
-import { startTestApi, API_URL } from './api-helpers.js'
+import { startTestApi, API_URL, linkDevice } from './api-helpers.js'
 import { agentJoin } from '../src/agent-join.js'
 import { WORKSPACE_GUIDE } from '../src/workspace-tools.js'
 import { agentAnnouncer } from '../src/mcp.js'
@@ -19,7 +19,7 @@ import { announceWhenReported } from '../src/account.js'
 
 const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'quilt.js')
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-mcpws-${n}-`))
-const WS_TOOLS = ['quilt_workspace_delete_file', 'quilt_workspace_files', 'quilt_workspace_move_file', 'quilt_workspace_read_file', 'quilt_workspace_webhook', 'quilt_workspace_webhook_off', 'quilt_workspace_write_file', 'quilt_workspaces']
+const WS_TOOLS = ['quilt_workspace_delete_file', 'quilt_workspace_files', 'quilt_workspace_make_folder', 'quilt_workspace_move_file', 'quilt_workspace_read_file', 'quilt_workspace_webhook', 'quilt_workspace_webhook_off', 'quilt_workspace_write_file', 'quilt_workspaces']
 const text = (r) => r.content.map((c) => c.text).join('\n')
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 async function waitFor (fn, ms = 8000) {
@@ -81,7 +81,7 @@ test('flag off: the tool list is the one without workspaces', async () => {
   for (const t of (await client.listTools()).tools) assert.ok(!String(t.description).includes(WORKSPACE_GUIDE), t.name)
 })
 
-test('flag on with an agent: the eight tools appear, and work over MCP', async () => {
+test('flag on with an agent: the nine tools appear, and work over MCP', async () => {
   const { home, saved } = await homeWithAgent(on)
   const ws = await on.store.createWorkspace({ ownerUserId: 'mem', name: 'Launch', createdBy: 'person:mem' })
   await on.store.putAgentPlacement({ agentId: saved.agentId, reach: 'all', access: 'edit', sessions: 'invited', updatedBy: 'person:mem' })
@@ -141,6 +141,63 @@ test('flag on, but no agent on this computer: nothing new', async () => {
   await sleep(500)
   assert.deepEqual(await names(client), baseline)
   assert.equal(changes.length, 0, 'the client is never told the list changed')
+})
+
+/** Signs `userId` in on the computer whose home is `home`, as the app does. */
+async function signIn (api, home, userId) {
+  const { token } = await linkDevice(api, userId)
+  fs.mkdirSync(path.join(home, '.quilt'), { recursive: true })
+  fs.writeFileSync(path.join(home, '.quilt', 'account.json'), JSON.stringify({ token, account: { id: userId, name: 'Mo' }, signedInAt: Date.now() }), { mode: 0o600 })
+}
+
+test("no agent, but a person signed in: their AI gets the library, as them, and makes folders", async () => {
+  const home = tmp('person')
+  await signIn(on, home, 'mem')
+  const ws = await on.store.createWorkspace({ ownerUserId: 'mem', name: 'Mine', createdBy: 'person:mem' })
+  const { client, changes } = await startMcp({ home, apiUrl: on.api.url })
+  await waitFor(() => changes.length > 0)
+  assert.deepEqual(await names(client), [...baseline, ...WS_TOOLS].sort())
+  assert.match(text(await client.callTool({ name: 'quilt_workspaces', arguments: {} })), /Mine/)
+  const made = await client.callTool({ name: 'quilt_workspace_make_folder', arguments: { workspace: 'Mine', path: 'cuts/raw' } })
+  assert.equal(made.isError, undefined, text(made))
+  assert.match(text(made), /Made the folder cuts\/raw\/ in Mine/)
+  const wrote = await client.callTool({ name: 'quilt_workspace_write_file', arguments: { workspace: 'Mine', path: 'cuts/raw/notes.md', text: 'by the AI' } })
+  assert.equal(wrote.isError, undefined, text(wrote))
+  const files = (await on.store.listWorkspaceFiles(ws.id)).map((f) => [f.path, f.kind, f.uploadedBy])
+  assert.deepEqual(files.sort(), [['cuts', 'folder', 'person:mem'], ['cuts/raw', 'folder', 'person:mem'], ['cuts/raw/notes.md', 'file', 'person:mem']])
+})
+
+test('several agents on this computer: an agent folder acts as its agent; elsewhere the signed-in person', async () => {
+  const { home, saved } = await homeWithAgent(on)
+  // A second agent, so "the only agent" no longer decides.
+  const link = (await on.call('POST', '/v1/agent-invites', {}, 'lim')).body.link.replace(API_URL, on.api.url)
+  await agentJoin({ link, name: 'other', dir: path.join(home, '.quilt'), log: () => {} })
+  const ws = await on.store.createWorkspace({ ownerUserId: 'mem', name: 'Shared', createdBy: 'person:mem' })
+  await on.store.putWorkspaceMember({ workspaceId: ws.id, account: `agent:${saved.agentId}`, access: 'edit', addedBy: 'person:mem' })
+  // Nobody to act as: no agent folder, nobody signed in.
+  const none = await startMcp({ home, apiUrl: on.api.url })
+  await sleep(500)
+  assert.deepEqual(await names(none.client), baseline)
+
+  // The agent's own copy of a session: its config names it.
+  const agentDir = tmp('agentdir')
+  fs.mkdirSync(path.join(agentDir, '.quilt'))
+  fs.writeFileSync(path.join(agentDir, '.quilt', 'config.json'), JSON.stringify({ server: 'ws://x', room: 'r1', name: 'helper', kind: 'agent' }))
+  const asAgent = new Client({ name: 'cursor', version: '1.0.0' })
+  const changes = []
+  asAgent.setNotificationHandler(ToolListChangedNotificationSchema, (n) => { changes.push(n) })
+  await asAgent.connect(new StdioClientTransport({ command: process.execPath, args: [BIN, 'mcp'], cwd: agentDir, env: { ...process.env, HOME: home, QUILT_API_URL: on.api.url }, stderr: 'ignore' }))
+  clients.push(asAgent)
+  await waitFor(() => changes.length > 0)
+  const wrote = await asAgent.callTool({ name: 'quilt_workspace_write_file', arguments: { workspace: 'Shared', path: 'from-helper.md', text: 'hi' } })
+  assert.equal(wrote.isError, undefined, text(wrote))
+  assert.equal((await on.store.listWorkspaceFiles(ws.id)).find((f) => f.path === 'from-helper.md').uploadedBy, `agent:${saved.agentId}`)
+
+  // Signed in, outside any agent folder: the person.
+  await signIn(on, home, 'mem')
+  const person = await startMcp({ home, apiUrl: on.api.url })
+  await waitFor(() => person.changes.length > 0)
+  assert.match(text(await person.client.callTool({ name: 'quilt_workspaces', arguments: {} })), /Shared/)
 })
 
 test('an API that never answers neither delays startup nor adds tools', async () => {

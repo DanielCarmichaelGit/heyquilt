@@ -1,5 +1,5 @@
 // The workspace library as MCP tools for agents: list workspaces and their files, read and
-// write files, move and delete them, and the agent's webhook for workspace events. Shared by
+// write files, make folders, move and delete them, and the agent's webhook for workspace events. Shared by
 // the local MCP (`quilt mcp`, which can also read and save files on this computer) and the
 // hosted MCP on the relay. Each host passes how to reach the API:
 //   call(method, path, body) -> parsed JSON, or throws an Error with .status and the API's message
@@ -270,6 +270,18 @@ export function registerWorkspaceTools (server, { call, fetchBytes, put, saveDir
     if (status < 200 || status >= 300) throw new Error(`The upload did not go through (storage answered ${status}). Try again.`)
     const done = await call('POST', `${file$(ws.id, file.id)}/done`, {})
     return `Saved ${done.file.path} in ${ws.name} (version ${done.file.version}, ${formatBytes(done.file.size)}).`
+  }))
+
+  server.registerTool('quilt_workspace_make_folder', {
+    description: 'Make a folder in a workspace library, with any folders above it ("cuts/raw" makes both). Writing a file to a path makes its folders too. Needs edit access.',
+    inputSchema: {
+      workspace: z.string().describe('The workspace name or id'),
+      path: z.string().describe('The folder, like "cuts/raw"')
+    }
+  }, tool(async ({ workspace, path: p }) => {
+    const ws = await workspaceOf(workspace)
+    const { file } = await call('POST', `${ws$(ws.id)}/folders`, { path: p })
+    return `Made the folder ${file.path}/ in ${ws.name}.`
   }))
 
   server.registerTool('quilt_workspace_move_file', {

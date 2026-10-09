@@ -48,9 +48,9 @@ before(async () => {
 })
 after(() => t.close())
 
-test('registers the eight library tools, each with a description', () => {
+test('registers the nine library tools, each with a description', () => {
   const { tools } = collect({ call: caller(editor.accessKey) })
-  assert.deepEqual([...tools.keys()].sort(), ['quilt_workspace_delete_file', 'quilt_workspace_files', 'quilt_workspace_move_file', 'quilt_workspace_read_file', 'quilt_workspace_webhook', 'quilt_workspace_webhook_off', 'quilt_workspace_write_file', 'quilt_workspaces'])
+  assert.deepEqual([...tools.keys()].sort(), ['quilt_workspace_delete_file', 'quilt_workspace_files', 'quilt_workspace_make_folder', 'quilt_workspace_move_file', 'quilt_workspace_read_file', 'quilt_workspace_webhook', 'quilt_workspace_webhook_off', 'quilt_workspace_write_file', 'quilt_workspaces'])
   for (const [name, { def }] of tools) {
     assert.ok(def.description && def.description.length > 20, name)
     assert.doesNotMatch(def.description, /—/, `${name}: no em dashes`)

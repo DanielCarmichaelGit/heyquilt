@@ -37,6 +37,7 @@ Usage:
   quilt chat-link [name] [--minutes N]                Owner: a link for a chat-only AI (ChatGPT, claude.ai, Grok); 10 minutes
   quilt chat-link extend <name> <minutes>             Owner: keep a chat link working for that long from now
   quilt invite                                        Print this session's invite code
+  quilt workspace list|files|get|put|write|mkdir|mv|rm  The workspace library (quilt workspace for help)
   quilt stop                                          Shut down everything quilt is running (relay, app, syncs)
   quilt doctor [folder] [--watch 30]                  Check what quilt can see of your Claude Code / Cursor chats
   quilt mcp                                           Run the MCP server (used by AI tools)
@@ -89,6 +90,7 @@ async function main () {
       return simple('/chat-link', { name, minutes }, (r) => `Chat link for ${r.name}, until ${new Date(r.expiresAt).toLocaleTimeString()}:\n\n  ${r.url}\n\nPaste it into ChatGPT, claude.ai or Grok with "Open this link and follow it to join our Quilt session."\nAnyone with it can act as ${r.name}. Extend it with \`quilt chat-link extend ${r.name} <minutes>\`; once it runs out, make a new one.`)
     }
     case 'invite': return invite()
+    case 'workspace': case 'workspaces': return workspaceCmd()
     case 'stop': return stopAll()
     case 'doctor': {
       const i = argv.indexOf('--watch')
@@ -421,6 +423,23 @@ async function say () {
   if (!rest.length) fail('usage: quilt say [@name] <message>  (a message to everyone names who it is for with @Name, or add --everyone)')
   await simple('/say', { text: rest.join(' '), to, everyone, also }, (r) =>
     to ? `sent to ${to}${r.recipientOnline ? '' : ' (offline, they will see it when they reconnect)'}` : 'sent')
+}
+
+async function workspaceCmd () {
+  const { WORKSPACE_USAGE, runWorkspaceCommand } = await import('../src/workspace-cli.js')
+  const [sub, ...rest] = argv
+  if (!sub || sub === 'help' || sub === '--help' || sub === '-h') return console.log(WORKSPACE_USAGE)
+  const { localWorkspaceAccess } = await import('../src/mcp.js')
+  const { findDaemon } = await import('../src/control.js')
+  const here = process.env.QUILT_DIR || process.cwd()
+  // Whoever this folder's session is (an agent's copy names its agent), from anywhere inside it.
+  const projectDirs = () => [here, findDaemon(here)?.dir].filter((d) => d && d !== os.homedir())
+  let r
+  try {
+    r = await runWorkspaceCommand(sub, rest, localWorkspaceAccess({ projectDirs }))
+  } catch (err) { fail(err.message) }
+  if (!r.ok) fail(r.text.replace(/^Error: /, ''))
+  console.log(r.text)
 }
 
 async function sendFile () {

@@ -20,7 +20,7 @@ process.env.HOME = process.env.USERPROFILE = fs.mkdtempSync(path.join(os.tmpdir(
 const keys = newPassKeys()
 const freePort = () => new Promise((resolve) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)) }) })
 const out = (r) => r.content.map((c) => c.text).join('\n')
-const LIBRARY = ['quilt_workspace_delete_file', 'quilt_workspace_files', 'quilt_workspace_move_file', 'quilt_workspace_read_file', 'quilt_workspace_webhook', 'quilt_workspace_webhook_off', 'quilt_workspace_write_file', 'quilt_workspaces']
+const LIBRARY = ['quilt_workspace_delete_file', 'quilt_workspace_files', 'quilt_workspace_make_folder', 'quilt_workspace_move_file', 'quilt_workspace_read_file', 'quilt_workspace_webhook', 'quilt_workspace_webhook_off', 'quilt_workspace_write_file', 'quilt_workspaces']
 const closers = []
 after(async () => { for (const c of closers.reverse()) await c() })
 

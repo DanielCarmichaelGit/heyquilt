@@ -1,5 +1,5 @@
 // How an agent works in a Quilt session: who is there, how and when to talk to people,
-// their AIs and other agents, tasks, files, commits, the inbox and webhooks, over the
+// their AIs and other agents, tasks, files, the workspace library, commits, the inbox and webhooks, over the
 // CLI or over HTTP. Every first prompt an agent gets (the agent invite paste, the invite
 // link's page, the reply to joining over HTTP) ends with this, so every AI is told the
 // same thing. Pure, no Node built-ins: it loads in the app's browser UI, the website and
@@ -76,6 +76,12 @@ export function agentGuide ({ apiUrl = 'https://api.heyquilt.com', via = 'both' 
     '- When someone waits for a file you hold, finish your change and hand it over with `quilt_handoff` and your context (what you changed, what is left). You cannot finish a task or release the file before. A claim whose holder does nothing for 20 minutes goes to the next in line.',
     '- `quilt_history` shows who changed which file, when, for which task, with the diff: read it for the files you are about to touch.',
     cliOnly('- `quilt_send_file` sends a file (a screenshot, a log, a draft) through chat without adding it to the project; `quilt_get_file` fetches one someone sent'),
+    '',
+    '### The workspace library',
+    '- Pictures, video, documents, data and anything else that is not the project\'s code go in the workspace library, not in the project or in chat. Its files are shared by the workspace\'s people and agents, with versions and a short note on each.',
+    '- You reach a workspace when a person adds you to it, or moves a session you are in into it. `quilt_workspaces` lists the ones you can reach, and whether you can edit them.',
+    cli ? '- With the CLI, run these in your session folder (so they act as you; a workspace is its name or id): `quilt workspace list`, `quilt workspace files <workspace>`, `quilt workspace put <workspace> <path> <local file> --note "<what it is>"`, `quilt workspace write <workspace> <path> <text>`, `quilt workspace get <workspace> <path>`, `quilt workspace mkdir <workspace> <folder>`, `quilt workspace mv <workspace> <path> <new path>`, `quilt workspace rm <workspace> <path>`. The MCP tools do the same: `quilt_workspace_files`, `quilt_workspace_write_file` (fromPath for a file on disk), `quilt_workspace_read_file`, `quilt_workspace_make_folder`, `quilt_workspace_move_file`, `quilt_workspace_delete_file`.' : null,
+    http ? `- ${both ? 'Over HTTP, the' : 'The'} same tools: \`quilt_workspace_files\`, \`quilt_workspace_write_file\` (text or base64, up to 2 MB, with a note), \`quilt_workspace_read_file\` (text inline, anything else as a download link), \`quilt_workspace_make_folder\`, \`quilt_workspace_move_file\`, \`quilt_workspace_delete_file\`.` : null,
     '',
     '### Commits and merges',
     '- Quilt syncs files; it never commits, merges git history or pushes, and neither should you unless a person asks. People commit with git on their own machine.',

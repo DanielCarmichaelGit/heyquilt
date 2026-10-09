@@ -22,8 +22,8 @@ import { runSession, decodeInvite, newConn, readConfig, runningElsewhere, person
 import { INVALID_INVITE } from './ui/invite.js'
 import { toolLabel } from './agents/common.js'
 import { sessionPasses } from './pass-source.js'
-import { pickAgent, agentWhoami, agentAccess, readAgent } from './agent-join.js'
-import { setSessionWorkspace, announceSessionStarted, announceWhenReported, apiUrl } from './account.js'
+import { pickAgent, agentWhoami, agentAccess, readAgent, savedAgents } from './agent-join.js'
+import { setSessionWorkspace, announceSessionStarted, announceWhenReported, apiUrl, readAccount, resumeAccount } from './account.js'
 import { registerWorkspaceTools, bytesFetcher, isInside } from './workspace-tools.js'
 import { quiltHome } from './legacy.js'
 import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, qaRefusal, qaNotesEnough, qaNotesLine, MAX_VERIFIED } from './agent-task-workflow.js'
@@ -994,34 +994,71 @@ const TRANSFER_TIMEOUT_MS = 10 * 60 * 1000
 const MAX_LOCAL_FILE = 500 * 1024 * 1024
 
 /**
- * Adds the workspace library tools when this computer has an agent (the only one saved, as
- * sessions pick it) and that agent's API says workspaces are on. Anything else (no agent,
- * several, the flag off, the API slow, unreachable or odd) adds nothing and never throws.
- * Returns whether the tools were added.
+ * Who the library tools act as, decided afresh on every call (the MCP may join a session as an
+ * agent later): the agent whose folder this is (the first of `dirs` holding a session, joined
+ * as one of this computer's saved agents); in a person's folder, the person signed in on this
+ * computer (their AI works as them); else this computer's only agent; else the signed-in
+ * person. null when there is nobody to act as.
  */
-export async function addWorkspaceTools (server, { fetch: fetchImpl = globalThis.fetch, projectDirs = () => [process.cwd()] } = {}) {
-  let name, api
-  try {
-    name = pickAgent()
-    api = String(readAgent({ name }).api || apiUrl()).replace(/\/+$/, '')
-  } catch { return false }
-  try {
-    const res = await fetchImpl(`${api}/v1/features`, { signal: AbortSignal.timeout(FEATURES_TIMEOUT_MS) })
-    if (!res.ok || (await res.json())?.workspaces !== true) return false
-  } catch { return false }
-  const call = async (method, route, body) => {
-    // A fresh access key every call: it is refreshed (and saved) when it has nearly run out.
-    const saved = await agentAccess({ name, fetch: fetchImpl })
-    let res
+export function workspaceActor ({ dirs = [process.cwd()] } = {}) {
+  const agents = savedAgents()
+  let personsFolder = false
+  for (const d of dirs) {
+    const c = readConfig(d)
+    if (!c) continue
+    if (c.kind === 'agent' && c.name && agents.includes(c.name)) return { agent: c.name }
+    personsFolder = c.kind !== 'agent'
+    break
+  }
+  const signedIn = !!readAccount()
+  if (personsFolder && signedIn) return { person: true }
+  if (agents.length === 1) return { agent: agents[0] }
+  return signedIn ? { person: true } : null
+}
+
+const NOBODY = 'Sign in to Quilt on this computer (the Quilt app, or quilt login), or join as an agent, to use the workspace library.'
+
+/**
+ * How the library reaches the API from this computer, for the local MCP and the CLI: as
+ * workspaceActor decides on each call. { actor, api(), call, fetchBytes, put, readLocal,
+ * saveDir } for registerWorkspaceTools; api() throws when there is nobody to act as.
+ */
+export function localWorkspaceAccess ({ fetch: fetchImpl = globalThis.fetch, projectDirs = () => [process.cwd()] } = {}) {
+  const actor = () => workspaceActor({ dirs: projectDirs() })
+  const api = () => {
+    const a = actor()
+    if (!a) throw new Error(NOBODY)
+    return String((a.agent && readAgent({ name: a.agent }).api) || apiUrl()).replace(/\/+$/, '')
+  }
+  const send = async (base, token, method, route, body) => {
     try {
-      res = await fetchImpl(String(saved.api).replace(/\/+$/, '') + route, {
+      return await fetchImpl(String(base).replace(/\/+$/, '') + route, {
         method,
-        headers: { authorization: `Bearer ${saved.accessKey}`, ...(body ? { 'content-type': 'application/json' } : {}) },
+        headers: { authorization: `Bearer ${token}`, ...(body ? { 'content-type': 'application/json' } : {}) },
         body: body ? JSON.stringify(body) : undefined,
         signal: AbortSignal.timeout(60_000)
       })
     } catch (err) {
       throw new Error(`Couldn't reach Quilt (${err.cause?.code || err.message}).`)
+    }
+  }
+  const call = async (method, route, body) => {
+    const a = actor()
+    if (!a) throw new Error(NOBODY)
+    let res
+    if (a.agent) {
+      // A fresh access key every call: it is refreshed (and saved) when it has nearly run out.
+      const saved = await agentAccess({ name: a.agent, fetch: fetchImpl })
+      res = await send(saved.api || apiUrl(), saved.accessKey, method, route, body)
+    } else {
+      const account = readAccount()
+      if (!account) throw new Error(NOBODY)
+      res = await send(apiUrl(), account.token, method, route, body)
+      // The sign-in ran out, not the link to this computer: sign back in with its key, once.
+      if (res.status === 401) {
+        const back = await resumeAccount({ fetch: fetchImpl }).catch(() => null)
+        if (back) res = await send(apiUrl(), back.token, method, route, body)
+      }
     }
     const data = await res.json().catch(() => null)
     if (!res.ok) throw Object.assign(new Error(data?.error || `Quilt answered ${res.status}.`), { status: res.status })
@@ -1030,8 +1067,30 @@ export async function addWorkspaceTools (server, { fetch: fetchImpl = globalThis
   }
   const fetchBytes = bytesFetcher(fetchImpl, { timeoutMs: TRANSFER_TIMEOUT_MS })
   const put = async (url, bytes, headers) => (await fetchImpl(url, { method: 'PUT', headers, body: bytes, signal: AbortSignal.timeout(TRANSFER_TIMEOUT_MS) })).status
+  return { actor, api, call, fetchBytes, put, saveDir: path.join(quiltHome(), 'workspaces'), readLocal: (p) => readLocalFile(p, projectDirs()) }
+}
+
+/** Whether the API at `api` says workspaces are on (false when it is slow, unreachable or odd). */
+export async function workspacesOn (api, fetchImpl = globalThis.fetch) {
   try {
-    registerWorkspaceTools(server, { call, fetchBytes, put, saveDir: path.join(quiltHome(), 'workspaces'), readLocal: (p) => readLocalFile(p, projectDirs()), guide: true })
+    const res = await fetchImpl(`${api}/v1/features`, { signal: AbortSignal.timeout(FEATURES_TIMEOUT_MS) })
+    return res.ok && (await res.json())?.workspaces === true
+  } catch { return false }
+}
+
+/**
+ * Adds the workspace library tools when there is someone to act as (workspaceActor: this
+ * folder's agent, or the person signed in on this computer) and their API says workspaces are
+ * on. Anything else (nobody, the flag off, the API slow, unreachable or odd) adds nothing and
+ * never throws. Returns whether the tools were added.
+ */
+export async function addWorkspaceTools (server, { fetch: fetchImpl = globalThis.fetch, projectDirs = () => [process.cwd()] } = {}) {
+  const access = localWorkspaceAccess({ fetch: fetchImpl, projectDirs })
+  let api
+  try { api = access.api() } catch { return false }
+  if (!await workspacesOn(api, fetchImpl)) return false
+  try {
+    registerWorkspaceTools(server, { ...access, guide: true })
   } catch { return false }
   return true
 }

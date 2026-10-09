@@ -29,9 +29,9 @@ test('the grid: a card per workspace with cover, name, space pill, counts, avata
   assert.ok(w.includes('open</span>') || w.includes('open<'), 'an N open pill')
 })
 
-test('the workspace page: back link, header, session cards with New session, people cards with access and Add, settings', () => {
+test('the workspace page: back link, header with what is in it, session rows with New session, people and agents alongside with Add, settings', () => {
   const w = ui('workspaces.js')
-  for (const bit of ['All workspaces', 'data-ws-back', 'class="ws-head"', 'class="sc-grid"', 'data-rejoin=', 'data-go=', 'data-new-session-in=', 'New session', 'People &amp; agents', '<div class="pc$' + '{admin && !isOwner ? \' has-x\' : \'\'}">', 'data-member-access=', 'data-member-remove=', 'Invite a person or add an agent', 'data-ws-settings', 'Delete workspace', "'/update'", "'/delete'", "'/members/remove'"]) assert.ok(w.includes(bit), bit)
+  for (const bit of ['All workspaces', 'data-ws-back', 'class="ws-head"', 'class="ws-statline"', 'class="ws-dash"', 'class="ws-aside"', 'class="sr-list"', 'function sessionRowHtml', 'data-rejoin=', 'data-go=', 'data-new-session-in=', 'New session', 'People &amp; agents', '<div class="pc$' + '{admin && !isOwner ? \' has-x\' : \'\'}">', 'data-member-access=', 'data-member-remove=', 'Invite a person or add an agent', 'data-ws-settings', 'Delete workspace', "'/update'", "'/delete'", "'/members/remove'"]) assert.ok(w.includes(bit), bit)
 })
 
 test('settings: Save sends archived only when it changed, and Delete shows only to who may delete', () => {
@@ -297,4 +297,19 @@ test('the Add dialog: anchored at the top, a gap before the agent tag, and a hin
   for (const bit of ['.modal-back.top { align-items: start; }', '#wi-people .tag.bot { margin-left: 6px; }', '.pc .btn.pc-x { position: absolute;', '.pc.has-x { padding-right: 44px; }', '.ag-detail {']) assert.ok(css.includes(bit), bit)
   assert.ok(!css.includes('.modal-back {') || css.includes('.modal-back { position: fixed; inset: 0; background: rgba(43, 42, 56, .4); backdrop-filter: blur(2px); display: grid; place-items: center;'), 'other dialogs stay centred')
   assert.ok(ui('workspaces.js').includes('class="btn sm ghost icon pc-x" data-member-remove='))
+})
+
+test('opening a workspace or a session shows a loading screen until it is all here, then fades in', () => {
+  const w = ui('workspaces.js')
+  assert.ok(w.includes("return loadingHtml({ label: 'Loading workspace',"), 'the workspace page while it loads')
+  assert.ok(w.includes("<div class=\"ws-page$" + "{enter ? ' enter' : ''}\">"), 'its page fades in once')
+  const a = ui('app.js')
+  assert.ok(a.includes('state.workspace = null\n      state.filesView = { folder: \'\', picked: null, mode: state.filesView.mode }\n      render()'), 'drawn at once, not after the wait')
+  assert.ok(a.includes("loadingHtml({ label: 'Loading session',"), 'a session opened for the first time')
+  const s = ui('session.js')
+  assert.ok(s.includes('const firstVisit = !state.trees.has(id)'))
+  assert.ok(s.includes("Promise.race([Promise.allSettled(loads), new Promise((resolve) => setTimeout(resolve, 6000))])"), 'in once its files and feeds are, or after six seconds')
+  const css = ui('app.css')
+  assert.ok(!css.includes('.page > * { max-width'), 'pages use the whole width')
+  for (const bit of ['.loading-screen {', '.sv-loading.done {', '.ws-page.enter {', '.loading-screen.steady { animation: none; }']) assert.ok(css.includes(bit), bit)
 })

@@ -618,7 +618,6 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 .side-foot { margin-top: auto; display: flex; flex-direction: column; gap: 2px; padding-top: 10px; border-top: 1px solid var(--border); }
 
 .page { overflow-y: auto; padding: 44px 48px 64px; }
-.page > * { max-width: 920px; margin-left: auto; margin-right: auto; }
 .page-head { margin-bottom: 26px; }
 .page-head h1 { font-size: 30px; font-weight: 600; margin: 0 0 6px; letter-spacing: -0.025em; }
 .page-head p { margin: 0; color: var(--muted); font-size: 15px; }
@@ -974,6 +973,21 @@ details.choice-foot .hint { display: block; margin-top: 6px; }
 .wordmark .qm-word { height: 72px; width: auto; margin: 0 auto; }
 .booting { min-height: 100vh; display: grid; place-items: center; }
 .booting .qm-sym { width: 56px; height: 56px; }
+/* Loading a workspace (fills the page) or a session (fills the window): the mark pieces itself
+   together over what is loading. It fades in after a beat, so a quick load never flashes it. */
+.loading-screen { min-height: 60vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; text-align: center; animation: loading-in .3s ease-out .12s both; }
+.loading-screen.full { min-height: 100vh; }
+.loading-screen.steady { animation: none; }
+.loading-screen .qm-sym { width: 56px; height: 56px; margin-bottom: 14px; }
+.loading-screen .ls-label { margin: 0; font-size: 15px; font-weight: 600; }
+.loading-screen .ls-name { margin: 0; font-size: 13px; color: var(--muted); max-width: 80vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@keyframes loading-in { from { opacity: 0; } to { opacity: 1; } }
+/* Over a session while its files and AI feeds load; it fades away once they are in. */
+.sv-loading { position: fixed; inset: 0; z-index: 30; background: var(--bg); display: grid; place-items: center; transition: opacity .28s ease; }
+.sv-loading.done { opacity: 0; pointer-events: none; }
+/* It takes over from the loading screen go() showed, so it is there at once, without a fade. */
+.sv-loading .loading-screen { animation: none; }
+@media (prefers-reduced-motion: reduce) { .ws-page.enter, .loading-screen { animation: none; } .sv-loading { transition: none; } }
 .qm-inline { width: 18px; height: 18px; display: inline-block; vertical-align: -3px; margin-right: 8px; }
 .btn .qm-inline { margin-right: 6px; }
 
@@ -1344,7 +1358,34 @@ body.has-update #app { padding-top: var(--update-bar); } /* padding, not margin:
 .ws-chip .t span { color: var(--muted); font-size: 12px; }
 .ws-back { display: inline-flex; align-items: center; gap: 4px; margin-bottom: 10px; color: var(--accent); font-weight: 600; font-size: 12.5px; text-decoration: none; }
 .ws-back svg { width: 12px; height: 12px; transform: rotate(180deg); }
-.ws-head { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; }
+.ws-head { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 26px; }
+.ws-head-t { min-width: 0; }
+.ws-head-t p { margin: 2px 0 0; }
+/* What is in the workspace at a glance, under its name. */
+.ws-statline { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; margin-top: 10px; font-size: 12.5px; color: var(--muted); }
+.ws-statline b { color: var(--text); font-weight: 600; }
+.ws-statline .live { display: inline-flex; align-items: center; gap: 6px; }
+.ws-statline .dot, .sr-who .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent); }
+/* Sessions and files on the left, the people and agents alongside; one column on a narrower window. */
+.ws-dash { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 360px); gap: 32px; align-items: start; }
+.ws-dash .sec:first-child { margin-top: 0; }
+.ws-main { min-width: 0; }
+.ws-aside { min-width: 0; position: sticky; top: 0; }
+.ws-aside .pc-grid { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 1100px) { .ws-dash { grid-template-columns: minmax(0, 1fr); } .ws-aside { position: static; } .ws-aside .pc-grid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); } }
+/* A session as a row: the name has the room it needs, and Open sits at the end. */
+.sr-list { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow); }
+.sr { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.sr:last-child { border-bottom: 0; }
+.sr .folder-ico { width: 28px; height: 28px; }
+.sr-t { min-width: 0; line-height: 1.35; }
+.sr-t b { display: block; font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sr-t .mono { display: block; font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sr-who { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.ws-empty { margin: 0; padding: 18px; border: 1px dashed var(--border-strong); border-radius: 8px; }
+/* The page fades in once, when it arrives after its loading screen. */
+.ws-page.enter { animation: page-in .26s ease-out both; }
+@keyframes page-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 .ws-head h1 { margin: 0; font-size: 24px; letter-spacing: -0.02em; display: flex; align-items: center; gap: 10px; }
 .ws-head p { margin: 0; color: var(--muted); }
 .ws-head .acts { margin-left: auto; display: flex; gap: 6px; }

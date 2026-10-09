@@ -1,6 +1,6 @@
 // Quilt app: boot, live events, home screen, folder picker and invites.
 // The session workspace lives in session.js. Plain ES modules, no build step.
-import { TOKEN, I, state, $, esc, basename, toast, api, ask, decodeInvite, remember, recall, startDropdowns, avatar, loadAccessTypes, typeOptions } from './common.js'
+import { TOKEN, I, state, $, esc, basename, toast, api, ask, decodeInvite, remember, recall, startDropdowns, avatar, loadAccessTypes, typeOptions, loadingHtml } from './common.js'
 import { renderShell, joinSessionDialog } from './home.js'
 import { mountSession, sessionUpdated, sessionMessage, sessionFeed, sessionFileChanged, sessionLog, sessionUnmount } from './session.js'
 import { quiltMark } from './mark.js'
@@ -222,16 +222,29 @@ export async function go (view) {
   if (view !== 'home') state.addingWorkspace = false
   if (isWorkspace(view)) {
     if (state.workspace?.workspace?.id !== wsIdOf(view)) {
-      state.workspace = null // "Loading…", not the last one's page
+      // Another workspace: its loading screen right away, not a wait on the last page.
+      state.workspace = null
       state.filesView = { folder: '', picked: null, mode: state.filesView.mode }
+      render()
     }
     await refreshRecent()
-    await openWorkspace(wsIdOf(view)).catch((err) => { toast(err.message); view = 'home' })
+    const loaded = await openWorkspace(wsIdOf(view)).then(() => true, (err) => { toast(err.message); return false })
+    if (state.view !== view) return // somewhere else was opened while this one loaded
+    if (loaded) state.wsEnter = wsIdOf(view) // its page fades in once, now that all of it is here
+    else view = 'home'
     state.view = view
   }
   remember('view', view)
   if (view === 'home') { await refreshRecent(); if (state.workspacesOn) await loadWorkspaces() }
-  if (isSession(view) && !state.messages.has(view)) await loadMessages(view)
+  if (isSession(view) && !state.messages.has(view)) {
+    // A session opened for the first time: its loading screen until its chat is here; the
+    // session view keeps it up until the files and the AI feeds are in too (mountSession).
+    sessionUnmount()
+    const sum = state.sessions.get(view)
+    $('#app').innerHTML = loadingHtml({ label: 'Loading session', name: sum?.status?.sessionName || basename(sum?.dir || ''), full: true })
+    await loadMessages(view).catch(() => {})
+    if (state.view !== view) return
+  }
   render()
   pollWorkspace()
   if (isSession(view)) markRead(view)

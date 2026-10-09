@@ -1,6 +1,6 @@
 // The session workspace: file tree on the left, a partner's live AI chat, a
 // shared file, or the task board in the middle, and the team chat on the right.
-import { TOKEN, I, state, $, esc, basename, bytes, clock, ago, avatar, toast, api, ask, remember, recall, toolsOf, busyPeople, NO_POSTING, ACCOUNT_KEY, loadAccessTypes, typeOptions, accessLine } from './common.js'
+import { TOKEN, I, state, $, esc, basename, bytes, clock, ago, avatar, toast, api, ask, remember, recall, toolsOf, busyPeople, NO_POSTING, ACCOUNT_KEY, loadAccessTypes, typeOptions, accessLine, loadingHtml } from './common.js'
 import { openInvite, renderTabs, markRead } from './app.js'
 import { renderFeed } from './feed.js'
 import { conversations } from './feed-convs.js'
@@ -79,6 +79,9 @@ export function mountSession (id) {
   current = id
   pendingAssign = ''
   mounted = new AbortController()
+  // The first time a session opens in this app, its loading screen stays over it until its files
+  // and AI feeds are in, then fades, so nothing pops in afterwards. Later visits draw from memory.
+  const firstVisit = !state.trees.has(id)
 
   $('#app').innerHTML = `
   <div class="ws" id="ws">
@@ -154,7 +157,7 @@ export function mountSession (id) {
       </aside>
       <div class="scrim" id="scrim"></div>
     </div>
-  </div>`
+  </div>${firstVisit ? `<div class="sv-loading" id="sv-loading">${loadingHtml({ label: 'Loading session', name: sum()?.status?.sessionName || basename(sum()?.dir || '') })}</div>` : ''}`
 
   bindTop()
   bindAccess()
@@ -175,9 +178,17 @@ export function mountSession (id) {
   renderComposer()
   grantLoad = grantsLoading()
   // The approve control and the people menu offer access types once they're here.
-  loadAccessTypes().then(() => { if (current === id) { renderAccess(); if (!$('#people-menu').hidden) renderPeopleMenu() } })
-  loadTree()
-  loadFeeds()
+  const accessLoad = loadAccessTypes().then(() => { if (current === id) { renderAccess(); if (!$('#people-menu').hidden) renderPeopleMenu() } })
+  const loads = [accessLoad, loadTree(), loadFeeds()]
+  if (firstVisit) {
+    // In once everything is here, or after a few seconds at most (a slow feed never locks you out).
+    Promise.race([Promise.allSettled(loads), new Promise((resolve) => setTimeout(resolve, 6000))]).then(() => {
+      const cover = $('#sv-loading')
+      if (current !== id || !cover) return
+      cover.classList.add('done')
+      setTimeout(() => cover.remove(), 300)
+    })
+  }
   const shown = ws(id).mode === 'merge' && shownMerge()
   if (shown && !shown.binary) refreshFile(shown.path, false) // the cached copy may be from before
   autoOpenNewPeople(id) // everyone already here gets a tab on first visit
@@ -1591,7 +1602,7 @@ async function loadFeed (name) {
 
 function loadFeeds () {
   if (!state.feeds.has(current)) state.feeds.set(current, new Map())
-  for (const name of ws(current).aiTabs) loadFeed(name)
+  return Promise.all(ws(current).aiTabs.map((name) => loadFeed(name)))
 }
 
 // -------------------------------------------------------------- file tree --

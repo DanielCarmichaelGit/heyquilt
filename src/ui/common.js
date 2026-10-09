@@ -1,4 +1,5 @@
 // Shared state and helpers for the Quilt app (native ES modules, no build step).
+import { quiltMark } from './mark.js'
 import { parseInvite } from './invite.js'
 
 // The app only ever talks to Quilt's own relay, so an old-style relay link that happens
@@ -404,4 +405,13 @@ export function startDropdowns (root = document.body) {
   })
   window.addEventListener('resize', () => closeMenu())
   document.addEventListener('scroll', (e) => { if (openMenu && !openMenu.menu.contains(e.target)) closeMenu() }, true)
+}
+
+/**
+ * A loading screen: the Quilt mark piecing itself together over "Loading workspace" (or a
+ * session) and its name. `full` fills the window (a session); otherwise it fills the page.
+ * `steady`: drawn again while still loading, so it doesn't fade in a second time.
+ */
+export function loadingHtml ({ label, name = '', full = false, steady = false } = {}) {
+  return `<div class="loading-screen${full ? ' full' : ''}${steady ? ' steady' : ''}" role="status" aria-live="polite">${quiltMark({ word: false, loop: true })}<p class="ls-label">${esc(label)}</p>${name ? `<p class="ls-name">${esc(name)}</p>` : ''}</div>`
 }

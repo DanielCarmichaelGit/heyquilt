@@ -1,7 +1,7 @@
 // Workspaces: the home grid of cards, the Add workspace card, and a workspace's page
 // (Sessions, Files, People & agents, Settings). Sessions stay in session.js; the file library
 // (the Files section, All files and uploads) is files.js.
-import { I, state, $, esc, basename, toast, api, ask, avatar, colorFor, ago, bytes, COLORS } from './common.js'
+import { I, state, $, esc, basename, toast, api, ask, avatar, colorFor, ago, bytes, COLORS, loadingHtml } from './common.js'
 import { filesSectionHtml, bindFilesSection } from './files.js'
 import { workspaceAgentCardHtml } from './agent-place.js'
 
@@ -174,13 +174,16 @@ export function bindWorkspaces (root, { go, rerender }) {
 }
 
 // ------------------------------------------------------------------ page --
-function sessionCardHtml (s, { live, dir, id, peers, lastUsed, mine }) {
+/** A session in the workspace, as a row: name and folder, who is there or when, and Open or Rejoin. */
+function sessionRowHtml (s, { live, dir, id, peers, lastUsed, mine }) {
+  const name = s?.name || basename(dir || '') || s?.room || ''
+  const who = live ? (peers ? `${peers} other${peers === 1 ? '' : 's'} here` : 'Just you') : (dir ? ago(lastUsed) : (mine ? 'Yours, on another computer' : 'Someone else\'s'))
   return `
-  <div class="sc">
-    <div class="top"><span class="folder-ico${live ? ' live' : ''}">${I.folder}</span><b>${esc(s?.name || basename(dir || '') || s?.room || '')}</b>${live ? '<span class="pill ok" title="Open now" aria-label="Open now"><span class="dot"></span></span>' : ''}</div>
-    <div class="mono">${esc(dir ? tildify(dir) : (s?.room || ''))}</div>
-    <div class="who"><span>${live ? (peers ? `${peers} other${peers === 1 ? '' : 's'} here` : 'Just you') : (dir ? esc(ago(lastUsed)) : (mine ? 'Yours, on another computer' : 'Someone else\'s'))}</span><span class="spacer"></span>
-      ${live ? `<button class="btn sm primary" data-go="${esc(id)}">Open</button>` : dir ? `<button class="btn sm" data-rejoin="${esc(dir)}">Rejoin</button>` : ''}</div>
+  <div class="sr${live ? ' live' : ''}">
+    <span class="folder-ico${live ? ' live' : ''}">${I.folder}</span>
+    <div class="sr-t"><b title="${esc(name)}">${esc(name)}</b><span class="mono">${esc(dir ? tildify(dir) : (s?.room || ''))}</span></div>
+    <span class="sr-who">${live ? '<span class="dot"></span>' : ''}${esc(who)}</span>
+    ${live ? `<button class="btn sm primary" data-go="${esc(id)}">Open</button>` : dir ? `<button class="btn sm" data-rejoin="${esc(dir)}">Rejoin</button>` : '<span></span>'}
   </div>`
 }
 
@@ -198,7 +201,13 @@ function peopleCardHtml (m, { admin, isOwner }) {
 
 export function workspacePageHtml () {
   const d = state.workspace
-  if (!d || d.workspace.id !== String(state.view).slice(3)) return '<p class="hint">Loading…</p>'
+  if (!d || d.workspace.id !== String(state.view).slice(3)) {
+    const id = String(state.view).slice(3)
+    // A refresh while it is still loading draws it again without fading it in again.
+    const steady = state.wsLoading === id
+    state.wsLoading = id
+    return loadingHtml({ label: 'Loading workspace', name: (state.workspaces || []).find((x) => x.id === id)?.name || '', steady })
+  }
   const w = d.workspace
   const admin = d.access.admin
   const running = d.running.map((id) => state.sessions.get(id)).filter(Boolean)
@@ -214,33 +223,54 @@ export function workspacePageHtml () {
   const listed = new Set(agents.map((a) => a.account))
   const people = members.filter((m) => !listed.has(m.account))
   const orgName = w.orgId ? d.owner.name : ''
+  const sessionCount = running.length + recent.length + others.length
+  const fileCount = (d.files || []).filter((f) => f.kind !== 'folder').length
+  const stat = (n, one, many) => `<span><b>${n}</b> ${n === 1 ? one : many}</span>`
+  // Fades in once, the first time it is drawn after loading (not on every refresh).
+  const enter = state.wsEnter === w.id
+  if (enter) state.wsEnter = null
+  state.wsLoading = null
   return `
+  <div class="ws-page${enter ? ' enter' : ''}">
   <a class="ws-back" href="#" data-ws-back>${I.caret} All workspaces</a>
   <header class="ws-head">
     <span class="ws-mark big" style="background:${coverOf(w)}">${esc(initial(w.name))}</span>
-    <div><h1>${esc(w.name)} <span class="pill ws-space${w.orgId ? ' coral' : ''}">${esc(w.orgId ? d.owner.name : 'Personal')}</span>${w.archivedAt ? ' <span class="pill">Archived</span>' : ''}</h1><p>${esc(w.description || '')}</p></div>
+    <div class="ws-head-t">
+      <h1>${esc(w.name)} <span class="pill ws-space${w.orgId ? ' coral' : ''}">${esc(w.orgId ? d.owner.name : 'Personal')}</span>${w.archivedAt ? ' <span class="pill">Archived</span>' : ''}</h1>
+      ${w.description ? `<p>${esc(w.description)}</p>` : ''}
+      <div class="ws-statline">${running.length ? `<span class="live"><span class="dot"></span><b>${running.length}</b> open now</span>` : ''}${stat(sessionCount, 'session', 'sessions')}${stat(fileCount, 'file', 'files')}${stat(people.length + agents.length, 'person or agent', 'people and agents')}</div>
+    </div>
     <div class="acts">${admin ? `<button class="btn sm" data-invite-ws>${I.link}<span>Invite</span></button><button class="btn sm ghost icon" data-ws-settings title="Workspace settings" aria-label="Workspace settings">${I.gear}</button>` : ''}</div>
   </header>
 
-  <section class="sec">
-    <div class="sec-head"><h2>Sessions</h2><span class="count">${running.length + recent.length + others.length}</span></div>
-    <div class="sc-grid">
-      ${running.map((s) => sessionCardHtml(d.sessions.find((x) => x.room === s.status.room), { live: true, dir: s.dir, id: s.id, peers: s.status.peers.length })).join('')}
-      ${recent.map((r) => sessionCardHtml(d.sessions.find((x) => x.room === r.room), { live: false, dir: r.dir, lastUsed: r.lastUsed })).join('')}
-      ${others.map((s) => sessionCardHtml(s, { live: false, mine: s.ownerAccount === me })).join('')}
-      ${d.access.access === 'edit' ? `<button class="sc add" data-new-session-in="${esc(w.id)}">${I.plus}<span>New session</span></button>` : ''}
+  <div class="ws-dash">
+    <div class="ws-main">
+      <section class="sec">
+        <div class="sec-head"><h2>Sessions</h2><span class="count">${sessionCount}</span><span class="spacer"></span>
+          ${d.access.access === 'edit' ? `<button type="button" class="btn sm" data-new-session-in="${esc(w.id)}">${I.plus}<span>New session</span></button>` : ''}</div>
+        ${sessionCount
+          ? `<div class="sr-list">
+          ${running.map((s) => sessionRowHtml(d.sessions.find((x) => x.room === s.status.room), { live: true, dir: s.dir, id: s.id, peers: s.status.peers.length })).join('')}
+          ${recent.map((r) => sessionRowHtml(d.sessions.find((x) => x.room === r.room), { live: false, dir: r.dir, lastUsed: r.lastUsed })).join('')}
+          ${others.map((s) => sessionRowHtml(s, { live: false, mine: s.ownerAccount === me })).join('')}
+        </div>`
+          : `<p class="hint ws-empty">No sessions yet.${d.access.access === 'edit' ? ' Start one with New session: it opens a folder of yours here.' : ''}</p>`}
+      </section>
+      ${filesSectionHtml(d)}
     </div>
-  </section>
-  ${filesSectionHtml(d)}
 
-  <section class="sec">
-    <div class="sec-head"><h2>People &amp; agents</h2><span class="count">${people.length + agents.length}</span></div>
-    <div class="pc-grid">
-      ${people.map((m) => peopleCardHtml(m, { admin, isOwner: !!m.owner })).join('')}
-      ${agents.map((a) => workspaceAgentCardHtml(a, { admin, orgName })).join('')}
-      ${admin ? `<button class="pc add" data-add-member>${I.plus}<span>Invite a person or add an agent</span></button>` : ''}
-    </div>
-  </section>`
+    <aside class="ws-aside">
+      <section class="sec">
+        <div class="sec-head"><h2>People &amp; agents</h2><span class="count">${people.length + agents.length}</span><span class="spacer"></span>
+          ${admin ? `<button type="button" class="btn sm ghost" data-add-member title="Invite a person or add an agent" aria-label="Invite a person or add an agent">${I.plus}<span>Add</span></button>` : ''}</div>
+        <div class="pc-grid">
+          ${people.map((m) => peopleCardHtml(m, { admin, isOwner: !!m.owner })).join('')}
+          ${agents.map((a) => workspaceAgentCardHtml(a, { admin, orgName })).join('')}
+        </div>
+      </section>
+    </aside>
+  </div>
+  </div>`
 }
 
 export function bindWorkspacePage (root, { go, rerender, newSessionDialog, inviteDialog, dialog }) {

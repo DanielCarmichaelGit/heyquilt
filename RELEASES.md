@@ -9,6 +9,15 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.34 — 2026-10-09
+
+Workspaces read like a dashboard, and opening one (or a session) shows it loading.
+
+- **A workspace's page is a dashboard.** Under its name, a line says what is in it: sessions open now, sessions, files, and people and agents. Sessions are rows with room for their full names, with **New session** beside the heading; files sit under them, and the people and agents are in a column alongside (below, on a narrower window).
+- **Loading workspace.** Opening a workspace shows the Quilt mark piecing itself together over "Loading workspace" and its name, then its page fades in, instead of a pause and a snap.
+- **Loading session.** The first time you open a session, the same screen stays up until its chat, files and AI feeds are in, then fades away, so nothing pops in after you arrive.
+- **Pages use the whole window.** The home screen, a workspace's page and Settings no longer stop at a fixed width.
+
 ## 0.3.33 — 2026-10-09
 
 - **One AI merges a clash, not all of them.** When commits from elsewhere clash with the session's uncommitted work, Quilt now puts one task on the board ("Bring 4 commits from origin/main into the session: src/a.js, src/b.js clash"), listing each file and why, and hands it to one AI: an agent member first, otherwise the AI session of a member who may change those files. Everyone else's AI is told who is merging it and to leave those files alone, and the branch list shows "being merged by …". Once that folder has pulled and resolved it, the others follow by themselves and the task closes itself. If the one it went to leaves for five minutes, the next member takes it over; a branch with commits of its own is still left to its own folder.

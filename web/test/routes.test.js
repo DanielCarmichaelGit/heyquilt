@@ -53,8 +53,8 @@ after(() => { server?.kill(); apiSrv?.close() })
 const get = (path) => fetch(base + path, { redirect: 'manual' })
 
 test('public pages render', async () => {
-  for (const path of ['/', '/pricing', '/terms', '/docs', '/docs/git', '/docs/agents', '/docs/agent-kinds', '/blog', '/blog/we-took-the-ai-out-of-merging', '/blog/teaching-ais-to-take-turns', '/blog/everyones-ai-work-at-once', '/join/room-abc']) assert.equal((await get(path)).status, 200, path)
-  assert.match(await (await get('/docs/agent-kinds')).text(), /Agent kinds[\s\S]*Global agent[\s\S]*Workspace agent[\s\S]*Session agent/)
+  for (const path of ['/', '/pricing', '/terms', '/docs', '/docs/git', '/docs/agents', '/blog', '/blog/we-took-the-ai-out-of-merging', '/blog/teaching-ais-to-take-turns', '/blog/everyones-ai-work-at-once', '/join/room-abc']) assert.equal((await get(path)).status, 200, path)
+  assert.match(await (await get('/docs/agents')).text(), /Agents[\s\S]*Global agent[\s\S]*Workspace agent[\s\S]*Session agent/)
 
   const missing = await get('/no-such-page')
   assert.equal(missing.status, 404)
@@ -65,7 +65,7 @@ test('public pages render', async () => {
 // a prerendered one is served straight from the CDN.
 test('the homepage, pricing and docs are prerendered at build time', () => {
   const manifest = JSON.parse(readFileSync(new URL('../.next/prerender-manifest.json', import.meta.url)))
-  for (const path of ['/', '/pricing', '/docs', '/docs/git', '/docs/agents', '/docs/agent-kinds', '/blog', '/blog/we-took-the-ai-out-of-merging', '/blog/teaching-ais-to-take-turns', '/blog/everyones-ai-work-at-once']) assert.ok(manifest.routes[path], `${path} is static`)
+  for (const path of ['/', '/pricing', '/docs', '/docs/git', '/docs/agents', '/blog', '/blog/we-took-the-ai-out-of-merging', '/blog/teaching-ais-to-take-turns', '/blog/everyones-ai-work-at-once']) assert.ok(manifest.routes[path], `${path} is static`)
 })
 
 test('the homepage serves sized WebP screenshots, lazily below the fold, and both downloads before hydration', async () => {

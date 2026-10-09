@@ -5,7 +5,7 @@
 import { I, esc, api, state, basename, COLORS } from './common.js'
 import { agentPaste } from './invite.js'
 
-export const DOCS_URL = 'https://heyquilt.com/docs/agent-kinds'
+export const DOCS_URL = 'https://heyquilt.com/docs/agents#kinds'
 export const KINDS = [
   ['global', 'Global agent', 'In all your workspaces, invited to their sessions', 'globe'],
   ['workspace', 'Workspace agent', 'In one workspace, invited to its sessions', 'grid'],

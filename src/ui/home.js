@@ -623,7 +623,7 @@ function agentsPageHtml () {
     </header>
     <div id="agents-invite"><p class="error" id="agents-error"></p></div>
     <div id="agents-list"><p class="hint">Loading…</p></div>
-    <p class="hint ag-foot"><a href="https://heyquilt.com/docs/agent-kinds" target="_blank" rel="noopener">How agent kinds work</a> · Revoke agents on <a href="https://heyquilt.com/dashboard/agents" target="_blank" rel="noopener">heyquilt.com</a></p>
+    <p class="hint ag-foot"><a href="https://heyquilt.com/docs/agents#kinds" target="_blank" rel="noopener">How agent kinds work</a> · Revoke agents on <a href="https://heyquilt.com/dashboard/agents" target="_blank" rel="noopener">heyquilt.com</a></p>
   </div>`
 }
 

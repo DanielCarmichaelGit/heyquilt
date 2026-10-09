@@ -21,7 +21,7 @@ test('the menu: three kinds with a line each, and How agent kinds work opening t
     'data-kind="global"', '<b>Global agent</b><span>In all your workspaces, invited to their sessions</span>',
     'data-kind="workspace"', '<b>Workspace agent</b><span>In one workspace, invited to its sessions</span>',
     'data-kind="session"', '<b>Session agent</b><span>Invited to one session</span>',
-    'href="https://heyquilt.com/docs/agent-kinds" target="_blank" rel="noopener">How agent kinds work'
+    'href="https://heyquilt.com/docs/agents#kinds" target="_blank" rel="noopener">How agent kinds work'
   ]) assert.ok(html.includes(bit), bit)
   assert.equal(html.match(/role="menuitem"/g).length, 4, 'every choice is a menu item, the docs link too')
   assert.ok(!html.includes(EM_DASH))
@@ -118,7 +118,7 @@ test('with workspaces on: an Agents page in the sidebar, and Join a session inst
   const app = ui('app.js')
   assert.ok(home.includes("$" + "{state.workspacesOn ? `<button data-view=\"agents\""), 'Agents only with workspaces on')
   assert.ok(home.includes("view === 'agents' ? agentsPageHtml()") && home.includes("else if (view === 'agents') bindAgents($('#page'))"))
-  assert.ok(home.includes('https://heyquilt.com/docs/agent-kinds'))
+  assert.ok(home.includes('https://heyquilt.com/docs/agents#kinds'))
   assert.ok(app.includes("view !== 'agents' && !isWorkspace(view)"), 'the Agents view is not a session')
   // The Sessions menu is still there with workspaces off; with them on, one Join a session button.
   assert.ok(home.includes("? `<button class=\"btn primary full sessions-btn\" type=\"button\" data-join-session>$" + "{I.link}<span>Join a session</span></button>`\n    : `<div class=\"menu-wrap\" id=\"sessions-menu-wrap\">"))

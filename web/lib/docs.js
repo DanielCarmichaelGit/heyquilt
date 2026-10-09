@@ -4,7 +4,7 @@
 /** The docs pages, in the order the sidebar lists them. */
 export const DOCS_NAV = [
   { href: '/docs', label: 'Command line' },
-  { href: '/docs/agents', label: 'Your own agents' },
+  { href: '/docs/agents', label: 'Agents' },
   { href: '/docs/git', label: 'Git in Quilt' }
 ]
 

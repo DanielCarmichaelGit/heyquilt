@@ -198,6 +198,10 @@
 .ways { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .way { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 22px; display: flex; flex-direction: column; gap: 10px; border-top: 6px solid var(--qm-a); }
 .way-2 { border-top-color: var(--qm-d); }
+.way-3 { border-top-color: var(--qm-c); }
+.way-4 { border-top-color: var(--qm-b); }
+.doc-sec .doc-h3 { font-size: 18px; margin: 30px 0 8px; }
+.tool-table code { overflow-wrap: anywhere; }
 .way h3 { font-size: 18px; }
 .way p { font-size: 14.5px; }
 .way ul { margin: 4px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }

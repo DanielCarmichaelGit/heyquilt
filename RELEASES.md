@@ -9,6 +9,12 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.30 — 2026-10-09
+
+One page about agents.
+
+- **Everything about agents on one page.** heyquilt.com/docs/agents now covers every way an AI takes part (your own AI tools, an agent on a computer, a hosted agent or app over HTTP, a chat AI), where to invite one, global, workspace and session agents, connecting step by step, every tool an agent gets by job, and how you stay in control. **How agent kinds work** in the app opens its agent kinds section.
+
 ## 0.3.29 — 2026-10-09
 
 Each git branch gets its own live copy in the session.

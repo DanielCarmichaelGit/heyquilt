@@ -849,7 +849,7 @@ export async function runMcp () {
   }))
 
   server.registerTool('quilt_sync_branch', {
-    description: 'Bring commits made outside the session into it now: fetches this folder\'s upstream (say origin/main after a PR merged, or a push from a worktree) and moves the branch forward, with the session\'s uncommitted work merged in. Quilt also does this by itself about once a minute; call it right after you push or merge elsewhere. It never merges git history: a branch that has diverged, or files that clash with the session\'s work, are reported for you to resolve with git.',
+    description: 'Bring commits made outside the session into it now: fetches this folder\'s upstream (say origin/main after a PR merged, or a push from a worktree) and moves the branch forward, with the session\'s uncommitted work merged in. Quilt also does this by itself about once a minute; call it right after you push or merge elsewhere. It never merges git history: a branch that has diverged, or files that clash with the session\'s work, become one task on the board for one AI to resolve with git (the others are told to leave those files to them).',
     inputSchema: {}
   }, () => withDaemon(async (d) => describeBranchSync(await call(d, 'POST', '/branches/sync'))))
 

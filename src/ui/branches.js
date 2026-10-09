@@ -9,9 +9,10 @@ import { esc, ago } from './common.js'
 export function upstreamText (u) {
   if (!u || !u.name) return ''
   const n = (k, w) => `${k} ${w}${k === 1 ? '' : 's'}`
-  if (u.diverged) return `diverged from ${u.name}: ${n(u.ahead, 'commit')} here, ${n(u.behind, 'commit')} there`
+  const by = u.mergedBy ? `; being merged by ${u.clashMine ? 'your AI' : u.mergedBy}` : ''
+  if (u.diverged) return `diverged from ${u.name}: ${n(u.ahead, 'commit')} here, ${n(u.behind, 'commit')} there${by}`
   const clash = Array.isArray(u.conflicts) ? u.conflicts.length : u.conflicts
-  if (clash) return `${n(u.behind, 'commit')} behind ${u.name}; ${n(clash, 'file')} clash with the session's work`
+  if (clash) return `${n(u.behind, 'commit')} behind ${u.name}; ${n(clash, 'file')} clash with the session's work${by}`
   if (u.waiting) return `${n(u.behind, 'commit')} behind ${u.name}; waiting: ${u.waiting}`
   if (u.behind) return `${n(u.behind, 'commit')} behind ${u.name}`
   if (u.ahead) return `${n(u.ahead, 'commit')} ahead of ${u.name}`

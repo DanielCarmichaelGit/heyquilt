@@ -270,7 +270,8 @@ function orderBefore (tasks, column, beforeId) {
  * Adds a task to To do. When the board is full, the oldest Done task is
  * dropped to make room. Throws if there is nothing finished to drop.
  */
-export function addTask (doc, map, { title, by, assignee = '', forAi = false, tool = '', files = [], column = 'todo', conv = '' }, origin) {
+export function addTask (doc, map, { id = null, title, by, assignee = '', forAi = false, tool = '', files = [], column = 'todo', conv = '' }, origin) {
+  if (id != null && (typeof id !== 'string' || !HEX_ID.test(id))) throw new Error('a task id is 16 hex characters')
   const clean = cleanTitle(title)
   if (!clean) throw new Error('say what the task is')
   if (!COLUMN_IDS.has(column)) throw new Error('pick To do, In progress, QA, or Done')
@@ -284,7 +285,7 @@ export function addTask (doc, map, { title, by, assignee = '', forAi = false, to
     dropping.push(...done.slice(0, need).map((t) => t.id))
   }
   const task = {
-    id: crypto.randomBytes(8).toString('hex'),
+    id: id || crypto.randomBytes(8).toString('hex'),
     title: clean,
     column,
     by: cleanName(by),

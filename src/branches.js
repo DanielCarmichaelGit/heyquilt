@@ -17,7 +17,7 @@ export function cleanGit (g) {
     key: str(g.key, 200),
     on: str(g.on, 200),
     held: str(g.held, 20),
-    upstream: u ? { name: str(u.name, 200), url: str(u.url, 500), behind: num(u.behind), ahead: num(u.ahead), diverged: !!u.diverged, conflicts: num(u.conflicts), waiting: str(u.waiting, 300) } : null,
+    upstream: u ? { name: str(u.name, 200), url: str(u.url, 500), behind: num(u.behind), ahead: num(u.ahead), diverged: !!u.diverged, conflicts: num(u.conflicts), waiting: str(u.waiting, 300), mergedBy: str(u.mergedBy, 120), clashTask: typeof u.clashTask === 'string' && /^[0-9a-f]{16}$/.test(u.clashTask) ? u.clashTask : null } : null,
     repo: r ? {
       worktrees: (Array.isArray(r.worktrees) ? r.worktrees : []).slice(0, 50).map((w) => ({ name: str(w && w.name, 200), branch: str(w && w.branch, 200) })),
       branches: (Array.isArray(r.branches) ? r.branches : []).slice(0, 30).map((b) => ({
@@ -92,8 +92,11 @@ const ago = (ts, now) => {
 /** One line on how a branch stands against its upstream, or ''. */
 export function upstreamLine (u) {
   if (!u || !u.name) return ''
-  if (u.diverged) return `diverged from ${u.name} (${u.ahead} ahead, ${u.behind} behind)`
-  if (u.conflicts) return `${u.behind} behind ${u.name}; ${u.conflicts} file${u.conflicts === 1 ? '' : 's'} clash with the session's work`
+  // A clash is handed to one AI as a task (clash.js): who, when it is.
+  const by = u.mergedBy ? `; being merged by ${u.mergedBy}${u.clashTask ? ` (task ${u.clashTask})` : ''}` : ''
+  if (u.diverged) return `diverged from ${u.name} (${u.ahead} ahead, ${u.behind} behind)${by}`
+  const n = Array.isArray(u.conflicts) ? u.conflicts.length : u.conflicts
+  if (n) return `${u.behind} behind ${u.name}; ${n} file${n === 1 ? '' : 's'} clash with the session's work${by}`
   if (u.waiting) return `${u.behind} behind ${u.name}; waiting: ${u.waiting}`
   if (u.behind) return `${u.behind} behind ${u.name}`
   if (u.ahead) return `${u.ahead} ahead of ${u.name}`
@@ -137,7 +140,7 @@ export function describeBranchSync (r) {
     return `Brought ${b && b.count ? `${b.count} commit${b.count === 1 ? '' : 's'}` : 'the new commits'} from ${u.name} into the session (${b ? b.files : 0} file${b && b.files === 1 ? '' : 's'}), merged with its uncommitted work. \`${r.branch}\` is up to date.`
   }
   if (u.conflicts && u.conflicts.length) {
-    return `Nothing brought in: ${u.behind} commit${u.behind === 1 ? '' : 's'} on ${u.name} clash with the session's uncommitted work in:\n${u.conflicts.map((c) => `- ${c.path}: ${c.why}`).join('\n')}\nRun git pull in this folder and resolve those; the session takes in the result.`
+    return `Nothing brought in: ${u.behind} commit${u.behind === 1 ? '' : 's'} on ${u.name} clash with the session's uncommitted work in:\n${u.conflicts.map((c) => `- ${c.path}: ${c.why}`).join('\n')}\n${u.mergedBy && !u.clashMine ? `${u.mergedBy} is merging them (task ${u.clashTask}): leave those files to them.` : `Run git pull in this folder and resolve those; the session takes in the result.${u.clashTask ? ` This merge is yours: task ${u.clashTask} on the board.` : ''}`}`
   }
   return `\`${r.branch}\`: ${upstreamLine(u)}.${u.diverged ? ' Quilt never merges git history: pull or rebase it yourself, and the session takes in whatever that changes.' : ''}`
 }

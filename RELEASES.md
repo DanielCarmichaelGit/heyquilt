@@ -9,12 +9,15 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.31 — 2026-10-09
+
+- **Fewer pulls left for you or your AI.** When commits from elsewhere and the session's uncommitted work both only added lines in the same place (two new release-note sections, code added at the end of a file, names added to the same import line), Quilt now keeps both and brings the commits in by itself. Only real edits to the same lines still wait for someone to merge them.
+
 ## 0.3.30 — 2026-10-09
 
-One page about agents, and fewer merges left for you.
+One page about agents.
 
 - **Everything about agents on one page.** heyquilt.com/docs/agents now covers every way an AI takes part (your own AI tools, an agent on a computer, a hosted agent or app over HTTP, a chat AI), where to invite one, global, workspace and session agents, connecting step by step, every tool an agent gets by job, and how you stay in control. **How agent kinds work** in the app opens its agent kinds section.
-- **Fewer pulls left for you or your AI.** When commits from elsewhere and the session's uncommitted work both only added lines in the same place (two new release-note sections, code added at the end of a file, names added to the same import line), Quilt now keeps both and brings the commits in by itself. Only real edits to the same lines still wait for someone to merge them.
 
 ## 0.3.29 — 2026-10-09
 

@@ -210,6 +210,13 @@ export function createSupabaseStore ({ url, serviceKey, client }) {
       if (error) throw error
     },
 
+    // The GitHub account a person connected (routes/github.js): { githubId, login, linkedAt } or null.
+    async githubLink (userId) { return rowFrom(await one(db.from('github_links').select('github_id, login, linked_at').eq('user_id', userId).maybeSingle())) },
+    async setGithubLink (userId, { githubId, login }) {
+      await one(db.from('github_links').upsert({ user_id: userId, github_id: githubId, login, linked_at: new Date().toISOString() }, { onConflict: 'user_id' }))
+    },
+    async deleteGithubLink (userId) { await one(db.from('github_links').delete().eq('user_id', userId)) },
+
     // The address a person signs in with, and whether they've confirmed it.
     async userEmail (userId) {
       const { data, error } = await db.auth.admin.getUserById(userId)

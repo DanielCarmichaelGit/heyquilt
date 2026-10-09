@@ -71,7 +71,7 @@ test('exposes the join and workspace tools', async () => {
     assert.ok(names.includes(n), n)
   }
   // Quilt doesn't run git for anyone: no quilt_commit, but requests can be marked done.
-  assert.ok(!names.includes('quilt_commit'))
+  assert.ok(names.includes('quilt_commit'), 'agents commit their own work (relay-commit.js)')
   assert.ok(names.includes('quilt_commit_request_done'))
 })
 

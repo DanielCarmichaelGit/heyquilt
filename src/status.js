@@ -79,8 +79,10 @@ export function renderStatus (st, { asAi = false, mentionYours = false } = {}) {
     for (const r of openCommits) {
       const who = r.by === st.me.name ? 'you' : r.by
       const branch = r.branch && r.branch !== DEFAULT_KEY ? ` on \`${r.branch}\`` : ''
-      out.push(`- ${ago(r.ts)}: ${who} asked for a commit${branch}: ${r.message}`)
+      const files = Array.isArray(r.files) && r.files.length ? ` (${r.files.length} file${r.files.length === 1 ? '' : 's'})` : ''
+      out.push(`- [${r.id}] ${ago(r.ts)}: ${who} asked for a commit${branch}: ${r.message}${files}${r.error ? `. Last try: ${r.error}` : ''}`)
     }
+    if (st.canCommit) out.push('This folder has git: commit one with quilt_commit (id), or in the app.')
     out.push('')
   }
 

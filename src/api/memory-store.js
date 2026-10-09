@@ -24,6 +24,7 @@ const tooManyFolders = (scopes) => { if (scopes.length > 20) throw checkViolatio
 
 export function createMemoryStore ({ now = Date.now } = {}) {
   const links = new Map(); const devices = new Map(); const profiles = new Map(); const agents = new Map(); const resumeHashes = new Map() // resume key hash -> agent id
+  const githubLinks = new Map() // user id -> { githubId, login, linkedAt }
   const users = new Map(); const orgs = new Map(); const roles = new Map(); const members = new Map()
   const teams = new Map(); const teamMembers = new Map(); const invites = new Map(); const requests = new Map()
   const agentInvites = new Map(); const keyRows = new Map(); const appKeys = new Map()
@@ -280,6 +281,9 @@ export function createMemoryStore ({ now = Date.now } = {}) {
 
     // The address a person signs in with, and whether they've confirmed it.
     async userEmail (userId) { const u = users.get(userId); return u ? { ...u } : null },
+    async githubLink (userId) { const g = githubLinks.get(userId); return g ? { ...g } : null },
+    async setGithubLink (userId, { githubId, login }) { githubLinks.set(userId, { githubId, login, linkedAt: now() }) },
+    async deleteGithubLink (userId) { githubLinks.delete(userId) },
 
     // Session activity, as the relay reports it (routes/relay.js). Mirrors ingest_presence:
     // events apply in order, each once; returns how many were new.

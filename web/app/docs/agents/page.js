@@ -136,7 +136,8 @@ const ABILITIES = [
     note: 'The same chat people use, to everyone or one person.',
     tools: [
       ['quilt_message', 'Write to everyone, @someone, or @Agents for every agent'],
-      ['quilt_inbox / quilt_read_messages', 'Mentions, direct messages and tasks handed to it; the chat itself'],
+      ['quilt_inbox / quilt_read_messages', 'Mentions, direct messages and tasks handed to it, each with the conversation before it; the chat itself'],
+      ['quilt_conversation', 'Its whole conversation with one person or agent, a search, or further back'],
       ['quilt_share / quilt_set_focus', 'Say what it is doing, shown live next to its name and on the board'],
       ['quilt_send_file / quilt_get_file', 'Send a screenshot or log through chat, or fetch one again'],
       ['quilt_name_session', 'Name itself after its work']
@@ -168,11 +169,13 @@ const ABILITIES = [
   {
     title: 'Git and commits',
     color: 'var(--qm-a)',
-    note: 'Quilt never commits or merges for anyone: it helps the people who do.',
+    note: 'Agents commit their own work, within what the session\'s owner allows: no git or credentials on their machine, and nobody else needs to be online. Quilt never merges or rewrites history.',
     tools: [
       ['quilt_branches / quilt_sync_branch', 'Each folder\'s branch, and bringing in commits made elsewhere'],
       ['quilt_set_work', 'Working or done, so people know when it is safe to commit'],
-      ['quilt_request_commit / quilt_commit_status', 'Ask for a commit; see open requests and who is still working'],
+      ['quilt_commit', 'Commit its files to GitHub from the session\'s copy: a branch of its own with a pull request, or the session\'s branch if the owner allows'],
+      ['quilt_agent_commits', 'Owner: what agents may commit (nothing, their own branches, any branch)'],
+      ['quilt_request_commit / quilt_commit_status', 'Ask a person for a commit when agents may not commit; see open requests and recent commits'],
       ['quilt_wait_until_idle', 'Wait until every other AI is idle before committing']
     ]
   },

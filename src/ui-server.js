@@ -18,7 +18,7 @@ import * as gitops from './git.js'
 import { installedEditors, openIn } from './editors.js'
 import { migrateDir } from './legacy.js'
 import { writePrivateJson } from './private-file.js'
-import { readAccount, saveAccount, clearAccount, clearAccountIf, resumeAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession, createAgentInvite, listAgents, listAccessTypes, listCollaborators, listGrants, putGrant, deleteGrant, inviteToSession, listSessionInvites, cancelSessionInvite, listWorkspaces, listOrgs, createWorkspace, getWorkspace, updateWorkspace, deleteWorkspace, putWorkspaceMember, removeWorkspaceMember, getAgentPlacement, putAgentPlacement, listOrgAgents, putWorkspaceAgent, deleteWorkspaceAgent, createWorkspaceAgentInvite, excludeSessionAgent, listExcludedSessionAgents, listSessionAgents, includeSessionAgent, setSessionWorkspace, moveSessionToWorkspace, listWorkspaceInvites, inviteToWorkspace, cancelWorkspaceInvite, listMyInvites, answerMyInvite, announceSessionStarted, announceWhenReported, listWorkspaceFiles, createWorkspaceFile, confirmWorkspaceFile, workspaceFileDownload, updateWorkspaceFile, deleteWorkspaceFile, createWorkspaceFolder, listWorkspaceFileVersions } from './account.js'
+import { readAccount, saveAccount, clearAccount, clearAccountIf, resumeAccount, startLink, waitForLink, fetchMe, signOut, revokeToken, accountFromProfile, renameSession, createAgentInvite, listAgents, listAccessTypes, listCollaborators, listGrants, putGrant, deleteGrant, inviteToSession, listSessionInvites, cancelSessionInvite, listWorkspaces, listOrgs, createWorkspace, getWorkspace, updateWorkspace, deleteWorkspace, putWorkspaceMember, removeWorkspaceMember, getAgentPlacement, putAgentPlacement, listOrgAgents, putWorkspaceAgent, deleteWorkspaceAgent, createWorkspaceAgentInvite, excludeSessionAgent, listExcludedSessionAgents, listSessionAgents, includeSessionAgent, setSessionWorkspace, moveSessionToWorkspace, listWorkspaceInvites, inviteToWorkspace, cancelWorkspaceInvite, listMyInvites, answerMyInvite, announceSessionStarted, announceWhenReported, listWorkspaceFiles, createWorkspaceFile, confirmWorkspaceFile, workspaceFileDownload, updateWorkspaceFile, deleteWorkspaceFile, createWorkspaceFolder, listWorkspaceFileVersions, githubStatus, githubConnectUrl } from './account.js'
 import { effectiveAccess, builtinType } from './session-access.js'
 import { cleanSessionName, BAD_SESSION_NAME, SESSION_NAME_MAX } from './session-name.js'
 import { personPasses } from './pass-source.js'
@@ -618,6 +618,9 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
   const api = {
     'GET /api/account': () => accountState(),
     'GET /api/access-types': () => asAccount(async (token) => ({ types: await listAccessTypes({ token }) })),
+    // Quilt's GitHub App: whether this account connected GitHub, and the link that connects it (opened in the browser).
+    'GET /api/github': () => asAccount(async (token) => githubStatus({ token })),
+    'POST /api/github/connect': () => asAccount(async (token) => ({ url: await githubConnectUrl({ token }) })),
     'GET /api/collaborators': () => asAccount(async (token) => ({ collaborators: await listCollaborators({ token }) })),
     'GET /api/sessions/:id/grants': (b, id) => { const s = owned(id); return asAccount(async (token) => ({ grants: await listGrants({ token, room: s.room }) })) },
     'POST /api/sessions/:id/members/access': (b, id) => setAccess(id, b),
@@ -808,7 +811,11 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     'GET /api/github/status': () => gitops.ghStatus(),
     'GET /api/github/repos': async (b, id, url) => ({ repos: await gitops.listRepos({ limit: url.searchParams.get('limit') || 100 }) }),
     'GET /api/github/branches': (b, id, url) => gitops.listBranches(url.searchParams.get('repo')),
-    'POST /api/sessions/:id/commit-request': (b, id) => get(id).requestCommit(b.message),
+    'POST /api/sessions/:id/commit-request': (b, id) => { const r = get(id).requestCommit(b.message, { files: Array.isArray(b.files) ? b.files : null, task: b.task || null, by: b.by ? String(b.by).slice(0, 80) : null }); pushStatus(id); return r },
+    // Commits a request in this folder (commit.js), and what is not committed here yet, by who made it.
+    'POST /api/sessions/:id/commit-request/commit': async (b, id) => { try { return await get(id).commitRequest(String(b.id || '')) } finally { pushStatus(id) } },
+    'POST /api/sessions/:id/agent-commits': async (b, id) => { try { return await get(id).setAgentCommits(b.mode) } finally { pushStatus(id) } },
+    'GET /api/sessions/:id/uncommitted': (b, id) => get(id).uncommittedWork(),
     'POST /api/sessions/:id/commit-request/done': (b, id) => { const done = get(id).resolveCommitRequests({ ids: b.id ? [String(b.id)] : null }); pushStatus(id); return { done } },
     'GET /api/fs': (b, id, url) => listDir(url.searchParams.get('path') || os.homedir()),
     // Reply first, then shut down, so the page hears back before we exit.

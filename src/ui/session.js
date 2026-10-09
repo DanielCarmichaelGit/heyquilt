@@ -638,7 +638,13 @@ function renderTop () {
   $('#chat-sub').textContent = st.peers.length ? `with ${peopleHere(st).map((p) => p.sessions && p.mine ? 'your AI' : p.name).join(', ')}` : 'just you so far'
 }
 
-// ---------------------------------------------------------- commit timing --
+// --------------------------------------------------------------- commits --
+// Agents commit their own work through the relay (quilt_commit, relay-commit.js), within what the
+// owner lets them: picked here. When they can't, they ask (commit.js): in a folder with git each
+// request has a Commit button (exactly its files, then a push). "Not committed yet" shows the
+// uncommitted work here by who made it, so nothing finished sits unshipped unnoticed.
+let commitWork = null // GET uncommitted, while the panel is open
+let commitGithub = null // the owner's GitHub connection (GET /api/github), while the panel is open
 function bindCommitChip () {
   const wrap = $('#commit-wrap')
   const chip = $('#commit-chip')
@@ -646,57 +652,127 @@ function bindCommitChip () {
   const setOpen = (open) => {
     panel.hidden = !open
     chip.setAttribute('aria-expanded', String(open))
-    if (open) renderCommitPanel()
+    if (open) { renderCommitPanel(); loadCommitWork() }
   }
   chip.onclick = () => setOpen(panel.hidden)
   wrap.addEventListener('keydown', (e) => { if (e.key === 'Escape') { setOpen(false); chip.focus() } })
-  document.addEventListener('mousedown', (e) => { if (!wrap.contains(e.target)) setOpen(false) }, { signal: mounted.signal })
+  document.addEventListener('mousedown', (e) => { if (!wrap.contains(e.target) && !e.target.closest('.modal, .dialog')) setOpen(false) }, { signal: mounted.signal })
+  panel.addEventListener('change', async (e) => {
+    if (!e.target.matches('[data-agent-commits]')) return
+    try {
+      const r = await api('POST', `/api/sessions/${current}/agent-commits`, { mode: e.target.value })
+      toast(AGENT_COMMIT_WORDS[r.agentCommits])
+    } catch (err) { toast(err.message); renderCommitPanel() }
+  })
   panel.addEventListener('click', async (e) => {
-    const b = e.target.closest('[data-done]')
+    if (e.target.closest('[data-gh-connect]')) {
+      try {
+        const { url } = await api('POST', '/api/github/connect')
+        window.open(url, '_blank', 'noopener')
+        toast('Finish in your browser, then come back')
+      } catch (err) { toast(err.message) }
+      return
+    }
+    const b = e.target.closest('[data-done], [data-commit], [data-commit-group]')
     if (!b) return
     b.disabled = true
     try {
-      const id = b.dataset.done === 'all' ? null : b.dataset.done
-      const r = await api('POST', `/api/sessions/${current}/commit-request/done`, id ? { id } : {})
-      toast(r.done === 1 ? 'Marked done' : `Marked ${r.done} done`)
-    } catch (err) { toast(err.message); b.disabled = false }
+      if (b.dataset.done) {
+        const id = b.dataset.done === 'all' ? null : b.dataset.done
+        const r = await api('POST', `/api/sessions/${current}/commit-request/done`, id ? { id } : {})
+        toast(r.done === 1 ? 'Closed' : `Closed ${r.done}`)
+      } else if (b.dataset.commit) {
+        b.textContent = 'Committing…'
+        const r = await api('POST', `/api/sessions/${current}/commit-request/commit`, { id: b.dataset.commit })
+        toast(r.hash ? `Committed ${r.hash.slice(0, 7)}${r.pushed ? ' and pushed' : `; not pushed: ${r.pushError || 'no upstream'}`}` : 'Already in git: closed')
+      } else {
+        const g = (commitWork?.groups || [])[Number(b.dataset.commitGroup)]
+        if (!g) return
+        const who = g.by || 'unknown'
+        const message = await ask({ title: `Commit ${g.by ? `${g.by}'s` : 'these'} changes`, message: `${g.files.length} file${g.files.length === 1 ? '' : 's'}: ${g.files.slice(0, 6).join(', ')}${g.files.length > 6 ? ', …' : ''}. Quilt commits exactly these and pushes.`, ok: 'Commit and push', input: { label: 'Commit message', placeholder: `Changes by ${who}` } })
+        if (!message) { b.disabled = false; return }
+        const req = await api('POST', `/api/sessions/${current}/commit-request`, { message: message.trim(), files: g.files, ...(g.by ? { by: g.by } : {}) })
+        const r = await api('POST', `/api/sessions/${current}/commit-request/commit`, { id: req.id })
+        toast(r.hash ? `Committed ${r.hash.slice(0, 7)}${r.pushed ? ' and pushed' : `; not pushed: ${r.pushError || 'no upstream'}`}` : 'Already in git')
+      }
+      loadCommitWork()
+    } catch (err) { toast(err.message); b.disabled = false; loadCommitWork() }
   })
+}
+
+async function loadCommitWork () {
+  if ($('#commit-panel').hidden) return
+  const st = sum().status
+  if (st.access?.owner) { try { commitGithub = await api('GET', '/api/github') } catch { commitGithub = null } }
+  if (st.canCommit) { try { commitWork = await api('GET', `/api/sessions/${current}/uncommitted`) } catch { commitWork = null } }
+  renderCommitPanel()
 }
 
 function renderCommitChip () {
   const chip = $('#commit-chip')
   if (!chip) return
-  const s = sum()
-  const st = s.status
+  const st = sum().status
   const open = (st.commits || []).filter((r) => r.state === 'open')
+  const left = st.uncommitted && st.uncommitted.files ? st.uncommitted : null
+  chip.hidden = !open.length && !left
+  if (chip.hidden) { $('#commit-panel').hidden = true; return }
   const busy = busyPeople(st)
-  chip.hidden = !open.length
-  if (!open.length) { $('#commit-panel').hidden = true; return }
-  chip.className = `commit-chip${busy.length ? '' : ' ready'}`
-  chip.innerHTML = busy.length
-    ? `${I.branch}<span>Commit requested · waiting on ${busy.length}</span>`
-    : `${I.branch}<span>Ready to commit</span>`
-  chip.title = `${open.map((r) => `${r.by}: ${r.message}`).join('\n')}${busy.length ? `\nStill working: ${busy.join(', ')}` : ''}`
+  chip.className = `commit-chip${open.length && !busy.length ? ' ready' : ''}${!open.length ? ' quiet' : ''}`
+  chip.innerHTML = open.length
+    ? `${I.branch}<span>${open.length === 1 ? 'Commit requested' : `${open.length} commits requested`}${busy.length ? ` · ${busy.length} working` : ''}</span>`
+    : `${I.branch}<span>${left.files} not committed</span>`
+  chip.title = open.length ? open.map((r) => `${r.by}: ${r.message}`).join('\n') : `Files changed in this folder that are not in git yet${left.people.length ? `, by ${left.people.join(', ')}` : ''}`
   if (!$('#commit-panel').hidden) renderCommitPanel()
 }
 
-/** Open requests, each with a Done button, and Mark all done. */
+/** Open requests (Commit, Close), the uncommitted work here by who made it, and committing by itself. */
 function renderCommitPanel () {
   const panel = $('#commit-panel')
   if (!panel) return
-  const open = (sum().status.commits || []).filter((r) => r.state === 'open')
-  panel.innerHTML = open.length
-    ? `<ul class="commit-reqs">${open.map((r) => `<li><b>${esc(r.by)}</b><div>${esc(r.message)}</div><button type="button" class="btn sm ghost" data-done="${esc(r.id)}">Done</button></li>`).join('')}</ul>
-       <div class="commit-foot"><button type="button" class="btn sm" data-done="all">Mark all done</button></div>`
-    : '<p class="hint">No open commit requests.</p>'
+  const st = sum().status
+  const open = (st.commits || []).filter((r) => r.state === 'open')
+  const work = st.canCommit ? commitWork : null
+  const held = new Map((work?.requests || []).map((r) => [r.id, r]))
+  const fileList = (files) => `<details><summary>${files.length} file${files.length === 1 ? '' : 's'}</summary><ul class="commit-files">${files.map((f) => `<li>${esc(f)}</li>`).join('')}</ul></details>`
+  const req = (r) => {
+    const w = held.get(r.id)
+    const why = r.error ? `Last try: ${r.error}` : w && w.blocker && w.blocker !== 'just asked' ? (w.blocker === 'nothing to commit' ? 'Already in git: it closes by itself.' : `Needs a look: ${w.blocker}.`) : ''
+    return `<li><b>${esc(r.by)}</b>${r.task ? ` <span class="hint">· task</span>` : ''}<div>${esc(r.message)}</div>
+      ${Array.isArray(r.files) && r.files.length ? fileList(r.files) : ''}
+      ${why ? `<p class="commit-why">${esc(why)}</p>` : ''}
+      <div class="commit-acts">${st.canCommit ? `<button type="button" class="btn sm" data-commit="${esc(r.id)}">Commit and push</button>` : ''}<button type="button" class="btn sm ghost" data-done="${esc(r.id)}" title="Close it without a commit from Quilt (committed by hand, or not needed)">Close</button></div></li>`
+  }
+  const groups = (work?.groups || []).map((g, i) => `<li><b>${esc(g.by || 'Not on record')}</b>${fileList(g.files)}<div class="commit-acts"><button type="button" class="btn sm ghost" data-commit-group="${i}">Commit…</button></div></li>`).join('')
+  const html = `
+    ${open.length ? `<h4>Asked to be committed</h4><ul class="commit-reqs">${open.map(req).join('')}</ul>` : '<p class="hint">No open commit requests.</p>'}
+    ${st.canCommit ? `<h4>Not committed yet</h4>${work ? (groups ? `<ul class="commit-reqs">${groups}</ul>` : '<p class="hint">Everything here is in git.</p>') : '<p class="hint">Looking…</p>'}` : '<p class="hint">A person with git on this branch commits these; you are told the commit.</p>'}
+    ${st.access?.owner ? `<label class="commit-auto">Agents may commit <select data-agent-commits>${Object.entries(AGENT_COMMIT_CHOICES).map(([v, l]) => `<option value="${v}"${(st.agentCommits || 'branches') === v ? ' selected' : ''}>${l}</option>`).join('')}</select>
+      <span class="hint">${githubLine(st)}</span></label>` : ''}
+    ${open.length > 1 ? '<div class="commit-foot"><button type="button" class="btn sm ghost" data-done="all">Close all</button></div>' : ''}`
+  // Status comes in often: redrawn only when something in it changed, so an open menu or a
+  // file list someone expanded stays as it is.
+  if (panel.dataset.html === html) return
+  panel.dataset.html = html
+  panel.innerHTML = html
 }
 
+/** How agents get to commit: the owner's GitHub connection (or a token), or what to do to connect it. */
+function githubLine (st) {
+  const g = commitGithub
+  if (g && g.connected) return `Through your GitHub (@${esc(g.login)}), on the repositories you installed Quilt on. <button type="button" class="linkish" data-gh-connect>Add repositories</button>`
+  if (g && g.available) return `${st.access.githubToken ? 'They commit with the session\'s GitHub token. ' : ''}<button type="button" class="btn sm" data-gh-connect>Connect GitHub</button> One click: pick the repositories, and agents commit without anyone online.`
+  return st.access.githubToken ? 'They commit with the session\'s GitHub token.' : 'They need GitHub connected: sign in to Quilt first.'
+}
+
+const AGENT_COMMIT_CHOICES = { off: 'Not at all (they ask)', branches: 'To branches of their own', any: 'To any branch' }
+const AGENT_COMMIT_WORDS = { off: 'Agents ask a person to commit', branches: 'Agents commit to branches of their own, with pull requests', any: 'Agents may commit to any branch' }
+
 async function askForCommit () {
-  const message = await ask({ title: 'Ask for a commit', message: 'Everyone sees the request until someone commits and marks it done.', ok: 'Ask', input: { label: 'What is the commit for?', placeholder: 'Pricing page and download button' } })
+  const message = await ask({ title: 'Ask for a commit', message: 'Of everything you changed that is not in git yet. A person with git on this branch commits it, and you are told the commit.', ok: 'Ask', input: { label: 'What is the commit for?', placeholder: 'Pricing page and download button' } })
   if (!message) return
   try {
-    await api('POST', `/api/sessions/${current}/commit-request`, { message: message.trim() })
-    toast('Asked for a commit')
+    const r = await api('POST', `/api/sessions/${current}/commit-request`, { message: message.trim() })
+    toast(`Asked for a commit of ${r.files.length} file${r.files.length === 1 ? '' : 's'}`)
   } catch (err) { toast(err.message) }
 }
 
@@ -900,18 +976,19 @@ function membersHtml (st) {
 }
 
 /**
- * The owner's read-only GitHub token, which the relay uses to bring commits in from a private
- * repository while nobody's folder is online. Never shown back: only whether one is set.
+ * The owner's GitHub token: the relay brings commits in from a private repository with it while
+ * nobody's folder is online, and commits members' work with it (quilt_commit) when it can write.
+ * Never shown back: only whether one is set.
  */
 export function githubTokenHtml (acc) {
   if (!acc || !acc.owner) return ''
   const set = !!acc.githubToken
-  return `<div class="pm-section"><div class="pm-title">Commits while everyone's offline</div>
+  return `<div class="pm-section"><div class="pm-title">GitHub</div>
     <form class="pm-gh pm-admit" autocomplete="off">
-      <label for="pm-gh-token"><span>GitHub read-only token for bringing in commits while everyone's offline</span></label>
-      <input class="input" id="pm-gh-token" type="password" name="token" autocomplete="off" spellcheck="false" placeholder="${set ? 'A token is set: paste another to replace it' : 'github_pat_… with contents: read'}" aria-label="GitHub read-only token">
+      <label for="pm-gh-token"><span>GitHub token for this session's repository</span></label>
+      <input class="input" id="pm-gh-token" type="password" name="token" autocomplete="off" spellcheck="false" placeholder="${set ? 'A token is set: paste another to replace it' : 'github_pat_… for this repository'}" aria-label="GitHub token">
       <div class="pm-gh-row"><button type="submit" class="btn sm">Save token</button>${set ? '<button type="button" class="btn sm ghost" data-gh-clear>Remove token</button>' : ''}</div>
-      <div class="hint">Private GitHub repositories need one, and it also spares the relay GitHub's limit on requests without a token. It stays on the relay and is never shown to anyone, you included.</div>
+      <div class="hint">With "Contents: Read" Quilt brings in commits while everyone's offline (private repositories need it). With "Contents: Read and write" (and "Pull requests: Read and write") agents can commit their own work, within what you let them in the commit panel, without anyone online. It stays on the relay and is never shown to anyone, you included.</div>
     </form></div>`
 }
 

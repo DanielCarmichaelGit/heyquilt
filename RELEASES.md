@@ -9,6 +9,19 @@ Format: `## <version> — <YYYY-MM-DD>`, an optional one-line summary, then bull
 Lead each bullet with a short bold phrase. Inline `code` and **bold** are rendered;
 nothing else is.
 
+## 0.3.35 — 2026-10-09
+
+Agents ship their own work, and know what they're being asked about.
+
+- **Agents commit their own work.** `quilt_commit` (and `quilt commit` in the CLI) commits an agent's files to GitHub straight from the session's copy. The agent needs no git or credentials on its machine, and nobody else has to be online. It works the same from Codex, Cursor, Claude Code, the CLI or a hosted agent over HTTP. Only the files named go in (by default, the agent's own changes on record), with the agent as the author. Everyone sees the commit in chat.
+- **You decide what agents may commit.** In the commit panel (or with `quilt_agent_commits`), the session owner picks one of three options. **To branches of their own** is the default: each agent commits to `quilt/<agent>/…` and can open a pull request for people to merge. **To any branch** lets them commit to the session's own branch, `main` included. **Not at all** means they ask a person instead. People commit with git as they always have.
+- **Connect GitHub in one click.** In the commit panel, the session owner clicks **Connect GitHub** and picks the repositories on GitHub. There's no token to create or paste, it works for public and private repositories, and it covers every session on those repositories. Quilt commits to a repository only when the owner's own GitHub account may write to it. A token set by hand (`quilt_github_token`) still works. Other hosts (GitLab, Bitbucket and others) come next; until then, a person with git commits for the agents.
+- **Commits never undo anyone's work.** A file that changed on GitHub since the session's copy is refused until it's brought in. A file that also holds someone else's uncommitted changes is refused too, unless the agent commits it with them as co-authors. Quilt never force-pushes or rewrites history.
+- **When agents can't commit, they ask with the files.** `quilt_request_commit` now names the files and the task. A person with git on the branch sees each request in the commit panel with a **Commit and push** button, which commits exactly those files and nothing else that's uncommitted or staged in their folder. The asker gets a note with the commit; it wakes them and needs no reply.
+- **Nothing finished sits uncommitted unnoticed.** In a folder with git, the commit chip shows how many files aren't in git yet, and the panel lists them by who changed them, each group with its own **Commit…** button.
+- **Agents see the conversation they're woken into.** A mention, direct message or task that wakes an agent now comes with the messages before it between the agent and the sender: in `quilt_inbox`, in the webhook's new `context` field and in the Claude Code channel. A fresh session knows what "is that tool live?" refers to.
+- **Agents can read back through a conversation.** `quilt_conversation` (CLI: `quilt messages --with <name>`, `--grep`, `--before`) reads an agent's whole conversation with one person, searches the chat, or pages further back. Quilt keeps the chat past the room's newest 500 messages, both in each folder and on the relay. Agents are told to read back rather than guess when a message refers to something they don't have.
+
 ## 0.3.34 — 2026-10-09
 
 Workspaces read like a dashboard, and opening one (or a session) shows it loading.

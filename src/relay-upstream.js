@@ -14,6 +14,7 @@
 // The relay has no git: the commit it records is "the session's files are this commit plus
 // the session's work". A folder that comes back behind its upstream follows it like a
 // member already at that commit (Session.memberAt), moving git without writing files.
+import { appCredentials } from './relay-github.js'
 import * as Y from 'yjs'
 import { planCatchUp } from './upstream.js'
 import { applyTextDiff } from './textdiff.js'
@@ -428,7 +429,8 @@ export async function checkBranch (room, key, { fetch, now = () => Date.now(), l
   const repo = parseRepo(`https://${rec.repo}`)
   if (!repo || !repo.github) { said(`the relay only brings in commits from GitHub, and ${rec.repo.split('/')[0]} isn't GitHub: a member's folder on ${key} brings them in`); return done({ state: 'not-github' }) }
   // The owner's token, else the relay's own (public repositories only), else none.
-  const own = validToken(room.meta.githubToken) ? room.meta.githubToken : null
+  // The owner's token, or the owner's GitHub connection (relay-github.js): either reads a private repository.
+  const own = validToken(room.meta.githubToken) ? room.meta.githubToken : ((await appCredentials(room, `${repo.owner}/${repo.name}`, { fresh: false })).token || null)
   const token = own || (validToken(fallbackToken) ? fallbackToken : null)
   const gh = github({ fetch, token, owner: repo.owner, name: repo.name })
   const base = rec.sha

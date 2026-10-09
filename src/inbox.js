@@ -72,6 +72,8 @@ export function scanInbox ({ messages = [], tasks = [], reader, now = Date.now()
     // File queue messages (a request for a file the reader holds, or a file handed to them) wake
     // them like a direct message, but ask for a handoff rather than a reply (duties.js).
     const queue = m.kind === 'queue' || m.kind === 'handoff' ? { queue: m.kind, file: typeof m.path === 'string' ? m.path : '' } : {}
+    // A note that work the reader asked to commit was committed (commit.js): it wakes them, and asks for no reply.
+    if (m.kind === 'commit') queue.commit = true
     if (names.includes(m.to)) events.push({ id: m.id, kind: 'dm', by: m.by, text, ts: m.ts, ...queue })
     else if (!m.to && names.some((n) => mentionsMe(text, n, { agent: !!reader.agent }))) events.push({ id: m.id, kind: 'mention', by: m.by, text, ts: m.ts })
   }
@@ -97,6 +99,38 @@ export function scanInbox ({ messages = [], tasks = [], reader, now = Date.now()
   return { events, state: { messages: msgIds.slice(-500), assigned: mine.filter((id) => open.has(id)) } }
 }
 
+// How much of each message a wake's context shows (conversation.js picks the messages).
+export const CONTEXT_MESSAGE_CHARS = 600
+
+const lowerNames = (names) => new Set((names || []).filter(Boolean).map((n) => String(n).toLowerCase()))
+const clip = (text, max) => {
+  const t = String(text || '').trim()
+  return t.length > max ? t.slice(0, max - 1).trimEnd() + '…' : t
+}
+
+const ago = (ts, now) => {
+  const m = Math.max(0, Math.round((now - (ts || now)) / 60000))
+  if (m < 1) return 'just now'
+  if (m < 60) return `${m}m ago`
+  const h = Math.round(m / 60)
+  return h < 48 ? `${h}h ago` : `${Math.round(h / 24)}d ago`
+}
+
+/** One message as a line: "[id] 3h ago Daniel → you: text". `me`: the reader's names, shown as "you". */
+export function messageLine (m, { me = [], now = Date.now(), max = 2000 } = {}) {
+  const mine = lowerNames(me)
+  const who = (n) => mine.has(String(n || '').toLowerCase()) ? 'you' : n
+  const to = m.to ? ` → ${who(m.to)}` : ''
+  return `- [${m.id}] ${ago(m.ts, now)} ${who(m.by)}${to}: ${clip(m.text, max).replace(/\n+/g, ' ⏎ ')}`
+}
+
+/** The context an event carries, as lines under it; '' when there is none. */
+export function renderContext (e, { me = [], now = Date.now() } = {}) {
+  if (!e || !Array.isArray(e.context) || !e.context.length) return ''
+  const head = `Earlier between you and ${e.by} (oldest first${e.earlier ? `; ${e.earlier} older: quilt_conversation with "${e.by}"` : ''}):`
+  return [head, ...e.context.map((m) => '  ' + messageLine(m, { me, now, max: CONTEXT_MESSAGE_CHARS }))].join('\n')
+}
+
 // A message's id, which quilt_inbox no_reply takes to settle it.
 const idOf = (e) => e.id ? ` (id ${e.id})` : ''
 
@@ -105,6 +139,7 @@ export function describeEvent (e) {
   const who = e.by || 'someone'
   if (e.queue === 'queue') return `${who} asked for ${e.file} in its file queue: ${e.text} Finish what you are doing in it, then hand it off with quilt_handoff and your context.`
   if (e.queue === 'handoff') return `${who} handed you ${e.file}, which you asked for: it is yours to edit now. ${e.text}`
+  if (e.commit) return `${who} committed work you asked for (no reply needed): ${e.text}`
   if (e.kind === 'dm') return `${who} sent you a direct message${idOf(e)}: ${e.text}`
   if (e.kind === 'mention') return `${who} mentioned you in chat${idOf(e)}: ${e.text}`
   if (e.kind === 'task') {
@@ -118,10 +153,23 @@ export function describeEvent (e) {
 export const INBOX_HOW = 'Answer a message that asks something of you with quilt_message (set "to", or start with @their name). ' +
   'One that needs nothing back (thanks, a greeting, an FYI, a status report) gets no reply: settle it with quilt_inbox (no_reply: [its id]). Take a task with quilt_move_task.'
 
-/** Several events as the text a tool returns, or '' when there are none. */
-export function renderInbox (events) {
+/**
+ * Several events as the text a tool returns, or '' when there are none. Each sender's
+ * conversation before their first event here is shown once, under it (`me`: the reader's names).
+ */
+export function renderInbox (events, { me = [], now = Date.now() } = {}) {
   if (!events || !events.length) return ''
-  return `Waiting for you:\n${events.map((e) => `- ${describeEvent(e)}`).join('\n')}\n${INBOX_HOW}`
+  const ids = new Set(events.map((e) => e.id))
+  const shown = new Set()
+  const lines = []
+  for (const e of events) {
+    lines.push(`- ${describeEvent(e)}`)
+    if (shown.has(e.by) || !Array.isArray(e.context)) continue
+    shown.add(e.by)
+    const ctx = renderContext({ ...e, context: e.context.filter((m) => !ids.has(m.id)) }, { me, now })
+    if (ctx) lines.push(ctx.replace(/^/gm, '  '))
+  }
+  return `Waiting for you:\n${lines.join('\n')}\n${INBOX_HOW}`
 }
 
 /** Keeps the events a member has not been shown yet, each with a sequence number. */

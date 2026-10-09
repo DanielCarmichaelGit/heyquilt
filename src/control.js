@@ -27,6 +27,7 @@ export async function startControl (session, extras = {}) {
     'POST /say': (b) => session.say(b.text, { to: b.to, agent: true, via: b.via ? String(b.via) : null, everyone: !!b.everyone, also: !!b.also }),
     'POST /inbox/settle': (b) => session.settle(b.ids),
     'POST /send': (b) => session.sendFile(b.path, { to: b.to, text: b.text }),
+    'POST /conversation': (b) => session.conversation({ with: b.with || null, q: b.q || '', before: b.before || null, limit: b.limit, via: b.via ? String(b.via) : null }),
     'POST /messages': (b) => ({ messages: session.messages({ limit: b.limit || 50, unreadOnly: !!b.unreadOnly, markRead: b.markRead !== false, withName: b.with || null }) }),
     'POST /get': async (b) => ({ path: await session.fetchFile(b.id, b.dest) }),
     'POST /focus': (b) => {
@@ -78,7 +79,13 @@ export async function startControl (session, extras = {}) {
     'GET /commits': () => session.commitStatus({ includeMe: false }),
     'GET /branches': () => ({ branches: session.status().branches, git: session.status().git }),
     'POST /branches/sync': () => session.syncBranchNow(),
-    'POST /commit-request': (b) => session.requestCommit(b.message),
+    'POST /commit-request': (b) => session.requestCommit(b.message, { files: Array.isArray(b.files) ? b.files : null, task: b.task || null, via: b.via ? String(b.via) : null }),
+    // quilt_commit: the relay commits the session's copy of the files to GitHub (relay-commit.js).
+    'POST /commit': (b) => session.commitToGit({ files: Array.isArray(b.files) ? b.files : null, message: b.message, branch: b.branch, pullRequest: !!b.pullRequest, withOthers: !!b.withOthers, task: b.task || null }),
+    'POST /agent-commits': (b) => session.setAgentCommits(b.mode),
+    // A commit request committed in this folder, which has git (commit.js).
+    'POST /commit-request/commit': (b) => session.commitRequest(String(b.id || '')),
+    'GET /uncommitted': () => session.uncommittedWork(),
     'POST /commit-request/done': (b) => ({ done: session.resolveCommitRequests({ ids: b.id ? [String(b.id)] : null }) }),
     'POST /work': (b) => {
       if (b.state === 'working') session.personaSays(b.via, b.note)

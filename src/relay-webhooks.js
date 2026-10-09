@@ -9,9 +9,16 @@
 import { scanInbox } from './inbox.js'
 import { readTasks } from './tasks.js'
 import { deliverEvents, makeSubscription } from './webhooks.js'
+import { withContext } from './conversation.js'
 
 /** The chat `me` can see: public messages, and direct ones to or from them. */
 const chatFor = (doc, me) => doc.getArray('chat').toArray().filter((m) => m && m.id && (!m.to || m.to === me || m.by === me))
+
+/** Each event with the conversation before it, from the room's kept chat (chat-archive.js) when it has one. */
+const inContext = (room, me, events) => {
+  const all = room.chatArchive ? room.chatArchive.with(room.doc.getArray('chat').toArray()) : room.doc.getArray('chat').toArray()
+  return withContext(events, all.filter((m) => m && m.id && (!m.to || m.to === me || m.by === me)), { names: [me], agent: true })
+}
 
 const scan = (doc, name, state) => scanInbox({ messages: chatFor(doc, name), tasks: readTasks(doc.getMap('tasks')), reader: { name, asAi: false, agent: true } }, state)
 
@@ -36,7 +43,7 @@ export function hostedWebhooks ({ hosted, saveHosted, log = () => {}, fetch, del
       sub.state = r.state
       changed = true
       if (!r.events.length) continue
-      const events = r.events
+      const events = inContext(room, sub.name, r.events)
       const prev = sending.get(account) || Promise.resolve()
       const next = prev.then(() => deliverEvents(sub, events, { room: room.name, to: sub.name }, opts)).catch(() => {})
       sending.set(account, next)

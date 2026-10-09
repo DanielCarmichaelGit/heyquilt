@@ -29,8 +29,16 @@ Usage:
   quilt chat                                          Live chat (messages, DMs, files) in this terminal
   quilt say [@name] <message>                         Message everyone, or one person with @name
   quilt send <file> [@name] [message]                 Send a file (not added to the project)
-  quilt messages [--all] [--with name]                Show unread (or all) messages
+  quilt messages [--all] [--with name] [--grep text] [--before id] [-n 30]
+                                                      Show unread messages, or read back: the conversation
+                                                      with one person, a search, earlier messages
   quilt get <message-id> [dest]                       Download a shared file again
+  quilt commit <message> [--files a,b] [--branch name] [--pr] [--with-others] [--task id]
+                                                      Commit your work to GitHub from the session's copy
+                                                      (no git needed here): a branch of your own by default
+  quilt commit-request <message> [--files a,b] [--task id]
+                                                      Ask a person to commit for you (when quilt commit can't)
+  quilt commits                                       Open commit requests and recent commits
   quilt focus <what you're doing>                     Tell collaborators what you're working on
   quilt claim <path|glob> [reason]                    Mark files as yours for now
   quilt release <path|glob|*>                         Release a claim
@@ -75,6 +83,9 @@ async function main () {
     case 'send': return sendFile()
     case 'messages': case 'inbox': return messages()
     case 'get': return getFile()
+    case 'commit-request': return commitRequest()
+    case 'commits': return commits()
+    case 'commit': return commitToGit()
     case 'chat': return chat()
     case 'focus': return simple('/focus', { text: argv.join(' ') }, () => 'focus updated')
     case 'claim': return simple('/claim', { pattern: argv[0], note: argv.slice(1).join(' ') }, (r) =>
@@ -182,6 +193,8 @@ async function apiCmd () {
     reportKey: env.QUILT_REPORT_KEY || '',
     // The relay signs its presence reports with this (scripts/relay-api-secret.mjs).
     relaySecret: env.RELAY_API_SECRET || '',
+    // Quilt's GitHub App (GITHUB_APP_*), for agents' commits; off when not set.
+    github: (await import('../src/api/github-app.js')).appConfig(env),
     // Where agents reach this API (invite links point here).
     apiUrl: env.QUILT_API_PUBLIC_URL || (values.memory ? `http://${host}:${port}` : 'https://api.heyquilt.com'),
     siteUrl: env.QUILT_SITE_URL || 'http://localhost:3000',
@@ -467,14 +480,42 @@ async function sendFile () {
 }
 
 async function messages () {
-  const { values } = parseArgs({ args: argv, options: { all: { type: 'boolean' }, with: { type: 'string' }, n: { type: 'string', short: 'n' } } })
+  const { values } = parseArgs({ args: argv, options: { all: { type: 'boolean' }, with: { type: 'string' }, grep: { type: 'string' }, before: { type: 'string' }, n: { type: 'string', short: 'n' } } })
   const { d, call } = await daemonOrFail()
+  if (values.with || values.grep || values.before) {
+    // Reading back (conversation.js): the kept chat, past the room's newest 500, with message ids.
+    const { renderConversation } = await import('../src/conversation.js')
+    const r = await call(d, 'POST', '/conversation', { with: values.with, q: values.grep, before: values.before, limit: Number(values.n || 30) })
+    return console.log(renderConversation(r, { me: r.me, with: values.with, q: values.grep }).replace(/quilt_conversation|call again with before: "([^"]+)"/g, (m, id) => id ? `run again with --before ${id}` : m))
+  }
   const { renderMessage } = await import('../src/status.js')
-  const all = values.all || !!values.with
+  const all = values.all
   const { messages } = await call(d, 'POST', '/messages', { unreadOnly: !all, with: values.with, limit: Number(values.n || 50) })
   const me = (await call(d, 'GET', '/status')).me.name
   if (!messages.length) return console.log(all ? 'no messages yet' : 'no unread messages (use --all to see history)')
   for (const m of messages) console.log(plain(renderMessage(m, me)))
+}
+
+async function commitRequest () {
+  const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { files: { type: 'string' }, task: { type: 'string' } } })
+  const files = values.files ? values.files.split(',').map((f) => f.trim()).filter(Boolean) : undefined
+  await simple('/commit-request', { message: positionals.join(' '), files, task: values.task }, (r) =>
+    `asked for a commit [${r.id}] of ${r.files.length} file${r.files.length === 1 ? '' : 's'}: ${r.files.slice(0, 12).join(', ')}${r.files.length > 12 ? ', …' : ''}\n${r.committer}`)
+}
+
+async function commitToGit () {
+  const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { files: { type: 'string' }, branch: { type: 'string' }, pr: { type: 'boolean' }, 'with-others': { type: 'boolean' }, task: { type: 'string' } } })
+  const files = values.files ? values.files.split(',').map((f) => f.trim()).filter(Boolean) : undefined
+  const { describeCommit } = await import('../src/relay-commit.js')
+  await simple('/commit', { message: positionals.join(' '), files, branch: values.branch, pullRequest: !!values.pr, withOthers: !!values['with-others'], task: values.task }, (r) =>
+    plain(describeCommit(r, { policy: r.agentCommits }).replace(/quilt_commit again and pull_request: true/g, 'quilt commit --pr')))
+}
+
+async function commits () {
+  const { d, call } = await daemonOrFail()
+  const { describeCommitRequests } = await import('../src/commit.js')
+  const c = await call(d, 'GET', '/commits')
+  console.log(plain(describeCommitRequests(c, { canCommit: !!c.canCommit }).replace(/quilt_commit \(id\)/g, 'quilt commit <id>')))
 }
 
 async function getFile () {

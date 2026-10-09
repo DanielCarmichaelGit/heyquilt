@@ -66,7 +66,10 @@ ${TASK_WORKFLOW_MD}
   Moving to Done still needs \`verified\`.
 - Always re-read a file right before editing it; never rely on an old copy.
 - Prefer small, focused edits over rewriting whole files.
-- Git works as usual here: commit, pull and push yourself. Quilt recognises git
+- Git works as usual here: pull and push yourself, and commit only the files you
+  changed (never \`git add -A\` or \`git commit -a\`: the folder holds other people's
+  unfinished work). Without git here, \`quilt_commit\` (or \`quilt commit\`) commits
+  your files to GitHub from the session's copy. Quilt recognises git
   commands, so a stash or reset on this computer never erases the session's
   work (it comes back a moment later), a git conflict pauses this folder until
   you resolve it and \`git add\` it, and checking out another branch moves this

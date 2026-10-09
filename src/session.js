@@ -23,14 +23,17 @@ import { migrateDir } from './legacy.js'
 import { withComments, addComment as putComment } from './task-comments.js'
 import { readTasks, addTask as putTask, updateTask as patchTask, deleteTask as dropTask, planAutoTask, nextTask, pickupMode } from './tasks.js'
 import { getSettings } from './settings.js'
-import { HistoryLog, queryHistory, parseSince, currentTask } from './history.js'
+import { HistoryLog, queryHistory, parseSince, currentTask, blameChange } from './history.js'
 import { historyMarks, awayChanges, mergeCatchUp, emptyCatchUp } from './catchup.js'
 import { Inbox } from './inbox.js'
+import { ChatArchive } from './chat-archive.js'
+import { withContext, queryConversation } from './conversation.js'
 import { personaName, cleanLabel, labelFromBranch, labelFromText, labelFromFile, gitBranch, aiName } from './persona.js'
 import { aiOwners, ownAiChatter } from './ui/chat.js'
 import { chatAbout, waitingOn, queuedFor, renderQueueNotice, askForIt, answered, addressees, unaddressed, sentByAnother, renderRepeat } from './duties.js'
 import { makeSubscription, deliverEvents } from './webhooks.js'
 import { pickChecklist } from './agent-task-workflow.js'
+import { cleanFiles, uncommitted, lastCommitted, commitFiles, commitMessage, editorsSince, uncommittedByPerson, requestWarning, REQUEST_SETTLE_MS, MAX_REQUEST_FILES, MAX_MESSAGE } from './commit.js'
 import { changeRefusal, TALK_REFUSED } from './session-access.js'
 import { canAdmit } from './admit-policy.js'
 import { merge3, withMarkers, hasMarkers } from './merge3.js'
@@ -52,6 +55,7 @@ const CLASH_IDLE_MS = 15 * 60 * 1000 // a clash assignee with no progress this l
 const CLASH_SETTLE_MS = 2000 // a clash task this member wrote is told to its AI after this long, if it survived a race
 const CLASH_KEEP_MS = 3 * 24 * 60 * 60 * 1000 // a finished clash record is kept this long
 const CLASH_RECORDS = 100
+const KEEP_DONE_COMMITS = 100 // finished commit requests kept, newest (the board shows which task's work was committed)
 const STILL_MARKED = 'this file has conflict markers in it; finish editing it (or choose Keep mine) first'
 const COLORS = ['#b9432b', '#3b6a9a', '#4a7a45', '#855a9c', '#a8701c', '#2e7a80', '#9c4f6b']
 const RECENT_MS = 2 * 60 * 1000
@@ -124,6 +128,8 @@ export class Session extends EventEmitter {
     this.stateFile = path.join(this.stateDir, 'state.bin')
 
     this.roomFile = path.join(this.stateDir, 'room.bin')
+    // Every message this folder has seen, kept past the room's newest 500 (chat-archive.js).
+    this.chatArchive = new ChatArchive(path.join(this.stateDir, 'chat-archive.jsonl'), { log: (m) => this.log(m) })
     // Two documents: the room's (chat, tasks, the agent feed, commit requests, activity) and
     // the one for the branch this folder syncs (its files and what goes with them; see
     // bindBranchDoc). state.bin keeps the branch's, room.bin the room's.
@@ -640,7 +646,9 @@ export class Session extends EventEmitter {
   goLive () {
     this.observeBranch()
     this.shareKeysWithViewers()
+    this.chatArchive.add(this.chat.toArray())
     this.chat.observe((ev, tr) => {
+      if (ev.changes.added.size) this.chatArchive.add(this.chat.toArray())
       for (const item of ev.changes.added) {
         for (const msg of item.content.getContent()) {
           // A malformed message (a modified client can push anything) is skipped, never fatal to the rest.
@@ -680,7 +688,7 @@ export class Session extends EventEmitter {
       for (const [id, change] of ev.changes.keys) {
         const r = this.commitRequests.get(id)
         if (tr.origin === LOCAL || !r) continue
-        if (change.action === 'add') this.log(`📌 ${r.by} asked for a commit: ${r.message}`)
+        if (change.action === 'add') { this.log(`📌 ${r.by} asked for a commit: ${r.message}`); this.reviewCommitsSoon() }
         else if (r.state === 'done') this.log(`✅ ${r.doneBy || 'the host'} committed ${r.hash ? r.hash.slice(0, 7) : ''} (${r.message})`)
       }
       this.emit('status-changed')
@@ -694,6 +702,11 @@ export class Session extends EventEmitter {
     this.ready = true
     this.scanInbox({ quiet: true }) // take stock: what is already here wakes nobody
     this.fetchMissedFiles()
+    // Commit requests: those waiting are looked at once this folder has settled, and again now and then
+    // (a file someone held is let go of, a request that couldn't be committed by itself is retried).
+    this.reviewCommitsSoon(20000)
+    this.reviewCommitsTimer2 = setInterval(() => this.reviewCommitsSoon(0), 2 * 60 * 1000)
+    if (this.reviewCommitsTimer2.unref) this.reviewCommitsTimer2.unref()
     this.scheduleStateSave()
     this.scheduleStatusWrite()
   }
@@ -3929,22 +3942,61 @@ export class Session extends EventEmitter {
     return this.work
   }
 
-  /** Asks the host to commit once everyone's AI is idle. */
-  requestCommit (message) {
-    message = String(message || '').trim().slice(0, 500)
-    if (!message) throw new Error('say what the commit is for')
+  /**
+   * Asks for a commit of `files` (or, without them, of the task's changes, or of everything this
+   * member changed): a person's Quilt with git on this branch commits exactly those that differ
+   * from HEAD and pushes (commitRequest), then tells the asker the hash. Agents' folders have no
+   * git, so this is how their work reaches the repository.
+   */
+  requestCommit (message, { files = null, task = null, via = null, by = null, id = null } = {}) {
+    message = String(message || '').trim().slice(0, MAX_MESSAGE)
     if (this.access && this.access.state === 'approved' && this.access.role === 'viewer') throw new Error('viewers can’t ask for commits')
     // A commit request is a message to the host: the relay undoes it from someone who may not post.
     if (!this.mayTalk()) throw new Error(TALK_REFUSED)
-    const r = { id: crypto.randomBytes(6).toString('hex'), by: this.name, message, branch: this.branch, ts: Date.now(), state: 'open' }
+    const t = task ? this.taskList().find((x) => x.id === String(task)) : null
+    if (task && !t) throw new Error(`no task ${task} on the board`)
+    if (!message && t) message = t.title
+    if (!message) throw new Error('say what the commit is for')
+    const asker = by || this.actorName(via)
+    let list = cleanFiles(files || [])
+    if (files && files.length && !list.length) throw new Error('none of those are files in the project (give paths relative to its top folder)')
+    if (!list.length) list = this.changedFilesFor({ task: t, by: t ? null : (asker === this.actorName(via) ? this.name : asker) })
+    if (!list.length) throw new Error(t ? `task ${t.id} has no changed files on record: give them in files` : 'Quilt has no changes of yours on record: give the files in files')
+    const r = { id: id || crypto.randomBytes(6).toString('hex'), by: asker, message, branch: this.branch, ts: Date.now(), state: 'open', files: list, ...(t ? { task: { id: t.id, title: t.title } } : {}) }
     this.doc.transact(() => {
       this.commitRequests.set(r.id, r)
       // Keep the list short: drop old finished requests.
       const done = [...this.commitRequests.values()].filter((x) => x.state === 'done').sort((a, b) => a.ts - b.ts)
-      for (const x of done.slice(0, Math.max(0, done.length - 20))) this.commitRequests.delete(x.id)
+      for (const x of done.slice(0, Math.max(0, done.length - KEEP_DONE_COMMITS))) this.commitRequests.delete(x.id)
     }, LOCAL)
-    this.log(`📌 you asked for a commit: ${message}`)
-    return r
+    this.log(`📌 ${asker === this.name ? 'you' : asker} asked for a commit: ${message} (${list.length} file${list.length === 1 ? '' : 's'})`)
+    this.reviewCommitsSoon()
+    return { ...r, committer: this.committerLine() }
+  }
+
+  /**
+   * The files a request covers when it names none: what was changed for `task` (the session's
+   * history, and the files on the card), or every file `by` changed, newest last. Pulls from git
+   * are not anyone's changes. The committer keeps only those that differ from HEAD.
+   */
+  changedFilesFor ({ task = null, by = null } = {}) {
+    const out = []
+    const add = (p) => { if (p && !out.includes(p) && isSafeRelPath(p)) out.push(p) }
+    for (const e of this.history.entries()) {
+      if (e.pulled) continue
+      if (task ? e.task && e.task.id === task.id : e.by === by) add(e.path)
+    }
+    if (task) for (const f of task.files || []) add(f)
+    return out.slice(-MAX_REQUEST_FILES)
+  }
+
+  /** Who will commit, in a line for the asker: a person with git on this branch, or what is missing. */
+  committerLine () {
+    const st = this.status()
+    const here = [st.me, ...st.peers].filter((p) => p && p.git && p.git.key === this.branch && !p.persona && p.name !== this.name)
+    if (this.canCommit()) return `This folder has git on ${this.branch}: its app shows the request with a Commit button.`
+    if (here.length) return `${here.map((p) => p.name).join(' or ')} ${here.length === 1 ? 'has' : 'have'} git on ${this.branch} and will be asked in the app; you are told the commit when it is made.`
+    return `Nobody with git on ${this.branch} is here right now; the request waits in the app until someone is, and you are told the commit when it is made.`
   }
 
   // ------------------------------------------------------------- tasks --
@@ -4079,7 +4131,40 @@ export class Session extends EventEmitter {
     }
     if (!events.length) return
     this.emit('inbox', events)
-    if (this.webhook) this.sendWebhook(events)
+    if (this.webhook) this.sendWebhook(this.withContext(events))
+  }
+
+  /** The names `via` (an AI session of ours, or this member when null) is known by in chat. */
+  readerNames (via = null) {
+    const p = this.persona(via)
+    if (p) return [p.name, ...p.aliases, aiName(this.name)]
+    return this.kind === 'agent' ? [this.name] : [this.name, aiName(this.name)]
+  }
+
+  /** Every message this member may read, the kept ones (chat-archive.js) before the room's, oldest first. */
+  seenMessages () {
+    return this.chatArchive.with(this.chat.toArray()).filter((m) => this.canSee(m))
+  }
+
+  /** Inbox events, each with the conversation before it with whoever it is from (conversation.js). */
+  withContext (events, via = null) {
+    try {
+      return withContext(events, this.seenMessages(), { names: this.readerNames(via), agent: this.kind === 'agent' || !!this.persona(via) })
+    } catch (err) {
+      this.emit('debug', `inbox context: ${err.message}`)
+      return events
+    }
+  }
+
+  /**
+   * Reads the chat `via` may see, kept past the room's newest 500: the conversation `with` one
+   * member (direct messages either way and @mentions), what contains `q`, before message `before`.
+   * { messages, more, me }.
+   */
+  conversation ({ with: other = null, q = '', before = null, limit = 30, via = null } = {}) {
+    const me = this.readerNames(via)
+    const r = queryConversation(this.seenMessages(), { me, with: other ? String(other).trim() : null, q, before: before ? String(before) : null, limit, agent: this.kind === 'agent' || !!this.persona(via) })
+    return { ...r, me }
   }
 
   /**
@@ -4090,12 +4175,12 @@ export class Session extends EventEmitter {
   inbox ({ after = 0, all = false, via = null } = {}) {
     const p = this.persona(via)
     const r = (p ? p.inbox : this.inboxTracker).since(after)
-    if (all) return r
+    if (all) return { ...r, events: this.withContext(r.events, via), me: this.readerNames(via) }
     const msgs = this.chat.toArray().filter((m) => this.canSee(m))
     const me = p ? [p.name, ...p.aliases, aiName(this.name)] : [this.name, aiName(this.name)]
-    const open = (e) => (e.kind !== 'dm' && e.kind !== 'mention') || e.queue ||
+    const open = (e) => (e.kind !== 'dm' && e.kind !== 'mention') || e.queue || e.commit ||
       (!this.settledIds.has(e.id) && !answered(msgs, me, e.by, e.ts))
-    return { ...r, events: r.events.filter(open) }
+    return { ...r, events: this.withContext(r.events.filter(open), via), me: this.readerNames(via) }
   }
 
   /** Marks direct messages and mentions as needing no reply, for every AI session working as this member. */
@@ -4160,7 +4245,7 @@ export class Session extends EventEmitter {
     return this.webhookSending
   }
 
-  /** Marks open requests as done by a commit. */
+  /** Marks open requests as done (by a commit made outside Quilt, or not needed): `ids`, or all. */
   resolveCommitRequests ({ hash = '', ids = null } = {}) {
     const open = [...this.commitRequests.values()].filter((r) => r.state === 'open' && (!ids || ids.includes(r.id)))
     if (!open.length) return 0
@@ -4168,6 +4253,186 @@ export class Session extends EventEmitter {
       for (const r of open) this.commitRequests.set(r.id, { ...r, state: 'done', doneBy: this.name, hash, doneAt: Date.now() })
     }, LOCAL)
     return open.length
+  }
+
+  // ------------------------------------------------------------- commits --
+  // Two ways work gets into git. quilt_commit: the relay commits the session's copy of the files
+  // to GitHub for any member (relay-commit.js), within what the owner lets agents do, with nobody
+  // else needed. And a commit request, for when that can't be (no GitHub token, not GitHub, the
+  // owner keeps agents from committing): a person's folder with git commits exactly its files
+  // (commit.js), from the app's commit panel.
+
+  /**
+   * Commits files to GitHub through the relay, from the session's copy on this folder's branch:
+   * `files` (or this member's changes on record, or a task's), `message`, `branch` ('' for the
+   * default: the session's branch, or a branch of an agent's own), `pullRequest`, `withOthers`.
+   */
+  async commitToGit ({ files = null, message = '', branch = '', pullRequest = false, withOthers = false, task = null } = {}) {
+    if (!this.conn || !this.conn.adminRequest) throw new Error('not connected to the relay')
+    const r = await this.conn.adminRequest({ op: 'commit', files: Array.isArray(files) ? files : null, message: String(message || ''), branch: String(branch || ''), pullRequest: !!pullRequest, withOthers: !!withOthers, task: task ? String(task) : null })
+    if (!r || !r.commit) throw new Error('the relay did not say')
+    if (!r.commit.nothing) this.log(`✅ committed ${r.commit.sha.slice(0, 7)} to ${r.commit.branch} (${r.commit.changed.length} files)`)
+    return { ...r.commit, agentCommits: (this.access && this.access.agentCommits) || 'branches' }
+  }
+
+  /** Owner only: what agents may do with commits ('off', 'branches', 'any'). */
+  async setAgentCommits (mode) {
+    if (!this.isOwner) throw new Error('only the session owner can decide what agents may commit')
+    const r = await this.conn.adminRequest({ op: 'agentCommits', agentCommits: String(mode || '') })
+    return { agentCommits: r.agentCommits }
+  }
+
+  /** Whether this folder can make the session's commits: a git checkout on a branch (agents' copies have no git). */
+  canCommit () {
+    return !!this.git && !!this.git.branch && !!gitDir(this.root) &&
+      !(this.access && this.access.state === 'approved' && this.access.role === 'viewer')
+  }
+
+  /**
+   * Commits request `id` here: its files that differ from HEAD, with its message, then pushes to
+   * the branch's upstream. Marks it done with the hash and tells the asker. Throws with the reason
+   * when it can't (another branch, behind the remote, conflict markers, git refused).
+   */
+  async commitRequest (id) {
+    const r = this.commitRequests.get(String(id || ''))
+    if (!r) throw new Error(`no commit request ${id}`)
+    if (r.state !== 'open') throw new Error(`that request is already ${r.hash ? `committed (${r.hash.slice(0, 7)})` : 'done'}`)
+    if (!this.canCommit()) throw new Error('this folder has no git (or no branch checked out), so it can’t commit: ask for the commit with quilt_request_commit, and a person with git commits it')
+    if (r.branch && r.branch !== this.git.branch) throw new Error(`the request is for ${r.branch} and this folder is on ${this.git.branch}`)
+    if (this.committing) throw new Error('a commit is already being made here')
+    this.committing = r.id
+    try {
+      return await this.gitTask(() => this.makeCommit(r))
+    } catch (err) {
+      const now = this.commitRequests.get(r.id)
+      if (now && now.state === 'open') this.doc.transact(() => this.commitRequests.set(r.id, { ...now, error: String(err.message).slice(0, 300), errorAt: Date.now() }), LOCAL)
+      throw err
+    } finally { this.committing = null }
+  }
+
+  async makeCommit (r) {
+    let up = await upstreamOf(this.root)
+    if (up && up.remote && up.remote !== '.') {
+      const f = await fetchUpstream(this.root, up.remote, up.url)
+      if (f.ok) up = await upstreamOf(this.root)
+      const head = await headKey(this.root)
+      // The remote has commits this folder doesn't: catch up first (Quilt brings them in), then commit on top.
+      if (f.ok && up && up.sha && head && head.sha && !(await isAncestor(this.root, up.sha, head.sha))) {
+        const diverged = !(await isAncestor(this.root, head.sha, up.sha))
+        if (diverged) throw new Error(`${this.git.branch} has diverged from ${up.name}: a person needs to pull here before Quilt can commit on top`)
+        this.checkUpstreamSoon({ fetch: false })
+        throw new Error(`${up.name} has commits this folder doesn't have yet; Quilt is bringing them in: try again in a moment`)
+      }
+    }
+    const files = cleanFiles(r.files)
+    for (const rel of files) {
+      let text = null
+      try { text = fs.readFileSync(path.join(this.root, rel), 'utf8') } catch {}
+      if (text !== null && text.length < 2_000_000 && hasMarkers(text)) throw new Error(`${rel} has conflict markers: resolve them first`)
+    }
+    const res = await commitFiles(this.root, { files, message: commitMessage(r), upstream: up, branch: this.git.branch })
+    const done = { ...this.commitRequests.get(r.id), state: 'done', doneBy: this.name, doneAt: Date.now(), hash: res.hash || '', committed: res.files, pushed: res.pushed, ...(res.pushError ? { pushError: res.pushError } : {}) }
+    delete done.error; delete done.errorAt
+    this.doc.transact(() => this.commitRequests.set(r.id, done), LOCAL)
+    const short = res.hash ? res.hash.slice(0, 7) : ''
+    const what = res.nothing
+      ? `Nothing to commit for "${r.message}": those files are already in git as they are.`
+      : `Committed ${short} on ${this.git.branch}${res.pushed ? ` and pushed to ${up.remote}` : ''}: "${r.message}" (${res.files.length} file${res.files.length === 1 ? '' : 's'}).${res.pushError ? ` Not pushed yet: ${res.pushError}.` : ''}`
+    this.log(`${res.nothing ? 'ℹ️' : '✅'} ${what}`)
+    // The asker hears it like a handoff: it wakes them, and asks for no reply (duties.js).
+    if (!res.nothing && r.by && r.by !== this.name && this.mayTalk()) this.postCommitNote(r.by, what)
+    if (r.task && r.task.id && !res.nothing) {
+      try { putComment(this.doc, this.taskComments, readTasks(this.tasks), { taskId: r.task.id, by: this.name, text: what }, LOCAL) } catch {}
+    }
+    this.reviewCommitsSoon()
+    return done
+  }
+
+  /** A chat note to `to` that their commit was made: it wakes them, and asks for no reply. */
+  postCommitNote (to, text) {
+    const msg = { id: crypto.randomBytes(8).toString('hex'), by: this.name, to, text, ts: Date.now(), kind: 'commit' }
+    this.doc.transact(() => {
+      this.chat.push([msg])
+      if (this.chat.length > 500) this.chat.delete(0, this.chat.length - 500)
+    }, LOCAL)
+    this.markRead([msg.id])
+  }
+
+  /**
+   * The uncommitted work in this folder, by who made it: { groups: [{ by, files }], requests:
+   * [{ id, editors: { path: [names] }, blocker }] } (null without git). For the app's commit panel
+   * and for committing by itself.
+   */
+  async uncommittedWork () {
+    if (!this.canCommit()) return null
+    const dirty = await uncommitted(this.root)
+    if (!dirty) return null
+    const rels = [...dirty.keys()].filter((rel) => this.syncable(rel))
+    const history = this.history.entries()
+    // Each changed line is put down to whoever added or removed it last; a file git or this folder
+    // can't give as text falls back to who edited it since it was last committed.
+    const before = await filesAt(this.root, 'HEAD', rels.filter((rel) => dirty.get(rel) !== 'A')) || new Map()
+    const editors = new Map()
+    const byPath = new Map()
+    for (const h of history) { if (h && h.path) { if (!byPath.has(h.path)) byPath.set(h.path, []); byPath.get(h.path).push(h) } }
+    const rest = []
+    for (const rel of rels) {
+      const was = dirty.get(rel) === 'A' ? '' : before.get(rel)
+      let now = ''
+      if (dirty.get(rel) !== 'D') { try { now = fs.readFileSync(path.join(this.root, rel), 'utf8') } catch { now = null } }
+      if (typeof was !== 'string' || typeof now !== 'string' || now.includes('\0') || was.includes('\0')) { rest.push(rel); continue }
+      editors.set(rel, blameChange({ before: was, after: now, entries: byPath.get(rel) || [] }))
+    }
+    if (rest.length) for (const [rel, names] of editorsSince(rest, history, await lastCommitted(this.root))) editors.set(rel, names)
+    const st = this.commitStatus({ includeMe: false })
+    const busy = st.busy.map((b) => b.name)
+    const claims = [...this.claims.values()]
+    const requests = []
+    for (const r of st.open) {
+      const mine = new Map(cleanFiles(r.files).filter((f) => editors.has(f)).map((f) => [f, editors.get(f)]))
+      const markers = new Set()
+      for (const rel of mine.keys()) {
+        try { const t = fs.readFileSync(path.join(this.root, rel), 'utf8'); if (t.length < 2_000_000 && hasMarkers(t)) markers.add(rel) } catch {}
+      }
+      const taskEditors = new Set(r.task ? history.filter((e) => e.task && e.task.id === r.task.id && !e.pulled).map((e) => e.by) : [])
+      const blocker = r.branch && r.branch !== this.git.branch ? `for ${r.branch}` : !mine.size ? 'nothing to commit' : requestWarning(r, { editors: mine, claims, markers, taskEditors, busy })
+      requests.push({ id: r.id, editors: Object.fromEntries(mine), blocker })
+    }
+    return { branch: this.git.branch, groups: uncommittedByPerson(editors), requests }
+  }
+
+  /** Looks at the open requests again soon (one came in, or one was committed). */
+  reviewCommitsSoon (ms = 5000) {
+    if (this.stopped || !this.canCommit()) return
+    clearTimeout(this.reviewCommitsTimer)
+    this.reviewCommitsTimer = setTimeout(() => this.reviewCommits().catch((err) => this.emit('debug', `commit requests: ${err.message}`)), ms)
+    if (this.reviewCommitsTimer.unref) this.reviewCommitsTimer.unref()
+  }
+
+  /**
+   * In a folder that can commit: a request on this branch whose files are already in git as they
+   * are (its asker committed them, or someone did) is closed quietly once it is a minute old, and
+   * the app's count of what is not committed here is brought up to date.
+   */
+  async reviewCommits () {
+    if (this.stopped || !this.canCommit() || this.committing || this.hold) return
+    const work = await this.uncommittedWork()
+    if (!work) return
+    // For the app's commit chip: how much work here is not in git yet, and whose.
+    const summary = { files: new Set(work.groups.flatMap((g) => g.files)).size, people: work.groups.filter((g) => g.by).map((g) => g.by) }
+    if (JSON.stringify(summary) !== JSON.stringify(this.uncommittedSummary)) { this.uncommittedSummary = summary; this.emit('status-changed') }
+    let next = Infinity
+    for (const w of work.requests) {
+      const r = this.commitRequests.get(w.id)
+      if (!r || r.state !== 'open' || (r.branch && r.branch !== work.branch)) continue
+      const young = Date.now() - (r.ts || 0) < REQUEST_SETTLE_MS
+      if (young) { next = Math.min(next, r.ts + REQUEST_SETTLE_MS - Date.now()); continue }
+      if (w.blocker === 'nothing to commit') {
+        this.doc.transact(() => this.commitRequests.set(r.id, { ...r, state: 'done', doneBy: this.name, doneAt: Date.now(), hash: '', committed: [], note: 'already in git' }), LOCAL)
+        continue
+      }
+    }
+    if (next < Infinity) this.reviewCommitsSoon(Math.max(1000, next + 500))
   }
 
   /**
@@ -4188,7 +4453,8 @@ export class Session extends EventEmitter {
       open: requests.filter((r) => r.state === 'open'),
       recent: requests.filter((r) => r.state === 'done').slice(-5),
       busy,
-      ready: busy.length === 0
+      ready: busy.length === 0,
+      canCommit: this.canCommit()
     }
   }
 
@@ -5376,6 +5642,9 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
       peers,
       claims: [...this.claims.values()].sort((a, b) => a.ts - b.ts),
       commits: [...this.commitRequests.values()].sort((a, b) => a.ts - b.ts),
+      canCommit: this.canCommit(),
+      agentCommits: (this.access && this.access.agentCommits) || 'branches',
+      uncommitted: this.canCommit() ? this.uncommittedSummary || null : null,
       tasks: this.taskList(),
       // Without the texts (up to 400 KB a record): status goes out on every
       // change. The full records are at GET /merges and the app's merges route.
@@ -5404,6 +5673,8 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
     this.ready = false
     clearInterval(this.autoClaimTimer)
     clearInterval(this.personaTimer)
+    clearInterval(this.reviewCommitsTimer2)
+    clearTimeout(this.reviewCommitsTimer)
     if (this.autoClaims.size && this.conn && !this.stopped) {
       await Promise.race([this.releaseAutoClaims(), new Promise((r) => setTimeout(r, 2000))])
     }

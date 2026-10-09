@@ -28,7 +28,11 @@ import { registerWorkspaceTools, bytesFetcher, isInside } from './workspace-tool
 import { quiltHome } from './legacy.js'
 import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, qaRefusal, qaNotesEnough, qaNotesLine, MAX_VERIFIED } from './agent-task-workflow.js'
 import { formatHistory } from './history.js'
+import { describeCommitRequests, REQUEST_COMMIT_DESCRIPTION } from './commit.js'
+import { COMMIT_DESCRIPTION, commitSchema } from './github-commit.js'
+import { describeCommit, POLICY_WORDS } from './relay-commit.js'
 import { renderInbox, describeEvent, INBOX_HOW } from './inbox.js'
+import { renderConversation, renderContext, CONVERSATION_DESCRIPTION } from './conversation.js'
 import { renderChatAbout, renderUnanswered, heldRefusal, renderQueueNotice, renderQueued, CHAT_RULES } from './duties.js'
 import { describeSubscription, WEBHOOK_EVENTS } from './webhooks.js'
 import { UpdateCheck } from './update-check.js'
@@ -87,6 +91,8 @@ export const MCP_INSTRUCTIONS =
   'If quilt_status lists merges to settle, read quilt_merges before editing those files. ' +
   'If quilt_status starts with While you were away, the session changed since this folder last synced: read quilt_history for those files before editing them. ' +
   'Mentions of you (@yourname) in chat, direct messages to you and tasks handed to you wait in quilt_inbox: read it when you start, and act on each one. ' +
+  'Each comes with the conversation before it with its sender; when a message refers to something earlier you do not have, read back with quilt_conversation before you answer, never guess. ' +
+  'Commit your finished work yourself with quilt_commit (the files and a message; no git needed, nobody else needs to be online), to a branch of your own with a pull request, or to the session\'s branch when the owner allows; when agents may not commit, ask a person with quilt_request_commit. ' +
   'Chat: ' + CHAT_RULES.replace(/^Send a chat message\. /, '') + ' A message that needs nothing back is settled with quilt_inbox (no_reply: [its id]), not answered. ' +
   'To be woken instead of polling, subscribe to the quilt://inbox resource (you are told when something new arrives), or quilt_webhook_subscribe POSTs each one to a URL of yours as it happens. ' +
   'You are a member of your own in the session, apart from your person and their other AI sessions, named "<their first name> · <label>" after your work (your git branch, or what you first say you are doing); rename yourself with quilt_name_session. Your messages, inbox, claims and duties are your own. People see all of a person\'s AI sessions as one, "<person>\'s AI" ("Daniel\'s AI"): write to another person\'s AI by that name, and what is written to your person\'s AI reaches whichever of their sessions was active last. ' +
@@ -460,10 +466,10 @@ export async function runMcp () {
     const s = await track(d)
     if (no_reply && no_reply.length) {
       const note = `Settled as needing no reply: ${settled.length ? settled.join(', ') : 'none (unknown ids)'}.`
-      return [note, renderInbox(r.events)].filter(Boolean).join('\n\n')
+      return [note, renderInbox(r.events, { me: r.me })].filter(Boolean).join('\n\n')
     }
     s.seq = Math.max(s.seq, r.seq) // shown here, so not again in front of the next answer
-    return renderInbox(r.events) || (all ? 'Nothing has been waiting for you.' : 'Nothing new for you.')
+    return renderInbox(r.events, { me: r.me }) || (all ? 'Nothing has been waiting for you.' : 'Nothing new for you.')
   }, { inbox: false }))
 
   server.registerTool('quilt_webhook_subscribe', {
@@ -510,7 +516,7 @@ export async function runMcp () {
     for (const e of r.events) {
       await server.server.notification({
         method: CHANNEL_METHOD,
-        params: { content: `${describeEvent(e)}\n${INBOX_HOW}`, meta: { kind: e.kind, from: String(e.by || ''), id: String(e.id || '') } }
+        params: { content: [describeEvent(e), renderContext(e, { me: r.me }), INBOX_HOW].filter(Boolean).join('\n'), meta: { kind: e.kind, from: String(e.by || ''), id: String(e.id || '') } }
       })
     }
   }
@@ -521,7 +527,7 @@ export async function runMcp () {
   }, async (uri) => {
     const d = findDaemon(joined ? joined.dir : undefined)
     const r = d ? await call(d, 'POST', '/inbox', { after: 0, poll: true }).catch(() => ({ events: [] })) : { events: [] }
-    return { contents: [{ uri: uri.href, mimeType: 'text/markdown', text: d ? (renderInbox(r.events) || 'Nothing has been waiting for you.') : NOT_RUNNING }] }
+    return { contents: [{ uri: uri.href, mimeType: 'text/markdown', text: d ? (renderInbox(r.events, { me: r.me }) || 'Nothing has been waiting for you.') : NOT_RUNNING }] }
   })
   server.server.setRequestHandler(SubscribeRequestSchema, (req) => {
     if (req.params.uri === INBOX_URI) {
@@ -547,6 +553,19 @@ export async function runMcp () {
     if (!messages.length) return all ? 'No messages yet.' : 'No unread messages.'
     const me = (await call(d, 'GET', '/status')).me.name
     return messages.map((m) => `- ${renderMessage(m, me)}`).join('\n')
+  }))
+
+  server.registerTool('quilt_conversation', {
+    description: CONVERSATION_DESCRIPTION,
+    inputSchema: {
+      with: z.string().max(200).optional().describe('Only the conversation with this person or agent: direct messages either way, and messages that @mention one of you'),
+      q: z.string().max(200).optional().describe('Only messages containing this text (any case)'),
+      before: z.string().max(40).optional().describe('Only messages before this message id (to read further back)'),
+      limit: z.number().int().min(1).max(200).optional().describe('How many of the newest matching messages (default 30)')
+    }
+  }, (args) => withDaemon(async (d) => {
+    const r = await call(d, 'POST', '/conversation', { with: args.with, q: args.q, before: args.before, limit: args.limit })
+    return renderConversation(r, { me: r.me, with: args.with, q: args.q })
   }))
 
   server.registerTool('quilt_send_file', {
@@ -740,9 +759,8 @@ export async function runMcp () {
   const describeCommits = (c) => {
     const lines = []
     lines.push(c.ready ? '✅ Everyone else\'s AI is idle: a good moment to commit.' : `⏳ Still working: ${c.busy.map((b) => b.why).join('; ')}`)
-    if (c.open.length) lines.push('Open commit requests:', ...c.open.map((r) => `- ${r.by}${r.branch && r.branch !== DEFAULT_KEY ? ` asked for a commit on \`${r.branch}\`` : ''}: ${r.message}`))
-    else lines.push('No open commit requests.')
-    lines.push('When a commit is made, mark the requests done with quilt_commit_request_done.')
+    lines.push(describeCommitRequests(c, { canCommit: !!c.canCommit }))
+    if (c.open.length) lines.push('A request committed outside Quilt (with git by hand) is closed with quilt_commit_request_done.')
     return lines.join('\n')
   }
 
@@ -832,12 +850,32 @@ export async function runMcp () {
   }))
 
   server.registerTool('quilt_request_commit', {
-    description: 'Ask the people in the session for a commit, e.g. because your changes are ready or you need one to test or deploy. Someone commits with git on their machine and marks the request done.',
-    inputSchema: { message: z.string().describe('What the commit should say / why you need it') }
-  }, ({ message }) => withDaemon(async (d) => {
-    await call(d, 'POST', '/commit-request', { message })
-    return `Asked for a commit.\n${describeCommits(await call(d, 'GET', '/commits'))}`
+    description: REQUEST_COMMIT_DESCRIPTION,
+    inputSchema: {
+      message: z.string().max(500).optional().describe('The commit message: what the change does (a task\'s title by default)'),
+      files: z.array(z.string().max(1024)).max(500).optional().describe('The files you changed, relative to the project\'s top folder (deleted ones too)'),
+      task: z.string().max(40).optional().describe('The task this work was for: its title is the message and its changes the files, unless you give them')
+    }
+  }, ({ message, files, task }) => withDaemon(async (d) => {
+    const r = await call(d, 'POST', '/commit-request', { message, files, task })
+    return `Asked for a commit [${r.id}] of ${r.files.length} file${r.files.length === 1 ? '' : 's'}: ${r.files.slice(0, 12).join(', ')}${r.files.length > 12 ? ', …' : ''}.\n${r.committer}`
   }, { gate: gateFor('quilt_request_commit') }))
+
+  server.registerTool('quilt_commit', {
+    description: COMMIT_DESCRIPTION,
+    inputSchema: commitSchema(z)
+  }, (args) => withDaemon(async (d) => {
+    const r = await call(d, 'POST', '/commit', { files: args.files, message: args.message, branch: args.branch, pullRequest: args.pull_request, withOthers: args.with_others, task: args.task })
+    return describeCommit(r, { policy: r.agentCommits })
+  }, { gate: gateFor('quilt_commit') }))
+
+  server.registerTool('quilt_agent_commits', {
+    description: 'Session owner only: what agents may do with quilt_commit. "off": nothing (they ask a person with quilt_request_commit); "branches" (the default): branches of their own, quilt/<agent>/…, with pull requests for people to merge; "any": any branch, the session\'s own included. People are not limited by it.',
+    inputSchema: { mode: z.enum(['off', 'branches', 'any']) }
+  }, ({ mode }) => withDaemon(async (d) => {
+    const r = await call(d, 'POST', '/agent-commits', { mode })
+    return `Now ${POLICY_WORDS[r.agentCommits]}.`
+  }))
 
   server.registerTool('quilt_branches', {
     description: 'The session\'s git branches: which branch each member\'s folder is on, which AI sessions and worktrees work on which branch, how each stands against its upstream (behind, ahead, diverged), and who committed last. Read it before you branch, merge or push.',
@@ -854,7 +892,7 @@ export async function runMcp () {
   }, () => withDaemon(async (d) => describeBranchSync(await call(d, 'POST', '/branches/sync'))))
 
   server.registerTool('quilt_github_token', {
-    description: 'Session owner only: set (or clear, with an empty token) the read-only GitHub token the relay uses to bring commits in from a private repository while no folder can, and to load branches from it for hosted agents. A fine-grained token with read access to the repository\'s contents is enough. It goes to the relay and stays there: never shown again.',
+    description: 'Session owner only: set (or clear, with an empty token) the GitHub token the relay uses to bring commits in from a private repository while no folder can, to load branches from it for hosted agents, and, when it can write, to commit members\' work (quilt_commit). A fine-grained token for the repository with "Contents: Read" brings commits in; "Contents: Read and write" and "Pull requests: Read and write" let agents commit and open pull requests, within what quilt_agent_commits allows. It goes to the relay and stays there: never shown again.',
     inputSchema: { token: z.string().max(300).describe('The token (github_pat_… or ghp_…), or "" to remove it') }
   }, ({ token }) => withDaemon(async (d) => {
     const r = await call(d, 'POST', '/github-token', { token })
@@ -880,7 +918,7 @@ export async function runMcp () {
   }, { gate: gateFor('quilt_wait_until_idle') }))
 
   server.registerTool('quilt_commit_request_done', {
-    description: 'Mark commit requests done after a commit was made with git (yours or someone\'s). Without an id, every open request is marked done.',
+    description: 'Close commit requests whose work was committed with git by hand (or isn\'t needed any more). Without an id, every open request is closed. To have Quilt commit one, use quilt_commit in a folder with git.',
     inputSchema: { id: z.string().optional().describe('One request id; omit for all open ones') }
   }, ({ id }) => withDaemon(async (d) => {
     const { done } = await call(d, 'POST', '/commit-request/done', { id })

@@ -21,7 +21,8 @@ export const TASK_WORKFLOW =
   'then implement a plan, then build the change, then test it (confirm the tests you touch pass) ' +
   'and run the project\'s own checks under "Verifying a change" in AGENTS.md. ' +
   'When finished, move the ticket to QA (not straight to Done) with `qaNotes`: describe the changes you made and how you self-validated them. ' +
-  'Moving to Done still requires `verified` (what you ran and what you saw). Unit tests passing is not enough when the app itself was not exercised.'
+  'Moving to Done still requires `verified` (what you ran and what you saw). Unit tests passing is not enough when the app itself was not exercised. ' +
+  'Commit the task\'s files with `quilt_commit` before you move it to QA (or, when agents may not commit, ask with `quilt_request_commit`): work only in the session has not shipped.'
 
 /** Markdown bullets for AGENTS.md / CLAUDE.md (same steps as TASK_WORKFLOW). */
 export const TASK_WORKFLOW_MD =
@@ -31,7 +32,8 @@ export const TASK_WORKFLOW_MD =
   '  3. **Build** it.\n' +
   '  4. **Test** it: confirm the tests you touch pass, then run the project\'s own checks under "Verifying a change" below.\n' +
   '  5. **QA**: move to `qa` (not straight to Done) with `qaNotes` describing the changes and how you self-validated them.\n' +
-  '  6. **Done** (after QA): `quilt_move_task` to `done` needs `verified`, what you ran and what you saw. Unit tests passing is not enough when the app itself was not exercised.'
+  '  6. **Done** (after QA): `quilt_move_task` to `done` needs `verified`, what you ran and what you saw. Unit tests passing is not enough when the app itself was not exercised.\n' +
+  '  7. **Commit** before QA: `quilt_commit` with the task\'s files and a message (a branch of your own with a pull request, or the session\'s branch when the owner allows). When agents may not commit, ask with `quilt_request_commit`. Work only in the session has not shipped.'
 
 /** Scaffolded into AGENTS.md by `quilt setup` when the project has no checklist yet. Owners edit it in place. */
 export const CHECKLIST_SCAFFOLD = `${CHECKLIST_HEADING}

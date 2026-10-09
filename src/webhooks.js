@@ -140,7 +140,7 @@ export function describeSubscription (sub, { showSecret = false } = {}) {
   if (!sub) return 'No webhook: Quilt only answers quilt_inbox when you ask.'
   const lines = [`Webhook: Quilt POSTs to ${sub.url} on ${sub.events.join(', ')}${sub.bearer ? ', with your bearer key in the Authorization header' : ''}.`]
   if (showSecret) lines.push(`Secret (shown once; check x-quilt-signature with it): ${sub.secret}`)
-  lines.push('Each POST is JSON ({ event, id, room, to, by, text, ts, task? }) with x-quilt-event, x-quilt-delivery, x-quilt-timestamp and ' +
+  lines.push('Each POST is JSON ({ event, id, room, to, by, text, ts, task?, context? }; context: the messages before this one between you and its sender, oldest first) with x-quilt-event, x-quilt-delivery, x-quilt-timestamp and ' +
     'x-quilt-signature: sha256=HMAC-SHA256(secret, "<timestamp>.<body>"). Answer 2xx quickly; a failed POST is retried a few times. ' +
     'What you are told is still in quilt_inbox. Stop with quilt_webhook_unsubscribe.')
   return lines.join('\n')
@@ -150,6 +150,13 @@ export function describeSubscription (sub, { showSecret = false } = {}) {
 export function webhookPayload (e, { room = '', to = '' } = {}) {
   const p = { event: EVENT_OF_KIND[e.kind] || e.kind, id: String(e.id || ''), room, to, by: String(e.by || ''), text: String(e.text || ''), ts: Number(e.ts) || Date.now() }
   if (e.kind === 'task' && e.task) p.task = { id: e.task.id, title: e.task.title, column: e.task.column, assignee: e.task.assignee ?? null, forAi: !!e.task.forAi, tool: e.task.tool || '', files: e.task.files || [] }
+  if (e.commit) p.commit = true // work this member asked to commit was committed: nothing to answer
+  // The conversation before this with whoever it is from (conversation.js), so an agent woken
+  // fresh knows what "that" refers to; `earlier` older messages are a quilt_conversation away.
+  if (Array.isArray(e.context) && e.context.length) {
+    p.context = e.context.map((m) => ({ id: m.id, by: m.by, ...(m.to ? { to: m.to } : {}), text: m.text, ts: m.ts }))
+    if (e.earlier) p.earlier = e.earlier
+  }
   return p
 }
 

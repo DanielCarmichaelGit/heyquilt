@@ -43,21 +43,23 @@ test('commit requests, busy people, and marking them done', async () => {
   assert.equal(host.commitStatus().ready, false)
   assert.throws(() => guest.requestCommit('  '), /say what the commit is for/)
   fs.writeFileSync(path.join(guestDir, 'app.js'), 'v2\n')
-  guest.requestCommit('login works end to end')
+  assert.throws(() => guest.requestCommit('x', { files: ['../outside'] }), /none of those are files/)
+  guest.requestCommit('login works end to end', { files: ['app.js'] })
   await waitFor(() => host.commitStatus().open.length === 1)
   assert.equal(host.commitStatus().open[0].by, 'gus')
   assert.equal(host.commitStatus().open[0].branch, 'main', 'the request names the branch it was asked for on')
-  assert.match(renderStatus(host.status()), /## Commit requests\n- .*: gus asked for a commit on `main`: login works end to end/)
+  assert.deepEqual(host.commitStatus().open[0].files, ['app.js'], 'the request names its files')
+  assert.match(renderStatus(host.status()), /## Commit requests\n- \[[0-9a-f]+\] .*: gus asked for a commit on `main`: login works end to end \(1 file\)/)
   guest.setWork('done')
   await waitFor(() => host.commitStatus().ready)
   await waitFor(() => fs.readFileSync(path.join(hostDir, 'app.js'), 'utf8') === 'v2\n')
 
-  // Nobody commits through Quilt any more: a commit is made outside it, and
-  // anyone marks the open requests done.
+  // quilt_commit goes to the relay, which doesn't know this branch's GitHub repository here;
+  // a commit made outside Quilt is closed by marking the open requests done.
   const hostCtl = await startControl(host, {})
   const guestCtl = await startControl(guest, { joined: true })
   const d = (c, s) => JSON.parse(fs.readFileSync(path.join(s.stateDir, 'daemon.json'), 'utf8'))
-  await assert.rejects(call(d(guestCtl, guest), 'POST', '/commit', {}), /not found/)
+  await assert.rejects(call(d(guestCtl, guest), 'POST', '/commit', { files: ['app.js'], message: 'x' }), /doesn't know which GitHub repository/)
   const r = await call(d(hostCtl, host), 'POST', '/commit-request/done', {})
   assert.equal(r.done, 1)
   await waitFor(() => guest.commitStatus().open.length === 0)

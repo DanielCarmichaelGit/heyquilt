@@ -186,6 +186,18 @@ export async function listAgents ({ token, api = apiUrl(), fetch: fetchImpl = gl
   return r.agents
 }
 
+/** This account's GitHub connection (Quilt's GitHub App): { available, connected, login? }. */
+export async function githubStatus ({ token, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  return call(fetchImpl, api, 'GET', '/v1/me/github', null, token)
+}
+
+/** Where to send this person to connect GitHub (install Quilt's app on their repositories). */
+export async function githubConnectUrl ({ token, api = apiUrl(), fetch: fetchImpl = globalThis.fetch }) {
+  const r = await call(fetchImpl, api, 'POST', '/v1/github/connect', {}, token)
+  if (!r.url) throw new Error(BAD_REPLY)
+  return r.url
+}
+
 // Access types, grants and session invites, as this computer's account (see
 // docs/superpowers/specs/2026-10-02-access-types-and-invites-design.md). Each throws with
 // .status when the API says no (401 once the token is revoked).

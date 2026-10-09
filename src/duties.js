@@ -139,12 +139,15 @@ export function waitingOn (messages, me, { now = Date.now(), windowMs = REQUEST_
   return out
 }
 
-/** A message the relay wrote for the file queue: someone asking for a file, or a file handed over. */
-export const fileQueueMessage = (m) => !!m && (m.kind === 'queue' || m.kind === 'handoff')
+/**
+ * A message that needs no reply: one the relay wrote for the file queue (someone asking for a file,
+ * or a file handed over), or a note that work someone asked to commit was committed (commit.js).
+ */
+export const fileQueueMessage = (m) => !!m && (m.kind === 'queue' || m.kind === 'handoff' || m.kind === 'commit')
 
 /** Direct messages and mentions among inbox `events` that `me` has not answered yet. */
 export function unanswered (events, { messages = [], me } = {}) {
-  return (events || []).filter((e) => e && (e.kind === 'dm' || e.kind === 'mention') && !e.queue && e.by !== me && !answered(messages, me, e.by, e.ts))
+  return (events || []).filter((e) => e && (e.kind === 'dm' || e.kind === 'mention') && !e.queue && !e.commit && e.by !== me && !answered(messages, me, e.by, e.ts))
 }
 
 /**

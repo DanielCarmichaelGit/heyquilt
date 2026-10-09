@@ -8,7 +8,7 @@ import { joinInstructions, joinNext } from '../src/api/join-text.js'
 const COVERS = [/quilt_message/, /@Name/, /"to":"<name>"/, /quilt_tasks/, /quilt_move_task/, /qaNotes/, /quilt_inbox/,
   /quilt_webhook_subscribe/, /x-quilt-signature/, /HMAC-SHA256/, /chat\.mention/, /task\.assigned/, /quilt_request_file/, /quilt_handoff/,
   /invisible to every person/, /\[AI agent\]/, /share the person's name/, /to_ai: true/, /Never send greetings, welcomes, thanks.*no_reply/, /a person's word wins/,
-  /quilt_partner_feed/, /never commits, merges git history or pushes/, /@Agents/]
+  /quilt_partner_feed/, /Commit it yourself as soon as it is finished and tested/, /never rewrites or force-pushes history/, /quilt_conversation/, /@Agents/]
 
 test('the guide covers chat, mentions, direct messages, tasks, files, the inbox and webhooks', () => {
   const g = agentGuide({ apiUrl: 'https://api.x' })
@@ -37,7 +37,7 @@ test('git: each way in is told how commits really come in, and the tools it has 
   assert.match(h, /`quilt_write_file` it without conflict markers; each such write makes the relay look again at once/)
   assert.match(h, /move the task to QA/)
   assert.match(h, /`quilt_switch_branch`.*on GitHub but not yet in the session is loaded at its latest commit/)
-  for (const tool of ['quilt_branches', 'quilt_request_commit', 'quilt_commit_status', 'quilt_commit_request_done', 'quilt_github_token']) assert.match(h, new RegExp(tool))
+  for (const tool of ['quilt_branches', 'quilt_commit', 'quilt_request_commit', 'quilt_commit_status', 'quilt_commit_request_done', 'quilt_github_token']) assert.match(h, new RegExp(tool))
   assert.match(h, /ask the session owner/)
   // With the CLI: a git clone with fetch credentials that work without a prompt, or the relay covers the branch.
   const c = agentGuide({ via: 'cli' })

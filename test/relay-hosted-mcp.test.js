@@ -306,7 +306,7 @@ test('quilt_inbox shows mentions, direct messages and tasks handed to the hosted
   assert.match(inbox, /- Carl sent you a direct message \(id \w+\): between us: keep it short/)
   assert.match(inbox, new RegExp(`- Carl handed you a task: "Write the usage section" \\(id ${task.id}\\)\\. Files: README\\.md`))
   assert.doesNotMatch(inbox, /nothing for the bot here/)
-  assert.doesNotMatch(inbox, /hello from the cloud/, 'its own messages')
+  assert.doesNotMatch(inbox, /^- .*hello from the cloud/m, 'its own messages are not waiting for it (they show only as context)')
   assert.equal(out(await call('quilt_inbox')), 'Nothing new for you.')
   carl.deleteTask(task.id)
 })

@@ -22,6 +22,7 @@ import { makeAgentAuth, isAgentKey } from './agent-auth.js'
 import { agentInviteRoutes } from './routes/agent-invites.js'
 import { joinRoutes } from './routes/join.js'
 import { relayRoutes } from './routes/relay.js'
+import { githubRoutes } from './routes/github.js'
 import { sessionRoutes } from './routes/sessions.js'
 import { accessTypeRoutes } from './routes/access-types.js'
 import { grantRoutes } from './routes/grants.js'
@@ -56,7 +57,7 @@ const MCP_TIMEOUT_MS = 30 * 1000
 // a change to its grant reaches it as soon as it reaches a connected app.
 const PASS_REUSE_MARGIN_MS = 5 * 60 * 1000
 
-export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, apiUrl = 'https://api.heyquilt.com', mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, tokenLimit = 30, joinLimit = 20, trustProxy = false, maxStartKeys = 10_000, passKey = '', passLimit = 60, relayUrl = HOSTED_RELAY, mcpLimit = 600, reportKey = '', reportLimit = 10, slowMs = 2000, pruneEveryMs = 60 * 60 * 1000, keepEventsMs = 30 * 24 * 60 * 60 * 1000, keepIssuesMs = 90 * 24 * 60 * 60 * 1000, pruneStartMs = 10_000, relaySecret = '', workspaces = false, fileStore = null, maxFileBytes = 500 * 1024 * 1024, workspaceQuotaBytes = 5 * 1024 * 1024 * 1024, maxWorkspaceFiles = 2000, webhookFetch = globalThis.fetch, webhookLookup, allowLocalWebhooks = false }) {
+export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, siteUrl, apiUrl = 'https://api.heyquilt.com', mailer = { send: async () => { throw new Error('no mailer configured') } }, now = Date.now, log = () => {}, startLimit = 10, inviteLimit = 10, inviteSendLimit = 20, tokenLimit = 30, joinLimit = 20, trustProxy = false, maxStartKeys = 10_000, passKey = '', passLimit = 60, relayUrl = HOSTED_RELAY, mcpLimit = 600, reportKey = '', reportLimit = 10, slowMs = 2000, pruneEveryMs = 60 * 60 * 1000, keepEventsMs = 30 * 24 * 60 * 60 * 1000, keepIssuesMs = 90 * 24 * 60 * 60 * 1000, pruneStartMs = 10_000, relaySecret = '', workspaces = false, fileStore = null, maxFileBytes = 500 * 1024 * 1024, workspaceQuotaBytes = 5 * 1024 * 1024 * 1024, maxWorkspaceFiles = 2000, webhookFetch = globalThis.fetch, webhookLookup, allowLocalWebhooks = false, github = null, githubFetch = globalThis.fetch }) {
   // PASS_SIGNING_KEY. A bad one should stop the API at start, not fail every pass later.
   if (passKey) passPublicKey(passKey)
   const site = String(siteUrl || '').replace(/\/+$/, '')
@@ -312,7 +313,7 @@ export function startApi ({ port = 0, host = '127.0.0.1', store, verifyUser, sit
   const deliveries = new Set()
   const trackDelivery = (p) => { deliveries.add(p); p.finally(() => deliveries.delete(p)).catch(() => {}); return p }
   const ctx = { store, user, person, device, bearer, now, site, apiUrl: api, mailer, log, limit: limitInvites, limitSend: limitInviteSend, limitTokens, limitStarts, spendResume, resumeWindowMs: RESUME_WINDOW_MS, limitJoin, agentAuth, reportKey, limitReports, relaySecret, files, maxFileBytes, workspaceQuotaBytes, maxWorkspaceFiles }
-  routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx), ...agentRoutes(ctx), ...agentInviteRoutes({ ...ctx, workspaces }), ...joinRoutes(ctx), ...relayRoutes(ctx), ...sessionRoutes(ctx), ...accessTypeRoutes(ctx), ...grantRoutes({ ...ctx, workspaces }), ...sessionInviteRoutes({ ...ctx, workspaces }), ...issueRoutes(ctx))
+  routes.push(...orgRoutes(ctx), ...memberRoutes(ctx), ...teamRoutes(ctx), ...inviteRoutes(ctx), ...agentRoutes(ctx), ...agentInviteRoutes({ ...ctx, workspaces }), ...joinRoutes(ctx), ...relayRoutes(ctx), ...githubRoutes({ ...ctx, github, githubFetch }), ...sessionRoutes(ctx), ...accessTypeRoutes(ctx), ...grantRoutes({ ...ctx, workspaces }), ...sessionInviteRoutes({ ...ctx, workspaces }), ...issueRoutes(ctx))
   // Always routed: with the flag off each answers a plain 404 of its own, so the app's
   // check at every launch isn't filed as a missing route.
   // Only these take a hosted agent's pass (workspaceReach), so they alone get the pass key.

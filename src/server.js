@@ -47,6 +47,9 @@ import { JOIN_HOST } from './ui/invite.js'
 import { PresenceReporter, PRESENCE_FILE } from './presence.js'
 import { cleanSessionName, BAD_SESSION_NAME } from './session-name.js'
 import { hostedWebhooks } from './relay-webhooks.js'
+import { ChatArchive } from './chat-archive.js'
+import { commitForMember, agentCommitsOf } from './relay-commit.js'
+import { AGENT_COMMITS } from './github-commit.js'
 import { UPSTREAM_CHECK_MS, SYNC_EVERY_MS, upstreamsOf, noteFolders, relayEntry, relayLooks, dueBranches, checkBranch, validToken, folderAble, noteHolds, connectedAs, describeRelayCheck, loadBranch, parseRepo, configureGithubBudget, CLASH_IDLE_MS } from './relay-upstream.js'
 
 const ROOM_RE = /^[A-Za-z0-9_-]{1,64}$/
@@ -207,6 +210,10 @@ class Room {
     this.blobs = this.doc.getMap('blobs')
     this.fileKeys = this.doc.getMap('fileKeys')
     this.chat = this.doc.getArray('chat')
+    // Every message, kept past the room's newest 500, for hosted agents' conversations (chat-archive.js).
+    this.chatArchive = new ChatArchive(dataDir && path.join(dataDir, `${name}.chat.jsonl`), { log: (m) => log(`[${name}] ${m}`) })
+    this.chatArchive.add(this.chat.toArray())
+    this.chat.observe((ev) => { if (ev.changes.added.size) this.chatArchive.add(this.chat.toArray()) })
     this.feed = this.doc.getArray('agentFeed')
     this.activity = this.doc.getArray('activity') // { by, path, kind, detail, ts }
     this.commitRequests = this.doc.getMap('commitRequests') // id -> { id, by, message, ts, state, ... }
@@ -1219,6 +1226,38 @@ class Room {
     return { state: r ? r.state : 'not-looking', said: describeRelayCheck(r, upstreamsOf(this)[key] || rec, key, this) }
   }
 
+  /**
+   * A member's commit to GitHub from the session's copy of the files on branch `key`
+   * (relay-commit.js): who is { name, kind, access }; `req` says files, message, branch,
+   * pullRequest, withOthers, task. One at a time per session.
+   */
+  async commitFor (who, key, req = {}) {
+    const run = () => commitForMember(this, {
+      who,
+      key,
+      files: Array.isArray(req.files) ? req.files.slice(0, 1000).map(String) : null,
+      message: typeof req.message === 'string' ? req.message : '',
+      branch: typeof req.branch === 'string' ? req.branch : '',
+      pullRequest: req.pullRequest === true,
+      withOthers: req.withOthers === true,
+      task: typeof req.task === 'string' ? req.task : null
+    }, { fetch: this.githubFetch, log: this.log })
+    const next = (this.committing || Promise.resolve()).then(run, run)
+    this.committing = next.catch(() => {})
+    return next
+  }
+
+  /** What agents may do with commits ('off', 'branches', 'any'): the owner's call. Everyone's access says it. */
+  setAgentCommits (mode) {
+    if (!AGENT_COMMITS.includes(mode)) throw new Error(`pick one of ${AGENT_COMMITS.join(', ')}`)
+    if (mode !== agentCommitsOf(this)) {
+      this.meta.agentCommits = mode
+      this.saveMeta()
+      for (const [cws, a] of this.access) send(cws, jsonMessage(MSG_ACCESS, this.accessMessage(a)))
+    }
+    return agentCommitsOf(this)
+  }
+
   /** The owner sets (or clears, with '') the read-only GitHub token. Never echoed or logged. */
   setGithubToken (token) {
     const t = String(token ?? '').trim()
@@ -1356,7 +1395,7 @@ class Room {
 
   accessMessage (a) {
     // The owner learns whether a GitHub token is set (never the token itself); nobody else hears of it.
-    return { state: 'approved', role: a.role, scopes: a.scopes || [], scopesExcept: a.scopesExcept || [], talk: a.talk !== false, owner: !!a.owner, controlled: this.controlled, admitBy: this.admitBy, canAdmit: this.personCanAdmit(a), ...(a.owner ? { githubToken: !!this.meta.githubToken } : {}) }
+    return { state: 'approved', role: a.role, scopes: a.scopes || [], scopesExcept: a.scopesExcept || [], talk: a.talk !== false, owner: !!a.owner, controlled: this.controlled, admitBy: this.admitBy, canAdmit: this.personCanAdmit(a), agentCommits: agentCommitsOf(this), ...(a.owner ? { githubToken: !!this.meta.githubToken } : {}) }
   }
 
   /** Tracks restricted connections so their file changes are checked. */
@@ -1414,7 +1453,12 @@ class Room {
       }
       return { ok: true }
     }
-    if (req.op === 'syncUpstream') throw new Error('syncUpstream is answered by itself') // see the MSG_ADMIN handler
+    if (req.op === 'syncUpstream' || req.op === 'commit') throw new Error(`${req.op} is answered by itself`) // see the MSG_ADMIN handler
+    if (req.op === 'agentCommits') {
+      // What agents may do with commits (relay-commit.js): the owner's call.
+      if (!me.owner) throw new Error('only the session owner can do that')
+      return { ok: true, agentCommits: this.setAgentCommits(req.agentCommits) }
+    }
     // A chat link lets a chat AI in, so whoever may let people in may make one, and set how long it lasts.
     if (req.op === 'approve' || req.op === 'deny' || req.op === 'chatlink' || req.op === 'chatextend') {
       if (!this.personCanAdmit(me)) throw new Error('you cannot let people into this session')
@@ -2131,6 +2175,16 @@ class Room {
             .then((r) => { if (this.conns.has(ws)) send(ws, jsonMessage(MSG_MEMBERS, { members: this.memberList(), sessionName: this.meta.name || '', admitBy: this.admitBy, pending: this.personCanAdmit(this.access.get(ws)) ? this.pendingList() : [], reply: r })) })
           return
         }
+        // quilt_commit from a folder: the relay commits the session's copy of the files to GitHub (relay-commit.js).
+        if (req.op === 'commit') {
+          const id = req.id
+          const a = this.access.get(ws)
+          if (!a || !ws.branch) throw new Error('not in this session')
+          this.commitFor({ name: a.name, kind: a.kind === 'agent' ? 'agent' : 'human', access: a }, ws.branch, req)
+            .then((commit) => ({ id, ok: true, commit }), (err) => ({ id, ok: false, error: err.message }))
+            .then((r) => { if (this.conns.has(ws)) send(ws, jsonMessage(MSG_MEMBERS, { members: this.memberList(), sessionName: this.meta.name || '', admitBy: this.admitBy, pending: this.personCanAdmit(this.access.get(ws)) ? this.pendingList() : [], reply: r })) })
+          return
+        }
         reply = { id: req.id, ...this.adminRequest(ws, req) }
       } catch (err) {
         reply = { id: req.id, ok: false, error: err.message }
@@ -2303,6 +2357,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       if (tooBigToLoad(name)) return null
       try {
         room = new Room(name, dataDir, cfg, log)
+        room.apiFetch = apiFetch // the API: credentials for agents' commits (relay-commit.js)
       } catch (err) {
         if (!err.unreadable) throw err
         // Logged once, not on every retry; tried again each time, in case the operator repaired it.
@@ -2452,6 +2507,7 @@ export function startServer ({ port = 4321, host = '0.0.0.0', dataDir = null, lo
       if (dataDir) {
         fs.rmSync(path.join(dataDir, `${name}.ydoc`), { force: true })
         fs.rmSync(path.join(dataDir, `${name}.json`), { force: true })
+        fs.rmSync(path.join(dataDir, `${name}.chat.jsonl`), { force: true })
         fs.rmSync(path.join(dataDir, 'branches', name), { recursive: true, force: true })
       }
       fs.rmSync(path.join(filesDir, name), { recursive: true, force: true })

@@ -263,6 +263,27 @@ export function formatHistory (list, { withDiff = false, now = Date.now() } = {}
 }
 
 /**
+ * Who made the changes between `before` (a file as git has it) and `after` (as it is now): each
+ * line that differs is put down to the newest history entry (`entries`: that file's, oldest
+ * first) that added or removed it. Pulls from git are nobody's, and lines too common to tell
+ * apart (blank, a lone brace) are not counted. Names in the order their lines come. Unlike "who
+ * edited it since", someone whose edit was later undone, or who only opened the session with the
+ * file, is not named.
+ */
+export function blameChange ({ before = '', after = '', entries = [] }) {
+  const diff = lineDiff(before, after, { context: 0, max: 400_000 })
+  if (!diff) return []
+  const changed = diff.split('\n').filter((l) => (l[0] === '+' || l[0] === '-') && !/^(\+\+\+|---) /.test(l) && l.slice(1).replace(/[\s{}()[\];,]/g, '').length >= 2)
+  const newest = [...entries].reverse().filter((e) => e && !e.pulled && e.by && typeof e.diff === 'string').map((e) => ({ by: e.by, lines: new Set(e.diff.split('\n')) }))
+  const out = []
+  for (const line of changed) {
+    const e = newest.find((x) => x.lines.has(line))
+    if (e && !out.includes(e.by)) out.push(e.by)
+  }
+  return out
+}
+
+/**
  * The In-progress task assigned to `name` (the person or their AI): the first on
  * the board, with the AI's tasks first when `preferAi` says the AI is the one working.
  */

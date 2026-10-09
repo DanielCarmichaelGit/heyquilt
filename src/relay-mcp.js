@@ -21,6 +21,10 @@ import { readComments, addComment, withComments, formatTaskDetails, MAX_COMMENT 
 import { applyTextDiff } from './textdiff.js'
 import { parseInvite } from './ui/invite.js'
 import { scanInbox, renderInbox } from './inbox.js'
+import { withContext, queryConversation, renderConversation, CONVERSATION_DESCRIPTION } from './conversation.js'
+import { cleanFiles, describeCommitRequests, REQUEST_COMMIT_DESCRIPTION, MAX_REQUEST_FILES } from './commit.js'
+import { COMMIT_DESCRIPTION, commitSchema } from './github-commit.js'
+import { describeCommit, agentCommitsOf, POLICY_WORDS } from './relay-commit.js'
 import { UpdateCheck } from './update-check.js'
 import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, qaRefusal, qaNotesEnough, qaNotesLine, pickChecklist, MAX_VERIFIED } from './agent-task-workflow.js'
 import { HistoryLog, queryHistory, parseSince, formatHistory, currentTask } from './history.js'
@@ -68,14 +72,14 @@ export const HOSTED_INSTRUCTIONS =
   'This rule is enforced: while someone who messaged or mentioned you waits for an answer, writes, claims and task changes are refused until you answer with quilt_message. ' +
   'Everyone sees your changes on their own disk within moments. ' +
   'Chat: ' + CHAT_RULES.replace(/^Send a chat message\. /, '') + ' A message that needs nothing back is settled with quilt_inbox (no_reply: [its id]), not answered. ' +
-  'Mentions of you (@yourname), direct messages and tasks handed to you wait in quilt_inbox. To be woken instead of polling, ' +
+  'Mentions of you (@yourname), direct messages and tasks handed to you wait in quilt_inbox, each with the conversation before it with its sender; when a message refers to something earlier you do not have, read back with quilt_conversation before you answer, never guess. To be woken instead of polling, ' +
   'call quilt_webhook_subscribe with a URL of yours: Quilt POSTs each one there as it happens. ' +
   'You are connected over HTTP, so you show as online for 30 minutes after each tool call: while idle, call quilt_inbox at least every 30 minutes so people can see you are still there. ' +
   'HTTP is only for an agent with no computer. If you can run shell commands anywhere (a computer, a cloud machine, a sandbox), you must use the Quilt CLI there instead (`quilt agent join`, then `quilt join <invite> --agent <your name>`): files sync to disk and you show as live. ' +
   'A session has a branch for each git branch its members work on, each with its own files: quilt_status and quilt_branches list them and who is on each, and your first call on files puts you on the busiest one, where you stay until you pick another with quilt_switch_branch (create: true loads a branch that is on GitHub but not yet in the session, at its latest commit; any other new branch starts from a copy of the files you have). ' +
   'Commits pushed or merged on GitHub come into your branch by themselves: through a member\'s folder on it when one is online and can fetch, otherwise the relay brings them in from GitHub about every 10 minutes. quilt_sync_branch asks for that now (at most once a minute per branch), for example after a PR merged. ' +
   'When those commits clash with the session\'s uncommitted work, nothing is brought in and the relay gives one agent a task ("Bring N commits from origin/main into the session"), with each file and what changed upstream in its comments. If it is yours: for each file, quilt_read_file, fold in the upstream change while keeping the session\'s work, and quilt_write_file the merged file without conflict markers; each such write makes the relay look again at once, and the rest of the commits come in when every file merges. If you kept one side whole, move the task to QA once all files are done: the relay then takes the files as merged. The task closes itself. ' +
-  'A private repository needs a read-only GitHub token on the relay: when quilt_status says the relay can\'t read it, ask the session owner (quilt_github_token sets it, owner only). Ask for a commit with quilt_request_commit; quilt_commit_status shows open requests and who is still working; quilt_commit_request_done marks them done once someone committed. ' +
+  'A private repository needs a read-only GitHub token on the relay: when quilt_status says the relay can\'t read it, ask the session owner (quilt_github_token sets it, owner only). Commit your finished work yourself with quilt_commit (the files you changed and a message): Quilt commits the session\'s copy to GitHub, to a branch of your own by default (pull_request: true opens a pull request), or to the session\'s branch when the owner lets agents. When agents may not commit, ask a person with quilt_request_commit. Work only in the session has not shipped: commit before you move a task to QA. ' +
   TASK_WORKFLOW
 
 const NOT_LINKED = 'Your user is not in a quilt session in their browser right now. Ask them to open quilt in their ' +
@@ -188,6 +192,8 @@ function sessionTools (server, ctx) {
   // Which branch a file answer is about, when the session has more than one.
   const onBranchNote = (room, branch) => branch && room.meta && Object.keys(room.meta.branches || {}).length > 1 ? ` on ${branch.key}` : ''
   const visible = (m) => m && m.id && (!m.to || m.to === me || m.by === me)
+  // The chat this agent may read, kept past the room's newest 500 (chat-archive.js), oldest first.
+  const keptChat = (room, chat) => (room && room.chatArchive ? room.chatArchive.with(chat.toArray()) : chat.toArray()).filter(visible)
   const fmtMsg = (m) => `- ${m.by}${m.to ? ` → ${m.to} (direct)` : ''} (${ago(m.ts)}): ${m.text}${m.file ? ` [file: ${m.file.name}]` : ''}`
   const peers = (room) => {
     const out = []
@@ -308,6 +314,8 @@ function sessionTools (server, ctx) {
     lines.push('', '## Recent file changes', ...(acts.length ? acts.map((x) => x.kind === 'pulled' ? `- ${x.by} pulled ${x.detail || 'commits'} (${ago(x.ts)})` : x.kind === 'brought' ? `- ${x.by} brought in ${x.detail || 'commits'}${x.branch ? ` on ${x.branch}` : ''} (${ago(x.ts)})` : x.kind === 'switched' ? `- ${x.by} switched to ${x.branch} (${ago(x.ts)})` : `- ${x.by} ${x.kind} ${x.path} (${ago(x.ts)})`) : ['- None yet.']))
     const msgs = chat.toArray().filter(visible).slice(-8)
     lines.push('', '## Recent messages', ...(msgs.length ? msgs.map(fmtMsg) : ['- None.']))
+    const asked = [...doc.getMap('commitRequests').values()].filter((r) => r && r.id && r.state === 'open').sort((x, y) => x.ts - y.ts)
+    if (asked.length) lines.push('', '## Commit requests', ...asked.map((r) => `- [${r.id}] ${r.by === me ? 'you' : r.by} (${ago(r.ts)}): ${r.message}${Array.isArray(r.files) ? ` (${r.files.length} files)` : ''}${r.error ? `. Last try: ${r.error}` : ''}`))
     lines.push('', '## Tasks', taskMarkdown(readTasks(doc.getMap('tasks')), me, { tool: ctx.tool(), asAi: false, mentionYours: true }))
     const br = branchesOf(room)
     if (br.length) {
@@ -528,7 +536,7 @@ function sessionTools (server, ctx) {
     inputSchema: {
       no_reply: z.array(z.string().max(40)).max(50).optional().describe('Ids of messages that need nothing back from you (thanks, a greeting, an FYI, a status report): settled without a reply')
     }
-  }, ({ no_reply }, { doc, chat }) => {
+  }, ({ no_reply }, { room, doc, chat }) => {
     const box = ctx.inbox ? ctx.inbox() : { state: null }
     const msgs = chat.toArray().filter(visible)
     let note = ''
@@ -542,8 +550,22 @@ function sessionTools (server, ctx) {
     box.state = r.state
     if (ctx.saveInbox) ctx.saveInbox()
     const settled = new Set(box.settled || [])
-    const open = r.events.filter((e) => (e.kind !== 'dm' && e.kind !== 'mention') || e.queue || (!settled.has(e.id) && !answered(msgs, me, e.by, e.ts)))
-    return text([note, renderInbox(open)].filter(Boolean).join('\n\n') || 'Nothing new for you.')
+    const open = r.events.filter((e) => (e.kind !== 'dm' && e.kind !== 'mention') || e.queue || e.commit || (!settled.has(e.id) && !answered(msgs, me, e.by, e.ts)))
+    const seen = keptChat(room, chat)
+    return text([note, renderInbox(withContext(open, seen, { names: [me], agent: true }), { me: [me] })].filter(Boolean).join('\n\n') || 'Nothing new for you.')
+  })
+
+  tool('quilt_conversation', {
+    description: CONVERSATION_DESCRIPTION,
+    inputSchema: {
+      with: z.string().max(200).optional().describe('Only the conversation with this person or agent: direct messages either way, and messages that @mention one of you'),
+      q: z.string().max(200).optional().describe('Only messages containing this text (any case)'),
+      before: z.string().max(40).optional().describe('Only messages before this message id (to read further back)'),
+      limit: z.number().int().min(1).max(200).optional().describe('How many of the newest matching messages (default 30)')
+    }
+  }, (args, { room, chat }) => {
+    const r = queryConversation(keptChat(room, chat), { me: [me], with: args.with || null, q: args.q || '', before: args.before || null, limit: args.limit, agent: true })
+    return text(renderConversation(r, { me: [me], with: args.with, q: args.q }))
   })
 
   if (ctx.webhook) {
@@ -612,36 +634,76 @@ function sessionTools (server, ctx) {
       else if (st.work && st.work.state === 'working') busy.push(`${st.name} is working${st.work.note ? `: ${String(st.work.note).slice(0, 200)}` : ''}`)
     }
     const requests = [...commitMap(doc).values()].filter((r) => r && r.id).sort((a, b) => a.ts - b.ts)
-    return { busy, open: requests.filter((r) => r.state === 'open') }
+    return { busy, open: requests.filter((r) => r.state === 'open'), recent: requests.filter((r) => r.state === 'done').slice(-5) }
   }
   const describeCommits = (c) => [
     c.busy.length ? `⏳ Still working: ${c.busy.join('; ')}` : '✅ Everyone else\'s AI is idle: a good moment to commit.',
-    ...(c.open.length ? ['Open commit requests:', ...c.open.map((r) => `- ${r.id} ${r.by}${r.branch && r.branch !== DEFAULT_KEY ? ` asked for a commit on \`${r.branch}\`` : ''}: ${r.message}`)] : ['No open commit requests.']),
-    'When a commit is made, mark the requests done with quilt_commit_request_done.'
+    describeCommitRequests(c)
   ].join('\n')
 
   tool('quilt_request_commit', {
-    description: 'Ask the people in the session for a commit, e.g. because your changes are ready or you need one to test or deploy. Someone commits with git on their machine and marks the request done.',
-    inputSchema: { message: z.string().min(1).max(500).describe('What the commit should say / why you need it') }
-  }, ({ message }, { room, doc }) => {
+    description: REQUEST_COMMIT_DESCRIPTION,
+    inputSchema: {
+      message: z.string().max(500).optional().describe('The commit message: what the change does (a task\'s title by default)'),
+      files: z.array(z.string().max(1024)).max(500).optional().describe('The files you changed, relative to the project\'s top folder (deleted ones too)'),
+      task: z.string().max(40).optional().describe('The task this work was for: its title is the message and its changes the files, unless you give them')
+    }
+  }, ({ message, files, task }, { room, doc, fdoc }) => {
     { const w = waitRefusal(doc, 'quilt_request_commit'); if (w) return fail(w) }
     const err = writable(room)
     if (err) return fail(err)
     const a = ctx.access(room)
     if (a && a.role === 'viewer') return fail('Viewers can\'t ask for commits.')
     if (a && a.talk === false) return fail(TALK_REFUSED)
-    const msg = String(message).trim().slice(0, 500)
+    const t = task ? readTasks(taskMap(doc)).find((x) => x.id === String(task)) : null
+    if (task && !t) return fail(`No task ${task} on the board.`)
+    const msg = String(message || (t ? t.title : '')).trim().slice(0, 500)
     if (!msg) return fail('Say what the commit is for.')
+    let list = cleanFiles(files || [])
+    if (files && files.length && !list.length) return fail('None of those are files in the project (give paths relative to its top folder).')
+    if (!list.length) {
+      // What was changed for the task, or by this agent, on record in the branch's history.
+      for (const e of fdoc.getArray('history').toArray()) {
+        if (!e || e.pulled || typeof e.path !== 'string') continue
+        if (t ? e.task && e.task.id === t.id : e.by === me) { if (!list.includes(e.path)) list.push(e.path) }
+      }
+      if (t) for (const f of t.files || []) if (!list.includes(f)) list.push(f)
+      list = cleanFiles(list.slice(-MAX_REQUEST_FILES))
+    }
+    if (!list.length) return fail(t ? `Task ${t.id} has no changed files on record: give them in files.` : 'Quilt has no changes of yours on record: give the files in files.')
     const key = branchOf(room)
-    const r = { id: crypto.randomBytes(6).toString('hex'), by: me, message: msg, ...(key ? { branch: key } : {}), ts: Date.now(), state: 'open' }
+    const r = { id: crypto.randomBytes(6).toString('hex'), by: me, message: msg, ...(key ? { branch: key } : {}), ts: Date.now(), state: 'open', files: list, ...(t ? { task: { id: t.id, title: t.title } } : {}) }
     doc.transact(() => {
       const map = commitMap(doc)
       map.set(r.id, r)
       const done = [...map.values()].filter((x) => x && x.state === 'done').sort((x, y) => x.ts - y.ts)
-      for (const x of done.slice(0, Math.max(0, done.length - 20))) map.delete(x.id)
+      for (const x of done.slice(0, Math.max(0, done.length - 100))) map.delete(x.id)
     }, AGENT)
-    return text(`Asked for a commit (${r.id}).\n${describeCommits(commitState(room, doc))}`)
+    return text(`Asked for a commit [${r.id}] of ${list.length} file${list.length === 1 ? '' : 's'}: ${list.slice(0, 12).join(', ')}${list.length > 12 ? ', …' : ''}. ` +
+      'A person with git on this branch commits it from their Quilt; you are told the commit when it is made.')
   })
+
+  if (ctx.kind) {
+    tool('quilt_commit', {
+      description: COMMIT_DESCRIPTION,
+      inputSchema: commitSchema(z)
+    }, async (args, { room, doc, branch }) => {
+      { const w = waitRefusal(doc, 'quilt_commit'); if (w) return fail(w) }
+      if (!room.commitFor) return fail('This relay can\'t commit yet.')
+      try {
+        const r = await room.commitFor({ name: me, kind: ctx.kind, access: ctx.access(room) }, branch ? branch.key : DEFAULT_KEY, { files: args.files, message: args.message, branch: args.branch, pullRequest: args.pull_request === true, withOthers: args.with_others === true, task: args.task })
+        return text(describeCommit(r, { policy: agentCommitsOf(room) }))
+      } catch (err) { return fail(err.message) }
+    })
+
+    tool('quilt_agent_commits', {
+      description: 'Session owner only: what agents may do with quilt_commit. "off": nothing (they ask a person with quilt_request_commit); "branches" (the default): branches of their own, quilt/<agent>/…, with pull requests for people to merge; "any": any branch, the session\'s own included. People are not limited by it.',
+      inputSchema: { mode: z.enum(['off', 'branches', 'any']) }
+    }, ({ mode }, { room }) => {
+      if (!ctx.access(room)?.owner) return fail('Only the session owner decides what agents may commit.')
+      return text(`Now ${POLICY_WORDS[room.setAgentCommits ? room.setAgentCommits(mode) : mode]}.`)
+    })
+  }
 
   tool('quilt_commit_status', {
     description: 'Is it a good moment to commit? Lists open commit requests and whose AI is still working (not counting yours).',
@@ -649,7 +711,7 @@ function sessionTools (server, ctx) {
   }, (_, { room, doc }) => text(describeCommits(commitState(room, doc))))
 
   tool('quilt_commit_request_done', {
-    description: 'Mark commit requests done after a commit was made with git (yours or someone\'s). Without an id, every open request is marked done.',
+    description: 'Close commit requests whose work was committed with git by hand (or isn\'t needed any more). Without an id, every open request is closed.',
     inputSchema: {
       id: z.string().max(40).optional().describe('One request id; omit for all open ones'),
       hash: z.string().max(64).optional().describe('The commit that did it, if you know it')
@@ -1006,6 +1068,7 @@ export async function handleHostedMcp ({ req, res, pass, relay, workspaces = nul
   const ctx = {
     me,
     who: () => ({ name: me, id: account }),
+    kind: pass.kind === 'agent' ? 'agent' : 'human',
     access: (room) => room.hostedAccess(pass),
     branch: (room) => room.hostedBranch(account),
     pin: (room) => room.pinHostedBranch(account),
@@ -1155,7 +1218,7 @@ export async function handleHostedMcp ({ req, res, pass, relay, workspaces = nul
   })
 
   mcp.registerTool('quilt_github_token', {
-    description: 'Session owner only: set (or clear, with an empty token) the read-only GitHub token the relay uses to bring commits in from a private repository while no folder can, and to load branches from it. A fine-grained token with read access to the repository\'s contents is enough. It stays on the relay: it is never shown again, in any answer, status or log.',
+    description: 'Session owner only: set (or clear, with an empty token) the GitHub token the relay uses to bring commits in from a private repository while no folder can, to load branches from it, and, when it can write, to commit members\' work (quilt_commit). A fine-grained token for the repository with "Contents: Read" brings commits in; "Contents: Read and write" and "Pull requests: Read and write" let agents commit and open pull requests, within what quilt_agent_commits allows. It stays on the relay: it is never shown again, in any answer, status or log.',
     inputSchema: { token: z.string().max(300).describe('The token (github_pat_… or ghp_…), or "" to remove it') }
   }, ({ token }) => {
     const c = current()

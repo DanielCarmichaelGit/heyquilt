@@ -8,7 +8,7 @@
 //
 // planCatchUp is pure: session.js reads git and the disk, asks for a plan,
 // and applies it (bringIn there).
-import { merge3 } from './merge3.js'
+import { mergeAdditive as merge3 } from './merge3.js'
 
 const isText = (k) => typeof k === 'string' && !k.startsWith('bin:')
 

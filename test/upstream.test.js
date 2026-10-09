@@ -223,3 +223,17 @@ test('a clash one member resolved by hand: the others\' folders follow it instea
   await waitFor(() => changed(dirB) === 'M src/app.js')
   assert.equal(B.status().git.upstream.conflicts.length, 0)
 })
+
+test('a pushed commit and the session\'s work that both added lines in the same place come in by themselves, both kept', async (t) => {
+  const { A, dirA, dirB, push } = await setup(t)
+  const notes = '# Releases\n\n## 0.3.24\n\n- old\n'
+  const sha0 = push('RELEASES.md', notes)
+  await waitFor(() => git(dirA, 'rev-parse', 'HEAD') === sha0 && read(dirB, 'RELEASES.md') === notes)
+  const mine = notes.replace('## 0.3.24', '## 0.3.25\n\n- **Typing.** Dots.\n\n## 0.3.24')
+  write(dirA, 'RELEASES.md', mine)
+  await waitFor(() => read(dirB, 'RELEASES.md') === mine)
+  const sha = push('RELEASES.md', notes.replace('## 0.3.24', '## 0.3.25\n\n- **CLI first.** Agents.\n\n## 0.3.24'))
+  const both = notes.replace('## 0.3.24', '## 0.3.25\n\n- **Typing.** Dots.\n- **CLI first.** Agents.\n\n## 0.3.24')
+  await waitFor(() => read(dirA, 'RELEASES.md') === both && read(dirB, 'RELEASES.md') === both && git(dirA, 'rev-parse', 'HEAD') === sha, 15000)
+  assert.equal(A.status().git.upstream.conflicts.length, 0)
+})

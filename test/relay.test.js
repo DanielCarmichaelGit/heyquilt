@@ -15,6 +15,7 @@ import { relayUrl } from '../src/settings.js'
 import { Session } from '../src/session.js'
 import { Connection } from '../src/connection.js'
 import { generateIdentity } from '../src/identity.js'
+import { CLOSE_ROOM_FULL } from '../src/protocol.js'
 import { PASS_KEYS, testPasses } from './pass-helpers.js'
 
 const tmp = (n) => fs.mkdtempSync(path.join(os.tmpdir(), `quilt-relay-${n}-`))
@@ -186,6 +187,36 @@ test('a connection refused for the room being over its size limit settles quickl
   seed.close()
   await wait(500)
   await srv.close()
+})
+
+test('an edit refused for the room being over its size limit closes the relay\'s socket for real, with the close handshake', { timeout: 15000 }, async (t) => {
+  // Not just the 'close' event: the relay's TCP socket is ended and destroyed, so nothing keeps
+  // the process alive. The bound is under closeSoon's 2s fallback, so this proves the client
+  // completes the close handshake itself rather than being terminated.
+  const srv = await startServer({ port: 0, host: '127.0.0.1', log: quiet, maxRoomBytes: 4000 })
+  const doc = new Y.Doc()
+  const a = new Connection({ server: `ws://127.0.0.1:${srv.port}`, room: 'full3', secret: 's', name: 'a', identity: generateIdentity(), doc })
+  t.after(async () => { a.close(); await srv.close() })
+  let fatal = null
+  a.on('fatal', (err) => { fatal = err })
+  await a.waitForSync()
+  await wait(100) // the client's own reply to the relay's sync step 1 lands before the room fills
+  const room = srv.rooms.get('full3')
+  const [ws] = room.conns.keys()
+  const sock = ws._socket
+  let code = null
+  ws.once('close', (c) => { code = c })
+  room.full = true
+  const start = Date.now()
+  doc.getMap('m').set('x', 1)
+  await waitFor(() => fatal && sock.destroyed, 1500)
+  assert.ok(Date.now() - start < 1500)
+  assert.match(fatal.message, /size limit/)
+  assert.equal(code, CLOSE_ROOM_FULL)
+  assert.equal(ws.readyState, ws.CLOSED)
+  assert.equal(sock.readable, false)
+  assert.equal(sock.writable, false)
+  assert.equal(a.ws, null, 'the client let go of its socket too')
 })
 
 test('a stored room too big to load is refused instead of loaded', async (t) => {

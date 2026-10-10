@@ -16,7 +16,7 @@ import { z } from 'zod'
 import * as Y from 'yjs'
 import { capText, toolLabel } from './agents/common.js'
 import { globMatcher, isSafeRelPath } from './pathrules.js'
-import { readTasks, addTask, updateTask, deleteTask, taskMarkdown, formatTasks, columnName, assigneeLabel, assignmentFields } from './tasks.js'
+import { readTasks, addTask, updateTask, deleteTask, taskMarkdown, formatTasks, columnName, assigneeLabel, assignmentFields, COLUMNS } from './tasks.js'
 import { readComments, addComment, withComments, formatTaskDetails, MAX_COMMENT } from './task-comments.js'
 import { applyTextDiff } from './textdiff.js'
 import { parseInvite } from './ui/invite.js'
@@ -30,7 +30,7 @@ import { TASK_WORKFLOW, pickupBrief, doneRefusal, verifiedEnough, verifiedLine, 
 import { HistoryLog, queryHistory, parseSince, formatHistory, currentTask } from './history.js'
 import { changeRefusal, TALK_REFUSED } from './session-access.js'
 import { aiName } from './persona.js'
-import { chatAbout, renderChatAbout, waitingOn, renderUnanswered, heldRefusal, queuedFor, renderQueueNotice, renderQueued, answered, unaddressed, CHAT_RULES } from './duties.js'
+import { chatAbout, renderChatAbout, waitingOn, renderUnanswered, heldRefusal, queuedFor, renderQueueNotice, renderQueued, answered, unaddressed, CHAT_RULES, RE_HELP, replyFor, renderReplied } from './duties.js'
 import { describeSubscription, WEBHOOK_EVENTS } from './webhooks.js'
 import { registerWorkspaceTools, bytesFetcher, WORKSPACE_GUIDE } from './workspace-tools.js'
 import { DEFAULT_KEY, validBranchKey } from './branchdocs.js'
@@ -45,6 +45,8 @@ const MAX_READ_CHARS = 200 * 1024
 // Tools that read or change a branch's files, claims or history: a hosted agent's first one pins its branch (Room.pinHostedBranch).
 const FILE_TOOLS = new Set(['quilt_history', 'quilt_list_files', 'quilt_read_file', 'quilt_write_file', 'quilt_claim', 'quilt_release', 'quilt_request_file', 'quilt_handoff', 'quilt_withdraw_request'])
 const AGENT = 'agent-mcp' // transaction origin
+// The board's columns, from tasks.js: hosted agents move tasks to every one of them (QA included), like the local MCP.
+const COLUMN_IDS_LIST = COLUMNS.map((c) => c.id)
 
 export const INSTRUCTIONS =
   'You are in a live quilt session: other people, each with their own AI, are editing this same project right now, ' +
@@ -194,7 +196,7 @@ function sessionTools (server, ctx) {
   const visible = (m) => m && m.id && (!m.to || m.to === me || m.by === me)
   // The chat this agent may read, kept past the room's newest 500 (chat-archive.js), oldest first.
   const keptChat = (room, chat) => (room && room.chatArchive ? room.chatArchive.with(chat.toArray()) : chat.toArray()).filter(visible)
-  const fmtMsg = (m) => `- ${m.by}${m.to ? ` → ${m.to} (direct)` : ''} (${ago(m.ts)}): ${m.text}${m.file ? ` [file: ${m.file.name}]` : ''}`
+  const fmtMsg = (m) => `- ${m.by}${m.to ? ` → ${m.to} (direct, id ${m.id}${m.re ? `, answers ${m.re}` : ''})` : ''} (${ago(m.ts)}): ${m.text}${m.file ? ` [file: ${m.file.name}]` : ''}`
   const peers = (room) => {
     const out = []
     for (const s of room.awareness.getStates().values()) if (s && s.name && s.name !== me) out.push(s)
@@ -358,8 +360,10 @@ function sessionTools (server, ctx) {
 
   tool('quilt_tasks', {
     description: 'List the shared task board (To do, In progress, QA, Done), with an id on each task. Open tasks assigned to you are listed first.',
-    inputSchema: {}
-  }, (_, { doc }) => text(formatTasks(readTasks(taskMap(doc)), reader())))
+    inputSchema: {
+      archived: z.boolean().optional().describe('True: list the archived tasks (off the board) instead.')
+    }
+  }, ({ archived } = {}, { doc }) => text(formatTasks(readTasks(taskMap(doc)), reader(), { archived: !!archived })))
 
   tool('quilt_add_task', {
     description: 'Add a task to the shared board, in To do. One short line. Optionally assign it to a person or their AI, and name the files it is about. It is added as you.',
@@ -386,9 +390,9 @@ function sessionTools (server, ctx) {
       '"done" after QA: requires `verified`, what you ran and what you saw; without it the move is refused.',
     inputSchema: {
       id: z.string().describe('Task id from quilt_tasks'),
-      column: z.enum(['todo', 'doing', 'qa', 'done']).describe('todo, doing, qa, or done'),
-      qaNotes: z.string().max(MAX_VERIFIED).optional().describe('For "qa": describe the changes you made and how you self-validated them.'),
-      verified: z.string().max(MAX_VERIFIED).optional().describe('For "done": what you ran and what you saw, concretely (commands, results, what you exercised in the app).')
+      column: z.enum(COLUMN_IDS_LIST).describe(COLUMN_IDS_LIST.join(', ')),
+      qaNotes: z.string().max(MAX_VERIFIED).optional().describe('For "qa": describe the changes you made and how you self-validated them, briefly (a few short sentences, no logs).'),
+      verified: z.string().max(MAX_VERIFIED).optional().describe('For "done": what you ran and what you saw, concretely and briefly (commands, results, what you exercised in the app; no full logs).')
     }
   }, ({ id, column, qaNotes, verified }, { room, doc, files }) => {
     { const w = waitRefusal(doc, 'quilt_move_task'); if (w) return fail(w) }
@@ -444,7 +448,7 @@ function sessionTools (server, ctx) {
   })
 
   tool('quilt_comment_task', {
-    description: 'Add a comment to a task: a work note, a handoff, or why it went to whom. Put reasoning about a task here instead of in the chat.',
+    description: 'Add a comment to a task: a work note, a handoff, or why it went to whom. Put reasoning about a task here instead of in the chat. Keep it brief: a few short sentences, no logs, diffs or play-by-play.',
     inputSchema: {
       id: z.string().describe('Task id from quilt_tasks'),
       text: z.string().max(MAX_COMMENT).describe('The comment')
@@ -472,6 +476,22 @@ function sessionTools (server, ctx) {
     try {
       deleteTask(doc, taskMap(doc), id, AGENT)
       return text('Removed.')
+    } catch (e) { return fail(e.message) }
+  })
+
+  tool('quilt_archive_task', {
+    description: 'Archive a task: it leaves the board and every task list, but is kept, and can be brought back. archived false brings it back to the column it was in.',
+    inputSchema: {
+      id: z.string().describe('Task id from quilt_tasks'),
+      archived: z.boolean().optional().describe('Omit or true: archive it. False: bring it back.')
+    }
+  }, ({ id, archived }, { room, doc }) => {
+    { const w = waitRefusal(doc, 'quilt_archive_task'); if (w) return fail(w) }
+    const err = writable(room)
+    if (err) return fail(err)
+    try {
+      const task = updateTask(doc, taskMap(doc), { id, archived: archived !== false }, AGENT)
+      return text(task.archived ? `Archived "${task.title}".` : `Brought "${task.title}" back to ${columnName(task.column)}.`)
     } catch (e) { return fail(e.message) }
   })
 
@@ -597,15 +617,22 @@ function sessionTools (server, ctx) {
     inputSchema: {
       text: z.string().min(1).max(4000),
       to: z.string().optional().describe('Name of one person, for a direct message'),
-      everyone: z.boolean().optional().describe('Only for a real announcement to the whole session: lets a message that @mentions nobody go out')
+      everyone: z.boolean().optional().describe('Only for a real announcement to the whole session: lets a message that @mentions nobody go out'),
+      re: z.string().max(40).optional().describe(RE_HELP),
+      also: z.boolean().optional().describe('Only when their message was already answered and yours is about something different they need')
     }
-  }, ({ text: t, to, everyone }, { room, doc, chat }) => {
+  }, ({ text: t, to, everyone, re, also }, { room, doc, chat }) => {
     const err = writable(room)
     if (err) return fail(err)
     if (ctx.access(room)?.talk === false) return fail(TALK_REFUSED)
+    const reply = replyFor(chat.toArray().filter(visible), { names: [me], to: to || null, re: re || '' })
+    if (reply.error) return fail(reply.error)
+    to = reply.to
     const why = unaddressed(t, { to, everyone: !!everyone, names: memberNames(room, doc) })
     if (why) return fail(why)
+    if (reply.repeat && !also) return fail(renderReplied(reply.repeat))
     const msg = { id: id(), by: me, to: to || null, text: t, ts: Date.now() }
+    if (to && reply.re) msg.re = reply.re
     doc.transact(() => {
       chat.push([msg])
       if (chat.length > 500) chat.delete(0, chat.length - 500)

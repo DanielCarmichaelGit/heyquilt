@@ -1,7 +1,9 @@
 // A read-only view of one shared file, with who's editing it, its claim, and
-// freshly changed lines highlighted for a few seconds.
+// freshly changed lines highlighted for a few seconds. Its Changes tab lists
+// every change to the file with its diff (diffview.js).
 import { esc, bytes, I } from './common.js'
 import { claimFolder, claimHolder, claimTitle } from './tree.js'
+import { historyMarkup, changeCount } from './diffview.js'
 
 const MAX_LINES = 20000
 
@@ -12,8 +14,12 @@ const MAX_LINES = 20000
  * @param {object|null} o.meta   tree entry ({ edited, claim })
  * @param {string} o.me
  * @param {string|null} o.prevText previous text, to highlight what changed
+ * @param {'file'|'changes'} [o.tab] which tab is shown
+ * @param {object[]|null} [o.history] the file's changes, newest first (null: not loaded yet)
+ * @param {object} [o.people] { who, colorOf } for the Changes tab
+ * @param {object|null} [o.summary] the file's totals in this session (changes.js fileChanges)
  */
-export function renderFileView (el, { path, file, meta, me, prevText, bannerOnly = false }) {
+export function renderFileView (el, { path, file, meta, me, prevText, bannerOnly = false, tab = 'file', history = null, people, summary = null }) {
   const scroller = el.querySelector('.fv-scroll')
   const keep = scroller && scroller.dataset.path === path ? scroller.scrollTop : 0
 
@@ -35,7 +41,8 @@ export function renderFileView (el, { path, file, meta, me, prevText, bannerOnly
   if (bannerOnly && existing && scroller && scroller.dataset.path === path) { existing.outerHTML = banner; return }
 
   let body
-  if (!file) body = '<div class="fv-note">Loading…</div>'
+  if (tab === 'changes') body = history ? `<div class="fv-history">${historyMarkup(history, { ...people, summary })}</div>` : '<div class="fv-note">Reading what changed…</div>'
+  else if (!file) body = '<div class="fv-note">Loading…</div>'
   else if (file.missing) body = `<div class="fv-note">${file.deleted ? 'This file was deleted.' : 'This file isn’t in the session. It may be too large to sync, or ignored.'}</div>`
   else if (file.binary) body = `<div class="fv-note">${I.file} Binary file · ${bytes(file.size)}. Only text files can be shown here.</div>`
   else {
@@ -48,8 +55,9 @@ export function renderFileView (el, { path, file, meta, me, prevText, bannerOnly
       ${lines.length > MAX_LINES ? `<div class="fv-note">Showing the first ${MAX_LINES.toLocaleString()} lines.</div>` : ''}`
   }
 
-  el.innerHTML = `<div class="fv">${banner}<div class="fv-scroll" data-path="${esc(path)}">${body}</div></div>`
+  el.innerHTML = `<div class="fv">${banner}${tabsMarkup(tab, history, summary)}<div class="fv-scroll" data-path="${esc(path)}" data-tab="${tab}">${body}</div></div>`
   const s = el.querySelector('.fv-scroll')
+  if (scroller && scroller.dataset.path === path && scroller.dataset.tab !== s.dataset.tab) { s.scrollTop = 0; return } // the other tab starts at the top
   const first = s.querySelector('tr.chg')
   if (first && prevText != null) {
     // Bring the change into view if it's off screen.
@@ -59,6 +67,17 @@ export function renderFileView (el, { path, file, meta, me, prevText, bannerOnly
   } else {
     s.scrollTop = keep
   }
+}
+
+const tabsMarkup = (tab, history, summary) => `<div class="fv-tabs segmented" role="tablist" aria-label="File or its changes">
+    <button type="button" role="tab" data-fvtab="file" class="${tab === 'file' ? 'on' : ''}" aria-selected="${tab === 'file'}">File</button>
+    <button type="button" role="tab" data-fvtab="changes" class="${tab === 'changes' ? 'on' : ''}" aria-selected="${tab === 'changes'}" title="Every change to this file, with who made it and what changed">Changes${history ? ` <span class="n">${changeCount(history, summary)}</span>` : ''}</button>
+  </div>`
+
+/** Updates the tabs (the Changes count) without re-rendering, so freshly changed lines stay lit. */
+export function renderFileTabs (el, { tab, history, summary = null }) {
+  const tabs = el.querySelector('.fv-tabs')
+  if (tabs) tabs.outerHTML = tabsMarkup(tab, history, summary)
 }
 
 function agoLong (ts) {

@@ -1,6 +1,7 @@
 // The Changes button and panel in the session top bar: what has changed in
 // this session and who changed it, grouped by person or by file. Everyone sees
-// it, since the counts live in the shared document.
+// it, since the counts live in the shared document. Clicking a file opens it
+// on its Changes tab: every change to it, with who made it and the diff.
 import { I, state, $, esc, api, ago, avatar, colorFor } from './common.js'
 
 let sid = null // session shown
@@ -24,7 +25,7 @@ export const changesMarkup = () => `
     </div>
   </div>`
 
-/** Mount for session `id`; `onOpen(path)` opens a file tab. */
+/** Mount for session `id`; `onOpen(path)` opens the file on its Changes tab. */
 export function bindChanges (id, signal, { onOpen } = {}) {
   sid = id
   data = null
@@ -70,6 +71,11 @@ export function changesChanged () {
   if (!sid) return
   clearTimeout(refreshTimer)
   refreshTimer = setTimeout(() => load(true), 800)
+}
+
+/** How a file changed in this session: { path, added, removed, ts, kind, by: [{ name, added, removed, ts, pulled }] } newest first, or null. */
+export function fileChanges (path) {
+  return (data && data.files.find((x) => x.path === path)) || null
 }
 
 async function load (quiet = false) {
@@ -129,9 +135,7 @@ function paint () {
   const removed = data.files.reduce((a, f) => a + f.removed, 0)
   sum.innerHTML = `${plural(n, 'file')} · ${plural(data.people.length, 'person').replace('persons', 'people')} · ${delta({ added, removed })}`
 
-  const fileRow = (f, extra = '') => f.kind === 'deleted'
-    ? `<li><span class="chg-file gone"><code title="${esc(f.path)}">${esc(f.path)}</code></span>${kindTag(f.kind)}${extra}</li>`
-    : `<li><button type="button" class="chg-file" data-path="${esc(f.path)}" title="Open ${esc(f.path)}"><code>${esc(f.path)}</code></button>${kindTag(f.kind)}${extra}</li>`
+  const fileRow = (f, extra = '') => `<li><button type="button" class="chg-file${f.kind === 'deleted' ? ' gone' : ''}" data-path="${esc(f.path)}" title="See what changed in ${esc(f.path)}"><code>${esc(f.path)}</code></button>${kindTag(f.kind)}${extra}</li>`
 
   const rows = (files) => `<ul>${files.map((f) => fileRow(f, `<span class="hint">${esc(ago(f.ts))}</span>${delta(f)}`)).join('')}</ul>`
   if (view === 'people') {

@@ -24,7 +24,9 @@ export async function startControl (session, extras = {}) {
     // What the person asked their AI session (a prompt hook): names a session that has no name yet.
     'POST /persona/prompt': (b) => { session.personaPrompt(b.via, b.text); return { ok: true } },
     // The CLI and the MCP server: what an AI sends, held to the chat rules (duties.js). A person typing in `quilt join` sends with everyone.
-    'POST /say': (b) => session.say(b.text, { to: b.to, agent: true, via: b.via ? String(b.via) : null, everyone: !!b.everyone, also: !!b.also }),
+    'POST /say': (b) => session.say(b.text, { to: b.to, agent: true, via: b.via ? String(b.via) : null, everyone: !!b.everyone, also: !!b.also, re: typeof b.re === 'string' ? b.re.slice(0, 40) : '' }),
+    // "… is typing" in chat, for an AI session (via) or this member: { on, to } (sending clears it).
+    'POST /typing': (b) => session.setTyping(b.on !== false, { via: b.via ? String(b.via) : null, to: b.to || null, agent: true }),
     'POST /inbox/settle': (b) => session.settle(b.ids),
     'POST /send': (b) => session.sendFile(b.path, { to: b.to, text: b.text }),
     'POST /conversation': (b) => session.conversation({ with: b.with || null, q: b.q || '', before: b.before || null, limit: b.limit, via: b.via ? String(b.via) : null }),
@@ -89,7 +91,10 @@ export async function startControl (session, extras = {}) {
     'POST /commit-request/done': (b) => ({ done: session.resolveCommitRequests({ ids: b.id ? [String(b.id)] : null }) }),
     'POST /work': (b) => {
       if (b.state === 'working') session.personaSays(b.via, b.note)
-      return { work: session.setWork(b.state, b.note) }
+      const work = session.setWork(b.state, b.note)
+      if (b.state === 'working' && b.note) session.noteActivity(`Working on: ${b.note}`, { via: b.via })
+      else if (b.state === 'done') session.noteActivity(b.note ? `Done: ${b.note}` : 'Done', { via: b.via })
+      return { work }
     },
     'GET /tasks': () => ({ tasks: session.taskList() }),
     // Mentions, direct messages and tasks handed to this member since sequence number `after` (agents wake on these).
@@ -98,15 +103,27 @@ export async function startControl (session, extras = {}) {
     'GET /webhook': () => ({ webhook: session.webhookInfo() }),
     'POST /webhook': (b) => ({ webhook: session.setWebhook({ url: b.url, secret: b.secret, events: b.events, bearer: b.bearer }) }),
     'POST /webhook/clear': () => ({ had: session.clearWebhook() }),
-    'POST /tasks': (b) => ({ task: session.addTask(b), tasks: session.taskList() }),
+    // Agents' task changes are written to their thread too (Session.noteTaskChange).
+    'POST /tasks': (b) => {
+      const task = session.addTask(b)
+      session.noteTaskChange(null, task, b.via)
+      return { task, tasks: session.taskList() }
+    },
     'POST /tasks/update': (b) => {
+      const before = session.taskList().find((t) => t.id === b.id) || null
       const task = session.updateTask(b)
+      session.noteTaskChange(before, task, b.via)
       if (b.column === 'doing' && task) session.personaSays(b.via, task.title) // taking a task can name an AI session
       return { task, tasks: session.taskList() }
     },
     // What an agent gets when it picks a task up: history for its files, claims, the project's checks.
     'POST /tasks/brief': (b) => session.taskBrief(b.id),
-    'POST /tasks/comment': (b) => session.commentTask(b),
+    'POST /tasks/comment': (b) => {
+      const r = session.commentTask(b)
+      const t = session.taskList().find((x) => x.id === b.id)
+      if (t && b.text) session.noteActivity(`Note on "${String(t.title || '').slice(0, 120)}": ${String(b.text).slice(0, 400)}`, { via: b.via })
+      return r
+    },
     'POST /tasks/delete': (b) => { session.deleteTask(b.id); return { tasks: session.taskList() } },
     'GET /merges': () => {
       const merges = session.mergeList()

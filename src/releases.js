@@ -100,6 +100,16 @@ export async function latestRelease ({ url = process.env.QUILT_RELEASES_URL || L
 export function seenVersion () { return String(getSettings().seenRelease || '') }
 export function markSeen (version) { saveSettings({ seenRelease: String(version || '') }) }
 
+// "Don't show this again" on the update bar: the newer release it was said for. Kept in the
+// settings file, not the page's storage (the app's address changes every launch), and only
+// for that release: a newer one shows the bar again.
+export function hiddenUpdate () { return String(getSettings().hiddenUpdate || '') }
+export function hideUpdate (version) {
+  const v = String(version || '')
+  if (!/^\d+\.\d+\.\d+$/.test(v)) throw new Error('that is not a version')
+  saveSettings({ hiddenUpdate: v })
+}
+
 /** The GitHub release body for a RELEASES.md section: the notes, then where to download. */
 export function releaseNotesBody (release) {
   const lines = [`**What's new in ${release.version}**`, '']

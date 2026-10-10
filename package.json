@@ -12,7 +12,13 @@
     "cowove": "bin/quilt.js"
   },
   "scripts": {
-    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js",
+    "test": "node --disable-warning=ExperimentalWarning --import ./test/helpers/setup.js --test test/*/*.test.js",
+    "test:unit": "node --disable-warning=ExperimentalWarning --import ./test/helpers/setup.js --test test/unit/*.test.js",
+    "test:integration": "node --disable-warning=ExperimentalWarning --import ./test/helpers/setup.js --test test/integration/*.test.js",
+    "test:e2e": "node --disable-warning=ExperimentalWarning --import ./test/helpers/setup.js --test test/e2e/*.test.js",
+    "test:file": "node --disable-warning=ExperimentalWarning --import ./test/helpers/setup.js --test",
+    "test:coverage": "node scripts/coverage.mjs",
+    "test:fast": "node --disable-warning=ExperimentalWarning --import ./test/helpers/setup.js --test test/unit/*.test.js test/integration/*.test.js",
     "serve": "node bin/quilt.js serve",
     "app": "electron .",
     "dist:mac": "electron-builder --mac",

@@ -4,3 +4,4 @@ quilt-data/
 .superpowers/
 dist/
 .netlify/
+coverage/

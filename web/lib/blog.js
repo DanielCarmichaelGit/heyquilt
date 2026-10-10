@@ -32,6 +32,7 @@ function readPost (file, dir) {
     sortKey: isoStamp(data.date),
     description: String(data.description || ''),
     author: String(data.author || ''),
+    cover: String(data.cover || ''),
     content
   }
 }

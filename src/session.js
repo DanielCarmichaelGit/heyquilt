@@ -21,7 +21,7 @@ import { deriveWrapKey, newFileKey, wrapKey, unwrapKey, encryptBlob, decryptBlob
 import { applyTextDiff } from './textdiff.js'
 import { migrateDir } from './legacy.js'
 import { withComments, addComment as putComment } from './task-comments.js'
-import { readTasks, addTask as putTask, updateTask as patchTask, deleteTask as dropTask, planAutoTask, nextTask, pickupMode } from './tasks.js'
+import { readTasks, addTask as putTask, updateTask as patchTask, deleteTask as dropTask, planAutoTask, nextTask, pickupMode, columnName } from './tasks.js'
 import { getSettings } from './settings.js'
 import { HistoryLog, queryHistory, parseSince, currentTask, blameChange } from './history.js'
 import { historyMarks, awayChanges, mergeCatchUp, emptyCatchUp } from './catchup.js'
@@ -30,7 +30,7 @@ import { ChatArchive } from './chat-archive.js'
 import { withContext, queryConversation } from './conversation.js'
 import { personaName, cleanLabel, labelFromBranch, labelFromText, labelFromFile, gitBranch, aiName } from './persona.js'
 import { aiOwners, ownAiChatter } from './ui/chat.js'
-import { chatAbout, waitingOn, queuedFor, renderQueueNotice, askForIt, answered, addressees, unaddressed, sentByAnother, renderRepeat } from './duties.js'
+import { chatAbout, waitingOn, queuedFor, renderQueueNotice, askForIt, answered, addressees, unaddressed, sentByAnother, renderRepeat, replyFor, renderReplied } from './duties.js'
 import { makeSubscription, deliverEvents } from './webhooks.js'
 import { pickChecklist } from './agent-task-workflow.js'
 import { cleanFiles, uncommitted, lastCommitted, commitFiles, commitMessage, editorsSince, uncommittedByPerson, requestWarning, REQUEST_SETTLE_MS, MAX_REQUEST_FILES, MAX_MESSAGE } from './commit.js'
@@ -43,6 +43,7 @@ import { gitDir, headKey, headRef, gitRuns, askTwice, lastCallTimedOut, busy as 
 import { planCatchUp, catchUpAdvice } from './upstream.js'
 import { clashTaskId, readClash, clashCandidates, clashOrder, holderOf, ownerLabel, clashTitle, clashFiles, clashBrief, leaveItNotice, clashFacts } from './clash.js'
 import { cleanGit, branchBoard, RELAY_BY } from './branches.js'
+import { cleanTyping, TYPING_MS, AGENT_TYPING_MS } from './ui/chat.js'
 import { DEFAULT_KEY } from './branchdocs.js'
 
 export { applyTextDiff }
@@ -65,7 +66,7 @@ function processAlive (pid) {
   try { process.kill(pid, 0); return true } catch (err) { return err.code === 'EPERM' }
 }
 const PERSONA_AWAY_MS = 30 * 60 * 1000 // an AI session not heard from this long is no longer shown as here
-const AUTO_CLAIM_QUIET_MS = 5 * 60 * 1000 // a file we stopped editing this long ago is let go of
+const AUTO_CLAIM_QUIET_MS = 10 * 60 * 1000 // a file we stopped editing this long ago is let go of (long enough for partners to see the claim)
 // Our AI stopped working (its chat reader says so) while someone waits for a file it held: this long
 // for it to hand the file on itself, then Quilt hands it on for it.
 const HANDOFF_GRACE_MS = 2 * 60 * 1000
@@ -167,8 +168,10 @@ export class Session extends EventEmitter {
     // Mentions, direct messages and tasks handed to this member (or their AI), for agents to wake on.
     this.inboxTracker = new Inbox()
     // Shared by every AI session working as this member (each runs its own `quilt mcp`): messages
-    // marked as needing no reply, and what each session sent lately, so only one answers each person.
+    // marked as needing no reply (kept on disk, so a restart doesn't bring them back), and what
+    // each session sent lately, so only one answers each person.
     this.settledIds = new Set()
+    try { this.settledIds = new Set(JSON.parse(fs.readFileSync(path.join(this.stateDir, 'settled.json'), 'utf8')).filter((x) => typeof x === 'string')) } catch {}
     this.aiSent = [] // [{ via, targets, text, ts }]
     // Each AI session working through this app (its `quilt mcp`, by its `via` id) under a name of
     // its own: "<first name> · <label>" (persona.js). via -> { via, name, label, aliases, tool,
@@ -186,6 +189,11 @@ export class Session extends EventEmitter {
     this.settleTried = new Set() // claimed merges already tried against a session version (id:sha1)
     this.awayBackups = null // while joining: copies of ours kept in .quilt/conflicts, for the catch-up
     this.work = null // { state: 'working'|'done', note, ts }: what an agent says it's doing
+    // Who is typing in chat (src/ui/chat.js): ours, name -> { ts, ms, to }, shared in presence;
+    // and when we first saw each partner's signal ("<client>\0<name>" -> { ts, at }), so it
+    // ages out on our clock, not theirs.
+    this.typing = {}
+    this.typingSeen = new Map()
     // Claims follow edits (see autoClaim): path -> when this person last changed it. Released when
     // their AI goes idle, when the file has been quiet for autoClaimQuietMs, and at stop.
     this.autoClaims = new Map()
@@ -3909,12 +3917,97 @@ export class Session extends EventEmitter {
       }
       if (removed.length) this.log(`${removed.length === 1 ? 'a partner' : `${removed.length} partners`} left`)
       this.scheduleStatusWrite()
+      this.scheduleTypingExpiry()
     })
     // Who reports a clash, and who is still here, decide who merges it (reviewClash).
     this.conn.awareness.on('change', () => {
       const seen = this.clashPresence()
       if (seen !== this.clashSeen) { this.clashSeen = seen; this.reviewClashSoon() }
     })
+  }
+
+  // --------------------------------------------------------------- typing --
+
+  /**
+   * Says (or stops saying) that this member, or one of its AI sessions (`via`), is typing in
+   * chat: partners see "… is typing" with a small animation. `to`: typing a direct message, so
+   * only they see it. A person's lasts TYPING_MS after their last keystroke; an AI's
+   * (`agent`) up to AGENT_TYPING_MS, or until it sends. Sending a message clears it.
+   */
+  setTyping (on = true, { via = null, to = null, agent = false, ms = null } = {}) {
+    const name = this.actorName(via)
+    if (on && !this.mayTalk()) return { typing: false, name }
+    const was = JSON.stringify(this.typing)
+    const now = Date.now()
+    for (const [n, v] of Object.entries(this.typing)) if (now - v.ts >= v.ms) delete this.typing[n]
+    if (on) {
+      const last = Math.min(Math.max(Number(ms) || (agent ? AGENT_TYPING_MS : TYPING_MS), 1000), AGENT_TYPING_MS)
+      this.typing[name] = { ts: now, ms: last, ...(to ? { to: String(to).slice(0, 80) } : {}) }
+    } else delete this.typing[name]
+    this.publishTyping(was)
+    return { typing: !!on, name }
+  }
+
+  /** Puts our typing entries in presence (if they changed), and clears them when they run out. */
+  publishTyping (was = null) {
+    clearTimeout(this.typingTimer)
+    const now = Date.now()
+    const left = Object.values(this.typing).map((v) => v.ts + v.ms - now)
+    if (left.length) {
+      this.typingTimer = setTimeout(() => this.setTypingExpired(), Math.max(50, Math.min(...left) + 20))
+      this.typingTimer.unref?.()
+    }
+    const next = JSON.stringify(this.typing)
+    if (was !== null && was === next) return
+    this.scheduleStatusWrite() // our own AI sessions typing show in our app too
+    if (this.conn && this.conn.awareness) this.conn.awareness.setLocalStateField('typing', { ...this.typing })
+  }
+
+  setTypingExpired () {
+    const was = JSON.stringify(this.typing)
+    const now = Date.now()
+    for (const [n, v] of Object.entries(this.typing)) if (now - v.ts >= v.ms) delete this.typing[n]
+    this.publishTyping(was)
+  }
+
+  /**
+   * A partner's typing entries we may show: only for names that client speaks for (its own and
+   * its AI sessions'), each fresh on our clock. name -> { to }.
+   */
+  typingOf (id, s, now = Date.now()) {
+    const out = {}
+    if (!s || !s.typing || typeof s.typing !== 'object') return out
+    const own = new Set([s.name, ...(Array.isArray(s.personas) ? s.personas.map((x) => x && x.name).filter((n) => typeof n === 'string') : [])])
+    for (const [name, raw] of Object.entries(s.typing)) {
+      if (!own.has(name)) continue
+      const v = cleanTyping(raw)
+      if (!v) continue
+      const key = `${id}\0${name}`
+      let seen = this.typingSeen.get(key)
+      if (!seen || seen.ts !== v.ts) { seen = { ts: v.ts, at: now }; this.typingSeen.set(key, seen) }
+      if (now - seen.at < v.ms) out[name] = { to: v.to }
+    }
+    return out
+  }
+
+  /** Repaints when the last partner's "is typing" runs out (no presence change says so). */
+  scheduleTypingExpiry () {
+    clearTimeout(this.typingExpiryTimer)
+    if (!this.conn || !this.conn.awareness) return
+    const now = Date.now()
+    let next = Infinity
+    for (const [id, s] of this.conn.awareness.getStates()) {
+      if (id === this.doc.clientID || !s || !s.typing) continue
+      for (const name of Object.keys(this.typingOf(id, s, now))) {
+        const raw = cleanTyping(s.typing[name])
+        const seen = this.typingSeen.get(`${id}\0${name}`)
+        if (raw && seen) next = Math.min(next, seen.at + raw.ms - now)
+      }
+    }
+    for (const [k, v] of this.typingSeen) if (now - v.at > AGENT_TYPING_MS * 2) this.typingSeen.delete(k)
+    if (next === Infinity) return
+    this.typingExpiryTimer = setTimeout(() => { this.scheduleStatusWrite(); this.scheduleTypingExpiry() }, Math.max(50, next + 20))
+    this.typingExpiryTimer.unref?.()
   }
 
   updatePresence () {
@@ -4189,6 +4282,7 @@ export class Session extends EventEmitter {
     const done = (Array.isArray(ids) ? ids : []).map(String).filter((id) => known.has(id))
     for (const id of done) this.settledIds.add(id)
     if (this.settledIds.size > 1000) this.settledIds = new Set([...this.settledIds].slice(-500))
+    if (done.length) try { fs.writeFileSync(path.join(this.stateDir, 'settled.json'), JSON.stringify([...this.settledIds])) } catch {}
     return { settled: done }
   }
 
@@ -4549,6 +4643,11 @@ export class Session extends EventEmitter {
     return false
   }
 
+  /** Every name this member answers to: its own, "<name>'s AI", and its AI sessions' (now and before a rename). */
+  ownNames () {
+    return [this.name, aiName(this.name), ...[...this.personas.values()].flatMap((p) => [p.name, ...p.aliases])]
+  }
+
   /** Whether a claim is this member's or one of its AI sessions': files on this disk are ours to write. */
   ownClaim (c) { return !!c && (c.by === this.name || c.of === this.name || this.isMine(c.by)) }
 
@@ -4669,13 +4768,19 @@ export class Session extends EventEmitter {
    * Posts a chat message. From an AI (`agent`: the MCP server or the CLI), it must say who it is
    * for (@Name or `to`, or `everyone`), and `via` (one AI session) may not repeat what another
    * session working as this member already sent the same person since they last wrote, unless `also`.
+   * A direct message carries the id of the one it answers (`re`, or the latest from `to` to us),
+   * and an AI may not answer the same message twice, unless `also`.
    */
-  say (text, { to = null, file = null, agent = false, via = null, everyone = false, also = false } = {}) {
+  say (text, { to = null, file = null, agent = false, via = null, everyone = false, also = false, re = '' } = {}) {
     if (!this.mayTalk()) throw new Error(TALK_REFUSED)
     text = String(text || '').slice(0, 4000)
     if (!text && !file) throw new Error('message is empty')
     to = to ? String(to).trim() : null
     const by = this.actorName(via) // an AI session speaks under its own name
+    const visible = this.chat.toArray().filter((m) => this.canSee(m))
+    const reply = replyFor(visible, { names: this.ownNames(), to, re: re ? String(re).trim() : '' })
+    if (reply.error) throw new Error(reply.error)
+    to = reply.to
     if (to === by || (to && via && this.persona(via) && to === aiName(this.name))) throw new Error('that is you')
     const names = agent ? this.memberNames(by) : []
     const targets = agent ? addressees(text, to, names) : []
@@ -4683,11 +4788,13 @@ export class Session extends EventEmitter {
       const why = unaddressed(text, { to, everyone, names })
       if (why) throw new Error(why)
       const now = Date.now()
+      if (reply.repeat && !also) throw new Error(renderReplied(reply.repeat, now))
       this.aiSent = this.aiSent.filter((x) => x.ts > now - 60 * 60 * 1000)
-      const hit = !also && sentByAnother(this.aiSent, { via, targets, messages: this.chat.toArray().filter((m) => this.canSee(m)), now })
+      const hit = !also && sentByAnother(this.aiSent, { via, targets, messages: visible, now })
       if (hit) throw new Error(renderRepeat(hit, now))
     }
     const msg = { id: crypto.randomBytes(8).toString('hex'), by, to, text, ts: Date.now() }
+    if (to && reply.re) msg.re = reply.re
     if (this.persona(via)) msg.of = this.name // people see it as from "<person>'s AI"
     if (file) msg.file = file
     this.doc.transact(() => {
@@ -4695,7 +4802,9 @@ export class Session extends EventEmitter {
       if (this.chat.length > 500) this.chat.delete(0, this.chat.length - 500)
     }, LOCAL)
     this.markRead([msg.id])
+    if (this.typing[by]) this.setTyping(false, { via })
     if (via) this.aiSent.push({ via: String(via), targets, text, ts: msg.ts })
+    if (agent && text) this.noteActivity(`${to ? `To ${to}` : 'In chat'}: ${text}`, { via, kind: 'reply' })
     this.scheduleStatusWrite()
     const online = !to || this.peerNames().includes(to) || this.status().peers.some((p) => p.persona && p.of && aiName(p.of) === to)
     return { ...this.describeMessage(msg), recipientOnline: online }
@@ -4842,6 +4951,7 @@ export class Session extends EventEmitter {
     if (!pattern) throw new Error('pattern required')
     await this.conn.claimRequest({ op: 'claim', pattern, note: String(note), ...this.as(via) })
     this.autoClaims.delete(pattern) // claimed by hand now: ours until we release it
+    this.noteActivity(`Claimed ${pattern}${note ? ` (${String(note).slice(0, 200)})` : ''}`, { via })
     return { ok: true }
   }
 
@@ -4861,6 +4971,7 @@ export class Session extends EventEmitter {
     this.autoClaims.set(rel, Date.now())
     if (!first || !this.conn) return
     const note = this.focus ? `editing: ${this.focus}` : 'editing'
+    this.noteActivity(`Editing ${rel}`)
     this.conn.claimRequest({ op: 'claim', pattern: rel, note }).catch((err) => {
       // Lost the race to a partner, or an overlapping claim: their copy wins; ours is undone on the next sync.
       this.autoClaims.delete(rel)
@@ -4929,6 +5040,7 @@ export class Session extends EventEmitter {
         await this.conn.claimRequest({ op: 'claim', pattern: p, note: focus ? `editing: ${focus}` : 'editing', ...this.as(via) })
         this.autoClaims.set(p, Date.now())
         if (p0) this.autoVia.set(p, via)
+        this.noteActivity(`Editing ${p}`, { via })
         files.push({ path: p, shared: true, ok: true, claimed: true })
       } catch (err) {
         c = this.claimFor(p)
@@ -4950,6 +5062,54 @@ export class Session extends EventEmitter {
     if (this.agentState?.status === 'working' || this.work?.state === 'working') return
     this.setWork('working', note)
     this.workFromEdits = true
+  }
+
+  // ------------------------------------------- agent threads, written by Quilt --
+  // An agent's thread (its lane in the feed) should show what it did in order, whatever tool it
+  // runs in. Agents driven by the CLI, webhooks or MCP rarely call quilt_share, so Quilt writes
+  // the thread itself as they post, claim, release, hand off, move tasks, leave notes and edit.
+
+  /**
+   * Whether Quilt writes this actor's thread itself: an agent member (CLI, webhooks), or one AI
+   * session over MCP whose conversation no chat reader shows already.
+   */
+  autoThread (via = null) {
+    if (this.kind === 'agent') return true
+    if (!this.persona(via)) return false
+    return !(this.agentState?.tool && this.agentState.status !== 'unavailable')
+  }
+
+  /**
+   * One line in this agent's thread for something it just did. The same line within a minute is
+   * written once. These entries never open or extend tasks (that is quilt_share's job).
+   */
+  noteActivity (text, { via = null, kind = 'action' } = {}) {
+    try {
+      if (!this.agentSharing || !this.autoThread(via)) return 0
+      text = String(text || '').trim().slice(0, 4000)
+      if (!text) return 0
+      const now = Date.now()
+      if (!this.activitySeen) this.activitySeen = new Map()
+      for (const [k, ts] of this.activitySeen) if (now - ts > 60 * 1000) this.activitySeen.delete(k)
+      const key = `${via || ''}\u0000${text}`
+      if (this.activitySeen.has(key)) return 0
+      this.activitySeen.set(key, now)
+      const p = this.persona(via)
+      const label = String((p && p.tool) || this.tool || 'AI')
+      return this.shareAgentEntries([{ id: `auto-${now}-${crypto.randomBytes(4).toString('hex')}`, tool: label, conv: `mcp-${label}`, kind, text, ts: now }])
+    } catch { return 0 }
+  }
+
+  /** A task an agent changed (control API): its thread says so when it moved, was handed to someone, or got QA notes. */
+  noteTaskChange (before, after, via = null) {
+    if (!after) return
+    const title = `"${String(after.title || '').slice(0, 120)}"`
+    if (!before) { this.noteActivity(`Added task ${title} to ${columnName(after.column)}`, { via }); return }
+    if (after.archived && !before.archived) this.noteActivity(`Archived task ${title}`, { via })
+    else if (after.column !== before.column) this.noteActivity(`Moved task ${title} to ${columnName(after.column)}`, { via })
+    if ((after.assignee || '') !== (before.assignee || '')) this.noteActivity(after.assignee ? `Assigned task ${title} to ${after.assignee}` : `Unassigned task ${title}`, { via })
+    if (after.qaNotes && after.qaNotes !== before.qaNotes) this.noteActivity(`QA notes on ${title}: ${String(after.qaNotes).slice(0, 400)}`, { via })
+    if (after.verified && after.verified !== before.verified) this.noteActivity(`Verified ${title}: ${String(after.verified).slice(0, 400)}`, { via })
   }
 
   /**
@@ -5023,7 +5183,9 @@ export class Session extends EventEmitter {
   async requestFile (file, { title = '', description = '', task = '', via = null } = {}) {
     const rel = String(file || '').replace(/\\/g, '/').replace(/^\.\//, '')
     if (!rel) throw new Error('path required')
-    return this.conn.claimRequest({ op: 'request', path: rel, title: String(title), description: String(description), ...(task ? { task: String(task) } : {}), ...this.as(via) })
+    const r = await this.conn.claimRequest({ op: 'request', path: rel, title: String(title), description: String(description), ...(task ? { task: String(task) } : {}), ...this.as(via) })
+    this.noteActivity(`Asked for ${rel}${r && r.holder ? ` (held by ${r.holder})` : ''}${title ? `: ${String(title).slice(0, 200)}` : ''}`, { via })
+    return r
   }
 
   /** Hands a file we hold to someone waiting for it (the first, or `to`: a name or request id), with our context. */
@@ -5032,6 +5194,7 @@ export class Session extends EventEmitter {
     const r = await this.conn.claimRequest({ op: 'handoff', pattern: rel, to: String(to || ''), context: String(context), ...this.as(via) })
     this.autoClaims.delete(r.pattern)
     this.autoVia.delete(r.pattern)
+    this.noteActivity(`Handed ${r.pattern || rel} to ${r.to}${context ? `: ${String(context).slice(0, 300)}` : ''}`, { via })
     return r
   }
 
@@ -5098,6 +5261,7 @@ export class Session extends EventEmitter {
   /** Releases one of our claims, or all of them with '*'. Resolves to the number released. */
   async release (pattern = '*', via = null) {
     const r = await this.conn.claimRequest({ op: 'release', pattern: String(pattern), ...this.as(via) })
+    if (r.released) this.noteActivity(`Released ${pattern === '*' ? 'all my claims' : pattern}`, { via })
     return r.released || 0
   }
 
@@ -5581,6 +5745,13 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
     const now = Date.now()
     const states = this.conn ? this.conn.awareness.getStates() : new Map()
     const peers = []
+    const typing = new Map() // name -> { to }: partners typing in chat now
+    for (const [id, s] of states) {
+      if (id === this.doc.clientID || !s) continue
+      for (const [n, v] of Object.entries(this.typingOf(id, s, now))) typing.set(n, v)
+    }
+    // Our own AI sessions are members of their own: the person sees them typing too.
+    for (const [n, v] of Object.entries(this.typing)) if (n !== this.name && now - v.ts < v.ms) typing.set(n, { to: v.to || null })
     for (const [id, s] of states) {
       if (id === this.doc.clientID || !s || !s.name) continue
       const git = cleanGit(s.git)
@@ -5617,6 +5788,10 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
       if (m.online && m.kind === 'agent' && m.name !== this.name && !peers.some((p) => p.name === m.name)) {
         peers.push({ name: m.name, tool: '', kind: 'agent', hosted: true, ...(m.lastSeen ? { lastSeen: m.lastSeen } : {}), agent: null, agents: [], work: null, focus: '', editing: [] })
       }
+    }
+    for (const p of peers) {
+      const t = typing.get(p.name)
+      if (t) { p.typing = true; if (t.to) p.typingTo = t.to }
     }
     return {
       room: this.room,
@@ -5693,6 +5868,8 @@ When the file is right, call the \`quilt_resolve_merge\` tool with id \`${rec.id
     clearTimeout(this.settleTimer)
     clearTimeout(this.statusTimer)
     clearTimeout(this.presenceTimer)
+    clearTimeout(this.typingTimer)
+    clearTimeout(this.typingExpiryTimer)
     if (this.conn) this.conn.close()
     this.saveState()
     await new Promise((r) => setTimeout(r, 100))

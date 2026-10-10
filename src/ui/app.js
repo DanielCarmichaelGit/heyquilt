@@ -10,12 +10,19 @@ import { loadWorkspaces, openWorkspace, wsIdOf } from './workspaces.js'
 import { previewBusy } from './files.js'
 import { agentPaste } from './invite.js'
 import { openKindMenu, kindLineHtml } from './agent-kinds.js'
+import { messageSound, letInSound, taskSound, soundOn, playSound, unlockSounds } from './sounds.js'
 
 // ---------------------------------------------------------------- boot --
 const SIGNED_OUT = 'This computer was signed out. Sign in again.'
 
 // Once per page, not per boot: signing in again calls boot() and mustn't add listeners twice.
 startDropdowns()
+unlockSounds()
+
+/** Plays the sound for `kind` if it's switched on in Settings. */
+function chime (kind) {
+  if (kind && soundOn(state.profile, kind)) playSound(kind)
+}
 
 async function boot () {
   if (!TOKEN) return renderLocked()
@@ -88,6 +95,10 @@ function connectEvents () {
   es.addEventListener('session', (e) => {
     const sum = JSON.parse(e.data)
     const prev = state.sessions.get(sum.id)
+    // Something new for you since the last summary: someone asking in, or a task handed to you.
+    if (prev && prev.status && sum.status) {
+      chime(letInSound(prev.status.waiting, sum.status.waiting) || taskSound(prev.status.tasks, sum.status.tasks, sum.status.me?.name))
+    }
     // Session summaries don't carry the full log; keep what we have.
     state.sessions.set(sum.id, prev ? { ...sum, logs: prev.logs } : sum)
     if (state.view === sum.id) sessionUpdated(sum.id)
@@ -106,6 +117,7 @@ function connectEvents () {
   es.addEventListener('message', (e) => {
     const { id, message } = JSON.parse(e.data)
     const list = state.messages.get(id)
+    if (!list || !list.some((m) => m.id === message.id)) chime(messageSound(message, state.sessions.get(id)?.status.me.name))
     if (list && !list.some((m) => m.id === message.id)) list.push(message)
     if (state.view === id) {
       sessionMessage(id, message)
@@ -388,7 +400,7 @@ export function openInvite (id) {
     ${s.viewInvite ? `<div class="label" style="margin-bottom:6px">View only</div>
     <div class="codebox"><code id="inv-view">${esc(s.viewInvite)}</code><button class="btn icon" data-copy="inv-view" title="Copy" aria-label="Copy view-only link">${I.copy}</button></div>` : ''}
     ${d ? `<p class="hint">Room <code>${esc(d.room)}</code> via <code>${esc(d.server)}</code></p>` : ''}
-    <p class="hint">${s.viewInvite ? 'Everyone who uses a link waits until you let them in, and you can change what they may do later from the people menu.' : 'Anyone with this link can edit the project. Only share it with people you trust.'}</p>
+    <p class="hint">${s.viewInvite ? 'Everyone who uses a link waits until you let them in, and you can change what they may do later in Session settings.' : 'Anyone with this link can edit the project. Only share it with people you trust.'}</p>
     ${owner ? `<div class="inv-section" id="inv-access">
       <div class="label inv-agent-label">Invite as</div>
       <select class="input" id="inv-type" aria-label="Invite as"></select>
@@ -412,7 +424,7 @@ export function openInvite (id) {
     </div>
     ${s.status.access?.owner || s.status.access?.canAdmit ? `<div class="label inv-agent-label">A chat AI</div>
     <div id="inv-chat" class="inv-agent">
-      <p class="hint">For ChatGPT, claude.ai, Grok and other AIs you use in a chat window: make a chat link and paste it into the chat. It can read and send messages, add, assign, move and comment on tasks, read files, and add pictures, documents and notes. It can't change existing files. It shows up in the session as its own member and works for 10 minutes: extend it from the people menu while it works, or make a new one after.</p>
+      <p class="hint">For ChatGPT, claude.ai, Grok and other AIs you use in a chat window: make a chat link and paste it into the chat. It can read and send messages, add, assign, move and comment on tasks, read files, and add pictures, documents and notes. It can't change existing files. It shows up in the session as its own member and works for 10 minutes: extend it in Session settings while it works, or make a new one after.</p>
       <button class="btn" type="button" id="inv-chat-make">${I.link}<span>Make a chat link</span></button>
       <p class="error" id="inv-chat-error"></p>
     </div>` : ''}
@@ -455,7 +467,7 @@ export function openInvite (id) {
       try {
         const r = await api('POST', `/api/sessions/${id}/chat-link`, {})
         const until = new Date(r.expiresAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
-        $('#inv-chat', back).innerHTML = `<p class="hint">Paste this into the chat. It works until ${esc(until)} (extend it from the people menu) and shows in the session as <b>${esc(r.name)}</b>. Anyone with it can act as ${esc(r.name)}, so only paste it there.</p>
+        $('#inv-chat', back).innerHTML = `<p class="hint">Paste this into the chat. It works until ${esc(until)} (extend it in Session settings) and shows in the session as <b>${esc(r.name)}</b>. Anyone with it can act as ${esc(r.name)}, so only paste it there.</p>
           <div class="codebox"><code id="inv-chat-text">${esc(`Open this link and follow it to join our Quilt session: ${r.url}`)}</code><button class="btn icon" data-copy="inv-chat-text" title="Copy" aria-label="Copy chat link">${I.copy}</button></div>`
       } catch (err) {
         chatMake.disabled = false

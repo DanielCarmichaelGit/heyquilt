@@ -161,7 +161,7 @@ function aiLine (a) {
 
 export function renderMessage (m, me) {
   const from = m.by === me ? 'you' : m.by
-  const to = m.to ? ` → ${m.to === me ? 'you' : m.to} (direct)` : ''
+  const to = m.to ? ` → ${m.to === me ? 'you' : m.to} (direct, id ${m.id}${m.re ? `, answers ${m.re}` : ''})` : ''
   let line = `${ago(m.ts)} ${m.unread ? '🆕 ' : ''}**${from}${to}:** ${m.text}`
   if (m.file) {
     line += ` 📎 \`${m.file.name}\` (${formatBytes(m.file.size)})`

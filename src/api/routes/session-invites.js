@@ -93,7 +93,7 @@ export function sessionInviteRoutes ({ store, person, now, site, mailer, log, li
       if (await store.openSessionInvite(room, { account }, now())) throw new HttpError(409, taken)
       // Inviting them again would overwrite the access they have, and cancelling that invite
       // would then take it all away.
-      if (await store.grantFor(room, account)) throw new HttpError(409, 'They already have access to this session. Change it from the people menu.')
+      if (await store.grantFor(room, account)) throw new HttpError(409, 'They already have access to this session. Change it in Session settings.')
       const invite = await createInvite({ room, account, accountName: who.name, typeId: type.id, invitedBy: owner.me, expiresAt: now() + SESSION_INVITE_TTL_MS, link }, taken,
         { room, account, typeId: type.id, grantedBy: owner.me })
       // A person hears about it at their sign-in email (looked up here, never sent back). An

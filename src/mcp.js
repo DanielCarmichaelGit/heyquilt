@@ -16,7 +16,7 @@ import { parentPids } from './hooks.js'
 import { renderMessage, renderStatus } from './status.js'
 import { branchesMarkdown, upstreamLine, describeBranchSync } from './branches.js'
 import { DEFAULT_KEY } from './branchdocs.js'
-import { formatTasks, columnName, assigneeLabel, renderNextTask } from './tasks.js'
+import { formatTasks, columnName, assigneeLabel, renderNextTask, COLUMNS } from './tasks.js'
 import { formatTaskDetails, MAX_COMMENT } from './task-comments.js'
 import { runSession, decodeInvite, newConn, readConfig, runningElsewhere, personsFolder, agentCopyFolder, forgetWorkspace } from './runner.js'
 import { INVALID_INVITE } from './ui/invite.js'
@@ -33,11 +33,14 @@ import { COMMIT_DESCRIPTION, commitSchema } from './github-commit.js'
 import { describeCommit, POLICY_WORDS } from './relay-commit.js'
 import { renderInbox, describeEvent, INBOX_HOW } from './inbox.js'
 import { renderConversation, renderContext, CONVERSATION_DESCRIPTION } from './conversation.js'
-import { renderChatAbout, renderUnanswered, heldRefusal, renderQueueNotice, renderQueued, CHAT_RULES } from './duties.js'
+import { renderChatAbout, renderUnanswered, heldRefusal, renderQueueNotice, renderQueued, CHAT_RULES, RE_HELP } from './duties.js'
 import { describeSubscription, WEBHOOK_EVENTS } from './webhooks.js'
 import { UpdateCheck } from './update-check.js'
 import { getSettings } from './settings.js'
 import { mergeAction } from './merges.js'
+
+// The board's columns, from tasks.js, so this and the hosted MCP (relay-mcp.js) never drift apart.
+const COLUMN_IDS_LIST = COLUMNS.map((c) => c.id)
 
 // A workspace id, as the accounts API makes them (UUID in src/api/http.js).
 const WORKSPACE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -93,6 +96,7 @@ export const MCP_INSTRUCTIONS =
   'Mentions of you (@yourname) in chat, direct messages to you and tasks handed to you wait in quilt_inbox: read it when you start, and act on each one. ' +
   'Each comes with the conversation before it with its sender; when a message refers to something earlier you do not have, read back with quilt_conversation before you answer, never guess. ' +
   'Commit your finished work yourself with quilt_commit (the files and a message; no git needed, nobody else needs to be online), to a branch of your own with a pull request, or to the session\'s branch when the owner allows; when agents may not commit, ask a person with quilt_request_commit. ' +
+  'When you are about to answer someone in chat, quilt_typing shows them you are typing; sending clears it. ' +
   'Chat: ' + CHAT_RULES.replace(/^Send a chat message\. /, '') + ' A message that needs nothing back is settled with quilt_inbox (no_reply: [its id]), not answered. ' +
   'To be woken instead of polling, subscribe to the quilt://inbox resource (you are told when something new arrives), or quilt_webhook_subscribe POSTs each one to a URL of yours as it happens. ' +
   'You are a member of your own in the session, apart from your person and their other AI sessions, named "<their first name> · <label>" after your work (your git branch, or what you first say you are doing); rename yourself with quilt_name_session. Your messages, inbox, claims and duties are your own. People see all of a person\'s AI sessions as one, "<person>\'s AI" ("Daniel\'s AI"): write to another person\'s AI by that name, and what is written to your person\'s AI reaches whichever of their sessions was active last. ' +
@@ -214,10 +218,12 @@ export async function runMcp () {
 
   server.registerTool('quilt_tasks', {
     description: 'List the shared task board (To do, In progress, QA, Done), with an id on each task. Open tasks assigned to you are listed first. Call this before starting work.',
-    inputSchema: {}
-  }, () => withDaemon(async (d) => {
+    inputSchema: {
+      archived: z.boolean().optional().describe('True: list the archived tasks (off the board) instead.')
+    }
+  }, ({ archived } = {}) => withDaemon(async (d) => {
     const st = await call(d, 'GET', '/status')
-    return formatTasks(st.tasks, taskReader(st))
+    return formatTasks(st.tasks, taskReader(st), { archived: !!archived })
   }))
 
   server.registerTool('quilt_add_task', {
@@ -245,9 +251,9 @@ export async function runMcp () {
       '"done" after QA: requires `verified`, what you ran and what you saw; without it the move is refused.',
     inputSchema: {
       id: z.string().describe('Task id from quilt_tasks'),
-      column: z.enum(['todo', 'doing', 'qa', 'done']).describe('todo, doing, qa, or done'),
-      qaNotes: z.string().max(MAX_VERIFIED).optional().describe('For "qa": describe the changes you made and how you self-validated them.'),
-      verified: z.string().max(MAX_VERIFIED).optional().describe('For "done": what you ran and what you saw, concretely (commands, results, what you exercised in the app).')
+      column: z.enum(COLUMN_IDS_LIST).describe(COLUMN_IDS_LIST.join(', ')),
+      qaNotes: z.string().max(MAX_VERIFIED).optional().describe('For "qa": describe the changes you made and how you self-validated them, briefly (a few short sentences, no logs).'),
+      verified: z.string().max(MAX_VERIFIED).optional().describe('For "done": what you ran and what you saw, concretely and briefly (commands, results, what you exercised in the app; no full logs).')
     }
   }, ({ id, column, qaNotes, verified }) => withDaemon(async (d) => {
     const brief = await call(d, 'POST', '/tasks/brief', { id })
@@ -290,7 +296,7 @@ export async function runMcp () {
   }))
 
   server.registerTool('quilt_comment_task', {
-    description: 'Add a comment to a task: a work note, a handoff, or why it went to whom. Put reasoning about a task here instead of in the chat.',
+    description: 'Add a comment to a task: a work note, a handoff, or why it went to whom. Put reasoning about a task here instead of in the chat. Keep it brief: a few short sentences, no logs, diffs or play-by-play.',
     inputSchema: {
       id: z.string().describe('Task id from quilt_tasks'),
       text: z.string().max(MAX_COMMENT).describe('The comment')
@@ -308,6 +314,17 @@ export async function runMcp () {
     return 'Removed.'
   }, { gate: gateFor('quilt_delete_task') }))
 
+  server.registerTool('quilt_archive_task', {
+    description: 'Archive a task: it leaves the board and every task list, but is kept, and can be brought back. archived false brings it back to the column it was in.',
+    inputSchema: {
+      id: z.string().describe('Task id from quilt_tasks'),
+      archived: z.boolean().optional().describe('Omit or true: archive it. False: bring it back.')
+    }
+  }, ({ id, archived }) => withDaemon(async (d) => {
+    const { task } = await call(d, 'POST', '/tasks/update', { id, archived: archived !== false })
+    return task.archived ? `Archived "${task.title}".` : `Brought "${task.title}" back to ${columnName(task.column)}.`
+  }, { gate: gateFor('quilt_archive_task') }))
+
   server.registerTool('quilt_set_focus', {
     description: 'Tell collaborators what you are working on right now (e.g. "adding dark mode to the settings page"). Shown to them live.',
     inputSchema: { focus: z.string().describe('Short description of the current task') }
@@ -315,6 +332,18 @@ export async function runMcp () {
     await call(d, 'POST', '/focus', { text: focus })
     return `Focus set: ${focus}`
   }, { gate: gateFor('quilt_set_focus') }))
+
+  server.registerTool('quilt_typing', {
+    description: 'Show people in the chat that you are typing a reply ("… is typing" with a small animation), e.g. right after you read a message you will answer. ' +
+      'It lasts about 30 seconds, or until you send with quilt_message (which clears it); call again for a longer reply, or with on false to take it back.',
+    inputSchema: {
+      on: z.boolean().optional().describe('False: stop showing that you are typing. Default true.'),
+      to: z.string().optional().describe('Typing a direct message to this person: only they see it')
+    }
+  }, ({ on, to }) => withDaemon(async (d) => {
+    const r = await call(d, 'POST', '/typing', { on: on !== false, to: to || null })
+    return r.typing ? `Showing that you are typing${to ? ` to ${to}` : ''}.` : 'Not showing that you are typing.'
+  }))
 
   server.registerTool('quilt_name_session', {
     description: 'Name yourself in the Quilt session after what you work on. You are a member of your own there, apart from your person and their other AI sessions: ' +
@@ -429,10 +458,11 @@ export async function runMcp () {
       text: z.string(),
       to: z.string().optional().describe('Name of one collaborator for a direct message'),
       everyone: z.boolean().optional().describe('Only for a real announcement to the whole session: lets a message that @mentions nobody go out'),
-      also: z.boolean().optional().describe('Only when another of your AI sessions already wrote to them and yours is about something different they need')
+      re: z.string().max(40).optional().describe(RE_HELP),
+      also: z.boolean().optional().describe('Only when another of your AI sessions already wrote to them, or their message was already answered, and yours is about something different they need')
     }
-  }, ({ text, to, everyone, also }) => withDaemon(async (d) => {
-    const r = await call(d, 'POST', '/say', { text, to, via, everyone: !!everyone, also: !!also })
+  }, ({ text, to, everyone, also, re }) => withDaemon(async (d) => {
+    const r = await call(d, 'POST', '/say', { text, to, via, everyone: !!everyone, also: !!also, re: re || '' })
     return to && !r.recipientOnline ? `Sent. (${to} is offline and will see it when they reconnect.)` : 'Sent.'
   }))
 

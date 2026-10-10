@@ -4,6 +4,7 @@ slug: everyones-ai-work-at-once
 date: 2026-10-08
 description: "A Quilt session used to hide most of what the AIs were doing behind tabs. Version 0.3.25 puts every person's AI lane in the middle of the window so you can see who is working on what side by side."
 author: Daniel Carmichael
+cover: /blog/everyones-ai-work-at-once.webp
 ---
 
 For a long time the middle of a Quilt session was just your own AI chat. That made sense when one person and one model were doing the work. It stops making sense the moment three people each have an AI open on the same folder.

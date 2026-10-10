@@ -12,6 +12,11 @@ export default function BlogIndex () {
       <ol className='blog-list'>
         {posts.map((p) => (
           <li key={p.slug}>
+            {p.cover && (
+              <Link href={`/blog/${p.slug}`} className='blog-cover-link'>
+                <img className='blog-cover' src={p.cover} alt={p.title} />
+              </Link>
+            )}
             <h2><Link href={`/blog/${p.slug}`}>{p.title}</Link></h2>
             <time className='blog-meta' dateTime={p.date}>{formatDate(p.date)}</time>
             {p.description && <p>{p.description}</p>}

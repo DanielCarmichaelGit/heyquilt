@@ -10,6 +10,7 @@ import { workspacesHtml, bindWorkspaces, workspacePageHtml, bindWorkspacePage, l
 import { allFilesHtml, bindAllFiles } from './files.js'
 import { invitesHtml, bindInvites } from './invites.js'
 import { agentRow, bindPlacements, placeableWorkspaces } from './agent-place.js'
+import { SOUND_EVENTS, playSound } from './sounds.js'
 
 export const tildify = (p) => state.defaults.home && String(p).startsWith(state.defaults.home) ? `~${String(p).slice(state.defaults.home.length)}` : p
 const hostOf = (url) => { try { return new URL(String(url).replace(/^ws/, 'http')).host } catch { return url } }
@@ -755,6 +756,15 @@ function settingsHtml ({ head = true } = {}) {
     </div>
   </section>
 
+  <section class="card settings-sec" id="sounds-sec">
+    <div class="sec-intro"><h2>Sounds</h2><p>A short chime when something needs you, in any open session.</p></div>
+    <div class="sec-body">
+      ${SOUND_EVENTS.map((ev) => `<div class="row sound-row">${toggle(ev.setting, p[ev.setting] !== false, ev.label, ev.hint)}
+        <button type="button" class="btn sm ghost" data-sound-test="${ev.kind}" title="Play this sound" aria-label="Play the ${esc(ev.label.toLowerCase())} sound">Play</button></div>`).join('')}
+      <span class="hint">Changes apply at once.</span>
+    </div>
+  </section>
+
   <form class="card settings-sec" id="sessions-sec" autocomplete="off">
     <div class="sec-intro"><h2>Sessions</h2><p>Defaults for starting and joining.</p></div>
     <div class="sec-body">
@@ -888,6 +898,23 @@ function bindSettings (root, refresh) {
       refresh()
     } catch (err) {
       document.documentElement.dataset.theme = before
+      toast(err.message)
+    }
+  })
+
+  // Sounds apply at once, like the theme; Play previews one.
+  const sounds = $('#sounds-sec', root)
+  sounds.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-sound-test]')
+    if (b) playSound(b.dataset.soundTest, { force: true })
+  })
+  sounds.addEventListener('change', async (e) => {
+    const box = e.target
+    if (!SOUND_EVENTS.some((ev) => ev.setting === box.name)) return
+    try {
+      state.profile = await api('POST', '/api/settings', { [box.name]: box.checked })
+    } catch (err) {
+      box.checked = !box.checked
       toast(err.message)
     }
   })

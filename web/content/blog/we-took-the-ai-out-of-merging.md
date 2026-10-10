@@ -4,6 +4,7 @@ slug: we-took-the-ai-out-of-merging
 date: 2026-10-08
 description: "Quilt used to hand overlapping edits to your coding AI and write back whatever it produced. Here is why we deleted that feature, and what replaced it."
 author: Daniel Carmichael
+cover: /blog/we-took-the-ai-out-of-merging.webp
 ---
 
 On October 4 we shipped a feature that felt like the obvious thing to build. On October 7 we deleted it. The commit that removed it took out 527 lines, including a whole file called `merge-ai.js`, and I think Quilt is better for it.

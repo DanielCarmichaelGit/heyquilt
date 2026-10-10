@@ -1,5 +1,5 @@
 // The shared project's file tree: who edited what recently, what's claimed.
-import { esc, I } from './common.js'
+import { esc, I, ago, colorFor } from './common.js'
 
 export const RECENT_MS = 2 * 60 * 1000
 
@@ -40,6 +40,25 @@ function buildTree (files) {
   return root
 }
 
+/**
+ * Claims on files or folders inside a folder (not the folder itself): a collapsed folder shows them,
+ * so a claim deep in the tree is seen without opening every folder.
+ */
+export function claimsInside (claims, dir) {
+  const pre = dir ? `${dir}/` : ''
+  return (claims || []).filter((c) => { const f = claimFolder(c.pattern); return f !== dir && f.startsWith(pre) })
+}
+
+/** The badge a collapsed folder shows for the claims inside it: "Brandon", "you +1", with each claim in the tooltip. */
+export function insideBadge (claims, me) {
+  if (!claims.length) return ''
+  const holders = [...new Set(claims.map((c) => claimHolder(c, me)))]
+  const label = holders.length > 1 ? `${holders[0]} +${holders.length - 1}` : holders[0]
+  const title = claims.map((c) => `${claimFolder(c.pattern)}: ${claimHolder(c, me)}${c.note ? ` (${c.note})` : ''}`).join('\n')
+  const away = claims.every((c) => c.active === false)
+  return `<span class="t-badge claim inside${away ? ' away' : ''}" title="${esc(`Claimed inside:\n${title}`)}">${I.lock}${esc(label)}</span>`
+}
+
 function hasRecent (node, me) {
   return node.files.some((f) => f.edited && f.edited.by !== me && Date.now() - f.edited.ts < RECENT_MS) ||
     [...node.dirs.values()].some((d) => hasRecent(d, me))
@@ -48,7 +67,7 @@ function hasRecent (node, me) {
 /**
  * @param {HTMLElement} el
  * @param {{ files: object[], claims: object[] }} tree
- * @param {{ me: string, expanded: object, selected: string|null, filter: string }} view
+ * @param {{ me: string, expanded: object, selected: string|null }} view
  */
 export function renderTree (el, tree, { me, expanded, selected }) {
   if (!tree) { el.innerHTML = '<div class="empty-note" style="padding:12px 14px">Loading files…</div>'; return }
@@ -59,6 +78,8 @@ export function renderTree (el, tree, { me, expanded, selected }) {
   const rows = []
 
   const claimBadge = (c) => c ? `<span class="t-badge claim${c.active === false ? ' away' : ''}" title="${esc(claimTitle(c, me))}">${I.lock}${esc(claimHolder(c, me))}${queueOf(c).length ? ` · ${queueOf(c).length} waiting` : ''}</span>` : ''
+  // Who just edited a file: a button to its Changes tab. Its +/− shows in the row's change card.
+  const editBadge = (f, byOther) => `<button type="button" class="t-badge ${byOther ? 'edit' : 'mine'}" data-changes="${esc(f.path)}" aria-label="See what changed in ${esc(f.path)}">${esc(f.edited.by === me ? 'you' : f.edited.by)} · ${shortAgo(f.edited.ts)}</button>`
   const walk = (node, depth) => {
     const dirs = [...node.dirs.values()].sort((a, b) => a.name.localeCompare(b.name))
     for (const d of dirs) {
@@ -66,7 +87,7 @@ export function renderTree (el, tree, { me, expanded, selected }) {
       const claim = folderClaims.get(d.path)
       rows.push(`<div class="t-row t-dir" role="treeitem" aria-expanded="${open}" tabindex="-1" data-dir="${esc(d.path)}" style="--depth:${depth}">
         <span class="t-caret${open ? ' open' : ''}">${I.caret}</span><span class="t-name">${esc(d.name)}</span>
-        ${!open && hasRecent(d, me) ? '<span class="t-dot" title="Recently edited inside"></span>' : ''}${claimBadge(claim)}
+        ${!open && hasRecent(d, me) ? '<span class="t-dot" title="Recently edited inside"></span>' : ''}${claim ? claimBadge(claim) : !open ? insideBadge(claimsInside(tree.claims, d.path), me) : ''}
         <button class="t-more" data-more="${esc(d.path)}" data-kind="dir" aria-label="More for ${esc(d.name)}">${I.more}</button></div>`)
       if (open) walk(d, depth + 1)
     }
@@ -77,7 +98,7 @@ export function renderTree (el, tree, { me, expanded, selected }) {
       // The holder of a claim is the one editing it: their claim badge says so, one badge is enough on a narrow row.
       rows.push(`<div class="t-row t-file${selected === f.path ? ' on' : ''}" role="treeitem" tabindex="-1" data-file="${esc(f.path)}" style="--depth:${depth}" title="${esc(f.path)}">
         <span class="t-ico">${I.file}</span><span class="t-name">${esc(f.name)}</span>
-        ${recent && !(ownClaim && ownClaim.by === f.edited.by) ? `<span class="t-badge ${byOther ? 'edit' : 'mine'}">${esc(f.edited.by === me ? 'you' : f.edited.by)} · ${shortAgo(f.edited.ts)}</span>` : ''}
+        ${recent && !(ownClaim && ownClaim.by === f.edited.by) ? editBadge(f, byOther) : ''}
         ${claimBadge(ownClaim)}
         <button class="t-more" data-more="${esc(f.path)}" data-kind="file" aria-label="More for ${esc(f.name)}">${I.more}</button></div>`)
     }
@@ -162,4 +183,68 @@ export function openTreeMenu (anchor, { path, kind, claim, me, owner, onClaim, o
 
 export function closeTreeMenu () {
   if (closeTreeMenu.cleanup) { closeTreeMenu.cleanup(); closeTreeMenu.cleanup = null }
+}
+
+// ------------------------------------------------------------ change card --
+// Hovering (or arrowing to) a file the session changed shows a card beside the
+// row: its +/− in this session, who made them and when. session.js decides when.
+
+const CARD_PEOPLE = 4
+const CARD_FOOT = {
+  all: 'Click to open · its <b>Changes</b> tab shows the diff',
+  some: 'Click to open · its <b>Changes</b> tab shows the latest diffs',
+  none: 'Click to open · its line-by-line diff is no longer kept'
+}
+
+/**
+ * The card for one file, from changes.js fileChanges().
+ * @param {{ path: string, added: number, removed: number, kind?: string, by: object[] }} f
+ * @param {{ who?: (name: string) => string, colorOf?: (name: string) => string|null, kept?: 'all'|'some'|'none'|null }} [o]
+ *   kept: how much of it the history still has a diff for (null: not known yet)
+ */
+export function changeCardHtml (f, { who = (n) => n, colorOf = () => null, kept = null } = {}) {
+  const by = [...(f.by || []).filter((b) => !b.pulled), ...(f.by || []).filter((b) => b.pulled)] // their own edits before git pulls
+  const person = (b) => `<li>
+      <span class="tcard-dot" style="--c:${esc(colorFor(b.name, colorOf(b.name)))}"></span>
+      <span class="tcard-who">${esc(who(b.name))}${b.pulled ? ' <i>pulled from git</i>' : ''}</span>
+      <span class="tcard-delta"><span class="add">+${b.added}</span> <span class="del">−${b.removed}</span></span>
+      <span class="tcard-ago">${esc(ago(b.ts))}</span>
+    </li>`
+  const more = by.length - CARD_PEOPLE
+  return `<div class="tcard-path">${esc(f.path)}</div>
+    <div class="tcard-total"><span class="add">+${f.added}</span> <span class="del">−${f.removed}</span><span class="tcard-in">in this session${f.kind === 'created' ? ' · new file' : ''}</span></div>
+    ${by.length ? `<ul class="tcard-people">${by.slice(0, CARD_PEOPLE).map(person).join('')}${more > 0 ? `<li class="tcard-more">and ${more} more</li>` : ''}</ul>` : ''}
+    <div class="tcard-foot">${CARD_FOOT[kept] || 'Click to open'}</div>`
+}
+
+let card = null
+
+/** Shows `html` in the card beside `row` (to its right, or under it when there's no room). */
+export function showChangeCard (row, html) {
+  if (!card) {
+    card = document.createElement('div')
+    card.className = 'tcard'
+    card.id = 'tree-change-card'
+    card.setAttribute('role', 'tooltip')
+    document.body.appendChild(card)
+  }
+  const fresh = card.hidden !== false
+  card.innerHTML = html
+  card.hidden = false
+  if (fresh) { card.classList.remove('in'); void card.offsetWidth; card.classList.add('in') }
+  const r = row.getBoundingClientRect()
+  const w = card.offsetWidth
+  const h = card.offsetHeight
+  const right = r.right + 8 + w <= window.innerWidth - 8
+  const left = right ? r.right + 8 : Math.max(8, Math.min(r.left + 16, window.innerWidth - w - 8))
+  const top = right ? r.top - 6 : r.bottom + 4
+  card.style.left = `${left}px`
+  card.style.top = `${Math.max(8, Math.min(top, window.innerHeight - h - 8))}px`
+  for (const el of document.querySelectorAll('[aria-describedby="tree-change-card"]')) if (el !== row) el.removeAttribute('aria-describedby')
+  row.setAttribute('aria-describedby', 'tree-change-card')
+}
+
+export function hideChangeCard () {
+  if (card) card.hidden = true
+  for (const el of document.querySelectorAll('[aria-describedby="tree-change-card"]')) el.removeAttribute('aria-describedby')
 }

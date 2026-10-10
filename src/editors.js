@@ -30,9 +30,13 @@ export const EDITORS = [
   { id: 'zed', name: 'Zed', tool: 'Zed', mac: 'Zed' }
 ]
 
+// Paths in `platform`'s style, so a Mac layout reads the same when tests run on Windows.
+const pathsOf = (platform) => platform === 'win32' ? path.win32 : path.posix
+
 /** Where an editor is installed on this computer, or null. */
 function locate (ed, opts = {}) {
   const { platform = process.platform, home = os.homedir(), exists = fs.existsSync, localAppData = process.env.LOCALAPPDATA } = opts
+  const path = pathsOf(platform)
   if (platform === 'darwin') {
     for (const dir of ['/Applications', path.join(home, 'Applications')]) {
       const app = path.join(dir, `${ed.mac}.app`)
@@ -79,6 +83,7 @@ export function openCommand (id, dir, opts = {}) {
   const where = locate(ed, opts)
   if (!where) throw new Error(`${ed.name} isn't installed on this computer.`)
   const platform = opts.platform || process.platform
+  const path = pathsOf(platform)
   const args = ed.args || []
   if (platform === 'darwin') {
     if (ed.url) return ['open', [ed.url(dir)]]
@@ -123,8 +128,11 @@ const run = (file, args, opts = {}) => {
 /** The Claude Code command-line tool: installed on its own, or the copy inside the Claude app. */
 export function claudeCli ({ platform = process.platform, home = os.homedir(), exists = fs.existsSync, readdir = fs.readdirSync } = {}) {
   const exe = platform === 'win32' ? 'claude.exe' : 'claude'
+  // PATH is this computer's, whatever platform is asked about.
+  const delimiter = pathsOf(process.platform).delimiter
+  const path = pathsOf(platform)
   const dirs = [path.join(home, '.local', 'bin'), path.join(home, '.claude', 'local'), '/opt/homebrew/bin', '/usr/local/bin',
-    ...(process.env.PATH || '').split(path.delimiter).filter(Boolean)]
+    ...(process.env.PATH || '').split(delimiter).filter(Boolean)]
   for (const d of dirs) if (exists(path.join(d, exe))) return path.join(d, exe)
   if (platform === 'darwin') {
     const bundled = path.join(home, 'Library', 'Application Support', 'Claude', 'claude-code')

@@ -24,8 +24,9 @@ import { cleanSessionName, BAD_SESSION_NAME, SESSION_NAME_MAX } from './session-
 import { personPasses } from './pass-source.js'
 import { INVALID_INVITE } from './ui/invite.js'
 import { loadIdentity } from './identity.js'
-import { currentVersion, localReleases, latestRelease, compareVersions, downloadUrl, seenVersion, markSeen } from './releases.js'
+import { currentVersion, localReleases, latestRelease, compareVersions, downloadUrl, seenVersion, markSeen, hiddenUpdate, hideUpdate } from './releases.js'
 import { createReporter } from './report.js'
+import { queryHistory } from './history.js'
 import { contentDisposition } from './api/file-paths.js'
 
 const TOOL_NAMES = ['Claude Code', 'Cursor', 'Codex', 'xAI', 'Windsurf', 'GitHub Copilot', 'Zed', 'Aider', 'Other']
@@ -37,6 +38,9 @@ const SIGNED_OUT_MESSAGE = 'This computer was signed out. Sign in again.'
 const LOCAL_RELAY_GONE = "This session ran on your computer's own relay, which Quilt no longer supports. Your files are untouched."
 // Until this computer is signed in, only these answer.
 const OPEN_ROUTES = new Set(['GET /api/account', 'POST /api/account/start', 'POST /api/account/cancel', 'POST /api/account/signout', 'GET /api/events', 'POST /api/shutdown', 'POST /api/report'])
+
+// The sound switches in Settings, one per event (SOUND_EVENTS in src/ui/sounds.js).
+const SOUND_SETTINGS = ['soundMentions', 'soundLetIn', 'soundTasks']
 
 /** Your profile and preferences, from ~/.quilt/settings.json with sensible defaults. */
 function profile () {
@@ -52,7 +56,9 @@ function profile () {
     preferLocal: !!s.preferLocal,
     theme: THEMES.includes(s.theme) ? s.theme : 'light',
     report: s.report !== false,
-    aiTasks: pickupMode(s.aiTasks)
+    aiTasks: pickupMode(s.aiTasks),
+    // Sounds (src/ui/sounds.js): each on unless switched off.
+    ...Object.fromEntries(SOUND_SETTINGS.map((k) => [k, s[k] !== false]))
   }
 }
 
@@ -82,6 +88,7 @@ function updateProfile (b) {
     if (!PICKUP_MODES.includes(b.aiTasks)) throw httpError(400, 'Pick Off, Assigned to it, or Assigned and unassigned.')
     patch.aiTasks = b.aiTasks === 'off' ? undefined : b.aiTasks
   }
+  for (const k of SOUND_SETTINGS) if (k in b) patch[k] = b[k] ? undefined : false
   saveSettings(patch) // undefined values clear a setting
   return profile()
 }
@@ -117,8 +124,12 @@ export const STATIC = {
   '/home.js': ['home.js', 'text/javascript; charset=utf-8'],
   '/signin.js': ['signin.js', 'text/javascript; charset=utf-8'],
   '/changes.js': ['changes.js', 'text/javascript; charset=utf-8'],
+  '/diffview.js': ['diffview.js', 'text/javascript; charset=utf-8'],
   '/releases.js': ['releases.js', 'text/javascript; charset=utf-8'],
   '/feed-convs.js': ['feed-convs.js', 'text/javascript; charset=utf-8'],
+  '/loom.js': ['loom.js', 'text/javascript; charset=utf-8'],
+  '/loom-model.js': ['loom-model.js', 'text/javascript; charset=utf-8'],
+  '/loom.css': ['loom.css', 'text/css; charset=utf-8'],
   '/board.js': ['board.js', 'text/javascript; charset=utf-8'],
   '/schedule.js': ['schedule.js', 'text/javascript; charset=utf-8'],
   '/branches.js': ['branches.js', 'text/javascript; charset=utf-8'],
@@ -127,7 +138,8 @@ export const STATIC = {
   '/agent-place.js': ['agent-place.js', 'text/javascript; charset=utf-8'],
   '/agent-kinds.js': ['agent-kinds.js', 'text/javascript; charset=utf-8'],
   '/files.js': ['files.js', 'text/javascript; charset=utf-8'],
-  '/csv.js': ['csv.js', 'text/javascript; charset=utf-8']
+  '/csv.js': ['csv.js', 'text/javascript; charset=utf-8'],
+  '/sounds.js': ['sounds.js', 'text/javascript; charset=utf-8']
 }
 
 // The page's Content-Security-Policy: scripts only from our own files (no inline script or
@@ -715,6 +727,8 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     'POST /api/sessions/:id/stop': (b, id) => stop(id).then(() => ({ ok: true })),
     'POST /api/sessions/:id/say': (b, id) => get(id).say(b.text, { to: b.to || null }),
     'POST /api/sessions/:id/focus': (b, id) => { get(id).setFocus(b.text); return { ok: true } },
+    // The composer says while someone types (and stops when they clear it or send).
+    'POST /api/sessions/:id/typing': (b, id) => get(id).setTyping(b.on !== false, { to: b.to || null }),
     'POST /api/sessions/:id/claim': (b, id) => get(id).claim(b.pattern, b.note),
     'POST /api/sessions/:id/release': async (b, id) => ({ released: await get(id).release(b.pattern) }),
     'POST /api/sessions/:id/clear-claims': async (b, id) => ({ released: await get(id).clearInactiveClaims() }),
@@ -751,6 +765,12 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
     'GET /api/sessions/:id/tree': (b, id) => get(id).tree(),
     'GET /api/sessions/:id/changes': (b, id) => get(id).changes(),
     'POST /api/sessions/:id/catch-up/dismiss': (b, id) => { const r = get(id).dismissCatchUp(); pushStatus(id); return r },
+    // One file's changes, newest first, each with its diff (the Changes panel's "What changed").
+    'GET /api/sessions/:id/history': (b, id, url) => {
+      const file = String(url.searchParams.get('path') || '')
+      const entries = get(id).history.entries().filter((e) => e.path === file)
+      return { entries: queryHistory(entries, { limit: 100 }).reverse() }
+    },
     // Commits pushed or merged elsewhere: fetch and bring them in now (they also come in by themselves).
     'POST /api/sessions/:id/branches/sync': async (b, id) => { const r = await get(id).syncBranchNow(); pushStatus(id); return r },
     'GET /api/sessions/:id/file': (b, id, url) => {
@@ -798,10 +818,15 @@ export async function startUi ({ port = 7420, onShutdown, preview = false, repor
         unseen: compareVersions(seenVersion(), version) < 0,
         latest,
         outOfDate: !!latest && compareVersions(latest.version, version) > 0,
+        barHidden: !!latest && hiddenUpdate() === latest.version, // "Don't show this again" for this release
         downloadUrl: downloadUrl()
       }
     },
     'POST /api/version/seen': () => { markSeen(currentVersion()); return { ok: true } },
+    'POST /api/version/hide-bar': (b) => {
+      try { hideUpdate(b.version) } catch (err) { throw httpError(400, err.message) }
+      return { ok: true }
+    },
     'GET /api/settings': () => profile(),
     'POST /api/settings': (b) => updateProfile(b),
     'POST /api/report': (b) => {

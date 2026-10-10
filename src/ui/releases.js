@@ -1,7 +1,7 @@
 // What's new and the update check: a bar across the top when a newer Quilt is out, and the
 // release notes in a quilted pop-up (shown by itself the first time a new version runs, and
 // again when a newer release appears). In the desktop app, "Update Quilt" installs it.
-import { I, state, $, esc, api, remember, recall } from './common.js'
+import { I, state, $, esc, api, remember, recall, toast } from './common.js'
 import { quiltMark } from './mark.js'
 
 const RECHECK_MS = 10 * 60 * 1000
@@ -13,7 +13,8 @@ export async function checkRelease () {
   try { state.release = await api('GET', '/api/version') } catch { return }
   const r = state.release
   // Each newer release is announced once per computer: when it is cut while the app is open, or at the next launch.
-  if (r.outOfDate && recall('announced-release') !== r.latest.version) {
+  // Not one you said not to show again.
+  if (r.outOfDate && !r.barHidden && recall('announced-release') !== r.latest.version) {
     remember('announced-release', r.latest.version)
     hiddenBar = false
     openReleaseNotes()
@@ -74,7 +75,7 @@ function refreshUpdateControls () {
 export function renderUpdateBar () {
   const r = state.release
   let bar = $('#update-bar')
-  const show = !!r?.outOfDate && !hiddenBar
+  const show = !!r?.outOfDate && !hiddenBar && !r.barHidden
   document.body.classList.toggle('has-update', show)
   if (!show) { bar?.remove(); return }
   if (!bar) {
@@ -88,7 +89,8 @@ export function renderUpdateBar () {
     <span class="ub-text"><b>Quilt ${esc(r.latest.version)} is out.</b> You have ${esc(r.version)}.</span>
     <button class="btn sm ghost" type="button" data-release-notes>What's new</button>
     ${updateControl()}
-    <button class="btn sm ghost icon ub-x" type="button" data-hide-update aria-label="Hide until next time">${I.x}</button>`
+    <label class="ub-never" title="Hide this bar until a newer Quilt than ${esc(r.latest.version)} is out"><input type="checkbox" data-update-never><span class="ub-long">Don't show this again</span><span class="ub-short">Don't show again</span></label>
+    <button class="btn sm ghost icon ub-x" type="button" data-hide-update aria-label="Hide until next time" title="Hide until Quilt starts again">${I.x}</button>`
 }
 
 /** Bold and code only; everything else is text. */
@@ -161,4 +163,20 @@ document.addEventListener('click', (e) => {
   }
   if (e.target.closest('[data-hide-update]')) { hiddenBar = true; renderUpdateBar() }
   if (e.target.closest('[data-update]')) startUpdate()
+})
+
+// "Don't show this again": hides the bar now, and for good for this release (a newer one shows it again).
+document.addEventListener('change', async (e) => {
+  const never = e.target.closest?.('[data-update-never]')
+  if (!never || !never.checked || !state.release?.latest) return
+  const version = state.release.latest.version
+  try {
+    await api('POST', '/api/version/hide-bar', { version })
+    state.release.barHidden = true
+    renderUpdateBar()
+    toast(`Hidden until a newer Quilt than ${version} is out. What's New in Quilt still has it.`)
+  } catch (err) {
+    never.checked = false
+    toast(err.message)
+  }
 })

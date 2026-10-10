@@ -15,4 +15,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm test
+      # Fastest first, so a broken change fails in seconds; together these are `npm test`.
+      - run: npm run test:unit
+      - run: npm run test:integration
+      - run: npm run test:e2e

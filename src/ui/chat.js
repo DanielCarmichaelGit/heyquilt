@@ -30,27 +30,49 @@ const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 export const ALL_AGENTS = 'Agents'
 
 /**
- * A message's text as HTML: escaped, with every @Name of `names` (the session's
- * members, any case, whole names only) marked up as a mention, and one of `me` marked
- * as mine. The rule is the one agents wake on (`mentioned` in src/inbox.js): the @
+ * A message's text as HTML: escaped, with lightweight markdown (**bold**, *italic*,
+ * ## headings, ---- rules) and every @Name of `names` (the session's members, any
+ * case, whole names only) marked up as a mention, and one of `me` marked as mine.
+ * The mention rule is the one agents wake on (`mentioned` in src/inbox.js): the @
  * starts a word, so an email address is not a mention, and the name ends one.
  * `meAgent`: the reader is an agent, so an @Agents mention is theirs too.
  */
-export function textHtml (text, names = [], me = '', { meAgent = false } = {}) {
-  const t = String(text ?? '')
+const PH_OPEN = '\uE000'
+const PH_CLOSE = '\uE001'
+
+/** One line: escape, **bold** / *italic*, then restore @mention placeholders. */
+function formatLine (line, names, me, { meAgent = false } = {}) {
   const list = [...new Set((names || []).map((n) => String(n || '').trim()).filter(Boolean))].sort((a, b) => b.length - a.length)
-  if (!list.length || !t.includes('@')) return esc(t)
-  const re = new RegExp(`(^|[^\\w@])(@(?:${list.map(escapeRe).join('|')}))(?![\\w-])`, 'giu')
-  let out = ''
-  let last = 0
-  for (const m of t.matchAll(re)) {
-    const start = m.index + m[1].length
-    const name = m[2].slice(1)
-    const mine = (!!me && name.toLowerCase() === String(me).toLowerCase()) || (meAgent && name.toLowerCase() === ALL_AGENTS.toLowerCase())
-    out += esc(t.slice(last, start)) + `<span class="mention${mine ? ' me' : ''}">${esc(m[2])}</span>`
-    last = start + m[2].length
+  const placeholders = []
+  let work = line
+  if (list.length && line.includes('@')) {
+    const re = new RegExp(`(^|[^\\w@])(@(?:${list.map(escapeRe).join('|')}))(?![\\w-])`, 'giu')
+    work = line.replace(re, (full, pre, mention) => {
+      const name = mention.slice(1)
+      const mine = (!!me && name.toLowerCase() === String(me).toLowerCase()) || (meAgent && name.toLowerCase() === ALL_AGENTS.toLowerCase())
+      const i = placeholders.length
+      placeholders.push(`<span class="mention${mine ? ' me' : ''}">${esc(mention)}</span>`)
+      return `${pre}${PH_OPEN}${i}${PH_CLOSE}`
+    })
   }
-  return out + esc(t.slice(last))
+  let s = esc(work)
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+  s = s.replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>')
+  if (placeholders.length) {
+    s = s.replace(new RegExp(`${PH_OPEN}(\\d+)${PH_CLOSE}`, 'g'), (_, i) => placeholders[Number(i)] || '')
+  }
+  return s
+}
+
+export function textHtml (text, names = [], me = '', opts = {}) {
+  const t = String(text ?? '')
+  if (!t) return ''
+  return t.split('\n').map((line) => {
+    if (/^-{3,}\s*$/.test(line)) return '<hr class="md-hr">'
+    const head = line.match(/^(#{1,6})\s+(.*)$/)
+    if (head) return `<span class="md-h">${formatLine(head[2], names, me, opts)}</span>`
+    return formatLine(line, names, me, opts)
+  }).join('\n')
 }
 
 /**
@@ -160,4 +182,54 @@ export function ownAiChatter (m, owners) {
   const re = new RegExp(`(^|[^\\w@])@(${names.map(escapeRe).join('|')})(?![\\w-])`, 'giu')
   const hit = [...text.matchAll(re)].map((x) => names.find((n) => n.toLowerCase() === x[2].toLowerCase()))
   return hit.length > 0 && hit.every(sibling)
+}
+
+// ---------------------------------------------------------------- typing --
+// Who is typing travels in presence (each member's awareness state, field `typing`):
+// { [name]: { ts, ms, to } }, one entry per name the member speaks for (themselves and
+// their AI sessions). `ms` is how long the signal lasts unless refreshed: a person's
+// keystrokes refresh it every few seconds; an AI says it once before it writes.
+
+/** How long "is typing" lasts after a person's last keystroke. */
+export const TYPING_MS = 6000
+/** How long an AI's "is typing" lasts at most, unless it says it again or sends. */
+export const AGENT_TYPING_MS = 30000
+
+/** A typing entry from the room as { ms, to }, or null when it is not one. Peer-controlled. */
+export function cleanTyping (v) {
+  if (!v || typeof v !== 'object' || typeof v.ts !== 'number') return null
+  const ms = Math.min(Math.max(Number(v.ms) || TYPING_MS, 1000), AGENT_TYPING_MS)
+  const to = typeof v.to === 'string' && v.to ? v.to.slice(0, 80) : null
+  return { ts: v.ts, ms, to }
+}
+
+/**
+ * The names typing to `me` now, in order: `peers` from status (each with `typing`
+ * true and maybe `typingTo`), without me and without direct messages to someone else.
+ */
+export function typingNames (peers, me = '') {
+  const out = []
+  for (const p of Array.isArray(peers) ? peers : []) {
+    if (!p || !p.typing || typeof p.name !== 'string' || !p.name || p.name === me) continue
+    if (p.typingTo && p.typingTo !== me) continue
+    if (!out.includes(p.name)) out.push(p.name)
+  }
+  return out
+}
+
+/** "Dana is typing…", "Dana and Bob are typing…", "Dana, Bob and 2 others are typing…", or ''. */
+export function typingText (names) {
+  const n = (names || []).filter(Boolean)
+  if (!n.length) return ''
+  if (n.length === 1) return `${n[0]} is typing…`
+  if (n.length === 2) return `${n[0]} and ${n[1]} are typing…`
+  if (n.length === 3) return `${n[0]}, ${n[1]} and ${n[2]} are typing…`
+  return `${n[0]}, ${n[1]} and ${n.length - 2} others are typing…`
+}
+
+/** The chat's typing line as HTML: three bouncing dots and who is typing. '' when nobody is. */
+export function typingHtml (names) {
+  const t = typingText(names)
+  if (!t) return ''
+  return `<span class="typing-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="typing-text">${esc(t)}</span>`
 }

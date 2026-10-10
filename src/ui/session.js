@@ -1,16 +1,20 @@
-// The session workspace: file tree on the left, a partner's live AI chat, a
-// shared file, or the task board in the middle, and the team chat on the right.
-import { TOKEN, I, state, $, esc, basename, bytes, clock, ago, avatar, toast, api, ask, remember, recall, toolsOf, busyPeople, NO_POSTING, ACCOUNT_KEY, loadAccessTypes, typeOptions, accessLine, loadingHtml } from './common.js'
+// The session workspace: file tree on the left; in the middle the Loom (everyone's
+// AI conversations at once), one person's AI chat, a shared file or the task board;
+// the team chat on the right.
+import { TOKEN, I, state, $, esc, basename, bytes, clock, ago, avatar, colorFor, toast, api, ask, remember, recall, toolsOf, busyPeople, NO_POSTING, ACCOUNT_KEY, loadAccessTypes, typeOptions, accessLine, loadingHtml } from './common.js'
 import { openInvite, renderTabs, markRead } from './app.js'
 import { renderFeed } from './feed.js'
+import { renderLoom, resetLoom, focusFile, showsLoom } from './loom.js'
+import { buildLoom, foldAiLanes } from './loom-model.js'
 import { conversations } from './feed-convs.js'
-import { renderTree, openTreeMenu, closeTreeMenu, claimFolder } from './tree.js'
-import { renderFileView } from './fileview.js'
-import { changesMarkup, bindChanges, unbindChanges, changesChanged } from './changes.js'
+import { renderTree, openTreeMenu, closeTreeMenu, claimFolder, changeCardHtml, showChangeCard, hideChangeCard } from './tree.js'
+import { renderFileView, renderFileTabs } from './fileview.js'
+import { rolledOff } from './diffview.js'
+import { changesMarkup, bindChanges, unbindChanges, changesChanged, fileChanges } from './changes.js'
 import { quiltMark } from './mark.js'
 import { openSettings } from './home.js'
-import { fileCardHref, renderable, textHtml, mentionAt, mentionCandidates, completeMention, ALL_AGENTS, foldPersonas, aiOwners, shownName, ownAiChatter } from './chat.js'
-import { renderBoard, taskNotesModalHtml } from './board.js'
+import { fileCardHref, renderable, textHtml, mentionAt, mentionCandidates, completeMention, ALL_AGENTS, typingNames, typingHtml, TYPING_MS, foldPersonas, aiOwners, shownName, ownAiChatter } from './chat.js'
+import { renderBoard, taskNotesModalHtml, openTaskMenu, foldPlan, matchesSearch } from './board.js'
 import { accessFormValues, accessSaveBody, grantsLoading, grantsLoaded, grantsFailed } from './access-form.js'
 import { renderMergeBar, bindMerges, renderMergeView } from './merges.js'
 import { workspaceFilePicker } from './files.js'
@@ -39,12 +43,17 @@ function ws (id) {
       convSel: {}, // person -> pinned conversation id (absent: follow the newest)
       fileTabs: [],
       fileSel: null,
+      fileTab: {}, // file path -> 'changes' when its Changes tab is shown (absent: the file)
       mergeSel: null, // merge id shown in the compare view
       expanded: {},
       stale: {}, // file path -> changed while not visible
+      loom: { chat: true, tasks: true, density: 'detailed', layout: 'lanes', hidden: [] },
       ...(saved || {}),
       drawer: null
     })
+    const w = state.ws.get(id)
+    // The Loom is where the AI area starts: once, for a session opened before it existed.
+    if (!w.loomSeen) { w.loomSeen = true; w.aiSel = null }
   }
   return state.ws.get(id)
 }
@@ -77,7 +86,10 @@ function personInfo (name) {
 // ------------------------------------------------------------------ mount --
 export function mountSession (id) {
   current = id
-  pendingAssign = ''
+  pendingAssign = null
+  resetLoom()
+  boardQuery = '' // a search is for the board it was typed on
+  filterOpen = false
   mounted = new AbortController()
   // The first time a session opens in this app, its loading screen stays over it until its files
   // and AI feeds are in, then fades, so nothing pops in afterwards. Later visits draw from memory.
@@ -115,6 +127,7 @@ export function mountSession (id) {
         <div class="popover more-menu" id="more-menu" role="menu" hidden>
           <button class="pop-item" role="menuitem" id="rename-btn" hidden>Rename session…</button>
           <button class="pop-item" role="menuitem" id="move-ws-btn" hidden>Move to a workspace…</button>
+          <button class="pop-item" role="menuitem" data-session-settings>Session settings…</button>
           <button class="pop-item" role="menuitem" id="ask-commit">Ask for a commit…</button>
           <button class="pop-item" role="menuitem" id="leave-btn">Leave this session</button>
           <button class="pop-item" role="menuitem" data-shutdown>Shut down Quilt</button>
@@ -141,6 +154,7 @@ export function mountSession (id) {
       <aside class="ws-chat" id="chat-pane" aria-label="Chat">
         <div class="chat-head"><h3>Chat</h3><span class="hint" id="chat-sub"></span></div>
         <div class="messages" id="messages"></div>
+        <div class="typing" id="typing" role="status" aria-live="polite" hidden></div>
         <div class="drop">Drop files to send</div>
         <form class="composer" id="composer">
           <div class="to"><label for="to-select">To</label><select id="to-select"></select></div>
@@ -162,7 +176,7 @@ export function mountSession (id) {
   bindTop()
   bindAccess()
   for (const el of [$('#merges'), $('#main')]) bindMerges(el, { sessionId: () => current, onCompare: openMerge, editors: editorsByPreference })
-  bindChanges(id, mounted.signal, { onOpen: openFile })
+  bindChanges(id, mounted.signal, { onOpen: (path) => openFile(path, { tab: 'changes' }) })
   bindCatchUp($('#catchup'), { sessionId: () => current, onOpen: openFile })
   bindMain()
   bindTreeEvents()
@@ -174,11 +188,12 @@ export function mountSession (id) {
   renderMain()
   renderTreePane()
   renderMessages(false, true)
+  renderTyping()
   renderRecipients()
   renderComposer()
   grantLoad = grantsLoading()
   // The approve control and the people menu offer access types once they're here.
-  const accessLoad = loadAccessTypes().then(() => { if (current === id) { renderAccess(); if (!$('#people-menu').hidden) renderPeopleMenu() } })
+  const accessLoad = loadAccessTypes().then(() => { if (current === id) { renderAccess(); refreshPeople() } })
   const loads = [accessLoad, loadTree(), loadFeeds()]
   if (firstVisit) {
     // In once everything is here, or after a few seconds at most (a slow feed never locks you out).
@@ -191,7 +206,7 @@ export function mountSession (id) {
   }
   const shown = ws(id).mode === 'merge' && shownMerge()
   if (shown && !shown.binary) refreshFile(shown.path, false) // the cached copy may be from before
-  autoOpenNewPeople(id) // everyone already here gets a tab on first visit
+  loadNewPeople(id)
   // Relative times ("4s ago") and recent-edit badges age out.
   timers.push(setInterval(() => { renderTreePane(); renderTop() }, 15000))
 }
@@ -203,7 +218,7 @@ export function sessionUnmount () {
   if (mounted) mounted.abort()
   mounted = null
   closeTreeMenu()
-  pendingAssign = ''
+  pendingAssign = null
   unbindChanges()
   current = null
 }
@@ -214,9 +229,10 @@ export function sessionUpdated (id) {
   if (id !== current) return
   const accState = sum().status.access?.state || null
   if (accState !== lastAccessState) { lastAccessState = accState; renderMain(); loadTree() }
-  autoOpenNewPeople(id)
+  loadNewPeople(id)
   renderTop()
   renderMainBar()
+  renderTyping()
   renderRecipients()
   renderComposer()
   if (ws(id).mode === 'ai') renderMain()
@@ -229,6 +245,7 @@ export function sessionMessage (id) {
   if (id !== current) return
   renderMessages(true)
   const w = ws(id)
+  if (w.mode === 'ai' && !w.aiSel) renderMain() // the Loom shows chat too
   if (w.drawer !== 'chat' && window.matchMedia('(max-width: 900px)').matches) {
     const b = $('#chat-badge')
     if (b) { b.hidden = false; b.textContent = '•' }
@@ -242,7 +259,7 @@ export function sessionFeed (id, entries) {
   if (!feeds) return
   const touched = new Set()
   for (const e of entries) {
-    if (!feeds.has(e.by)) continue // not loaded yet; fetched when opened
+    if (!feeds.has(e.by)) { if (id === current) loadFeed(e.by); continue } // fetched whole, this entry included
     const list = feeds.get(e.by)
     if (!list.some((x) => x.id === e.id)) list.push(e)
     if (list.length > 300) list.splice(0, list.length - 300)
@@ -250,7 +267,7 @@ export function sessionFeed (id, entries) {
   }
   if (id !== current) return
   const w = ws(id)
-  if (w.mode === 'ai' && touched.has(w.aiSel)) renderMain()
+  if (w.mode === 'ai' && (!w.aiSel || touched.has(w.aiSel))) renderMain()
   renderMainBar()
 }
 
@@ -261,31 +278,15 @@ export function sessionFileChanged (id, { path }) {
   const w = ws(id)
   if (w.mode === 'merge' && shownMerge()?.path === path) refreshFile(path, false)
   if (w.fileTabs.includes(path)) {
-    if (w.mode === 'files' && w.fileSel === path) refreshFile(path, true)
-    else { w.stale[path] = true; renderMainBar() }
+    if (w.mode === 'files' && w.fileSel === path) { refreshFile(path, true); scheduleHistory(path) } else { w.stale[path] = true; histories.delete(fileKey(path)); renderMainBar() }
   }
 }
 
-/** Someone new joined: give them an AI tab once (closing it sticks). */
-function autoOpenNewPeople (id) {
-  const w = ws(id)
-  w.autoOpened = w.autoOpened || []
-  let changed = false
-  let grew = false
-  for (const p of sum().status.peers) {
-    if (p.persona) continue // an AI session working through someone's app has no AI chat of its own to show
-    if (w.autoOpened.includes(p.name)) continue
-    w.autoOpened.push(p.name)
-    grew = true
-    if (!w.aiTabs.includes(p.name)) {
-      w.aiTabs.push(p.name)
-      if (!w.aiSel) w.aiSel = p.name
-      changed = true
-      loadFeed(p.name)
-    }
-  }
-  if (changed) { saveWs(id); renderMainBar(); if (w.mode === 'ai') renderMain() }
-  else if (grew) saveWs(id)
+/** The Loom shows everyone's AI feed: fetch each person's once (someone new, when they join). */
+function loadNewPeople (id) {
+  const feeds = state.feeds.get(id)
+  const st = sum().status
+  for (const p of [st.me, ...st.peers]) if (p && p.name && !feeds?.has(p.name)) loadFeed(p.name)
 }
 
 // --------------------------------------------------------------- top bar --
@@ -353,7 +354,7 @@ function bindTop () {
   const moreMenu = $('#more-menu')
   const setMore = (open) => { moreMenu.hidden = !open; moreBtn.setAttribute('aria-expanded', String(open)) }
   moreBtn.onclick = () => setMore(moreMenu.hidden)
-  moreMenu.addEventListener('click', () => setMore(false))
+  moreMenu.addEventListener('click', (e) => { setMore(false); if (e.target.closest('[data-session-settings]')) openSessionSettings() })
   moreMenu.addEventListener('keydown', (e) => { if (e.key === 'Escape') { setMore(false); moreBtn.focus() } })
   document.addEventListener('mousedown', (e) => { if (!moreBtn.parentElement.contains(e.target)) setMore(false) }, { signal: mounted.signal })
   const wrap = $('#people')
@@ -365,7 +366,6 @@ function bindTop () {
     clearTimeout(hoverTimer)
     if (!menu.hidden) return
     menu.hidden = false; openedAt = Date.now(); btn.setAttribute('aria-expanded', 'true'); renderPeopleMenu()
-    if (sum().status.access?.owner) { loadGrants(); if (state.workspacesOn) loadSessionAgents() }
   }
   const close = () => { clearTimeout(hoverTimer); menu.hidden = true; btn.setAttribute('aria-expanded', 'false') }
   // A click also focuses (and may hover) the button, which already opened the menu; don't toggle it shut.
@@ -380,31 +380,8 @@ function bindTop () {
   wrap.addEventListener('keydown', (e) => { if (e.key === 'Escape') { close(); btn.focus() } })
   document.addEventListener('mousedown', (e) => { if (!wrap.contains(e.target)) close() }, { signal: mounted.signal })
 
-  menu.addEventListener('change', async (e) => {
-    if (e.target.matches('[data-share]')) {
-      const on = e.target.checked
-      try {
-        await api('POST', `/api/sessions/${current}/sharing`, { on })
-        toast(on ? 'Sharing your AI chat again' : 'Paused sharing your AI chat')
-      } catch (err) { toast(err.message); e.target.checked = !on }
-      return
-    }
-    if (e.target.matches('[data-admit-by]')) {
-      const admitBy = e.target.value
-      try {
-        await api('POST', `/api/sessions/${current}/admit-by`, { admitBy })
-        toast(admitBy === 'owner' ? 'Only you can let people in' : admitBy === 'editors' ? 'Anyone who can edit may let people in' : 'Anyone in the session may let people in')
-      } catch (err) { toast(err.message); renderPeopleMenu({ force: true }) }
-      return
-    }
-    if (!e.target.matches('[data-summarize]')) return
-    const on = e.target.checked
-    try {
-      await api('POST', `/api/sessions/${current}/summarize`, { on })
-      toast(on ? 'Your prompts and replies are summarized before sharing' : 'Sharing your AI chat word for word')
-    } catch (err) { toast(err.message); e.target.checked = !on }
-  })
   menu.addEventListener('click', async (e) => {
+    if (e.target.closest('[data-session-settings]')) { openSessionSettings(); return }
     const t = e.target.closest('[data-person],[data-dm],[data-sharing]')
     if (!t) return
     if (t.dataset.sharing) {
@@ -426,7 +403,47 @@ function bindTop () {
     openPerson(t.dataset.person)
     close()
   })
-  menu.addEventListener('change', async (e) => {
+  menu.addEventListener('submit', async (e) => {
+    e.preventDefault()
+    if (e.target.closest('.pm-member') || e.target.closest('.pm-gh')) return
+    const input = menu.querySelector('#focus-input')
+    await api('POST', `/api/sessions/${current}/focus`, { text: input.value }).catch((err) => toast(err.message))
+    toast(input.value ? 'Focus shared' : 'Focus cleared')
+    input.blur()
+  })
+
+  $('#toggle-tree').onclick = () => toggleDrawer('tree')
+  $('#toggle-chat').onclick = () => { toggleDrawer('chat'); $('#chat-badge').hidden = true }
+  $('#scrim').onclick = () => toggleDrawer(null)
+}
+
+/** The Session settings window's controls: your AI chat's sharing, and (for the owner) who can get in and what they may do. */
+function bindSessionSettings (root) {
+  root.addEventListener('change', async (e) => {
+    if (e.target.matches('[data-share]')) {
+      const on = e.target.checked
+      try {
+        await api('POST', `/api/sessions/${current}/sharing`, { on })
+        toast(on ? 'Sharing your AI chat again' : 'Paused sharing your AI chat')
+      } catch (err) { toast(err.message); e.target.checked = !on }
+      return
+    }
+    if (e.target.matches('[data-admit-by]')) {
+      const admitBy = e.target.value
+      try {
+        await api('POST', `/api/sessions/${current}/admit-by`, { admitBy })
+        toast(admitBy === 'owner' ? 'Only you can let people in' : admitBy === 'editors' ? 'Anyone who can edit may let people in' : 'Anyone in the session may let people in')
+      } catch (err) { toast(err.message); refreshPeople({ force: true }) }
+      return
+    }
+    if (!e.target.matches('[data-summarize]')) return
+    const on = e.target.checked
+    try {
+      await api('POST', `/api/sessions/${current}/summarize`, { on })
+      toast(on ? 'Your prompts and replies are summarized before sharing' : 'Sharing your AI chat word for word')
+    } catch (err) { toast(err.message); e.target.checked = !on }
+  })
+  root.addEventListener('change', async (e) => {
     const f = e.target.closest('.pm-member.edit')
     // Access types are saved with Save (below), not on every change; a chat link's time with Extend.
     if (!f || f.classList.contains('pm-access') || f.classList.contains('pm-chat')) return
@@ -435,13 +452,13 @@ function bindTop () {
       toast('Access updated')
     } catch (err) { toast(err.message) }
   })
-  menu.addEventListener('click', (e) => {
+  root.addEventListener('click', (e) => {
     if (!e.target.closest('[data-retry-grants]')) return
     grantLoad = grantsLoading()
-    renderPeopleMenu({ force: true })
+    refreshPeople({ force: true })
     loadGrants()
   })
-  menu.addEventListener('click', async (e) => {
+  root.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-extend-chat]')
     if (!b) return
     const f = b.closest('.pm-chat')
@@ -454,7 +471,7 @@ function bindTop () {
       b.blur()
     } catch (err) { toast(err.message) } finally { b.disabled = false }
   })
-  menu.addEventListener('click', async (e) => {
+  root.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-remove]')
     if (!b) return
     const f = b.closest('.pm-member')
@@ -464,7 +481,7 @@ function bindTop () {
     if (state.workspacesOn && f.dataset.key.startsWith('agent:')) loadSessionAgents()
   })
   // Invited from the workspace: Don't invite (a keep-out) and Invite (which sends it the link now).
-  menu.addEventListener('click', async (e) => {
+  root.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-agent-uninvite],[data-agent-invite]')
     if (!b) return
     const invite = 'agentInvite' in b.dataset
@@ -475,10 +492,10 @@ function bindTop () {
     } catch (err) { toast(err.message); b.disabled = false }
     loadSessionAgents()
   })
-  menu.addEventListener('click', async (e) => {
+  root.addEventListener('click', async (e) => {
     if (e.target.closest('[data-gh-clear]')) {
       try { await api('POST', `/api/sessions/${current}/github-token`, { token: '' }); toast('The relay no longer has a GitHub token') } catch (err) { toast(err.message) }
-      renderPeopleMenu({ force: true })
+      refreshPeople({ force: true })
       return
     }
     if (e.target.closest('[data-end-session]')) {
@@ -487,7 +504,7 @@ function bindTop () {
       return
     }
   })
-  menu.addEventListener('submit', async (e) => {
+  root.addEventListener('submit', async (e) => {
     const f = e.target.closest('.pm-access')
     if (!f) return
     e.preventDefault()
@@ -502,10 +519,10 @@ function bindTop () {
       toast('Access updated')
       // The relay's member list may have redrawn the form meanwhile, from the old grant.
       save.blur()
-      renderPeopleMenu()
+      refreshPeople()
     } catch (err) { toast(err.message) } finally { save.disabled = false }
   })
-  menu.addEventListener('submit', async (e) => {
+  root.addEventListener('submit', async (e) => {
     const f = e.target.closest('.pm-gh')
     if (!f) return
     e.preventDefault()
@@ -517,21 +534,9 @@ function bindTop () {
       await api('POST', `/api/sessions/${current}/github-token`, { token })
       f.token.value = ''
       toast('Token saved: the relay brings in commits while everyone\'s offline')
-      renderPeopleMenu({ force: true })
+      refreshPeople({ force: true })
     } catch (err) { toast(err.message) } finally { save.disabled = false }
   })
-  menu.addEventListener('submit', async (e) => {
-    e.preventDefault()
-    if (e.target.closest('.pm-member') || e.target.closest('.pm-gh')) return
-    const input = menu.querySelector('#focus-input')
-    await api('POST', `/api/sessions/${current}/focus`, { text: input.value }).catch((err) => toast(err.message))
-    toast(input.value ? 'Focus shared' : 'Focus cleared')
-    input.blur()
-  })
-
-  $('#toggle-tree').onclick = () => toggleDrawer('tree')
-  $('#toggle-chat').onclick = () => { toggleDrawer('chat'); $('#chat-badge').hidden = true }
-  $('#scrim').onclick = () => toggleDrawer(null)
 }
 
 function toggleDrawer (which) {
@@ -554,7 +559,7 @@ function memberDot (m) {
 function agentLine (p) {
   if (p.hosted) return `<span class="ai-state http" title="Connected over HTTP: shown as here for 30 minutes after each check-in">Over HTTP · ${p.lastSeen ? `checked in ${ago(p.lastSeen) === 'now' ? 'just now' : `${ago(p.lastSeen)} ago`}` : 'checked in lately'}</span>`
   const a = p.agent
-  if (!a || (!a.tool && a.status !== 'unavailable' && a.sharing !== false)) return p.online ? 'No AI activity found yet' : ''
+  if (!a || (!a.tool && a.status !== 'unavailable' && a.sharing !== false)) return '' // nothing to say: no line
   if (a.sharing === false) return `<span class="ai-state paused">${p.isMe ? 'You paused sharing' : 'Paused sharing'}</span>`
   if (a.status === 'unavailable') return `<span class="ai-state off" title="${esc(a.reason || '')}">${esc(a.tool || 'AI')} feed unavailable</span>`
   if (a.status === 'working') return `<span class="ai-state working"><span class="pulse"></span>${esc(a.tool || 'AI')} is working…</span>`
@@ -627,7 +632,7 @@ function renderTop () {
     problem.textContent = st.connected ? '' : (st.problem || '')
     problem.title = problem.textContent ? `${problem.textContent}. Quilt keeps retrying.` : ''
   }
-  if (!$('#people-menu').hidden) renderPeopleMenu()
+  refreshPeople()
   renderAccess()
   renderCatchUp($('#catchup'), st.catchUp, { colors: new Map([st.me, ...st.peers].map((p) => [p.name, p.color])) })
   renderMerges()
@@ -941,7 +946,7 @@ function openMerge (id) {
   if (m && !m.binary) refreshFile(m.path, false)
 }
 
-/** Owner controls for everyone who has been let in, shown in the people menu. */
+/** Owner controls for everyone who has been let in, shown in Session settings. */
 function membersHtml (st) {
   const acc = st.access || {}
   if (!acc.controlled) return ''
@@ -1001,7 +1006,7 @@ async function loadSessionAgents () {
   }
   if (id !== current) return
   wsAgents = { id, agents }
-  if (!$('#people-menu').hidden) renderPeopleMenu({ force: true })
+  refreshPeople({ force: true })
 }
 
 /** How long a chat link still works, e.g. "8 min left (until 14:32)", or "Ran out". */
@@ -1071,82 +1076,112 @@ async function loadGrants () {
   if (id !== current) return
   grantLoad = next
   // Fresh grants replace what the forms show, even one the owner is in.
-  if (!$('#people-menu').hidden) renderPeopleMenu({ force: true })
+  refreshPeople({ force: true })
 }
 
-function renderPeopleMenu ({ force = false } = {}) {
+/** Redraws whatever shows people and access: the people menu and the Session settings window, when open. */
+function refreshPeople (opts = {}) {
+  if (!$('#people-menu').hidden) renderPeopleMenu()
+  if (document.querySelector('.session-settings-back')) renderSessionSettings(opts)
+}
+
+/** Who is here and what each is working on, at a glance. Access and sharing live in Session settings. */
+function renderPeopleMenu () {
   const st = sum().status
   const menu = $('#people-menu')
   const focusEl = menu.querySelector('#focus-input')
   const typing = focusEl && document.activeElement === focusEl ? focusEl.value : null
-  // Don't redraw under the owner while they change someone's access (unless fresh grants
-  // arrived: then the form is redrawn from them, and keeps its focus).
-  const active = menu.contains(document.activeElement) && document.activeElement.closest('.pm-member') ? document.activeElement : null
-  if (!force && active && menu.querySelector('.pm-member.edit')) return
-  const refocus = active && active.name ? [active.closest('.pm-member').dataset.key, active.name] : null
   const self = personInfo(st.me.name)
-  const a = st.me.agent || {}
-  // Your AI chat: two plain switches instead of a button plus a checkbox.
-  // Without posting rights there's nothing to share: the feed is posting too.
-  const muted = mayNotPost()
-  const sharing = a.sharing !== false && !muted
-  const shareLine = a.status === 'unavailable'
-    ? `<div class="pm-card"><div class="hint warn">${esc(a.reason || 'Your AI feed is unavailable')}</div></div>`
-    : `<div class="pm-card pm-settings">
-        <label class="pm-switch ${muted ? 'off' : ''}"><span><b>Share my AI chat</b><small>${muted ? NO_POSTING : 'Others see your prompts and your AI\'s replies.'}</small></span><input type="checkbox" role="switch" data-share ${sharing ? 'checked' : ''} ${muted ? 'disabled' : ''}></label>
-        <label class="pm-switch ${sharing ? '' : 'off'}"><span><b>Summarize it first</b><small>Share short summaries instead of every word.</small></span><input type="checkbox" role="switch" data-summarize ${a.summarized ? 'checked' : ''} ${sharing ? '' : 'disabled'}></label>
-      </div>`
+  const message = (name) => `<button class="btn sm ghost icon pm-dm" data-dm="${esc(name)}" title="Message ${esc(name)}" aria-label="Message ${esc(name)}">${I.chat}</button>`
   const row = (p) => {
-    const editing = p.editing && p.editing[0] ? `<div class="pm-sub">Editing <code>${esc(p.editing[0].path)}</code></div>` : ''
+    const editing = p.editing && p.editing[0] ? `<span class="pm-sub">Editing <code>${esc(p.editing[0].path)}</code></span>` : ''
     return `<div class="pm-row">
       <button class="pm-open" data-person="${esc(p.name)}" title="Open ${p.isMe ? 'your' : `${esc(p.name)}'s`} AI chat">${avatar(p.name, p.color, p.online)}
         <span class="pm-main">
           <span class="pm-name">${esc(p.isMe ? `${p.name} (you)` : p.name)}${p.kind === 'agent' ? `<span class="tag bot">${I.bot}agent</span>` : ''}${toolsOf(p).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</span>
-          ${p.persona ? `<span class="pm-sub">${p.mine ? 'One of your AI sessions' : `One of ${esc(p.of)}'s AI sessions`}</span>` : ''}
-          ${p.focus && !p.isMe ? `<span class="pm-sub">${esc(p.focus)}</span>` : ''}
+          ${p.focus && !p.isMe ? `<span class="pm-sub pm-what">${esc(p.focus)}</span>` : ''}
           ${editing}
-          ${p.persona ? '' : `<span class="pm-sub">${agentLine(p)}</span>`}
+          ${agentLine(p) ? `<span class="pm-sub">${agentLine(p)}</span>` : ''}
         </span></button>
-      ${p.isMe ? '' : `<button class="btn sm ghost" data-dm="${esc(p.name)}">Message</button>`}
+      ${p.isMe ? '' : message(p.name)}
     </div>`
   }
-  // A person's AI sessions are one row, "Daniel's AI", with each session under it.
+  // A person's AI sessions are one row, "Daniel's AI", with what each is working on under it.
   const aiRow = (g) => `<div class="pm-row">
-      <div class="pm-open">${avatar(g.name, null, true)}
+      <div class="pm-open" title="${g.sessions.length === 1 ? 'One chat' : `${g.sessions.length} chats`}: a message goes to the one active last">${avatar(g.name, null, true)}
         <span class="pm-main">
           <span class="pm-name">${esc(g.mine ? 'Your AI' : g.name)}<span class="tag bot">${I.bot}AI</span>${g.agents.map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</span>
-          <span class="pm-sub">${g.sessions.length === 1 ? 'One chat' : `${g.sessions.length} chats`}. Messages go to the one active last.</span>
-          ${g.sessions.map((x) => `<span class="pm-sub" title="${esc(x.name)}">· ${esc(x.focus || x.name.split(' · ').slice(1).join(' · ') || x.tool || 'AI')}${x.tool && x.focus ? ` <span class="hint">(${esc(x.tool)})</span>` : ''}</span>`).join('')}
+          ${g.sessions.map((x) => `<span class="pm-sub pm-what" title="${esc(x.name)}">${esc(x.focus || x.name.split(' · ').slice(1).join(' · ') || x.tool || 'AI')}</span>`).join('')}
         </span></div>
-      <button class="btn sm ghost" data-dm="${esc(g.name)}">Message</button>
+      ${message(g.name)}
     </div>`
   const here = peopleHere(st)
   const myAi = here.find((p) => p.sessions && p.mine)
-  const others = here.some((p) => p !== myAi)
-    ? here.filter((p) => p !== myAi).map((p) => p.sessions ? aiRow(p) : row(personInfo(p.name))).join('')
-    : '<div class="pm-empty">Nobody else is here yet. Use <b>Invite</b> to bring someone in.</div>'
+  const others = here.filter((p) => p !== myAi)
   menu.innerHTML = `
     <div class="pm-head"><span>People</span><span class="pm-count">${here.length + 1} here</span></div>
-    <div class="pm-section">
-      <div class="pm-title">You</div>
-      <div class="pm-card">
-        ${row(self)}
-        <form class="pm-focus"><input class="input" id="focus-input" placeholder="What are you working on?" aria-label="Your focus" value="${esc(typing ?? st.me.focus ?? '')}"></form>
-      </div>
-      ${myAi ? `<div class="pm-card">${aiRow(myAi)}</div>` : ''}
-      ${shareLine}
+    <div class="pm-list">
+      ${row(self)}
+      <form class="pm-focus"><input class="input" id="focus-input" placeholder="What are you working on?" aria-label="Your focus" value="${esc(typing ?? st.me.focus ?? '')}"></form>
+      ${myAi ? aiRow(myAi) : ''}
+      <div class="pm-sep"></div>
+      ${others.length ? others.map((p) => p.sessions ? aiRow(p) : row(personInfo(p.name))).join('') : '<div class="pm-empty">Nobody else is here yet. Use <b>Invite</b> to bring someone in.</div>'}
     </div>
-    <div class="pm-section">
-      <div class="pm-title">Others</div>
-      ${others}
-    </div>
-    ${membersHtml(st)}`
+    <div class="pm-foot"><button type="button" class="btn sm ghost" data-session-settings>${I.gear}<span>Session settings</span></button></div>`
   if (typing != null) {
     const el = menu.querySelector('#focus-input')
     el.focus()
     el.setSelectionRange(el.value.length, el.value.length)
   }
-  if (refocus) [...menu.querySelectorAll('.pm-member')].find((f) => f.dataset.key === refocus[0])?.elements?.[refocus[1]]?.focus()
+}
+
+/** Your AI chat's sharing in this session: two plain switches. */
+function sharingHtml (st) {
+  const a = st.me.agent || {}
+  // Without posting rights there's nothing to share: the feed is posting too.
+  const muted = mayNotPost()
+  const sharing = a.sharing !== false && !muted
+  const body = a.status === 'unavailable'
+    ? `<div class="hint warn">${esc(a.reason || 'Your AI feed is unavailable')}</div>`
+    : `<label class="pm-switch ${muted ? 'off' : ''}"><span><b>Share my AI chat</b><small>${muted ? NO_POSTING : 'Others see your prompts and your AI\'s replies.'}</small></span><input type="checkbox" role="switch" data-share ${sharing ? 'checked' : ''} ${muted ? 'disabled' : ''}></label>
+        <label class="pm-switch ${sharing ? '' : 'off'}"><span><b>Summarize it first</b><small>Share short summaries instead of every word.</small></span><input type="checkbox" role="switch" data-summarize ${a.summarized ? 'checked' : ''} ${sharing ? '' : 'disabled'}></label>`
+  return `<div class="pm-section"><div class="pm-title">Your AI chat</div><div class="pm-card pm-settings">${body}</div></div>`
+}
+
+/** The Session settings window: your sharing, and who can get in and what they may do here. */
+function openSessionSettings () {
+  document.querySelector('.session-settings-back')?.remove()
+  $('#people-menu').hidden = true
+  $('#people-btn').setAttribute('aria-expanded', 'false')
+  const back = document.createElement('div')
+  back.className = 'modal-back top session-settings-back'
+  back.innerHTML = `<div class="card modal session-settings" role="dialog" aria-modal="true" aria-labelledby="ss-title">
+      <div class="ss-head"><h3 id="ss-title">Session settings</h3><p class="lead">For this session only.</p>
+        <button type="button" class="btn sm ghost icon ss-close" data-close-ss aria-label="Close">${I.x}</button></div>
+      <div class="ss-body"></div>
+    </div>`
+  document.body.appendChild(back)
+  const close = () => back.remove()
+  back.addEventListener('mousedown', (e) => { if (e.target === back) close() })
+  back.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); close() } })
+  back.querySelector('[data-close-ss]').onclick = close
+  bindSessionSettings(back)
+  renderSessionSettings({ force: true })
+  if (sum().status.access?.owner) { loadGrants(); if (state.workspacesOn) loadSessionAgents() }
+  back.querySelector('[data-close-ss]').focus()
+}
+
+function renderSessionSettings ({ force = false } = {}) {
+  const box = document.querySelector('.session-settings-back .ss-body')
+  if (!box || !current) return
+  const st = sum().status
+  // Don't redraw under the owner while they change someone's access (unless fresh grants
+  // arrived: then the form is redrawn from them, and keeps its focus).
+  const active = box.contains(document.activeElement) && document.activeElement.closest('.pm-member') ? document.activeElement : null
+  if (!force && active && box.querySelector('.pm-member.edit')) return
+  const refocus = active && active.name ? [active.closest('.pm-member').dataset.key, active.name] : null
+  box.innerHTML = sharingHtml(st) + membersHtml(st)
+  if (refocus) [...box.querySelectorAll('.pm-member')].find((f) => f.dataset.key === refocus[0])?.elements?.[refocus[1]]?.focus()
 }
 
 // ------------------------------------------------------ main area (AI/Files) --
@@ -1166,6 +1201,7 @@ function bindMain () {
       return
     }
     if (tab && tab.dataset.kind === 'merge') { openMerge(tab.dataset.tab); return }
+    if (tab && tab.dataset.kind === 'loom') { openLoom(); return }
     if (close) {
       e.stopPropagation()
       const key = close.dataset.close
@@ -1173,13 +1209,11 @@ function bindMain () {
       const list = isAi ? w.aiTabs : w.fileTabs
       const i = list.indexOf(key)
       if (i !== -1) list.splice(i, 1)
-      const selKey = isAi ? 'aiSel' : 'fileSel'
-      if (w[selKey] === key) w[selKey] = list[Math.min(i, list.length - 1)] || null
-      // Closing the tab you're looking at falls back to whatever is left.
-      if ((w.mode === 'ai') === isAi && !w[selKey]) {
-        const other = isAi ? 'files' : 'ai'
-        if ((other === 'ai' ? w.aiSel : w.fileSel)) w.mode = other
-      }
+      if (!isAi && w.fileTab) delete w.fileTab[key]
+      // Closing a person's AI tab goes back to the Loom; a file tab to the file beside it, or the Loom.
+      if (isAi && w.aiSel === key) w.aiSel = null
+      if (!isAi && w.fileSel === key) w.fileSel = list[Math.min(i, list.length - 1)] || null
+      if (!isAi && w.mode === 'files' && !w.fileSel) w.mode = 'ai'
       saveWs(current)
       renderMainBar()
       renderMain()
@@ -1202,10 +1236,23 @@ function bindMain () {
     if (b) openPerson(b.dataset.person)
     const c = e.target.closest('[data-conv]')
     if (c) pickConv(c.dataset.conv)
+    const t = e.target.closest('[data-fvtab]')
+    if (t) showFileTab(t.dataset.fvtab)
     const f = e.target.closest('[data-fv]')
     if (f && f.dataset.fv === 'claim') claimPath(ws(current).fileSel, '')
     if (f && f.dataset.fv === 'release') releasePattern(f.dataset.pattern)
   })
+}
+
+function openLoom () {
+  const w = ws(current)
+  w.aiSel = null
+  w.mode = 'ai'
+  saveWs(current)
+  renderMainBar()
+  renderMain()
+  renderTreePane()
+  renderTop()
 }
 
 function openPerson (name) {
@@ -1233,11 +1280,16 @@ function pickConv (conv) {
   renderMain()
 }
 
-function openFile (path) {
+/** Opens a file tab; `tab: 'changes'` shows its Changes tab, otherwise the tab it was on. */
+function openFile (path, { tab } = {}) {
   const w = ws(current)
   if (!w.fileTabs.includes(path)) w.fileTabs.push(path)
   w.fileSel = path
   w.mode = 'files'
+  if (!w.fileTab) w.fileTab = {}
+  if (tab === 'changes') w.fileTab[path] = 'changes'
+  else if (tab === 'file') delete w.fileTab[path]
+  loadHistory(path)
   const wasStale = w.stale[path]
   delete w.stale[path]
   saveWs(current)
@@ -1254,25 +1306,30 @@ function renderMainBar () {
   const el = $('#main-tabs')
   const aiOn = (name) => w.mode === 'ai' && w.aiSel === name
   const fileOn = (path) => w.mode === 'files' && w.fileSel === path
-  el.innerHTML = w.aiTabs.map((name) => {
+  const loomOn = w.mode === 'ai' && !w.aiSel
+  const st = sum().status
+  const anyWorking = [st.me, ...st.peers].some((p) => p?.agent && p.agent.sharing !== false && p.agent.status === 'working')
+  const loomTab = `<div class="ws-tab loom-tab${loomOn ? ' on' : ''}" role="tab" aria-selected="${loomOn}" tabindex="0" data-kind="loom" data-tab="loom" title="Everyone's AI conversations, chat and task notes at once">
+      <span class="ico">${I.users}</span><span class="nm">Everyone</span>${anyWorking ? '<span class="pulse" title="An AI is working"></span>' : ''}</div>`
+  el.innerHTML = loomTab + (w.aiTabs.length ? '<span class="ws-tab-sep"></span>' : '') + w.aiTabs.map((name) => {
     const p = personInfo(name)
     const working = p.agent && p.agent.sharing !== false && p.agent.status === 'working'
     return `<div class="ws-tab${aiOn(name) ? ' on' : ''}" role="tab" aria-selected="${aiOn(name)}" tabindex="0" data-kind="ai" data-tab="${esc(name)}" title="${esc(p.isMe ? 'Your AI chat' : `${name}'s AI chat`)}">
       ${avatar(name, p.color, p.online)}<span class="nm">${esc(p.isMe ? 'Your AI' : `${name}'s AI`)}</span>${working ? '<span class="pulse" title="AI is working"></span>' : ''}
       <button class="x" data-kind="ai" data-close="${esc(name)}" aria-label="Close ${esc(name)}">${I.x}</button></div>`
-  }).join('') + (w.aiTabs.length && w.fileTabs.length ? '<span class="ws-tab-sep"></span>' : '') +
+  }).join('') + (w.fileTabs.length ? '<span class="ws-tab-sep"></span>' : '') +
   w.fileTabs.map((path) => `<div class="ws-tab${fileOn(path) ? ' on' : ''}" role="tab" aria-selected="${fileOn(path)}" tabindex="0" data-kind="file" data-tab="${esc(path)}" title="${esc(path)}">
       <span class="ico">${I.file}</span><span class="nm">${esc(basename(path))}</span>${w.stale[path] ? '<span class="changed" title="Changed"></span>' : ''}
       <button class="x" data-kind="file" data-close="${esc(path)}" aria-label="Close ${esc(basename(path))}">${I.x}</button></div>`).join('') +
   (w.mergeSel ? mergeTabHtml(w) : '')
-  $('#mainbar').hidden = !w.aiTabs.length && !w.fileTabs.length && !w.mergeSel
+  $('#mainbar').hidden = false
 }
 
 function mergeTabHtml (w) {
   const m = shownMerge()
   const on = w.mode === 'merge'
   const name = m ? `Merge ${basename(m.path)}` : 'Merge'
-  return `${w.aiTabs.length || w.fileTabs.length ? '<span class="ws-tab-sep"></span>' : ''}<div class="ws-tab${on ? ' on' : ''}" role="tab" aria-selected="${on}" tabindex="0" data-kind="merge" data-tab="${esc(w.mergeSel)}" title="${esc(m ? `Compare the two versions of ${m.path}` : 'Merge')}">
+  return `<span class="ws-tab-sep"></span><div class="ws-tab${on ? ' on' : ''}" role="tab" aria-selected="${on}" tabindex="0" data-kind="merge" data-tab="${esc(w.mergeSel)}" title="${esc(m ? `Compare the two versions of ${m.path}` : 'Merge')}">
       <span class="ico">${I.branch}</span><span class="nm">${esc(name)}</span>
       <button class="x" data-kind="merge" data-close="${esc(w.mergeSel)}" aria-label="Close merge">${I.x}</button></div>`
 }
@@ -1280,13 +1337,14 @@ function mergeTabHtml (w) {
 // A card being renamed, or a drag in progress, must not be rebuilt under the pointer.
 let draggingTask = false
 let boardDirty = false
-// Who the next task is for, chosen before Add. `p:name` or `a:name`.
-let pendingAssign = ''
+// Who the next task is for, chosen before Add: `p:name`, `a:name`, or '' for nobody.
+// null until chosen: the add form then follows the board's Show choice.
+let pendingAssign = null
 
 function renderTaskButton () {
   const btn = $('#tasks-btn')
   if (!btn || !current) return
-  const open = (sum()?.status.tasks || []).filter((t) => t.column === 'todo' || t.column === 'doing').length
+  const open = (sum()?.status.tasks || []).filter((t) => !t.archived && (t.column === 'todo' || t.column === 'doing')).length
   const n = $('#tasks-count')
   if (n) { n.hidden = open === 0; n.textContent = String(open) }
   const on = ws(current).mode === 'tasks'
@@ -1297,13 +1355,14 @@ function renderTaskButton () {
 function editingTask () {
   const el = document.activeElement
   if (!el?.closest) return false
-  return !!el.closest('.task-edit, .task-assign, .task-file, .task-file-form, .task-cron, .task-cron-form, .task-add-assign')
+  return !!el.closest('.task-edit, .task-assign, .task-file, .task-file-form, .task-cron, .task-cron-form, .task-add-assign, .task-show')
 }
 
 function taskPeople (st) {
   // A person's AI sessions are assigned as "their AI" (forAi), not one by one.
   return [st.me, ...(st.peers || [])].filter((p) => p && p.name && !p.persona).map((p) => ({
     name: p.name,
+    color: p.color,
     tool: p.tool && p.tool !== 'unknown' ? p.tool : '',
     agent: p.kind === 'agent'
   }))
@@ -1344,6 +1403,206 @@ function restoreBoardScroll (root, scroll) {
     const top = scroll.lists[col.dataset.column]
     if (list && typeof top === 'number') list.scrollTop = top
   }
+}
+
+// ------------------------------------------------------ board: folding --
+// The board always fits: when its columns can't all sit side by side, the ones
+// you're not using fold to a thin strip (name and count), so nothing is ever off
+// to the side. foldPlan (board.js) decides which; this lays it out and keeps your
+// choices per session: the columns you opened (most recent first) and folded.
+const boardCounts = new Map() // session -> { column: count } at the last layout, to pulse a folded column that grew
+let unfoldTimer = null // a dragged card resting on a strip opens that column
+
+function boardChoices () {
+  const w = ws(current)
+  return { picked: w.boardOpen || [], folded: w.boardFolded || [], counts: boardCounts.get(current) || {} }
+}
+
+/**
+ * Folds and opens the columns to fit the board's width. `animate` when you opened or folded one:
+ * a fresh render or a resize lands in place, or every status tick would replay the folding.
+ */
+function layoutBoard (root = $('#main'), { animate = false } = {}) {
+  const board = root?.querySelector('.board')
+  const cols = board?.querySelector('.board-cols')
+  if (!cols) return
+  if (!animate) cols.classList.add('still')
+  const all = [...cols.querySelectorAll('.board-col')]
+  const counts = {}
+  for (const col of all) counts[col.dataset.column] = col.querySelectorAll('.task').length // every card, found by a search or not
+  const pad = parseFloat(getComputedStyle(cols).paddingLeft) || 0
+  const plan = foldPlan({ ...boardChoices(), counts, room: cols.clientWidth - 2 * pad })
+  const open = new Set(plan.open)
+  board.dataset.layout = plan.layout
+  const before = boardCounts.get(current)
+  for (const col of all) {
+    const id = col.dataset.column
+    const isOpen = open.has(id)
+    col.classList.toggle('folded', !isOpen)
+    // Hidden parts can't be tabbed into or read out: the strip when open, the cards when folded.
+    col.querySelector('.board-strip').inert = isOpen
+    for (const part of col.querySelectorAll(':scope > h3, :scope > .board-list')) part.inert = !isOpen
+    // The last open column can't be folded: something is always open.
+    const fold = col.querySelector('.board-fold')
+    if (fold) fold.hidden = isOpen && open.size === 1
+    if (!isOpen && before && counts[id] > (before[id] ?? counts[id])) {
+      const strip = col.querySelector('.board-strip')
+      strip.classList.remove('grew')
+      void strip.offsetWidth // restart the animation
+      strip.classList.add('grew')
+    }
+  }
+  boardCounts.set(current, counts)
+  if (!animate) {
+    void cols.offsetWidth // settle without transitions, then let later changes animate
+    cols.classList.remove('still')
+  }
+}
+
+/** Opens a column: it becomes the most recent, so the least recent open one folds to make room. */
+function openColumn (id, { focus = false } = {}) {
+  const w = ws(current)
+  const { order, folded } = foldPlan({ ...boardChoices(), room: 0 })
+  w.boardOpen = [id, ...order.filter((x) => x !== id)]
+  w.boardFolded = folded.filter((x) => x !== id)
+  saveWs(current)
+  layoutBoard(undefined, { animate: true })
+  if (focus) $(`#main .board-col[data-column="${id}"]`)?.focus({ preventScroll: true }) // the strip clicked is gone: focus its column
+}
+
+/** Folds a column to its strip, and keeps it folded until it's opened again. */
+function foldColumn (id) {
+  const w = ws(current)
+  const { order, folded } = foldPlan({ ...boardChoices(), room: 0 })
+  w.boardFolded = [...new Set([...folded, id])]
+  w.boardOpen = [...order.filter((x) => x !== id), id]
+  saveWs(current)
+  layoutBoard(undefined, { animate: true })
+  $(`#main .board-col[data-column="${id}"] .board-strip`)?.focus()
+}
+
+function cancelUnfold () {
+  clearTimeout(unfoldTimer)
+  unfoldTimer = null
+}
+
+// -------------------------------------------------------- board: search --
+// The search box hides the cards that don't hold every word typed (board.js
+// searchText), in every column. Column and strip counts become the matches, and a
+// folded column with matches stands out, so nothing found hides in a strip.
+let boardQuery = ''
+
+function searchBoard (root = $('#main')) {
+  const input = root?.querySelector('#board-search')
+  if (!input) return
+  if (input.value !== boardQuery) input.value = boardQuery
+  const q = boardQuery.trim()
+  let found = 0
+  let total = 0
+  for (const col of root.querySelectorAll('.board-col')) {
+    let n = 0
+    const cards = col.querySelectorAll('.task')
+    for (const card of cards) {
+      const show = !q || matchesSearch(card.dataset.search || '', q)
+      card.hidden = !show
+      if (show) n++
+    }
+    total += cards.length
+    found += n
+    const shown = q ? n : cards.length
+    const count = col.querySelector('h3 .board-n')
+    if (count) count.textContent = shown
+    const strip = col.querySelector('.board-strip-n')
+    if (strip) { strip.textContent = shown; strip.dataset.n = shown }
+    col.classList.toggle('search-hit', !!q && n > 0)
+    col.classList.toggle('search-miss', !!q && !n)
+    let none = col.querySelector('.board-nomatch')
+    if (q && !n && cards.length) {
+      if (!none) {
+        none = document.createElement('p')
+        none.className = 'board-empty board-nomatch'
+        col.querySelector('.board-list')?.appendChild(none)
+      }
+      none.textContent = 'No matching tickets.'
+    } else none?.remove()
+  }
+  root.querySelector('.board')?.classList.toggle('searching', !!q)
+  const n = root.querySelector('.board-search-n')
+  if (n) n.textContent = q ? `${found} of ${total}` : ''
+  labelFilter(root, { q, found })
+}
+
+// ------------------------------------------------------- board: filter --
+// Search and Show live behind one Filter button (board.js filterHtml). The button
+// says what's on: "agents" · Sam · 8 of 19, accented, with an × to clear it all.
+let filterOpen = false
+
+function labelFilter (root, { q = boardQuery.trim(), found = null } = {}) {
+  const box = root?.querySelector('#board-filter')
+  if (!box) return
+  const showing = box.dataset.showLabel || ''
+  const total = Number(box.dataset.total) || 0
+  const visible = found ?? root.querySelectorAll('.board-col .task:not([hidden])').length
+  const on = !!(q || showing)
+  const parts = [q && `“${q}”`, showing, on && !root.querySelector('.board.archived') && `${visible} of ${total}`].filter(Boolean)
+  const label = box.querySelector('.board-filter-label')
+  if (label) label.textContent = on ? parts.join(' · ') : 'Filter'
+  box.querySelector('[data-filter-toggle]')?.setAttribute('title', on ? `Filtered: ${parts.join(' · ')}` : 'Search and filter tickets (/)')
+  box.classList.toggle('on', on)
+  for (const x of box.querySelectorAll('[data-filter-clear]')) x.hidden = !on
+}
+
+/** Opens or closes the Filter panel; it stays open across repaints until closed. */
+function setFilterOpen (open, { focus } = {}) {
+  filterOpen = open
+  const panel = $('#board-filter-panel')
+  const btn = $('#board-filter [data-filter-toggle]')
+  if (!panel || !btn) return
+  panel.hidden = !open
+  btn.setAttribute('aria-expanded', String(open))
+  if (open && focus === 'search') { const i = $('#board-search'); i?.focus(); i?.select() }
+  if (open && focus === 'first') ($('#board-search') || panel.querySelector('[aria-checked="true"]'))?.focus()
+  if (!open && focus === 'button') btn.focus()
+}
+
+function clearFilters () {
+  boardQuery = ''
+  const w = ws(current)
+  if (w.show) { w.show = ''; saveWs(current); paintBoard({ force: true }) } else searchBoard()
+}
+
+// ------------------------------------------------------ board: archived --
+// Typing in the archive's filter hides the rows whose title doesn't match, and
+// opens the groups so matches show; the groups you folded are kept per session.
+let archiveQuery = ''
+
+function filterArchive (root = $('#main')) {
+  const input = root?.querySelector('#archive-filter')
+  if (!input) return
+  if (input.value !== archiveQuery) input.value = archiveQuery
+  const q = archiveQuery.trim().toLowerCase()
+  const closed = ws(current).archiveClosed || []
+  let any = false
+  for (const group of root.querySelectorAll('.archive-group')) {
+    let n = 0
+    for (const row of group.querySelectorAll('.task-archived')) {
+      const show = !q || row.dataset.title.includes(q)
+      row.hidden = !show
+      if (show) n++
+    }
+    group.hidden = !n
+    group.querySelector('[data-group-count]').textContent = n
+    group.open = q ? n > 0 : !closed.includes(group.dataset.group)
+    any ||= n > 0
+  }
+  root.querySelector('.board-archive-none').hidden = any || !q
+}
+
+/** Asks before removing an archived task for good: the row turns into a confirmation. */
+function askRemove (row, ask) {
+  row.classList.toggle('confirming', ask)
+  if (ask) row.querySelector('[data-task-remove-cancel]')?.focus() // the safe choice has focus
+  else row.querySelector('[data-task-remove-ask]')?.focus()
 }
 
 // A plain mouse wheel only scrolls up and down. Over the board's headers,
@@ -1424,6 +1683,66 @@ function beginEdit (btn) {
 function bindBoard () {
   const el = $('#main')
   el.addEventListener('wheel', boardWheel, { passive: false })
+  el.addEventListener('input', (e) => {
+    if (e.target.id === 'board-search') { boardQuery = e.target.value; searchBoard(el); return }
+    if (e.target.id !== 'archive-filter') return
+    archiveQuery = e.target.value
+    filterArchive(el)
+  })
+  // "/" from anywhere on the board (not while typing) goes to the search.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey || !current || ws(current).mode !== 'tasks') return
+    if (e.target.closest?.('input, textarea, select, [contenteditable="true"]')) return
+    if (!$('#board-filter')) return
+    e.preventDefault()
+    setFilterOpen(true, { focus: $('#board-search') ? 'search' : 'first' })
+  }, { signal: mounted.signal })
+  // A click outside the Filter panel closes it.
+  document.addEventListener('mousedown', (e) => {
+    if (filterOpen && !e.target.closest?.('#board-filter')) setFilterOpen(false)
+  }, { signal: mounted.signal })
+  // Folding a group is remembered, but not the opening that filtering does.
+  el.addEventListener('toggle', (e) => {
+    const group = e.target.closest?.('.archive-group')
+    if (!group || archiveQuery.trim()) return
+    const w = ws(current)
+    const closed = new Set(w.archiveClosed || [])
+    if (group.open) closed.delete(group.dataset.group)
+    else closed.add(group.dataset.group)
+    w.archiveClosed = [...closed]
+    saveWs(current)
+  }, true)
+  el.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return
+    const row = e.target.closest?.('.task-archived.confirming')
+    if (row) { e.preventDefault(); askRemove(row, false); return }
+    if (e.target.id === 'archive-filter' && archiveQuery) { e.preventDefault(); archiveQuery = ''; filterArchive(el) }
+    if (filterOpen && e.target.closest?.('#board-filter')) { e.preventDefault(); setFilterOpen(false, { focus: 'button' }); return }
+    if (e.target.closest?.('[data-filter-toggle]') && boardQuery) { e.preventDefault(); boardQuery = ''; searchBoard(el) }
+  })
+  // The board's width changes with the window and with the file tree and chat beside it.
+  const resized = new ResizeObserver(() => { if (current && ws(current).mode === 'tasks') layoutBoard(el) })
+  resized.observe(el)
+  mounted.signal.addEventListener('abort', () => resized.disconnect())
+  el.addEventListener('click', (e) => {
+    if (e.target.closest?.('[data-filter-toggle]')) { setFilterOpen(!filterOpen, { focus: filterOpen ? null : 'first' }); return }
+    if (e.target.closest?.('[data-filter-clear]')) { clearFilters(); return }
+    const pick = e.target.closest?.('[data-show-pick]')
+    if (pick) {
+      // Kept per session, like the rest of the workspace. The panel stays open to try another.
+      const value = pick.dataset.showPick
+      ws(current).show = value
+      saveWs(current)
+      paintBoard({ force: true })
+      const again = [...document.querySelectorAll('#board-filter [data-show-pick]')].find((b) => b.dataset.showPick === value)
+      again?.focus()
+      return
+    }
+    const unfold = e.target.closest?.('[data-unfold]')
+    if (unfold) { openColumn(unfold.dataset.unfold, { focus: true }); return }
+    const fold = e.target.closest?.('[data-fold]')
+    if (fold) foldColumn(fold.dataset.fold)
+  })
   el.addEventListener('focusout', () => {
     setTimeout(() => { if (!editingTask() && boardDirty) paintBoard() }, 0)
   })
@@ -1469,7 +1788,7 @@ function bindBoard () {
     button.disabled = true
     const who = assignmentFromValue(e.target.querySelector('#task-add-assign')?.value || pendingAssign, sum().status)
     try {
-      await changeTasks('', { title, ...who }, () => { pendingAssign = '' })
+      await changeTasks('', { title, ...who }, () => { pendingAssign = null })
       $('#task-add')?.focus()
     } catch (err) { toast(err.message); button.disabled = false }
   })
@@ -1492,9 +1811,47 @@ function bindBoard () {
       catch (err) { toast(err.message) }
       return
     }
+    if (e.target.closest('[data-archived-toggle]')) {
+      // The board shows the archived tasks in place of its columns.
+      ws(current).archived = !ws(current).archived
+      archiveQuery = ''
+      paintBoard({ force: true })
+      if (ws(current).archived) $('#archive-filter')?.focus()
+      return
+    }
+    const ask = e.target.closest('[data-task-remove-ask], [data-task-remove-cancel]')
+    if (ask) { askRemove(ask.closest('.task-archived'), ask.matches('[data-task-remove-ask]')); return }
+    const more = e.target.closest('[data-task-more]')
+    if (more) {
+      const id = more.closest('.task')?.dataset.task
+      const task = (sum()?.status.tasks || []).find((t) => t.id === id)
+      if (!task) return
+      const update = async (path, body) => {
+        try { await changeTasks(path, body) } catch (err) { toast(err.message) }
+      }
+      openTaskMenu(more, task, {
+        // The board may have been redrawn since the menu opened: find the card again.
+        edit: () => {
+          const title = [...document.querySelectorAll('.task')].find((c) => c.dataset.task === id)?.querySelector('.task-title')
+          if (title) beginEdit(title)
+        },
+        recur: () => update('/update', { id, recurring: !task.recurring }),
+        archive: () => update('/update', { id, archived: true }),
+        remove: () => update('/delete', { id })
+      })
+      return
+    }
+    const unarchive = e.target.closest('[data-task-unarchive]')
+    if (unarchive) {
+      const id = unarchive.closest('[data-task]')?.dataset.task
+      if (!id) return
+      try { await changeTasks('/update', { id, archived: false }) }
+      catch (err) { toast(err.message) }
+      return
+    }
     const notes = e.target.closest('[data-task-notes]')
     if (notes) {
-      const id = notes.closest('.task')?.dataset.task
+      const id = notes.closest('[data-task]')?.dataset.task
       const task = (sum()?.status.tasks || []).find((t) => t.id === id)
       if (task) openTaskNotes(task)
       return
@@ -1509,14 +1866,13 @@ function bindBoard () {
       return
     }
     if (e.target.closest('[data-task-delete]')) {
-      const id = e.target.closest('.task')?.dataset.task
+      const id = e.target.closest('[data-task]')?.dataset.task
       if (!id) return
       try { await changeTasks('/delete', { id }) }
       catch (err) { toast(err.message) }
       return
     }
-    const edit = e.target.closest('[data-task-edit]')
-    const title = edit ? edit.closest('.task')?.querySelector('.task-title') : e.target.closest('.task-title')
+    const title = e.target.closest('.task-title')
     if (title) beginEdit(title)
   })
   el.addEventListener('dragstart', (e) => {
@@ -1529,13 +1885,19 @@ function bindBoard () {
   })
   el.addEventListener('dragover', (e) => {
     const col = e.target.closest?.('.board-col')
-    if (!col) return
+    if (!col) { cancelUnfold(); return }
     e.preventDefault()
     e.dataTransfer.dropEffect = 'move'
-    for (const n of el.querySelectorAll('.board-col.over')) if (n !== col) n.classList.remove('over')
+    for (const n of el.querySelectorAll('.board-col.over')) if (n !== col) { n.classList.remove('over'); cancelUnfold() }
     col.classList.add('over')
+    // Resting on a folded column opens it, so the card can go where it belongs in the list.
+    // Dropping on the strip right away puts it at the end.
+    if (col.classList.contains('folded') && !unfoldTimer) {
+      unfoldTimer = setTimeout(() => { unfoldTimer = null; if (col.classList.contains('over')) openColumn(col.dataset.column) }, 500)
+    }
   })
   el.addEventListener('drop', async (e) => {
+    cancelUnfold()
     const col = e.target.closest?.('.board-col')
     if (!col) return
     e.preventDefault()
@@ -1548,6 +1910,7 @@ function bindBoard () {
     catch (err) { toast(err.message); paintBoard({ force: true }) }
   })
   el.addEventListener('dragend', () => {
+    cancelUnfold()
     draggingTask = false
     for (const n of el.querySelectorAll('.over, .dragging')) n.classList.remove('over', 'dragging')
     if (boardDirty) paintBoard()
@@ -1560,14 +1923,31 @@ function renderMain () {
   const w = ws(current)
   const st = sum().status
   if (w.mode === 'tasks') {
-    const html = renderBoard(st.tasks || [], me(), taskPeople(st), pendingAssign)
+    // Restoring the last archived task goes back to the board, and stays there.
+    if (w.archived && !(st.tasks || []).some((t) => t.archived)) w.archived = false
+    // Showing one person's tasks: a new task is theirs too, unless the add form says otherwise.
+    const show = typeof w.show === 'string' ? w.show : ''
+    const assignTo = pendingAssign ?? (/^[pa]:/.test(show) ? show : '')
+    const html = renderBoard(st.tasks || [], me(), taskPeople(st), assignTo, { archived: !!w.archived, show, closedGroups: w.archiveClosed || [] })
     // Status ticks arrive every few seconds. Re-rendering an unchanged board
     // would throw away hover, selection and scroll for nothing.
     if (html === lastBoard.html && lastBoard.el && el.firstElementChild === lastBoard.el) return
     const scroll = boardScroll(el)
+    const box = ['archive-filter', 'board-search'].includes(document.activeElement?.id) ? document.activeElement : null
+    const typing = box ? { id: box.id, at: box.selectionStart } : null
     el.innerHTML = html
     lastBoard = { html, el: el.firstElementChild }
+    layoutBoard(el)
     restoreBoardScroll(el, scroll)
+    filterArchive(el)
+    searchBoard(el)
+    if (filterOpen) setFilterOpen(true)
+    labelFilter(el)
+    if (typing) {
+      const input = $(`#${typing.id}`)
+      input?.focus()
+      try { input?.setSelectionRange(typing.at, typing.at) } catch {}
+    }
     return
   }
   lastBoard = { html: '', el: null }
@@ -1593,7 +1973,7 @@ function renderMain () {
   if (w.mode === 'ai') {
     if (!w.aiSel) {
       const people = st.peers
-      if (!people.length) {
+      if (!people.length && !state.feeds.get(current)?.get(st.me.name)?.length) {
         const { invite, viewInvite } = sum()
         el.innerHTML = `<div class="main-empty invite-empty">
           <div class="ill">${I.link}</div>
@@ -1610,14 +1990,7 @@ function renderMain () {
         </div>`
         return
       }
-      el.innerHTML = `<div class="main-empty">
-        <div class="ill">${I.sparkle}</div>
-        <h3>Watch your partners' AI, live</h3>
-        <p class="hint">Pick someone to see what they ask their AI, what it answers, and which files it touches.</p>
-        <div class="row" style="justify-content:center;flex-wrap:wrap">
-          ${people.map((p) => `<button class="btn" data-person="${esc(p.name)}">${avatar(p.name, p.color, true)}${esc(p.name)}</button>`).join('')}
-        </div>
-      </div>`
+      renderLoomView(el)
       return
     }
     const feeds = state.feeds.get(current)
@@ -1633,12 +2006,58 @@ function renderMain () {
       return
     }
     const cached = state.files.get(fileKey(w.fileSel))
-    renderFileView(el, { path: w.fileSel, file: cached ? cached.file : null, meta: treeMeta(w.fileSel), me: me(), prevText: cached ? cached.prevText : null })
-    if (cached) cached.prevText = null // highlight once
+    renderFileView(el, {
+      path: w.fileSel,
+      file: cached ? cached.file : null,
+      meta: treeMeta(w.fileSel),
+      me: me(),
+      prevText: cached ? cached.prevText : null,
+      tab: fileTabOf(w.fileSel),
+      history: histories.get(fileKey(w.fileSel)) || null,
+      summary: fileChanges(w.fileSel),
+      people: { who: (name) => name === me() ? 'you' : name, colorOf: (name) => personInfo(name).color }
+    })
+    if (cached && fileTabOf(w.fileSel) === 'file') cached.prevText = null // highlight once, on the File tab
   }
 }
 
 const fileKey = (path) => `${current}\n${path}`
+const fileTabOf = (path) => (ws(current).fileTab || {})[path] === 'changes' ? 'changes' : 'file'
+
+function showFileTab (tab) {
+  const w = ws(current)
+  if (!w.fileSel) return
+  if (!w.fileTab) w.fileTab = {}
+  if (tab === 'changes') w.fileTab[w.fileSel] = 'changes'
+  else delete w.fileTab[w.fileSel]
+  saveWs(current)
+  renderMain()
+  $('#main .fv-tabs [aria-selected="true"]')?.focus()
+  if (tab === 'changes') loadHistory(w.fileSel)
+}
+
+// ------------------------------------------------------- a file's changes --
+const histories = new Map() // fileKey -> history entries, newest first
+const historyTimers = new Map()
+
+/** A save is recorded in the history alongside the file: read it again once that has landed. */
+function scheduleHistory (path) {
+  clearTimeout(historyTimers.get(path))
+  historyTimers.set(path, setTimeout(() => { historyTimers.delete(path); loadHistory(path) }, 500))
+}
+
+async function loadHistory (path) {
+  const id = current
+  try {
+    const { entries } = await api('GET', `/api/sessions/${id}/history?path=${encodeURIComponent(path)}`)
+    if (id !== current) return
+    histories.set(`${id}\n${path}`, entries)
+    const w = ws(id)
+    if (w.mode !== 'files' || w.fileSel !== path) return
+    if (fileTabOf(path) === 'changes') renderMain()
+    else renderFileTabs($('#main'), { tab: 'file', history: entries, summary: fileChanges(path) }) // the count only: freshly changed lines stay lit
+  } catch {}
+}
 
 function treeMeta (path) {
   const t = state.trees.get(current)
@@ -1665,15 +2084,88 @@ async function refreshFile (path, highlight) {
   if ((w.mode === 'files' && w.fileSel === path) || (w.mode === 'merge' && shownMerge()?.path === path)) renderMain()
 }
 
+// ------------------------------------------------------------------ Loom --
+function loomPrefs (w) {
+  const p = w.loom && typeof w.loom === 'object' ? w.loom : {}
+  const names = (list) => Array.isArray(list) ? list.filter((n) => typeof n === 'string') : []
+  w.loom = {
+    chat: p.chat !== false,
+    tasks: p.tasks !== false,
+    density: p.density === 'compact' ? 'compact' : 'detailed',
+    layout: p.layout === 'merged' ? 'merged' : 'lanes',
+    hidden: names(p.hidden),
+    pinned: names(p.pinned), // lanes kept open when they don't all fit
+    opened: names(p.opened).slice(0, 20) // lanes opened from a strip, latest first
+  }
+  return w.loom
+}
+
+function renderLoomView (el) {
+  const s = sum()
+  const st = s.status
+  // Each person's AI sessions share one lane, "<person>'s AI", as in chat.
+  const { personOf, ...data } = foldAiLanes({
+    people: [
+      { ...st.me, isMe: true, online: st.connected },
+      ...st.peers.map((p) => ({ ...p, online: p.hosted ? 'http' : true, optional: !!p.persona }))
+    ],
+    owners: owners(s),
+    feeds: state.feeds.get(current) || new Map(),
+    messages: renderable(state.messages.get(current)),
+    tasks: st.tasks || [],
+    claims: st.claims || []
+  })
+  loomPersonOf = personOf
+  const prefs = loomPrefs(ws(current))
+  renderLoom(el, {
+    build: (merged, width) => buildLoom({ ...data, show: prefs, hidden: prefs.hidden, merged, width, pinned: prefs.pinned, opened: prefs.opened }),
+    prefs,
+    me: st.me.name,
+    names: mentionNames(s),
+    meAgent: st.me.kind === 'agent',
+    onAction: loomAction
+  })
+}
+
+let loomPersonOf = new Map() // a "<person>'s AI" lane -> the person whose AI chat it opens
+
+function loomAction (kind, value) {
+  const w = ws(current)
+  const prefs = loomPrefs(w)
+  if (kind === 'person') return openPerson(loomPersonOf.get(value) || value)
+  if (kind === 'conv') { openPerson(loomPersonOf.get(value.name) || value.name); pickConv(value.conv); return }
+  if (kind === 'file') return openFile(value)
+  if (kind === 'task') {
+    const task = (sum().status.tasks || []).find((t) => t.id === value)
+    if (task) openTaskNotes(task)
+    return
+  }
+  if (kind === 'hide') prefs.hidden = [...new Set([...prefs.hidden, value])]
+  else if (kind === 'unhide') prefs.hidden = prefs.hidden.filter((n) => n !== value)
+  else if (kind === 'toggle') prefs[value] = prefs[value] === false
+  else if (kind === 'density') prefs.density = value
+  else if (kind === 'layout') prefs.layout = value
+  else if (kind === 'pin') prefs.pinned = prefs.pinned.includes(value) ? prefs.pinned.filter((n) => n !== value) : [...prefs.pinned, value]
+  else if (kind === 'open-lane') { prefs.opened = [value, ...prefs.opened.filter((n) => n !== value)].slice(0, 20); prefs.layout = 'lanes' }
+  saveWs(current)
+  renderMain()
+}
+
+const feedsLoading = new Set()
 async function loadFeed (name) {
   const id = current
+  const key = `${id}|${name}`
+  if (feedsLoading.has(key)) return
+  feedsLoading.add(key)
   try {
     const { entries } = await api('GET', `/api/sessions/${id}/feed?who=${encodeURIComponent(name)}`)
     if (!state.feeds.has(id)) state.feeds.set(id, new Map())
     state.feeds.get(id).set(name, entries)
-    if (id === current && ws(id).mode === 'ai' && ws(id).aiSel === name) renderMain()
+    feedsLoading.delete(key)
+    if (id === current && ws(id).mode === 'ai' && (!ws(id).aiSel || ws(id).aiSel === name)) renderMain()
   } catch (err) {
-    toast(err.message)
+    setTimeout(() => feedsLoading.delete(key), 30000) // not again on every status tick
+    if (ws(id).aiSel === name) toast(err.message)
   }
 }
 
@@ -1715,7 +2207,88 @@ function renderTreePane () {
   renderTree(el, tree, { me: me(), expanded: w.expanded, selected: w.mode === 'files' ? w.fileSel : null })
   el.scrollTop = scroll
   $('#file-count').textContent = tree ? `${tree.files.length}` : ''
+  // The rows were replaced: keep the card on the one still under the pointer, with fresh numbers.
+  if (cardPath) {
+    const row = treeRow(cardPath)
+    const under = cardPointer && document.elementFromPoint(cardPointer.x, cardPointer.y)?.closest('[data-file]')
+    if (row && (under === row || row.matches(':focus-visible'))) showTreeCard(row)
+    else hideTreeCard()
+  }
 }
+
+// ------------------------------------------------------------- change card --
+// Hovering a file the session changed shows its +/−, who made them and when
+// (tree.js draws it). It waits a moment so a pointer passing over the tree
+// doesn't flash cards, then follows from row to row at once. Arrowing to a row
+// shows it too; a click doesn't, it opens the file.
+const CARD_DELAY = 300
+let cardPath = null // the file whose card is showing
+let cardTimer = null
+let cardWarmUntil = 0 // just closed: the next row's card shows at once
+let cardPointer = null // where the pointer last was over the tree, to find its row after a re-render
+
+const treeRow = (path) => [...document.querySelectorAll('#tree [data-file]')].find((r) => r.dataset.file === path)
+
+function restoreRowTitle (path) {
+  const row = path && treeRow(path)
+  if (row?.dataset.title) { row.title = row.dataset.title; delete row.dataset.title }
+}
+
+/** How much of a file's changes the history still has a diff for: 'all', 'some', 'none', or null until read. */
+function keptOf (path) {
+  const entries = histories.get(fileKey(path))
+  if (!entries) return null
+  if (!entries.length) return 'none'
+  return rolledOff(entries, fileChanges(path)).length ? 'some' : 'all'
+}
+
+// The card reads the file's history to say whether the Changes tab has a diff; it may have
+// changed since, so it's read again each time a card opens (it's local and small).
+const keptReading = new Set()
+async function readKept (path) {
+  if (keptReading.has(path)) return
+  keptReading.add(path)
+  const id = current
+  try {
+    const { entries } = await api('GET', `/api/sessions/${id}/history?path=${encodeURIComponent(path)}`)
+    if (id !== current) return
+    histories.set(fileKey(path), entries)
+    if (cardPath === path) { const row = treeRow(path); if (row) showTreeCard(row, { fresh: false }) }
+  } catch {} finally { keptReading.delete(path) }
+}
+
+function showTreeCard (row, { fresh = true } = {}) {
+  const f = fileChanges(row.dataset.file)
+  if (!f) { hideTreeCard(); return }
+  if (fresh && row.dataset.file !== cardPath) readKept(row.dataset.file)
+  if (cardPath !== row.dataset.file) restoreRowTitle(cardPath) // moving row to row: the card follows
+  cardPath = row.dataset.file
+  // The row's own tooltip (its full path) would pop up over the card: the card shows the path.
+  if (row.title) { row.dataset.title = row.title; row.removeAttribute('title') }
+  showChangeCard(row, changeCardHtml(f, {
+    who: (name) => name === me() ? 'you' : name,
+    colorOf: (name) => personInfo(name).color,
+    kept: keptOf(row.dataset.file)
+  }))
+}
+
+function hideTreeCard ({ warm = true } = {}) {
+  clearTimeout(cardTimer)
+  if (!cardPath) return
+  restoreRowTitle(cardPath)
+  cardPath = null
+  if (warm) cardWarmUntil = Date.now() + CARD_DELAY
+  hideChangeCard()
+}
+
+function cardSoon (row) {
+  clearTimeout(cardTimer)
+  if (!fileChanges(row.dataset.file)) { hideTreeCard(); return }
+  readKept(row.dataset.file) // during the wait, so the card opens knowing
+  const now = cardPath || Date.now() < cardWarmUntil
+  cardTimer = setTimeout(() => showTreeCard(row), now ? 0 : CARD_DELAY)
+}
+
 
 function openTaskNotes (task, { instant = false } = {}) {
   document.querySelector('.task-notes-back')?.remove()
@@ -1791,6 +2364,8 @@ function bindTreeEvents () {
   el.addEventListener('click', (e) => {
     const more = e.target.closest('[data-more]')
     if (more) { e.stopPropagation(); showTreeMenu(more, more.dataset.more, more.dataset.kind); return }
+    const changes = e.target.closest('[data-changes]')
+    if (changes) { e.stopPropagation(); openFile(changes.dataset.changes, { tab: 'changes' }); return }
     const dir = e.target.closest('[data-dir]')
     if (dir) {
       const w = ws(current)
@@ -1811,7 +2386,31 @@ function bindTreeEvents () {
     const path = row.dataset.file || row.dataset.dir
     showTreeMenu(row.querySelector('.t-more') || row, path, row.dataset.file ? 'file' : 'dir')
   })
+  el.addEventListener('mousemove', (e) => { cardPointer = { x: e.clientX, y: e.clientY } }, { passive: true })
+  el.addEventListener('mouseover', (e) => {
+    const row = e.target.closest?.('[data-file]')
+    if (row && showsLoom($('#main'))) focusFile($('#main'), row.dataset.file) // the Loom lights who worked on it
+    if (row && row.dataset.file !== cardPath) cardSoon(row)
+  })
+  el.addEventListener('mouseout', (e) => {
+    const row = e.target.closest?.('[data-file]')
+    if (!row || row.contains(e.relatedTarget)) return
+    if (showsLoom($('#main'))) focusFile($('#main'), null)
+    clearTimeout(cardTimer)
+    cardTimer = setTimeout(hideTreeCard, 80) // the next row's mouseover cancels this
+  })
+  // Keyboard focus shows it; a click's focus doesn't (the click opens the file).
+  el.addEventListener('focusin', (e) => {
+    const row = e.target.closest?.('[data-file]')
+    if (row && row.matches(':focus-visible')) showTreeCard(row)
+  })
+  el.addEventListener('focusout', (e) => { if (!el.contains(e.relatedTarget)) hideTreeCard({ warm: false }) })
+  el.addEventListener('mousedown', () => hideTreeCard({ warm: false }))
+  el.addEventListener('scroll', () => hideTreeCard({ warm: false }), { passive: true })
+  window.addEventListener('blur', () => hideTreeCard({ warm: false }), { signal: mounted.signal })
+  mounted.signal.addEventListener('abort', () => hideTreeCard({ warm: false }))
   el.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && cardPath) { hideTreeCard({ warm: false }); return }
     const row = e.target.closest('.t-row')
     if (!row) return
     const rows = [...el.querySelectorAll('.t-row')]
@@ -1889,6 +2488,18 @@ function bindChat () {
   const input = $('#msg-input')
   const grow = () => { input.style.height = 'auto'; input.style.height = `${Math.min(input.scrollHeight, 160)}px` }
   input.addEventListener('input', grow)
+  // Partners see "… is typing" while there is text in the box: said again every few seconds
+  // while keys come, taken back when the box is cleared or loses focus (sending clears it too).
+  let typingSaid = 0
+  const sayTyping = (on) => {
+    if (mayNotPost()) return
+    if (on && Date.now() - typingSaid < TYPING_MS / 2) return
+    if (!on && !typingSaid) return
+    typingSaid = on ? Date.now() : 0
+    api('POST', `/api/sessions/${id}/typing`, { on, to: state.to || null }).catch(() => {})
+  }
+  input.addEventListener('input', () => sayTyping(!!input.value.trim()))
+  input.addEventListener('blur', () => sayTyping(false))
   bindMentions(input)
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !e.defaultPrevented) { e.preventDefault(); $('#composer').requestSubmit() }
@@ -1936,6 +2547,7 @@ function bindChat () {
         if (state.to && !r.recipientOnline) toast(`${state.to} is offline. They'll see it when they’re back.`)
       }
       input.value = ''
+      typingSaid = 0 // sending cleared it
       state.pending = []
       renderAttachments()
       grow()
@@ -2088,6 +2700,20 @@ function bindMentions (input) {
   input.addEventListener('blur', () => setTimeout(close, 150))
   menu.addEventListener('mousedown', (e) => e.preventDefault()) // keep the textarea focused
   menu.addEventListener('click', (e) => { const b = e.target.closest('[data-name]'); if (b) pick(b.dataset.name) })
+}
+
+/** "Dana is typing…" under the messages, with a small chatting animation, while partners type. */
+function renderTyping () {
+  const el = $('#typing')
+  const s = sum()
+  if (!el || !s) return
+  const html = typingHtml(typingNames(s.status.peers, s.status.me?.name))
+  if (el.innerHTML === html) return
+  const list = $('#messages')
+  const nearBottom = list && list.scrollHeight - list.scrollTop - list.clientHeight < 80
+  el.innerHTML = html
+  el.hidden = !html
+  if (nearBottom) list.scrollTop = list.scrollHeight
 }
 
 function renderMessages (incoming = false, force = false) {

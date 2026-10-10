@@ -31,7 +31,7 @@ export function renderFeed (el, { entries, person, isMe, color, agent, online, c
     let title, hint
     if (!sharing) {
       title = isMe ? 'You paused sharing your AI chat' : `${person} paused sharing`
-      hint = isMe ? 'Resume from the people menu when you want partners to follow along.' : 'Their AI conversation shows up here when they resume.'
+      hint = isMe ? 'Turn sharing back on in Session settings when you want partners to follow along.' : 'Their AI conversation shows up here when they resume.'
     } else if (agent && agent.status === 'unavailable') {
       title = `${isMe ? 'Your' : `${person}'s`} ${agent.tool || 'AI'} feed isn't available`
       hint = agent.reason || ''
@@ -103,7 +103,7 @@ export function renderFeed (el, { entries, person, isMe, color, agent, online, c
 }
 
 /** Prompts already shared may still contain Cursor's timestamp and user_query wrappers. */
-function visiblePrompt (text) {
+export function visiblePrompt (text) {
   const raw = String(text || '')
   const queries = [...raw.matchAll(/<user_query>\s*([\s\S]*?)\s*<\/user_query>/gi)].map((m) => m[1].trim()).filter(Boolean)
   if (queries.length) return queries.join('\n\n')
@@ -112,7 +112,7 @@ function visiblePrompt (text) {
 
 // ------------------------------------------------------------ markdown --
 // Just enough Markdown for AI replies: code blocks, inline code, bold,
-// italics, headings, lists and links. Everything is escaped first.
+// italics, headings, horizontal rules, lists and links. Everything is escaped first.
 
 export function markdown (text) {
   const out = []
@@ -142,6 +142,7 @@ function blocks (text) {
     const num = line.match(/^\s*\d+[.)]\s+(.*)$/)
     const head = line.match(/^(#{1,6})\s+(.*)$/)
     if (!line.trim()) { endPara(); endList(); continue }
+    if (/^-{3,}\s*$/.test(line)) { endPara(); endList(); out.push('<hr class="md-hr">'); continue }
     if (head) { endPara(); endList(); out.push(`<p class="md-h">${inline(head[2])}</p>`); continue }
     if (bullet || num) {
       endPara()

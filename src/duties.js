@@ -59,7 +59,11 @@ export function answered (messages, me, who, ts) {
 export const CHAT_RULES = 'Send a chat message. Start it with @Name of each person or agent it is for (several are fine; @Agents for every agent): ' +
   'only they are told, so nobody else is interrupted. A message that names nobody is refused unless it is a real announcement (everyone: true). ' +
   'Write only when you have something they need: an answer, a question, a handoff, a warning. Never send greetings, welcomes, thanks or "noted" replies. ' +
-  'Other AI sessions may be working as the same member as you (other windows, other tools) and see the same messages: only one answers each person, and Quilt refuses a repeat.'
+  'Other AI sessions may be working as the same member as you (other windows, other tools) and see the same messages: only one answers each person, and Quilt refuses a repeat. ' +
+  'A direct message you answer gets its id on your reply (re), and each message is answered once: Quilt refuses a second answer to the same one.'
+
+/** What quilt_message's `re` is for, local and hosted. */
+export const RE_HELP = 'Id of the message you are answering (the id in your inbox). It goes back to its sender. Without it, a direct message answers the latest one they sent you. A message already answered is refused'
 
 /** Who a message is for: `to`, or the names among `names` (and @Agents) it mentions. */
 export function addressees (text, to, names) {
@@ -102,6 +106,50 @@ export function renderRepeat (hit, now = Date.now()) {
     'If yours is about something different that they need from you, send it again with also: true.'
 }
 
+// ------------------------------------------------------------- reply ids --
+// A direct message that answers one carries its id (`re`), so an AI can see a message was
+// already answered (by it, or by another of its person's AI sessions) and not answer twice.
+
+/**
+ * The reply id for a message about to go out, and whether it is a second answer to the same
+ * message. `names`: every name the sender answers to (its own, its person's, their other AI
+ * sessions'). `re`: the id it says it answers ('' to work it out: the latest direct message
+ * from `to` to one of `names`). Returns { to, re, repeat } where `repeat` ({ re, to, text, ts }:
+ * the earlier answer) is set when that message was already answered and its sender has not
+ * written since, or { error } for an id that can't be answered.
+ */
+export function replyFor (messages, { names = [], to = null, re = '', now = Date.now(), windowMs = REPEAT_WINDOW_MS } = {}) {
+  const list = (messages || []).filter((m) => m && typeof m.id === 'string')
+  const ours = (m) => names.includes(m.by)
+  let orig = null
+  if (re) {
+    orig = list.find((m) => m.id === re)
+    if (!orig) return { error: `No message with id ${re}: check the id in your inbox.` }
+    if (ours(orig)) return { error: `Message ${re} is your own: give the id of the message you are answering.` }
+    if (!to && orig.to) to = orig.by // answering a direct message answers its sender
+  } else if (to) {
+    for (let i = list.length - 1; i >= 0 && !orig; i--) if (list[i].by === to && names.includes(list[i].to)) orig = list[i]
+  }
+  if (!orig) return { to, re: '', repeat: null }
+  const earlier = list.filter((m) => ours(m) && m.re === orig.id).pop()
+  if (earlier) {
+    const lastFrom = list.reduce((n, m) => m.by === orig.by && (m.ts || 0) > n ? m.ts : n, 0)
+    // Explicitly answered twice, or written to again right after answering with nothing new from them.
+    if (re || ((earlier.ts || 0) >= lastFrom && (earlier.ts || 0) > now - windowMs)) {
+      return { to, re: orig.id, repeat: { re: orig.id, to: orig.by, text: earlier.text, ts: earlier.ts } }
+    }
+    return { to, re: '', repeat: null } // a new message to them, not an answer to that one
+  }
+  return { to, re: orig.id, repeat: null }
+}
+
+/** Why a second answer to one message is refused: the answer already sent. */
+export function renderReplied (hit, now = Date.now()) {
+  return `Not sent: ${hit.to}'s message ${hit.re} was already answered ${ago(hit.ts, now)}: "${quote(hit.text)}". ` +
+    `${hit.to} has not written since, so do not answer it again, thank them or confirm. ` +
+    'If yours is something new that they need from you, send it again with also: true.'
+}
+
 /**
  * Recent chat from others that names one of `paths`: what people said about the files this
  * agent is about to change (asked for, warned off, planned). Each is
@@ -133,6 +181,7 @@ export function waitingOn (messages, me, { now = Date.now(), windowMs = REQUEST_
     if (!m || !m.by || names.includes(m.by) || typeof m.text !== 'string' || (m.ts || 0) < now - windowMs) continue
     if (settled && settled.has(m.id)) continue // needs no reply (quilt_inbox no_reply)
     if (fileQueueMessage(m)) continue // a file queue request or a handoff: handled by handing off, not by a reply
+    if (m.kind === 'commit') continue // a commit request told to the owner: handled by committing (quilt_commit_request_done)
     const kind = names.includes(m.to) ? 'dm' : !m.to && names.some((n) => mentionsMe(m.text, n, { agent })) ? 'mention' : null
     if (kind && !answered(messages, names, m.by, m.ts)) out.push({ id: m.id, kind, by: m.by, text: m.text, ts: m.ts })
   }

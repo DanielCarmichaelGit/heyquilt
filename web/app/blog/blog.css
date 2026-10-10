@@ -29,3 +29,10 @@
 .post-body hr { border: 0; border-top: 1px solid var(--border); margin: 2em 0; }
 
 .post-back { margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--border); font-size: 14px; }
+
+.blog-cover-link { display: block; margin-bottom: 4px; }
+.blog-cover, .post-cover {
+  display: block; width: 100%; height: auto; border-radius: 10px;
+  border: 1px solid var(--border);
+}
+.post-cover { margin: 0 0 28px; }

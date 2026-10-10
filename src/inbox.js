@@ -84,7 +84,7 @@ export function scanInbox ({ messages = [], tasks = [], reader, now = Date.now()
       (reader && reader.of && (t.assignee === me || assignedToReader(t, { name: reader.of, asAi: true })))
     if (!t || typeof t.id !== 'string' || !its) continue
     mine.push(t.id)
-    if (seed || assigned.has(t.id) || t.column === 'done') continue
+    if (seed || assigned.has(t.id) || t.column === 'done' || t.archived) continue
     events.push({
       id: t.id,
       kind: 'task',
@@ -94,8 +94,8 @@ export function scanInbox ({ messages = [], tasks = [], reader, now = Date.now()
       task: { id: t.id, title: t.title, column: t.column, assignee: t.assignee, forAi: !!t.forAi, tool: t.tool || '', files: t.files || [] }
     })
   }
-  // A task that is done, or no longer the reader's, can wake them again later.
-  const open = new Set(tasks.filter((t) => t && t.column !== 'done').map((t) => t.id))
+  // A task that is done, archived, or no longer the reader's, can wake them again later.
+  const open = new Set(tasks.filter((t) => t && t.column !== 'done' && !t.archived).map((t) => t.id))
   return { events, state: { messages: msgIds.slice(-500), assigned: mine.filter((id) => open.has(id)) } }
 }
 
@@ -150,7 +150,7 @@ export function describeEvent (e) {
   return `${who}: ${e.text || ''}`
 }
 
-export const INBOX_HOW = 'Answer a message that asks something of you with quilt_message (set "to", or start with @their name). ' +
+export const INBOX_HOW = 'Answer a message that asks something of you with quilt_message (re: its id, or set "to", or start with @their name), once. ' +
   'One that needs nothing back (thanks, a greeting, an FYI, a status report) gets no reply: settle it with quilt_inbox (no_reply: [its id]). Take a task with quilt_move_task.'
 
 /**

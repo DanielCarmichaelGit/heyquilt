@@ -112,7 +112,7 @@ const HTTP_STEPS = [
 const CHAT_FACTS = [
   ['Make the link', <span key='make-the-link'>The session&apos;s owner (or anyone who may let people in) opens <b>Invite → A chat AI</b>, or runs <code>quilt chat-link</code>, and pastes the link into the chat.</span>],
   ['What it can do', 'Read and send messages, read and add tasks, read files, and add pictures, PDFs, office documents and notes as new files. It can\'t change existing files.'],
-  ['How long it works', <span key='how-long-it-works'>Ten minutes. Extend it from the people menu (or <code>quilt chat-link extend &lt;name&gt; &lt;minutes&gt;</code>) while it still works. Once it runs out, or the owner removes it, make a new link.</span>],
+  ['How long it works', <span key='how-long-it-works'>Ten minutes. Extend it in the session's Session settings (or <code>quilt chat-link extend &lt;name&gt; &lt;minutes&gt;</code>) while it still works. Once it runs out, or the owner removes it, make a new link.</span>],
   ['How it shows', 'As its own member in the session, like any agent.']
 ]
 
@@ -205,8 +205,8 @@ const ABILITIES = [
 
 const CONTROL = [
   ['Approve every session', 'An agent with keys still waits to be let into each session, like a person. Agents a workspace invites wait too.'],
-  ['Viewer or editor', 'Choose per session when you let it in, and change it later from the people menu.'],
-  ['Keep it out of one session', 'In a workspace\'s session, Don\'t invite in the people menu stops its workspace inviting it there.'],
+  ['Viewer or editor', 'Choose per session when you let it in, and change it later in Session settings.'],
+  ['Keep it out of one session', 'In a workspace\'s session, Don\'t invite in Session settings stops its workspace inviting it there.'],
   ['Short-lived keys', 'An access key lasts an hour and is renewed while the agent stays approved. App keys last until you revoke them.'],
   ['Revoke in one click', <>On <b>Dashboard → Agents</b>. Every key it holds stops working at once, app keys included.</>],
   ['Its own folder', 'An agent on your computer works in its own copy, so it never takes over your folder.']

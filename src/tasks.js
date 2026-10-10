@@ -135,11 +135,20 @@ export function publicTask (value) {
   if (verified == null) return null
   const qaNotes = storedQaNotes(value.qaNotes)
   if (qaNotes == null) return null
-  const recurring = storedRecurring(value.recurring)
+  const recurring = storedFlag(value.recurring)
   if (recurring == null) return null
   const cron = canonicalCron(value.cron)
   if (cron == null) return null
-  return { id: value.id, title, column: value.column, by: value.by, order: value.order, ts: value.ts, ...who, files, conv, verified, qaNotes, recurring, cron }
+  const archived = storedFlag(value.archived)
+  if (archived == null) return null
+  // When it was archived. Tasks archived before this was kept have none; a bad value is dropped, not the task.
+  const archivedAt = archived && Number.isFinite(value.archivedAt) && value.archivedAt > 0 ? value.archivedAt : 0
+  return { id: value.id, title, column: value.column, by: value.by, order: value.order, ts: value.ts, ...who, files, conv, verified, qaNotes, recurring, cron, archived, ...(archivedAt ? { archivedAt } : {}) }
+}
+
+/** Tasks still on the board: archived ones are kept, but off the board and out of every listing. */
+export function activeTasks (tasks) {
+  return (tasks || []).filter((t) => t && !t.archived)
 }
 
 /** What an agent said it ran and saw before moving the task to Done. Newlines kept, control chars dropped. */
@@ -171,7 +180,8 @@ function storedQaNotes (v) {
   return v
 }
 
-function storedRecurring (v) {
+// Missing means off (tasks from before the flag existed).
+function storedFlag (v) {
   if (v == null) return false
   if (typeof v !== 'boolean') return null
   return v
@@ -244,9 +254,14 @@ export function readTasks (map) {
   return split(map).valid
 }
 
-function listed (tasks) {
+function everyTask (tasks) {
   if (tasks && typeof tasks.forEach === 'function' && !Array.isArray(tasks)) return readTasks(tasks)
   return (Array.isArray(tasks) ? tasks : []).map(publicTask).filter(Boolean).sort(byOrder)
+}
+
+// The board as people see it: archived tasks left out.
+function listed (tasks) {
+  return activeTasks(everyTask(tasks))
 }
 
 function nextOrder (tasks, column) {
@@ -267,8 +282,8 @@ function orderBefore (tasks, column, beforeId) {
 }
 
 /**
- * Adds a task to To do. When the board is full, the oldest Done task is
- * dropped to make room. Throws if there is nothing finished to drop.
+ * Adds a task to To do. When the board is full, the oldest archived task, then the
+ * oldest Done task, is dropped to make room. Throws if there is nothing finished to drop.
  */
 export function addTask (doc, map, { id = null, title, by, assignee = '', forAi = false, tool = '', files = [], column = 'todo', conv = '' }, origin) {
   if (id != null && (typeof id !== 'string' || !HEX_ID.test(id))) throw new Error('a task id is 16 hex characters')
@@ -279,7 +294,12 @@ export function addTask (doc, map, { id = null, title, by, assignee = '', forAi 
   const { valid, junk } = split(map)
   const dropping = []
   if (valid.length >= MAX_TASKS) {
-    const done = valid.filter((t) => t.column === 'done').sort((a, b) => a.ts - b.ts || byOrder(a, b))
+    const oldest = (a, b) => a.ts - b.ts || byOrder(a, b)
+    const shelvedFirst = (a, b) => (a.archivedAt || a.ts) - (b.archivedAt || b.ts) || byOrder(a, b) // archived longest ago
+    const done = [
+      ...valid.filter((t) => t.archived).sort(shelvedFirst),
+      ...valid.filter((t) => !t.archived && t.column === 'done').sort(oldest)
+    ]
     const need = valid.length - MAX_TASKS + 1
     if (done.length < need) throw new Error('the board is full. Remove a task first.')
     dropping.push(...done.slice(0, need).map((t) => t.id))
@@ -298,6 +318,7 @@ export function addTask (doc, map, { id = null, title, by, assignee = '', forAi 
     qaNotes: '',
     recurring: false,
     cron: '',
+    archived: false,
     order: nextOrder(valid, column),
     ts: Date.now()
   }
@@ -310,11 +331,12 @@ export function addTask (doc, map, { id = null, title, by, assignee = '', forAi 
 }
 
 /**
- * Changes a task's title, column, place, assignee, files, verified evidence, QA notes, or repeat schedule.
+ * Changes a task's title, column, place, assignee, files, verified evidence, QA notes, repeat schedule, or archived flag.
  * `before` is a task id to insert ahead of. Leaving Done clears `verified`; leaving QA clears `qaNotes`.
+ * Moving an archived task to another column brings it back onto the board.
  * `cron` is 5-field cron or a phrase such as "daily at 9". A schedule turns `recurring` on.
  */
-export function updateTask (doc, map, { id, title, column, before, assignee, forAi, tool, files, verified, qaNotes, recurring, cron } = {}, origin) {
+export function updateTask (doc, map, { id, title, column, before, assignee, forAi, tool, files, verified, qaNotes, recurring, cron, archived } = {}, origin) {
   const { valid } = split(map)
   const cur = valid.find((t) => t.id === id)
   if (!cur) throw new Error('no such task')
@@ -377,6 +399,16 @@ export function updateTask (doc, map, { id, title, column, before, assignee, for
     if (c !== (cur.cron || '')) { next.cron = c; changed = true }
     if (c && !next.recurring) { next.recurring = true; changed = true }
   }
+  if (archived !== undefined) {
+    if (typeof archived !== 'boolean') throw new Error('archived must be true or false')
+    if (archived !== cur.archived) { next.archived = archived; changed = true }
+  } else if (moving && cur.archived) {
+    next.archived = false
+    changed = true
+  }
+  // When it went onto the shelf, for the archived list's "archived 3d ago" and its order.
+  if (next.archived && !cur.archived) next.archivedAt = Date.now()
+  if (!next.archived) delete next.archivedAt
   if (!changed) return cur
   doc.transact(() => map.set(id, next), origin)
   return next
@@ -531,7 +563,7 @@ export function planAutoTask ({ entries, tasks, prompts, now = Date.now(), me = 
     const p = actionPath(e.text)
     if (p && !bucket.files.includes(p)) bucket.files.push(p)
   }
-  const open = (Array.isArray(tasks) ? tasks : []).filter((t) => t && (t.column === 'todo' || t.column === 'doing'))
+  const open = activeTasks(Array.isArray(tasks) ? tasks : []).filter((t) => t.column === 'todo' || t.column === 'doing')
   for (const [conv, bucket] of fresh) {
     const files = []
     for (const f of bucket.files) {
@@ -586,16 +618,26 @@ function agentLine (t) {
 /**
  * Plain text for an agent, with ids so it can move a task.
  * `reader` is { name, tool, asAi }. Open tasks assigned to that reader are listed first.
+ * `archived` lists the archived tasks instead of the board.
  */
-export function formatTasks (tasks, reader) {
-  const list = listed(tasks)
+export function formatTasks (tasks, reader, { archived = false } = {}) {
+  const all = everyTask(tasks)
+  const shelved = all.filter((t) => t.archived)
+  if (archived) {
+    if (!shelved.length) return 'No archived tasks.'
+    return `Archived (off the board; quilt_archive_task with archived false brings one back)\n${shelved.map(agentLine).join('\n')}`
+  }
+  const list = activeTasks(all)
+  const hidden = shelved.length
+    ? `\n\n${shelved.length} archived task${shelved.length === 1 ? ' is' : 's are'} not shown: quilt_tasks with archived true lists them.`
+    : ''
   const board = () => {
-    if (!list.length) return 'No tasks yet. The board has four columns: To do, In progress, QA, and Done.'
+    if (!list.length) return `No tasks yet. The board has four columns: To do, In progress, QA, and Done.${hidden}`
     return COLUMNS.map((col) => {
       const items = list.filter((t) => t.column === col.id)
       const lines = items.length ? items.map(agentLine) : ['- Nothing.']
       return `${col.name}\n${lines.join('\n')}`
-    }).join('\n\n')
+    }).join('\n\n') + hidden
   }
   if (!reader?.name) return board()
   const open = openTasks(list)

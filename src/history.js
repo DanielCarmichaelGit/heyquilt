@@ -288,7 +288,7 @@ export function blameChange ({ before = '', after = '', entries = [] }) {
  * the board, with the AI's tasks first when `preferAi` says the AI is the one working.
  */
 export function currentTask (tasks, name, { preferAi = false } = {}) {
-  const doing = (tasks || []).filter((t) => t && t.column === 'doing' && t.assignee === name)
+  const doing = (tasks || []).filter((t) => t && !t.archived && t.column === 'doing' && t.assignee === name)
   if (!doing.length) return null
   doing.sort((a, b) => (Number(!!b.forAi === preferAi) - Number(!!a.forAi === preferAi)) || ((a.order ?? 0) - (b.order ?? 0)))
   return { id: doing[0].id, title: doing[0].title }

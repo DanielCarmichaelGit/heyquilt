@@ -4,6 +4,7 @@ slug: teaching-ais-to-take-turns
 date: 2026-10-08
 description: "Two coding agents in the same folder will happily overwrite each other. How Quilt went from warnings to claims to a proper queue with handoffs."
 author: Daniel Carmichael
+cover: /blog/teaching-ais-to-take-turns.webp
 ---
 
 Put two coding agents in the same project folder and they will step on each other within minutes. Neither one is being careless. Each of them reads a file, plans a change, and writes it back, with no idea that another agent did the same thing ten seconds earlier. With people this mostly sorts itself out because we talk. Agents don't, unless something makes them.
